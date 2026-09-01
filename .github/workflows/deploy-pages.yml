@@ -31,8 +31,10 @@ jobs:
 
       - name: Validate schedule data
         run: |
+          node --check app.js
           node tests/validate-schedule.js
           node tests/date-defaults.js
+          node tests/range-rendering.js
 
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3

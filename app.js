@@ -27,8 +27,37 @@
     };
   }
 
+  function dateKey(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  function isDateKeyInRange(key, dateFrom, dateTo) {
+    const isAfterStart = !dateFrom || key >= dateFrom;
+    const isBeforeEnd = !dateTo || key <= dateTo;
+    return isAfterStart && isBeforeEnd;
+  }
+
+  function getVisibleMonthDates(year, monthIndex, dateFrom, dateTo) {
+    const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+    return Array.from({ length: daysInMonth }, (_, index) => new Date(year, monthIndex, index + 1))
+      .filter((date) => isDateKeyInRange(dateKey(date), dateFrom, dateTo));
+  }
+
+  function getDateGridColumn(date) {
+    return date.getDay() + 1;
+  }
+
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { getTokyoDateDefaults };
+    module.exports = {
+      dateKey,
+      getDateGridColumn,
+      getTokyoDateDefaults,
+      getVisibleMonthDates,
+      isDateKeyInRange
+    };
   }
 
   if (typeof window === "undefined" || typeof document === "undefined") {
@@ -67,17 +96,8 @@
     resetFilters: document.querySelector("#reset-filters")
   };
 
-  function dateKey(date) {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
-  }
-
   function isInDateRange(key) {
-    const isAfterStart = !state.dateFrom || key >= state.dateFrom;
-    const isBeforeEnd = !state.dateTo || key <= state.dateTo;
-    return isAfterStart && isBeforeEnd;
+    return isDateKeyInRange(key, state.dateFrom, state.dateTo);
   }
 
   function filteredEntries(key, shift) {
@@ -85,7 +105,7 @@
     return entries.filter((entry) => state.selectedMaids.has(entry.name));
   }
 
-  function createShiftSection(key, shift, isInRange) {
+  function createShiftSection(key, shift) {
     const section = document.createElement("section");
     section.className = `shift-section ${shiftDetails[shift].className}`;
     section.setAttribute("aria-label", `${shift}のお給仕`);
@@ -102,7 +122,7 @@
     section.append(title);
 
     const allEntries = data.schedule[key]?.[shift] ?? [];
-    const entries = isInRange ? filteredEntries(key, shift) : [];
+    const entries = filteredEntries(key, shift);
 
     if (entries.length > 0) {
       const list = document.createElement("ul");
@@ -129,9 +149,7 @@
     const empty = document.createElement("p");
     section.classList.add("is-empty");
     empty.className = "empty-shift";
-    if (!isInRange) {
-      empty.textContent = "期間外";
-    } else if (allEntries.length > 0) {
+    if (allEntries.length > 0) {
       empty.textContent = "該当なし";
     } else {
       empty.textContent = "確認情報なし";
@@ -140,10 +158,8 @@
     return section;
   }
 
-  function createDayCell(date, visibleMonthIndex) {
+  function createDayCell(date, isFirstRenderedDate) {
     const key = dateKey(date);
-    const isCurrentMonth = date.getMonth() === visibleMonthIndex;
-    const inRange = isInDateRange(key);
     const day = document.createElement("article");
     day.className = "calendar-day";
     day.setAttribute("role", "gridcell");
@@ -151,6 +167,10 @@
       "aria-label",
       `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`
     );
+
+    if (isFirstRenderedDate) {
+      day.style.gridColumnStart = String(getDateGridColumn(date));
+    }
 
     if (date.getDay() === 0) {
       day.classList.add("is-sunday");
@@ -169,22 +189,8 @@
     dateLabel.append(number, weekday);
     heading.append(dateLabel);
 
-    if (!isCurrentMonth) {
-      day.classList.add("is-outside-month");
-      const outsideLabel = document.createElement("span");
-      outsideLabel.className = "outside-month-label";
-      outsideLabel.textContent = `${date.getMonth() + 1}月`;
-      heading.append(outsideLabel);
-      day.append(heading);
-      return day;
-    }
-
-    if (!inRange) {
-      day.classList.add("is-outside-range");
-    }
-
     day.append(heading);
-    shifts.forEach((shift) => day.append(createShiftSection(key, shift, inRange)));
+    shifts.forEach((shift) => day.append(createShiftSection(key, shift)));
     return day;
   }
 
@@ -192,9 +198,12 @@
     const year = state.visibleMonth.getFullYear();
     const monthIndex = state.visibleMonth.getMonth();
     const firstDay = new Date(year, monthIndex, 1);
-    const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
-    const cellCount = Math.ceil((firstDay.getDay() + daysInMonth) / 7) * 7;
-    const firstCellDate = new Date(year, monthIndex, 1 - firstDay.getDay());
+    const visibleDates = getVisibleMonthDates(
+      year,
+      monthIndex,
+      state.dateFrom,
+      state.dateTo
+    );
     const grid = document.createElement("div");
     grid.className = "calendar-grid";
     grid.setAttribute("role", "grid");
@@ -212,18 +221,32 @@
     });
     grid.append(headerRow);
 
-    for (let weekStart = 0; weekStart < cellCount; weekStart += 7) {
+    if (visibleDates.length === 0) {
       const row = document.createElement("div");
       row.className = "calendar-row";
       row.setAttribute("role", "row");
-
-      for (let offset = 0; offset < 7; offset += 1) {
-        const date = new Date(firstCellDate);
-        date.setDate(firstCellDate.getDate() + weekStart + offset);
-        row.append(createDayCell(date, monthIndex));
-      }
-
+      const empty = document.createElement("p");
+      empty.className = "calendar-empty";
+      empty.setAttribute("role", "gridcell");
+      empty.setAttribute("aria-live", "polite");
+      empty.textContent = "この月には、選択した期間の日付がありません。";
+      row.append(empty);
       grid.append(row);
+    } else {
+      let currentWeek = -1;
+      let row;
+
+      visibleDates.forEach((date, index) => {
+        const week = Math.floor((firstDay.getDay() + date.getDate() - 1) / 7);
+        if (week !== currentWeek) {
+          row = document.createElement("div");
+          row.className = "calendar-row";
+          row.setAttribute("role", "row");
+          grid.append(row);
+          currentWeek = week;
+        }
+        row.append(createDayCell(date, index === 0));
+      });
     }
 
     const displayedCount = Object.entries(data.schedule).reduce((total, [key, day]) => {
@@ -277,7 +300,6 @@
       label.append(checkbox, text);
       fragment.append(label);
     });
-    elements.maidCheckboxes.replaceChildren(fragment);
     elements.maidCheckboxes.replaceChildren(fragment);
     updateMaidFilterSummary();
   }

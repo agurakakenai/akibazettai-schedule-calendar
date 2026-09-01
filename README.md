@@ -19,6 +19,7 @@ python -m http.server 4173
 ```powershell
 node tests/validate-schedule.js
 node tests/date-defaults.js
+node tests/range-rendering.js
 ```
 
 ## お給仕情報の更新
