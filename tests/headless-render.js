@@ -648,41 +648,76 @@ assert.equal(
 );
 
 // --- 実績・見込みの月へ移動する -----------------------------------------
+// 実績は日ごとに伸びるので、月を決め打ちしない。記録の最終日を含む月まで動かす。
 const lastActual = Object.keys(insights.actual).sort().at(-1);
-elementById("date-from").value = "2026-08-26";
-dispatch("date-from", "change");
-elementById("date-to").value = "2026-09-02";
-dispatch("date-to", "change");
-dispatch("previous-month", "click");
+const shiftDate = (key, days) => {
+  const date = new Date(`${key}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+};
+const monthOf = (key) => key.slice(0, 7);
 
-const augustBadges = withClass(calendar, "calendar-day").map((cell) => ({
+elementById("date-from").value = shiftDate(lastActual, -5);
+dispatch("date-from", "change");
+elementById("date-to").value = shiftDate(lastActual, 2);
+dispatch("date-to", "change");
+
+// カレンダーは schedule.js の initialMonth から始まる。記録の月まで前後させる。
+const monthsBetween = (from, to) => {
+  const [fy, fm] = from.split("-").map(Number);
+  const [ty, tm] = to.split("-").map(Number);
+  return (ty - fy) * 12 + (tm - fm);
+};
+let steps = monthsBetween(monthOf(schedule.initialMonth), monthOf(lastActual));
+while (steps < 0) {
+  dispatch("previous-month", "click");
+  steps += 1;
+}
+while (steps > 0) {
+  dispatch("next-month", "click");
+  steps -= 1;
+}
+
+const recordMonthBadges = withClass(calendar, "calendar-day").map((cell) => ({
   day: withClass(cell, "day-number")[0].textContent,
   badges: withClass(cell, "store-status-badge").map((badge) => badge.textContent)
 }));
-const rendered = new Set(augustBadges.flatMap((cell) => cell.badges));
+const rendered = new Set(recordMonthBadges.flatMap((cell) => cell.badges));
 assert.ok(rendered.has("実績"), "the recorded window must render 実績 badges");
-assert.ok(rendered.has("翌日見込み"), "the day after the last record must render a forecast");
-assert.ok(rendered.has("曜日傾向"), "a shift with no record must fall back to the weekday tendency");
 
-const lastActualDay = String(Number(lastActual.slice(-2)));
-const forecastDay = String(Number(lastActual.slice(-2)) + 1);
-assert.deepEqual(
-  augustBadges.find((cell) => cell.day === lastActualDay).badges,
-  ["実績", "実績"],
-  `${lastActual} is fully recorded, so both shifts must show 実績`
+const dayLabel = (key) => String(Number(key.slice(-2)));
+const lastActualCell = recordMonthBadges.find((cell) => cell.day === dayLabel(lastActual));
+assert.ok(lastActualCell, `${lastActual} must be visible in the selected range`);
+// 最新の記録日は片シフトだけのことがある（その日の夜がまだ来ていない等）。
+const recordedShifts = Object.keys(insights.actual[lastActual]).length;
+assert.equal(
+  lastActualCell.badges.filter((badge) => badge === "実績").length,
+  recordedShifts,
+  `${lastActual} has ${recordedShifts} recorded shift(s), so that many 実績 badges are correct`
 );
-assert.deepEqual(
-  augustBadges.find((cell) => cell.day === forecastDay).badges,
-  ["翌日見込み", "翌日見込み"],
-  "the day after the last record must be a forecast on both shifts"
-);
+
+const forecastKey = shiftDate(lastActual, 1);
+if (monthOf(forecastKey) === monthOf(lastActual)) {
+  const forecastCell = recordMonthBadges.find((cell) => cell.day === dayLabel(forecastKey));
+  assert.ok(forecastCell, `${forecastKey} must be visible in the selected range`);
+  // 見込みは前日の同じシフトの記録から出す。前日が片シフトだけなら、
+  // もう片方は前日を引けないので曜日傾向に落ちる。
+  assert.equal(
+    forecastCell.badges.filter((badge) => badge === "翌日見込み").length,
+    recordedShifts,
+    `${forecastKey} must forecast exactly the ${recordedShifts} shift(s) recorded the day before`
+  );
+}
 
 // 片方のシフトしか記録が無い日は、記録のある側だけが 実績 になる。
 const partialDate = Object.keys(insights.actual).find(
-  (date) => date.startsWith("2026-08-2") && Object.keys(insights.actual[date]).length === 1
+  (date) =>
+    monthOf(date) === monthOf(lastActual) &&
+    date >= shiftDate(lastActual, -5) &&
+    Object.keys(insights.actual[date]).length === 1
 );
 if (partialDate) {
-  const cell = augustBadges.find((entry) => entry.day === String(Number(partialDate.slice(-2))));
+  const cell = recordMonthBadges.find((entry) => entry.day === dayLabel(partialDate));
   assert.ok(cell, `${partialDate} must be visible in the selected range`);
   assert.equal(
     cell.badges.filter((badge) => badge === "実績").length,

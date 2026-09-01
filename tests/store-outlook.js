@@ -42,10 +42,27 @@ const outlookFor = (dateKey, shift) =>
 const openIdsOf = (outlook) =>
   outlook.entries.filter((entry) => entry.state === "open").map((entry) => entry.store.id);
 
-assert.equal(lastActual, "2026-08-30", "the fixture must still end on 2026-08-30");
+// 実績はこの先も日ごとに伸びるので、最終日を決め打ちしない。
+// 見張りたいのは「actual のいちばん新しい日を拾えているか」であって、日付そのものではない。
+{
+  const recorded = Object.keys(insights.actual).sort();
+  assert.ok(recorded.length > 0, "the fixture must contain some records");
+  assert.match(lastActual, /^\d{4}-\d{2}-\d{2}$/, "the last recorded date must be a date");
+  assert.equal(lastActual, recorded[recorded.length - 1], "the last record must be the newest one");
+  assert.ok(
+    insights.shifts.some((shift) => Array.isArray(insights.actual[lastActual][shift])),
+    "the newest record must carry at least one shift"
+  );
+}
 
 // 1. 実績のある日は actual の中身がそのまま返る。
-for (const shift of insights.shifts) {
+// 最新の記録日は片シフトだけのことがある（その日の夜がまだ来ていない等）ので、
+// 記録のあるシフトだけを見る。
+const recordedShifts = insights.shifts.filter((shift) =>
+  Array.isArray(insights.actual[lastActual][shift])
+);
+assert.ok(recordedShifts.length > 0, "the newest record must carry at least one shift");
+for (const shift of recordedShifts) {
   const outlook = outlookFor(lastActual, shift);
   assert.equal(outlook.basis, "actual", `${lastActual} ${shift} must resolve to a record`);
   assert.deepEqual(
@@ -66,8 +83,9 @@ for (const shift of insights.shifts) {
 
 // 2. 実績最終日の翌日はローテーションを使った見込みになる。
 const forecastDate = addDays(lastActual, 1);
-assert.equal(forecastDate, "2026-08-31", "addDays must roll to the next calendar day");
-for (const shift of insights.shifts) {
+assert.notEqual(forecastDate, lastActual, "addDays must roll to the next calendar day");
+assert.ok(forecastDate > lastActual, "the next day must sort after the last record");
+for (const shift of recordedShifts) {
   const outlook = outlookFor(forecastDate, shift);
   assert.equal(outlook.basis, "forecast", `${forecastDate} ${shift} must be a forecast`);
 
@@ -183,9 +201,10 @@ for (const date of partialDates) {
     if (recorded) {
       assert.equal(outlook.basis, "actual", `${date} ${shift} has a record and must use it`);
     } else {
-      assert.equal(
-        outlook.basis,
-        "tendency",
+      // 記録が無い側は、前日の同じシフトが分かっていれば見込み、分からなければ
+      // 曜日傾向になる。どちらにせよ「実績」を名乗ってはいけない。
+      assert.ok(
+        ["forecast", "tendency"].includes(outlook.basis),
         `${date} ${shift} has no record, so it must not be treated as a record`
       );
       assert.equal(
@@ -541,7 +560,8 @@ const eventShiftsPreview = eventShifts;
 assert.ok(eventShifts.length > 0, "the fixture must contain at least one event shift");
 
 for (const { date, shift, entries } of eventShifts) {
-  const pins = eventStorePins({ insights, entries });
+  // アプリと同じく公式サイトの配属を渡す。推定側の経路は下の単体テストで見る。
+  const pins = eventStorePins({ insights, entries, homeStore: schedule.homeStore });
   const hosts = entries.filter((entry) => entry.featured);
   assert.equal(pins.size, hosts.length, `${date} ${shift} must pin every featured maid`);
 
@@ -549,8 +569,8 @@ for (const { date, shift, entries } of eventShifts) {
     const pin = pins.get(host.name);
     assert.equal(
       pin.storeId,
-      insights.maidTendency[host.name].home,
-      `${host.name} must be pinned to her own store`
+      schedule.homeStore[host.name],
+      `${host.name} must be pinned to the shop the site posts her to`
     );
     assert.equal(pin.label, host.eventLabel, "the pin must carry the event label");
   }
@@ -587,7 +607,7 @@ for (const { date, shift, entries } of eventShifts) {
     const placed = eventAssignment.byMaid.get(host.name);
     assert.equal(
       placed.storeId,
-      insights.maidTendency[host.name].home,
+      schedule.homeStore[host.name],
       `${host.name} must be assigned to her own store on ${date} ${shift}`
     );
     assert.equal(placed.score, 1, "a pinned placement is certain, not a guess");
@@ -607,8 +627,8 @@ for (const { date, shift, entries } of eventShifts) {
       "the host's chip must name the event that fixes her store"
     );
     assert.ok(
-      hostChip.title.includes("推定"),
-      "the chip must admit the home store is inferred from shifts, not an official posting"
+      hostChip.title.includes("公式サイトの配属"),
+      "the chip must credit the site for the home store, now that we read it from there"
     );
   }
 
@@ -664,6 +684,21 @@ assert.equal(
   // 予定表に配属が無い人でも落ちない。
   const partial = eventStorePins({ insights, entries: host, homeStore: {} }).get("える");
   assert.equal(partial.storeId, guessed, "an empty posting table falls back too");
+
+  // ツールチップは出どころを言い分ける。公式なら公式、無ければ推定と断る。
+  const chipFor = (pin) => {
+    const outlook = applyEventCertainty(insights, outlookFor(farFuture, "昼"), new Map([["える", pin]]));
+    const assignment = getShiftAssignment({
+      insights,
+      members: ["える"],
+      shift: "昼",
+      outlook,
+      pins: new Map([["える", pin]])
+    });
+    return getMaidStoreOutlook({ insights, name: "える", shift: "昼", outlook, assignment });
+  };
+  assert.ok(chipFor(pinned).title.includes("公式サイトの配属"), "an official pin must credit the site");
+  assert.ok(chipFor(fallback).title.includes("推定"), "a guessed pin must still admit it is a guess");
 
   // 公式の配属は全員ぶんあるので、記念日の主役はすべて公式で置ける。
   for (const [date, day] of Object.entries(schedule.schedule)) {
@@ -725,7 +760,7 @@ assert.equal(
     const pinned = applyEventCertainty(
       insights,
       outlookFor(eventShift.date, eventShift.shift),
-      eventStorePins({ insights, entries: eventShift.entries })
+      eventStorePins({ insights, entries: eventShift.entries, homeStore: schedule.homeStore })
     );
     const chosen = expectedOpenStores(insights, eventShift.shift, pinned, 1);
     for (const storeId of pinned.certainStores) {
@@ -982,6 +1017,40 @@ assert.equal(
     "maids without a store must still be listed, after the shops"
   );
   assert.equal(partial[1].entries.length, roster.length - 1, "nobody may be dropped");
+}
+
+// 店舗だけ分かっていて顔ぶれの記録が無い日は、実績として扱いつつ、その旨を断る。
+{
+  const storesOnly = insights.actualWithoutRoster ?? {};
+  const dates = Object.keys(storesOnly);
+  assert.ok(dates.length > 0, "the fixture must contain a stores-only record to exercise this");
+
+  for (const date of dates) {
+    for (const [shift, stores] of Object.entries(storesOnly[date])) {
+      // 顔ぶれが無いだけで営業したことは確かなので、見込みには落とさない。
+      const outlook = outlookFor(date, shift);
+      assert.equal(outlook.basis, "actual", `${date} ${shift} is recorded, even without a line-up`);
+      assert.deepEqual(
+        [...outlook.openStores].sort(),
+        [...stores].sort(),
+        `${date} ${shift} must report exactly the stores we were told about`
+      );
+      assert.ok(
+        outlook.summary.includes("誰がいたかの記録はありません"),
+        `${date} ${shift} must admit the line-up is unknown`
+      );
+    }
+  }
+
+  // 顔ぶれまで分かっている日には、その断り書きを付けない。
+  const fullyRecorded = Object.keys(insights.actual).find(
+    (date) => !storesOnly[date] && insights.actual[date]["昼"]
+  );
+  assert.ok(fullyRecorded, "the fixture must contain a normally recorded day");
+  assert.ok(
+    !outlookFor(fullyRecorded, "昼").summary.includes("誰がいたかの記録はありません"),
+    `${fullyRecorded} has a line-up, so it must not carry the caveat`
+  );
 }
 
 console.log(

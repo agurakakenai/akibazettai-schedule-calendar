@@ -217,14 +217,20 @@
     if (!open) {
       return null;
     }
+    // 店舗だけ分かっていて顔ぶれの記録が無い日がある（メイドさんの当日投稿など）。
+    // 営業したことは確かなので実績として扱うが、誰がいたかは分からないと断る。
+    const storesOnly = Boolean(insights.actualWithoutRoster?.[key]?.[shift]);
+    const summary = open.size > 0
+      ? `${shift}は${joinStoreNames(insights, open)}が営業していました（公式Xの投稿で確認できた実績）。`
+      : `${shift}に営業した店舗の記録がありません。`;
     return {
       basis: "actual",
       badge: "実績",
       badgeClass: "is-actual",
       openStores: [...open],
-      summary: open.size > 0
-        ? `${shift}は${joinStoreNames(insights, open)}が営業していました（公式Xの投稿で確認できた実績）。`
-        : `${shift}に営業した店舗の記録がありません。`,
+      summary: storesOnly
+        ? `${summary}この日は営業した店舗だけが分かっていて、誰がいたかの記録はありません。下の顔ぶれは予定表からの割り振りです。`
+        : summary,
       entries: storesOf(insights).map((store) => {
         const isOpen = open.has(store.id);
         return {
@@ -238,11 +244,17 @@
     };
   }
 
+  // 前日の同じシフトに記録があれば、そこから翌日を見る。実績は昼だけ・夜だけ
+  // 入ることがあるので、「実績の最終日の翌日」で判定すると、記録の飛んだ側が
+  // 前日を引けずに見込みを出せなくなる。前日そのものを見れば飛んでいても動く。
+  // ただし記録より前の日には使わない。過ぎた日の抜けは予測ではなく「記録が無い」
+  // だけなので、曜日傾向側で「休みとは限りません」と断るほうが正しい。
   function forecastOutlook(insights, key, shift, lastActualDate) {
-    if (!lastActualDate || key !== addDays(lastActualDate, 1)) {
+    if (lastActualDate && key < lastActualDate) {
       return null;
     }
-    const previous = openStoresOn(insights, lastActualDate, shift);
+    const previousDate = addDays(key, -1);
+    const previous = openStoresOn(insights, previousDate, shift);
     const baseRate = insights.baseOpenRate?.[shift];
     if (!previous || !baseRate) {
       return null;
@@ -274,7 +286,7 @@
     const leader = rivals.length > 0
       ? rivals.reduce((best, entry) => (entry.rate > best.rate ? entry : best))
       : null;
-    const parts = [`前日（${lastActualDate}）の${shift}の実績から見た、翌日の${shift}の見込みです。`];
+    const parts = [`前日（${previousDate}）の${shift}の実績から見た、翌日の${shift}の見込みです。`];
 
     if (leader) {
       parts.push(`2・3号店では${leader.store.short}が${toPercent(leader.rate)}で最有力です。`);
@@ -287,7 +299,7 @@
     if (typeof dayAccuracy.group === "number") {
       // 日単位のローテーション表は、日単位の問いに対してはシフト別より当たる（51.4% 対 38〜43%）。
       // チップの数値はシフト別のままにして、ここでは「その日どちらが開くか」だけを補足する。
-      const previousDay = openStoresOnDay(insights, lastActualDate);
+      const previousDay = openStoresOnDay(insights, previousDate);
       const dayNext = previousDay
         ? insights.rotation?.nextDayByDay?.[groupStateOf(previousDay)] ?? {}
         : {};
@@ -713,6 +725,9 @@
       const strength = typeof placed.pin.pickRate === "number"
         ? `${store.short}が開いた${shift}の${toPercent(placed.pin.pickRate)}をこの店で過ごしています`
         : null;
+      const source = placed.pin.official
+        ? `所属店は公式サイトの配属です${strength ? `（${strength}）` : ""}`
+        : `所属店は公式の配属が分からないため、出勤実績から推定したものです${strength ? `（${strength}）` : ""}`;
       return {
         basis: "event",
         storeId: store.id,
@@ -720,10 +735,7 @@
         label: compactStoreLabel(store),
         percent: "確定",
         alternative: null,
-        title: [
-          `${placed.pin.label}の主役なので、所属店の${store.short}にいます`,
-          `所属店は公式の配属ではなく、出勤実績から推定したものです${strength ? `（${strength}）` : ""}`
-        ].join("。"),
+        title: [`${placed.pin.label}の主役なので、所属店の${store.short}にいます`, source].join("。"),
         srText: `${placed.pin.label}の主役なので所属店の${store.short}にいます`
       };
     }

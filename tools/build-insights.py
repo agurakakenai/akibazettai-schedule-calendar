@@ -56,9 +56,38 @@ SCHEDULE_SYSTEM_CHANGED = '2026-09-01'
 # 「予定表に何人載るか」の基準としてはそのまま使えない点に注意。
 
 
-def load_csv(name):
-    with open(os.path.join(DATA, name), encoding='utf-8-sig', newline='') as f:
+def load_csv(name, optional=False):
+    path = os.path.join(DATA, name)
+    if optional and not os.path.exists(path):
+        return []
+    with open(path, encoding='utf-8-sig', newline='') as f:
         return list(csv.DictReader(f))
+
+
+def read_openings():
+    """「開いた店は分かるが、誰が出たかは分からない」日を読む。
+
+    shifts.csv は公式Xの当日お給仕投稿から復元したもので、メイド単位の記録がある。
+    一方で、店休告知やメイドさん個人の投稿から「この日はこの店が開いた」とだけ
+    分かることがある。そういう日をここに書く。
+
+    統計（営業率・ローテーション・人数）には混ぜない。人数が分からない以上、
+    人数まわりの集計に入れると母数がずれるし、shifts.csv を統計の唯一の出典に
+    しておくほうが、あとで数字を追いやすい。カレンダーに出す actual にだけ足す。
+    """
+    out = {}
+    for row in load_csv('openings.csv', optional=True):
+        date = (row.get('date') or '').strip()
+        shift = (row.get('shift') or '').strip()
+        if not date or shift not in SHIFTS:
+            continue
+        ids = [s.strip() for s in (row.get('stores') or '').split('|') if s.strip()]
+        unknown = [s for s in ids if s not in IDS]
+        if unknown:
+            raise SystemExit('openings.csv に未知の店舗 %s があります（%s %s）'
+                             % (', '.join(unknown), date, shift))
+        out.setdefault(date, {})[shift] = sorted(set(ids), key=IDS.index)
+    return out
 
 
 
@@ -552,6 +581,17 @@ def build():
         if entry:
             actual[d] = entry
 
+    # 誰が出たかは分からないが開いた店は分かる日を足す。shifts.csv に記録がある
+    # シフトは上書きしない（メイド単位の記録のほうが確かなので）。
+    openings = read_openings()
+    openings_used = {}
+    for d, per_shift in sorted(openings.items()):
+        for sh, ids in per_shift.items():
+            if (d, sh) in cell:
+                continue
+            actual.setdefault(d, {})[sh] = ids
+            openings_used.setdefault(d, {})[sh] = ids
+
     return {
         'generatedAt': datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),
         'historyRange': {'from': all_dates[0], 'to': last},
@@ -589,6 +629,9 @@ def build():
             'maidStoreTop2': 0.750,
         },
         'actual': actual,
+        # 上のうち、メイド単位の記録が無く「開いた店」だけ分かっている日。
+        # 統計には入っていないので、UI が出典を書き分けたいときに使える。
+        'actualWithoutRoster': openings_used,
         'maidTendency': tendency,
         'unlistedMaids': unlisted,
         'rosterCoverage': roster_coverage,
