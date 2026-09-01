@@ -462,20 +462,56 @@ for (const entry of featured) {
 }
 
 
-// 予測モードでは、同じ店に入りそうな人がまとまって並ぶ。
+// 予測モードでは、店舗ごとに見出しを付けてまとめる。
+// 一本のリストに混ぜると掲載順が飛ぶので、並びが崩れて見える。
+const rosterIndex = new Map(schedule.roster.map((name, index) => [name, index]));
 const storeOrder = new Map(insights.stores.map((store, index) => [store.id, index]));
+let groupedSections = 0;
+
 for (const section of shiftSections) {
-  const assigned = withClass(section, "maid-entry")
-    .map((entry) => withClass(entry, "maid-store-chip")[0]?.dataset.store)
-    .filter(Boolean)
-    .map((id) => storeOrder.get(id));
-  const sorted = [...assigned].sort((a, b) => a - b);
-  assert.deepEqual(
-    assigned,
-    sorted,
-    "maids must be listed in store order so each shop's line-up reads together"
-  );
+  const labels = withClass(section, "maid-group-label");
+  const lists = withClass(section, "maid-list");
+  if (withClass(section, "maid-entry").length === 0) {
+    continue;
+  }
+  groupedSections += 1;
+  assert.equal(labels.length, lists.length, "every group must have a heading");
+
+  let previousRank = -1;
+  labels.forEach((label, index) => {
+    const storeId = label.dataset.store;
+    assert.ok(storeIds.has(storeId), `unknown store heading "${storeId}"`);
+    const rank = storeOrder.get(storeId);
+    assert.ok(rank > previousRank, "shop headings must follow the shop order");
+    previousRank = rank;
+
+    const members = withClass(lists[index], "maid-entry");
+    assert.ok(members.length > 0, "a shop heading must have maids under it");
+    assert.ok(
+      label.textContent.includes(`${members.length}人`),
+      "the heading must count the maids under it"
+    );
+
+    let previousRoster = -1;
+    for (const member of members) {
+      const name = withClass(member, "maid-name")[0].textContent;
+      const position = rosterIndex.get(name);
+      assert.ok(
+        position > previousRoster,
+        `${storeId}: ${name} breaks the official roster order`
+      );
+      previousRoster = position;
+
+      const chip = withClass(member, "maid-store-chip")[0];
+      assert.equal(
+        chip.dataset.store,
+        storeId,
+        `${name} sits under ${storeId} so her chip must agree`
+      );
+    }
+  });
 }
+assert.ok(groupedSections > 0, "some shifts must render grouped line-ups");
 
 // --- 表示モードの切り替え -----------------------------------------------
 assert.equal(

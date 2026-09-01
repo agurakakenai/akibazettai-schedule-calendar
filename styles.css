@@ -669,6 +669,46 @@ input[type="date"] {
   text-decoration: line-through;
 }
 
+.maid-group-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px;
+  margin: 6px 0 3px;
+  padding: 0 0 2px;
+  border-bottom: 2px solid var(--chip-color, var(--cp-border));
+  color: var(--cp-text);
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.maid-group-label:first-of-type {
+  margin-top: 0;
+}
+
+.maid-group-label[data-store="s1"] {
+  --chip-color: var(--cp-store-s1);
+}
+
+.maid-group-label[data-store="s2"] {
+  --chip-color: var(--cp-store-s2);
+}
+
+.maid-group-label[data-store="s3"] {
+  --chip-color: var(--cp-store-s3);
+}
+
+.maid-group-label[data-store="s4"] {
+  --chip-color: var(--cp-store-s4);
+}
+
+.maid-group-count {
+  color: var(--cp-text-soft);
+  font-size: 0.62rem;
+  font-weight: 400;
+}
+
 .maid-list {
   display: flex;
   flex-wrap: wrap;
@@ -676,6 +716,10 @@ input[type="date"] {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.maid-list + .maid-group-label {
+  margin-top: 7px;
 }
 
 .maid-entry {

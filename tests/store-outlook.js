@@ -14,6 +14,7 @@ const {
   getMaidStoreOutlook,
   getShiftAssignment,
   getStoreOutlook,
+  groupByAssignedStore,
   lastActualDateOf,
   openStoresOn,
   openStoresOnDay,
@@ -893,9 +894,68 @@ assert.equal(
   assert.equal(scheduleSystemNote(insights, null), null, "no note without a date to compare");
 }
 
+// 店舗ごとにまとめる。店は店舗の並び順、店の中はサイト掲載順（渡した順）のまま。
+{
+  const roster = schedule.roster.slice(0, 8);
+  const entries = roster.map((name) => ({ name }));
+  const byMaid = new Map([
+    [roster[0], { storeId: "s4" }],
+    [roster[1], { storeId: "s1" }],
+    [roster[2], { storeId: "s4" }],
+    [roster[3], { storeId: "s2" }],
+    [roster[4], { storeId: "s1" }],
+    [roster[5], { storeId: "s2" }],
+    [roster[6], { storeId: "s1" }],
+    [roster[7], { storeId: "s4" }]
+  ]);
+  const grouped = groupByAssignedStore({ insights, entries, assignment: { byMaid } });
+
+  assert.deepEqual(
+    grouped.map((group) => group.storeId),
+    ["s1", "s2", "s4"],
+    "groups must come out in shop order, skipping the shops nobody works"
+  );
+  assert.deepEqual(
+    grouped.map((group) => group.entries.length),
+    [3, 2, 3],
+    "every maid must land in exactly one group"
+  );
+  for (const group of grouped) {
+    const positions = group.entries.map((entry) => roster.indexOf(entry.name));
+    assert.deepEqual(
+      positions,
+      [...positions].sort((a, b) => a - b),
+      `${group.storeId}: the line-up must keep the official roster order`
+    );
+  }
+
+  // 誰いるかモードでは割り振りがないので、一本のリストのまま返す。
+  const flat = groupByAssignedStore({ insights, entries, assignment: null });
+  assert.equal(flat.length, 1, "without an assignment there is nothing to group by");
+  assert.equal(flat[0].storeId, null, "an ungrouped list must not claim a store");
+  assert.deepEqual(
+    flat[0].entries.map((entry) => entry.name),
+    roster,
+    "an ungrouped list must keep the order it was given"
+  );
+
+  // 割り振り漏れが出ても落とさない。最後にまとめて出す。
+  const partial = groupByAssignedStore({
+    insights,
+    entries,
+    assignment: { byMaid: new Map([[roster[1], { storeId: "s1" }]]) }
+  });
+  assert.deepEqual(
+    partial.map((group) => group.storeId),
+    ["s1", null],
+    "maids without a store must still be listed, after the shops"
+  );
+  assert.equal(partial[1].entries.length, roster.length - 1, "nobody may be dropped");
+}
+
 console.log(
   "Store outlook valid: records, next-day forecast, weekday tendency, " +
     `${partialDates.length} single-shift days, Sunday-based weekday index, sparse-rotation fallbacks, ` +
-    `headcount-driven shop counts (1/2/3), capacity-based assignment, ` +
+    `headcount-driven shop counts (1/2/3), capacity-based assignment, store-by-store grouping, ` +
     `and ${eventShifts.length} event shifts pinned to the host's own store.`
 );

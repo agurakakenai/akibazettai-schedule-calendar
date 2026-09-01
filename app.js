@@ -156,6 +156,31 @@
       .map(({ entry }) => entry);
   }
 
+  // 店舗ごとにまとめて返す。店は店舗の並び順、店の中はサイト掲載順（roster 順）のまま。
+  // 一本のリストに混ぜると、掲載順が飛ぶせいで並びが崩れて見える。
+  function groupByAssignedStore({ insights, entries, assignment }) {
+    if (!assignment) {
+      return [{ storeId: null, entries: [...entries] }];
+    }
+    const groups = new Map(storesOf(insights).map((store) => [store.id, []]));
+    const strays = [];
+    entries.forEach((entry) => {
+      const placed = assignment.byMaid.get(entry.name);
+      if (placed && groups.has(placed.storeId)) {
+        groups.get(placed.storeId).push(entry);
+      } else {
+        strays.push(entry);
+      }
+    });
+    const ordered = [...groups]
+      .filter(([, members]) => members.length > 0)
+      .map(([storeId, members]) => ({ storeId, entries: members }));
+    if (strays.length > 0) {
+      ordered.push({ storeId: null, entries: strays });
+    }
+    return ordered;
+  }
+
   function storesOf(insights) {
     return Array.isArray(insights?.stores) ? insights.stores : [];
   }
@@ -760,6 +785,7 @@
       getStoreOutlook,
       getTokyoDateDefaults,
       getVisibleMonthDates,
+      groupByAssignedStore,
       isDateKeyInRange,
       lastActualDateOf,
       openStoresOn,
@@ -849,19 +875,22 @@
     return badge;
   }
 
-  function createMaidStoreChip(chipData) {
+  function createMaidStoreChip(chipData, showStore = true) {
     const chip = document.createElement("span");
     chip.className = "maid-store-chip";
     chip.dataset.store = chipData.storeId;
     chip.setAttribute("aria-hidden", "true");
 
-    const label = document.createElement("span");
-    label.textContent = chipData.label;
+    if (showStore) {
+      const label = document.createElement("span");
+      label.textContent = chipData.label;
+      chip.append(label);
+    }
     // 月グリッドはセルが狭く、割合まで出すと1件が2行になるので CSS で出し分ける。
     const percent = document.createElement("span");
-    percent.className = "maid-store-chip-rate";
+    percent.className = showStore ? "maid-store-chip-rate" : "maid-store-chip-only";
     percent.textContent = chipData.percent;
-    chip.append(label, percent);
+    chip.append(percent);
 
     // 上位2店で実測97%をカバーする。狭いセルでは隠し、ツールチップに全店を出す。
     if (chipData.alternative) {
@@ -993,62 +1022,82 @@
       ? sortByAssignedStore({ insights, entries: visible, assignment })
       : visible;
 
+    function createMaidEntry(entry, groupStoreId) {
+      const item = document.createElement("li");
+      item.className = "maid-entry";
+      const account = insights?.maidTendency?.[entry.name]?.x;
+      const nameLabel = document.createElement(account ? "a" : "span");
+      nameLabel.className = "maid-name";
+      nameLabel.textContent = entry.name;
+      if (account) {
+        nameLabel.href = `https://x.com/${account}`;
+        nameLabel.target = "_blank";
+        nameLabel.rel = "noopener noreferrer";
+        nameLabel.title = `${entry.name}のXを開く`;
+      }
+      item.append(nameLabel);
+      const isKitchen = kitchenStaff.has(entry.name);
+      const chipData = getMaidStoreOutlook({
+        insights,
+        name: entry.name,
+        shift,
+        outlook,
+        assignment
+      });
+      const titles = [];
+      const descriptions = [];
+
+      if (isKitchen) {
+        item.classList.add("is-kitchen");
+        titles.push("キッチンにゃんこ");
+        descriptions.push("キッチンにゃんこ");
+      }
+
+      if (entry.featured) {
+        item.classList.add("is-featured");
+        titles.unshift(entry.eventLabel);
+        descriptions.unshift(`${entry.eventLabel}の主役`);
+      }
+
+      if (chipData) {
+        // 見出しで店が分かっているときは、チップは割合だけにして繰り返さない。
+        item.append(createMaidStoreChip(chipData, groupStoreId !== chipData.storeId));
+        titles.push(chipData.title);
+        descriptions.push(chipData.srText);
+      }
+
+      if (titles.length > 0) {
+        item.title = `${entry.name}：${titles.join(" / ")}`;
+        item.setAttribute("aria-label", `${entry.name}（${descriptions.join("・")}）`);
+      }
+      return item;
+    }
+
     if (entries.length > 0) {
-      const list = document.createElement("ul");
-      list.className = "maid-list";
+      const groups = groupByAssignedStore({ insights, entries, assignment });
 
-      entries.forEach((entry) => {
-        const item = document.createElement("li");
-        item.className = "maid-entry";
-        const account = insights?.maidTendency?.[entry.name]?.x;
-        const nameLabel = document.createElement(account ? "a" : "span");
-        nameLabel.className = "maid-name";
-        nameLabel.textContent = entry.name;
-        if (account) {
-          nameLabel.href = `https://x.com/${account}`;
-          nameLabel.target = "_blank";
-          nameLabel.rel = "noopener noreferrer";
-          nameLabel.title = `${entry.name}のXを開く`;
-        }
-        item.append(nameLabel);
-        const isKitchen = kitchenStaff.has(entry.name);
-        const chipData = getMaidStoreOutlook({
-          insights,
-          name: entry.name,
-          shift,
-          outlook,
-          assignment
-        });
-        const titles = [];
-        const descriptions = [];
-
-        if (isKitchen) {
-          item.classList.add("is-kitchen");
-          titles.push("キッチンにゃんこ");
-          descriptions.push("キッチンにゃんこ");
+      groups.forEach(({ storeId, entries: members }) => {
+        const store = storeId ? storeList.find((candidate) => candidate.id === storeId) : null;
+        if (store) {
+          const heading = document.createElement("p");
+          heading.className = "maid-group-label";
+          heading.dataset.store = store.id;
+          const name = document.createElement("span");
+          name.textContent = store.short;
+          const count = document.createElement("span");
+          count.className = "maid-group-count";
+          count.textContent = `${members.length}人`;
+          heading.append(name, count);
+          heading.title = storeSizeNote(insights, shift, store.id) ?? "";
+          section.append(heading);
         }
 
-        if (entry.featured) {
-          item.classList.add("is-featured");
-          titles.unshift(entry.eventLabel);
-          descriptions.unshift(`${entry.eventLabel}の主役`);
-        }
-
-        if (chipData) {
-          item.append(createMaidStoreChip(chipData));
-          titles.push(chipData.title);
-          descriptions.push(chipData.srText);
-        }
-
-        if (titles.length > 0) {
-          item.title = `${entry.name}：${titles.join(" / ")}`;
-          item.setAttribute("aria-label", `${entry.name}（${descriptions.join("・")}）`);
-        }
-
-        list.append(item);
+        const list = document.createElement("ul");
+        list.className = "maid-list";
+        members.forEach((entry) => list.append(createMaidEntry(entry, storeId)));
+        section.append(list);
       });
 
-      section.append(list);
       return section;
     }
 
