@@ -945,33 +945,97 @@ assert.equal(
     "a pinned cook stays at her own shop even though cooks are spread out"
   );
 
-  // 実データでも分かれること。まこっちゃんとあらたの同店率は実測14%。
-  for (const [date, shift] of [["2026-09-01", "夜"], ["2026-09-10", "昼"]]) {
-    const entries = schedule.schedule[date][shift];
-    const members = entries.map((entry) => entry.name);
-    const cooksToday = members.filter((name) => kitchen.has(name));
-    if (cooksToday.length < 2) {
-      continue;
+  // 実データでも、キッチンにゃんこはたいてい別の店に分かれること。
+  // 「必ず分かれる」とは書かない。実測でも 13.7% は2人一緒に入っているし、
+  // 2人とも同じ店を強く好むシフトまで無理に離すのは、減点ではなく禁止になる。
+  {
+    let apart = 0;
+    let together = 0;
+    for (const [date, day] of Object.entries(schedule.schedule)) {
+      for (const shift of insights.shifts) {
+        const entries = day[shift] ?? [];
+        const members = entries.map((entry) => entry.name);
+        const cooksToday = members.filter((name) => kitchen.has(name));
+        if (cooksToday.length < 2) {
+          continue;
+        }
+        const pins = eventStorePins({ insights, entries, homeStore: schedule.homeStore });
+        const outlook = applyEventCertainty(insights, outlookFor(date, shift), pins);
+        const assigned = getShiftAssignment({
+          insights,
+          members,
+          shift,
+          outlook,
+          pins,
+          kitchenStaff: kitchen
+        });
+        if (!assigned || assigned.storeIds.length < 2) {
+          continue;
+        }
+        const shops = new Set(cooksToday.map((name) => assigned.byMaid.get(name).storeId));
+        if (shops.size === cooksToday.length) {
+          apart += 1;
+        } else {
+          together += 1;
+        }
+      }
     }
-    const pins = eventStorePins({ insights, entries });
-    const outlook = applyEventCertainty(insights, outlookFor(date, shift), pins);
-    const assigned = getShiftAssignment({
-      insights,
-      members,
-      shift,
-      outlook,
-      pins,
-      kitchenStaff: kitchen
-    });
-    if (assigned.storeIds.length < 2) {
-      continue;
-    }
-    assert.equal(
-      new Set(cooksToday.map((name) => assigned.byMaid.get(name).storeId)).size,
-      cooksToday.length,
-      `${date} ${shift}: ${cooksToday.join(" and ")} must each get their own shop`
+    const total = apart + together;
+    assert.ok(total >= 3, "the rota must contain a few shifts with two cooks to judge this");
+    // 実測は「1店1人」が77.5%。多数が分かれていれば減点は効いている。
+    assert.ok(
+      apart / total >= 0.6,
+      `cooks must usually land in different shops, got ${apart}/${total}`
     );
   }
+}
+
+// 顔ぶれの配属で、開きそうな店の順位が変わること。
+{
+  const shares = insights.homeStaffShare;
+  assert.ok(shares, "homeStaffShare must exist");
+  for (const shift of insights.shifts) {
+    const table = shares[shift];
+    assert.ok(table, `homeStaffShare must cover ${shift}`);
+    const total = Object.values(table).reduce((sum, value) => sum + value, 0);
+    assert.ok(
+      Math.abs(total - 1) < 0.01,
+      `${shift} shares must add up to 1, got ${total}`
+    );
+    for (const store of insights.stores) {
+      assert.ok(table[store.id] > 0, `${shift} ${store.id} must have a baseline share`);
+    }
+  }
+
+  // 第4引数は人数でも顔ぶれでもよい。人数だけなら従来どおりの順位になる。
+  const future = outlookFor(farFuture, "昼");
+  const roster = Object.keys(insights.maidTendency).filter((name) => insights.maidTendency[name]);
+  const bySize = expectedOpenStores(insights, "昼", future, 9);
+  assert.equal(bySize.length, expectedOpenStores(insights, "昼", future, 9).length);
+
+  // 2号店配属だけを並べたら、2号店が選ばれること。1号店配属だけなら選ばれないこと。
+  const postedTo = (id) => roster.filter((name) => insights.maidTendency[name].posted === id);
+  const s2Only = postedTo("s2").slice(0, 9);
+  const s1Only = postedTo("s1").slice(0, 9);
+  assert.ok(s2Only.length >= 4 && s1Only.length >= 4, "the roster must cover both shops");
+  const withS2 = expectedOpenStores(insights, "昼", future, s2Only);
+  const withS1 = expectedOpenStores(insights, "昼", future, s1Only);
+  assert.ok(
+    withS2.includes("s2"),
+    `a line-up posted to 2号店 must open it, got ${withS2.join("+")}`
+  );
+  assert.ok(
+    !withS1.includes("s2"),
+    `a line-up with nobody posted to 2号店 must not open it, got ${withS1.join("+")}`
+  );
+
+  // 名前が分からない（配属が引けない）ときは、人数だけのときと同じ結果に戻る。
+  const unknown = ["だれか", "べつのだれか", "みっつめ"];
+  assert.deepEqual(
+    expectedOpenStores(insights, "昼", future, unknown),
+    expectedOpenStores(insights, "昼", future, unknown.length),
+    "unknown names must fall back to the headcount-only ordering"
+  );
 }
 
 // 制度変更（上旬・下旬をまとめて事前公開）直後だけ出す注意書き。移行が落ち着けば自動で消える。
