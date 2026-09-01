@@ -252,7 +252,7 @@
 
     return {
       basis: "forecast",
-      badge: "見込み（翌日）",
+      badge: "翌日見込み",
       badgeClass: "is-forecast",
       previousStores: [...previous],
       summary: parts.join(""),
@@ -1324,7 +1324,7 @@
         text: "公式Xの投稿で確認できた、その日そのシフトの営業店舗です。"
       },
       {
-        badge: "見込み（翌日）",
+        badge: "翌日見込み",
         badgeClass: "is-forecast",
         text: "実績の最終日の翌日だけ、前日からのローテーションで見積もっています。"
       },

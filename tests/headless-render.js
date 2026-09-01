@@ -236,7 +236,7 @@ assert.equal(
   `each day must render ${insights.shifts.length} shift sections`
 );
 
-const knownBadges = new Set(["実績", "見込み（翌日）", "曜日傾向"]);
+const knownBadges = new Set(["実績", "翌日見込み", "曜日傾向"]);
 const storeIds = new Set(insights.stores.map((store) => store.id));
 
 // 記念日の主役はかならず所属店に立つので、その店だけは見込みの日でも「営業」で確定する。
@@ -635,7 +635,7 @@ const augustBadges = withClass(calendar, "calendar-day").map((cell) => ({
 }));
 const rendered = new Set(augustBadges.flatMap((cell) => cell.badges));
 assert.ok(rendered.has("実績"), "the recorded window must render 実績 badges");
-assert.ok(rendered.has("見込み（翌日）"), "the day after the last record must render a forecast");
+assert.ok(rendered.has("翌日見込み"), "the day after the last record must render a forecast");
 assert.ok(rendered.has("曜日傾向"), "a shift with no record must fall back to the weekday tendency");
 
 const lastActualDay = String(Number(lastActual.slice(-2)));
@@ -647,7 +647,7 @@ assert.deepEqual(
 );
 assert.deepEqual(
   augustBadges.find((cell) => cell.day === forecastDay).badges,
-  ["見込み（翌日）", "見込み（翌日）"],
+  ["翌日見込み", "翌日見込み"],
   "the day after the last record must be a forecast on both shifts"
 );
 
