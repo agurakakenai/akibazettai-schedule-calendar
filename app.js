@@ -749,15 +749,28 @@
 
   // 割り振り結果を、そのメイドさんの行に出すチップに変換する。
   // 表示した確率が実測とどれだけ離れているか。真ん中は5ポイント以内に収まるが、
-  // 両端は自信過剰で、「97%」と出しても実測は74%ほどしか当たらない。
+  // 両端は自信過剰で、「94%」と出しても実測は76%ほどしか当たらない。
   // 帯そのものはデータ側の測定（accuracy.calibration）から引く。
   const CALIBRATION_DRIFT = 0.1;
   // 標本の少ないバケットは実測値自体が揺れるので、注記の根拠にしない。
   const CALIBRATION_MIN_SAMPLE = 100;
+  // この測定は2店舗以上開いたシフトだけを対象にしている（データ側の scope）。
+  // 1店舗の日は「その店にいる」が定義上100%になり、バケットを不当に良く見せる
+  // ため除外されている。だから候補が1つのときは、この数字を引けない。
+  const CALIBRATION_SCOPE_MIN_STORES = { twoOrMoreOpen: 2 };
+  const CALIBRATION_MIN_STORES = 2;
 
-  function calibrationNote(insights, rate) {
-    const buckets = insights?.accuracy?.calibration?.buckets;
+  function calibrationNote(insights, rate, storeCount) {
+    const calibration = insights?.accuracy?.calibration;
+    const buckets = calibration?.buckets;
     if (!Array.isArray(buckets) || typeof rate !== "number") {
+      return null;
+    }
+    const minStores =
+      calibration.minOpenStores ??
+      CALIBRATION_SCOPE_MIN_STORES[calibration.scope] ??
+      CALIBRATION_MIN_STORES;
+    if (typeof storeCount === "number" && storeCount < minStores) {
       return null;
     }
     const bucket = buckets.find(
@@ -773,9 +786,12 @@
     const band = bucket.to >= 1
       ? `${toPercent(bucket.from)}以上`
       : `${toPercent(bucket.from)}〜${toPercent(bucket.to - 0.01)}`;
+    // 較正は開いた店が分かっている日で測っている。開く店の予測を外すぶんは
+    // 含まれていないので、実際にはこれよりさらに下がる。
+    const measured = "開いた店が分かっている日で測った値なので、開く店の予測を外すぶんは含みません";
     return drift < 0
-      ? `ただしこのくらい高い数字は自信過剰で、${band}と出したときに実際に当たったのは${toPercent(bucket.actual)}です`
-      : `ただしこのくらい低い数字は控えめすぎて、${band}と出した店にも実際は${toPercent(bucket.actual)}の割合で入っています`;
+      ? `ただしこのくらい高い数字は自信過剰で、${band}と出したときに実際に当たったのは${toPercent(bucket.actual)}です（${measured}）`
+      : `ただしこのくらい低い数字は控えめすぎて、${band}と出した店にも実際は${toPercent(bucket.actual)}の割合で入っています（${measured}）`;
   }
 
   function getMaidStoreOutlook({ insights, name, shift, outlook, assignment }) {
@@ -843,6 +859,11 @@
     const postedNote = tendency?.posted
       ? `公式サイトの配属は${shortOf(tendency.posted)}`
       : null;
+    // 候補が1つなら、正規化の結果この店が100%になる。それはこの人の話ではなく
+    // 「開く店が1つと見込んだ」という話なので、不確かさの在り処を書いておく。
+    const soleStoreNote = assignment.storeIds.length === 1
+      ? `この${shift}は${top.short}だけが開く見込みなので、その見込みが当たればこの店です`
+      : null;
 
     return {
       basis: "probability",
@@ -856,7 +877,8 @@
       title: [
         `この${shift}に開きそうな店にいる確率：${everyStore}（${scopeNote}）`,
         postedNote,
-        calibrationNote(insights, probabilities[top.id]),
+        soleStoreNote,
+        calibrationNote(insights, probabilities[top.id], assignment.storeIds.length),
         "どの店にも入る可能性があります。実際、在籍35名は全員が4店舗すべてに入った実績があります",
         "いちばん高い店だけを見ると、たまに入る店を取りこぼします"
       ]

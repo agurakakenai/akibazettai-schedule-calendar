@@ -1236,19 +1236,89 @@ assert.equal(
     "an empty table must not throw"
   );
 
+  // この測定は2店舗以上開いたシフトだけを見ている。候補が1つの日は
+  // 「その店にいる」が定義上100%になるため、データ側で除外されている。
+  // そこにこの数字を当てると、測っていない母数の値を引くことになる。
+  assert.equal(
+    calibrationNote(measured, 1, 1),
+    null,
+    "a shift with one candidate is outside what the calibration measured"
+  );
+  assert.ok(calibrationNote(measured, 0.97, 2), "two candidates are inside the measurement");
+
+  // 対象範囲がデータ側で変わったら、それに従う。
+  const stricter = {
+    accuracy: { calibration: { buckets, minOpenStores: 3 } }
+  };
+  assert.equal(
+    calibrationNote(stricter, 0.97, 2),
+    null,
+    "the data decides how many shops the measurement needs, not app.js"
+  );
+
+  // データ側は範囲を scope で書いている。そちらでも同じ判定になること。
+  const scoped = { accuracy: { calibration: { buckets, scope: "twoOrMoreOpen" } } };
+  assert.equal(calibrationNote(scoped, 1, 1), null, "scope must exclude single-shop shifts");
+  assert.ok(calibrationNote(scoped, 0.97, 2), "scope must allow two-shop shifts");
+  assert.equal(
+    insights.accuracy.calibration.scope,
+    "twoOrMoreOpen",
+    "the shipped data must say what the calibration covers"
+  );
+
+  // 測っているのは「開いた店が分かっている日の、人の配置」だけ。
+  // 開く店の予測を外すぶんは含まれないので、そこも断る。
+  assert.ok(
+    calibrationNote(scoped, 0.97, 2).includes("開く店の予測を外すぶんは含みません"),
+    "the caveat must not be read as covering the shop guess as well"
+  );
+
   // 実データに測定が入ったら、チップの本文にも出ること。
   if (insights.accuracy?.calibration?.buckets?.length > 0) {
     const noted = schedule.roster
       .map((name) =>
         getMaidStoreOutlook({ insights, name, shift: "昼", outlook: futureOutlook, assignment })
       )
-      .filter((chip) => chip && calibrationNote(insights, chip.rate));
+      .filter((chip) => chip && calibrationNote(insights, chip.rate, assignment.storeIds.length));
     for (const chip of noted) {
       assert.ok(
         chip.title.includes("自信過剰") || chip.title.includes("控えめすぎ"),
         "a chip whose figure lands in an unreliable band must say so in its tooltip"
       );
     }
+  }
+
+  // 候補が1つの日は、100% の理由を構造で説明する。較正の数字は引かない。
+  {
+    const sole = getShiftAssignment({
+      insights,
+      members: schedule.roster.slice(0, 4),
+      shift: "昼",
+      outlook: {
+        ...futureOutlook,
+        entries: futureOutlook.entries.map((entry) => ({
+          ...entry,
+          rate: entry.store.id === "s1" ? 0.99 : 0.001
+        }))
+      }
+    });
+    assert.equal(sole.storeIds.length, 1, "four maids must fit in a single shop");
+    const chip = getMaidStoreOutlook({
+      insights,
+      name: schedule.roster[0],
+      shift: "昼",
+      outlook: futureOutlook,
+      assignment: sole
+    });
+    assert.equal(chip.percent, "100%", "with one shop open the probability is one by construction");
+    assert.ok(
+      chip.title.includes("だけが開く見込み"),
+      "the tooltip must say the 100% comes from the shop guess, not from her record"
+    );
+    assert.ok(
+      !chip.title.includes("自信過剰"),
+      "the calibration figure excludes single-shop shifts, so it must not be quoted here"
+    );
   }
 }
 
