@@ -865,6 +865,16 @@ a.maid-name:focus-visible {
   margin-left: auto;
 }
 
+.schedule-system-note {
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--cp-accent);
+  border-radius: 0.625rem;
+  background: var(--cp-accent-soft);
+  color: var(--cp-text);
+}
+
 .noscript-message {
   margin: 16px 32px;
   padding: 12px;

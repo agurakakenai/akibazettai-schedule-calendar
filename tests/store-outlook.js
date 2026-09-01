@@ -17,6 +17,7 @@ const {
   lastActualDateOf,
   openStoresOn,
   openStoresOnDay,
+  scheduleSystemNote,
   sortByAssignedStore,
   storeCapacities,
   storeProbabilities,
@@ -858,6 +859,38 @@ assert.equal(
       `${date} ${shift}: ${cooksToday.join(" and ")} must each get their own shop`
     );
   }
+}
+
+// 制度変更（上旬・下旬をまとめて事前公開）直後だけ出す注意書き。移行が落ち着けば自動で消える。
+{
+  const changedAt = insights.scheduleSystemChangedAt;
+  assert.match(changedAt, /^\d{4}-\d{2}-\d{2}$/, "scheduleSystemChangedAt must be a date");
+
+  assert.equal(
+    scheduleSystemNote(insights, addDays(changedAt, -1)),
+    null,
+    "nothing to say before the system changed"
+  );
+  const onTheDay = scheduleSystemNote(insights, changedAt);
+  assert.ok(onTheDay, "the note must show on the day the system changed");
+  assert.ok(
+    onTheDay.includes("提出していない"),
+    "the note must explain why some maids are missing"
+  );
+  assert.ok(onTheDay.includes("9月"), "the note must name the month it changed");
+
+  assert.ok(scheduleSystemNote(insights, addDays(changedAt, 30)), "still relevant a month later");
+  assert.equal(
+    scheduleSystemNote(insights, addDays(changedAt, 61)),
+    null,
+    "the note must retire itself once the transition has settled"
+  );
+  assert.equal(
+    scheduleSystemNote({ ...insights, scheduleSystemChangedAt: undefined }, changedAt),
+    null,
+    "no note without a recorded change"
+  );
+  assert.equal(scheduleSystemNote(insights, null), null, "no note without a date to compare");
 }
 
 console.log(

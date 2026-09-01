@@ -449,6 +449,13 @@ assert.ok(
   "both windows must end on the same day"
 );
 
+// 予定の公開方式が変わった日。UI の一時的な注意書きの期限に使う。
+assert.match(
+  insights.scheduleSystemChangedAt,
+  /^\d{4}-\d{2}-\d{2}$/,
+  "scheduleSystemChangedAt must be a date"
+);
+
 for (const [name, info] of Object.entries(unlisted)) {
   assert.ok(
     !schedule.roster.includes(name),

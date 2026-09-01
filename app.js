@@ -917,6 +917,7 @@
     monthTitle: document.querySelector("#month-title"),
     resultSummary: document.querySelector("#result-summary"),
     lastUpdated: document.querySelector("#last-updated"),
+    scheduleSystemNote: document.querySelector("#schedule-system-note"),
     modeHelp: document.querySelector("#mode-help"),
     modeInputs: [...document.querySelectorAll('input[name="view-mode"]')],
     maidCheckboxes: document.querySelector("#maid-checkboxes"),
@@ -1329,6 +1330,11 @@
   elements.dateFrom.value = state.dateFrom;
   elements.dateTo.value = state.dateTo;
   elements.lastUpdated.textContent = `最終更新：${data.lastUpdated}`;
+  const systemNote = scheduleSystemNote(insights, defaults.dateFrom);
+  if (systemNote && elements.scheduleSystemNote) {
+    elements.scheduleSystemNote.textContent = systemNote;
+    elements.scheduleSystemNote.hidden = false;
+  }
   elements.maidFilterDetails.open =
     !window.matchMedia("(max-width: 45rem)").matches;
   syncViewMode();
