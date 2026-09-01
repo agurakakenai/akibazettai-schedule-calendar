@@ -29,7 +29,10 @@ node tests/range-rendering.js
 1. `lastUpdated` を更新します。
 2. `schedule` の日付に、`昼` と `夜` の配列を追加・編集します。
 3. 記念日・生誕の主役には `featured: true` と、読み上げ・ツールチップ用の `eventLabel` を指定します。
-4. `node tests/validate-schedule.js` を実行します。
+4. メイド服を着ないキッチンにゃんこは `kitchenStaff` に入れます。カレンダーでは 🍳 が付き、フィルターには「キッチン」バッジが出ます。
+5. `node tests/validate-schedule.js` を実行します。
+
+各シフトの並び順は `roster` の公式順と一致させてください（検証スクリプトが確認します）。
 
 初期表示月と日付範囲は、アクセス時の日本時間から自動計算されます。開始日は当日、終了日は当日が1〜15日なら15日、16日以降なら同じ月の末日です。
 

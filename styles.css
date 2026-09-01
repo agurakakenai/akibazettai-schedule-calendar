@@ -268,6 +268,13 @@ input[type="date"] {
   accent-color: var(--cp-accent);
 }
 
+.kitchen-badge {
+  flex-shrink: 0;
+  margin-left: 2px;
+  font-size: 0.8125rem;
+  line-height: 1;
+}
+
 .button,
 .icon-button {
   min-height: 44px;
@@ -469,6 +476,11 @@ input[type="date"] {
   content: "\2665";
 }
 
+.maid-entry.is-kitchen::before {
+  margin-right: 3px;
+  content: "\1F373";
+}
+
 .empty-shift {
   margin: 0;
   color: var(--cp-text-soft);
@@ -554,6 +566,10 @@ input[type="date"] {
   border-radius: 0.625rem;
   background: var(--cp-accent);
   vertical-align: -0.1em;
+}
+
+.kitchen-key {
+  margin-right: 5px;
 }
 
 .last-updated {

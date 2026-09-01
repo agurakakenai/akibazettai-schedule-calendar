@@ -2,6 +2,7 @@
  * お給仕情報の編集ファイルです。
  *
  * - roster: フィルターに表示する公式順の在籍メイド一覧
+ * - kitchenStaff: メイド服を着ないキッチンにゃんこ（roster の部分集合）
  * - schedule: "YYYY-MM-DD" ごとの昼・夜のお給仕情報
  * - featured: 記念日・生誕の主役だけ true
  * - eventLabel: 主役のツールチップ・読み上げ用イベント名
@@ -13,7 +14,7 @@ window.SCHEDULE_DATA = {
   initialMonth: "2026-09",
   defaultDateFrom: "2026-09-01",
   defaultDateTo: "2026-09-30",
-  lastUpdated: "2026年9月1日 19:50 JST時点",
+  lastUpdated: "2026年9月1日 23:50 JST時点",
 
   roster: [
     "あむ",
@@ -53,6 +54,14 @@ window.SCHEDULE_DATA = {
     "ひかり"
   ],
 
+  kitchenStaff: [
+    "まこっちゃん",
+    "あらた",
+    "うる",
+    "みりん",
+    "けだま"
+  ],
+
   schedule: {
     "2026-09-01": {
       "昼": [
@@ -61,6 +70,7 @@ window.SCHEDULE_DATA = {
         { name: "きらり" },
         { name: "すくい" },
         { name: "えみ" },
+        { name: "けだま" },
         { name: "ちゆ" }
       ],
       "夜": [
@@ -82,12 +92,15 @@ window.SCHEDULE_DATA = {
         { name: "あめる" },
         { name: "しゃち" },
         { name: "かなた" },
-        { name: "るるか" }
+        { name: "るるか" },
+        { name: "けだま" },
+        { name: "ひかり" }
       ],
       "夜": [
         { name: "あめる" },
         { name: "うな" },
-        { name: "こえび" }
+        { name: "こえび" },
+        { name: "ひかり" }
       ]
     },
     "2026-09-03": {
@@ -112,7 +125,8 @@ window.SCHEDULE_DATA = {
         { name: "みりあ" },
         { name: "ひなり" },
         { name: "つぼみ" },
-        { name: "みえる" }
+        { name: "みえる" },
+        { name: "ひかり" }
       ]
     },
     "2026-09-04": {
@@ -155,6 +169,7 @@ window.SCHEDULE_DATA = {
         { name: "あめる" },
         { name: "しゃち" },
         { name: "みえる" },
+        { name: "けだま" },
         { name: "ちゆ" }
       ]
     },
@@ -187,6 +202,7 @@ window.SCHEDULE_DATA = {
         { name: "こい" },
         { name: "うな" },
         { name: "かなた" },
+        { name: "けだま" },
         { name: "ちゆ" }
       ],
       "夜": [
@@ -206,7 +222,9 @@ window.SCHEDULE_DATA = {
         { name: "こい" },
         { name: "かなた" },
         { name: "るるか" },
-        { name: "ちゆ" }
+        { name: "けだま" },
+        { name: "ちゆ" },
+        { name: "ひかり" }
       ],
       "夜": [
         { name: "あむ" },
@@ -244,6 +262,7 @@ window.SCHEDULE_DATA = {
         { name: "ひなり" },
         { name: "るるか" },
         { name: "こん" },
+        { name: "けだま" },
         { name: "ちぇる" }
       ],
       "夜": [
@@ -269,7 +288,8 @@ window.SCHEDULE_DATA = {
         { name: "こえび" },
         { name: "かなた" },
         { name: "みえる" },
-        { name: "ちゆ" }
+        { name: "ちゆ" },
+        { name: "ひかり" }
       ]
     },
     "2026-09-12": {
@@ -278,7 +298,9 @@ window.SCHEDULE_DATA = {
         { name: "こい" },
         { name: "かなた" },
         { name: "るるか" },
-        { name: "こん" }
+        { name: "こん" },
+        { name: "けだま" },
+        { name: "ひかり" }
       ],
       "夜": [
         { name: "みりあ" },
@@ -319,13 +341,15 @@ window.SCHEDULE_DATA = {
         { name: "こい" },
         { name: "しゃち" },
         { name: "うな" },
-        { name: "こん" }
+        { name: "こん" },
+        { name: "けだま" }
       ],
       "夜": [
         { name: "あめる" },
         { name: "ひなり" },
         { name: "しゃち" },
-        { name: "ちょこ" }
+        { name: "ちょこ" },
+        { name: "ひかり" }
       ]
     },
     "2026-09-15": {
@@ -345,7 +369,8 @@ window.SCHEDULE_DATA = {
         { name: "あらた" },
         { name: "うな" },
         { name: "こえび" },
-        { name: "ちゆ" }
+        { name: "ちゆ" },
+        { name: "ひかり" }
       ]
     }
   }

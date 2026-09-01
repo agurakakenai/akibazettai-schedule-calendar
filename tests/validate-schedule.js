@@ -19,6 +19,27 @@ const featuredEntries = [];
 assert.ok(data, "SCHEDULE_DATA must be defined");
 assert.equal(roster.size, data.roster.length, "roster contains duplicate names");
 
+const kitchenStaff = [...(data.kitchenStaff ?? [])];
+assert.ok(Array.isArray(data.kitchenStaff ?? []), "kitchenStaff must be an array");
+assert.equal(
+  new Set(kitchenStaff).size,
+  kitchenStaff.length,
+  "kitchenStaff contains duplicate names"
+);
+for (const name of kitchenStaff) {
+  assert.ok(roster.has(name), `unknown kitchen staff "${name}"`);
+}
+assert.deepEqual(
+  [...kitchenStaff].sort((a, b) => rosterOrder.get(a) - rosterOrder.get(b)),
+  kitchenStaff,
+  "kitchenStaff must follow official roster order"
+);
+assert.deepEqual(
+  kitchenStaff,
+  ["まこっちゃん", "あらた", "うる", "みりん", "けだま"],
+  "kitchenStaff does not match the maids without a maid uniform on the official site"
+);
+
 for (const [date, day] of Object.entries(data.schedule)) {
   assert.match(date, /^\d{4}-\d{2}-\d{2}$/, `invalid date format: ${date}`);
   const parsed = new Date(`${date}T00:00:00Z`);
@@ -120,7 +141,38 @@ assert.deepEqual(
   "ちさと's shifts do not match the verified schedule"
 );
 
+assert.deepEqual(
+  shiftsFor("けだま"),
+  [
+    "2026-09-01|昼",
+    "2026-09-02|昼",
+    "2026-09-05|夜",
+    "2026-09-07|昼",
+    "2026-09-08|昼",
+    "2026-09-10|昼",
+    "2026-09-12|昼",
+    "2026-09-14|昼"
+  ],
+  "けだま's shifts do not match the schedule published in her X profile"
+);
+
+assert.deepEqual(
+  shiftsFor("ひかり"),
+  [
+    "2026-09-02|昼",
+    "2026-09-02|夜",
+    "2026-09-03|夜",
+    "2026-09-08|昼",
+    "2026-09-11|夜",
+    "2026-09-12|昼",
+    "2026-09-14|夜",
+    "2026-09-15|夜"
+  ],
+  "ひかり's shifts do not match her published 9月前半 post"
+);
+
 console.log(
-  `Schedule valid: ${data.roster.length} rostered maids, ` +
+  `Schedule valid: ${data.roster.length} rostered maids ` +
+    `(${kitchenStaff.length} kitchen), ` +
     `${Object.keys(data.schedule).length} scheduled dates, ${featuredEntries.length} featured shifts.`
 );

@@ -66,6 +66,7 @@
 
   const data = window.SCHEDULE_DATA;
   const shifts = ["昼", "夜"];
+  const kitchenStaff = new Set(data.kitchenStaff ?? []);
   const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
   const shiftDetails = {
     "昼": { icon: "☀", className: "shift-day" },
@@ -132,11 +133,26 @@
         const item = document.createElement("li");
         item.className = "maid-entry";
         item.textContent = entry.name;
+        const isKitchen = kitchenStaff.has(entry.name);
+
+        if (isKitchen) {
+          item.classList.add("is-kitchen");
+        }
 
         if (entry.featured) {
           item.classList.add("is-featured");
-          item.title = `${entry.name}：${entry.eventLabel}`;
-          item.setAttribute("aria-label", `${entry.name}（${entry.eventLabel}の主役）`);
+          item.title = isKitchen
+            ? `${entry.name}：${entry.eventLabel} / キッチンにゃんこ`
+            : `${entry.name}：${entry.eventLabel}`;
+          item.setAttribute(
+            "aria-label",
+            isKitchen
+              ? `${entry.name}（${entry.eventLabel}の主役・キッチンにゃんこ）`
+              : `${entry.name}（${entry.eventLabel}の主役）`
+          );
+        } else if (isKitchen) {
+          item.title = `${entry.name}：キッチンにゃんこ`;
+          item.setAttribute("aria-label", `${entry.name}（キッチンにゃんこ）`);
         }
 
         list.append(item);
@@ -298,6 +314,18 @@
       const text = document.createElement("span");
       text.textContent = name;
       label.append(checkbox, text);
+
+      if (kitchenStaff.has(name)) {
+        label.classList.add("is-kitchen");
+        const badge = document.createElement("span");
+        badge.className = "kitchen-badge";
+        badge.textContent = "🍳";
+        badge.title = `${name}はキッチンにゃんこです`;
+        badge.setAttribute("role", "img");
+        badge.setAttribute("aria-label", "キッチンにゃんこ");
+        label.append(badge);
+      }
+
       fragment.append(label);
     });
     elements.maidCheckboxes.replaceChildren(fragment);
