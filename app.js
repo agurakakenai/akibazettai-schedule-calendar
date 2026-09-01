@@ -83,6 +83,23 @@
     return Array.isArray(ids) ? new Set(ids) : null;
   }
 
+  // 昼夜をまとめた「その日開いていた店」。日単位の見方はシフト別より当たる。
+  function openStoresOnDay(insights, key) {
+    const record = insights?.actual?.[key];
+    if (!record) {
+      return null;
+    }
+    const ids = new Set();
+    let seen = false;
+    for (const value of Object.values(record)) {
+      if (Array.isArray(value)) {
+        seen = true;
+        value.forEach((id) => ids.add(id));
+      }
+    }
+    return seen ? ids : null;
+  }
+
   function groupStateOf(open) {
     const hasS2 = open.has("s2");
     const hasS3 = open.has("s3");
@@ -207,8 +224,22 @@
       );
     }
     if (typeof dayAccuracy.group === "number") {
+      // 日単位のローテーション表は、日単位の問いに対してはシフト別より当たる（51.4% 対 38〜43%）。
+      // チップの数値はシフト別のままにして、ここでは「その日どちらが開くか」だけを補足する。
+      const previousDay = openStoresOnDay(insights, lastActualDate);
+      const dayNext = previousDay
+        ? insights.rotation?.nextDayByDay?.[groupStateOf(previousDay)] ?? {}
+        : {};
+      const dayRates = {
+        s2: (dayNext.s2 ?? 0) + (dayNext.both ?? 0),
+        s3: (dayNext.s3 ?? 0) + (dayNext.both ?? 0)
+      };
+      const dayLeader = dayRates.s2 >= dayRates.s3 ? "s2" : "s3";
+      const dayLead = dayRates[dayLeader] > 0
+        ? `昼夜をまとめると${storeShort(insights, dayLeader)}が${toPercent(dayRates[dayLeader])}で、この見方の的中は`
+        : "昼夜をまとめて「どちらが開くか」なら的中は";
       parts.push(
-        `昼夜をまとめて「どちらが開くか」なら実測${toPercent(dayAccuracy.group)}` +
+        `${dayLead}実測${toPercent(dayAccuracy.group)}` +
           (typeof dayAccuracy.groupBaseline === "number"
             ? `（当てずっぽうは${toPercent(dayAccuracy.groupBaseline)}）`
             : "") +
@@ -608,6 +639,7 @@
       isDateKeyInRange,
       lastActualDateOf,
       openStoresOn,
+      openStoresOnDay,
       sortByAssignedStore,
       storeCapacities,
       weekdayBucket,

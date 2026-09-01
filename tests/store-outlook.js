@@ -16,6 +16,8 @@ const {
   getStoreOutlook,
   lastActualDateOf,
   openStoresOn,
+  openStoresOnDay,
+  sortByAssignedStore,
   storeCapacities,
   weekdayBucket,
   weekdayIndex
@@ -101,6 +103,52 @@ for (const shift of insights.shifts) {
   assert.ok(
     outlook.summary.includes(lastActual),
     "the forecast summary must name the day it is based on"
+  );
+
+  // チップはシフト別の表、説明文は日単位の表。両方が実際に使われていること。
+  const previousDay = openStoresOnDay(insights, lastActual);
+  const dayNext = insights.rotation.nextDayByDay[
+    previousDay.has("s2")
+      ? (previousDay.has("s3") ? "both" : "s2")
+      : previousDay.has("s3") ? "s3" : "none"
+  ];
+  const dayRates = {
+    s2: (dayNext.s2 ?? 0) + (dayNext.both ?? 0),
+    s3: (dayNext.s3 ?? 0) + (dayNext.both ?? 0)
+  };
+  const dayLeader = dayRates.s2 >= dayRates.s3 ? "s2" : "s3";
+  const dayLeaderShort = insights.stores.find((store) => store.id === dayLeader).short;
+  assert.ok(
+    outlook.summary.includes(`昼夜をまとめると${dayLeaderShort}`),
+    "the summary must use the day-level rotation table, which is the accurate one for that question"
+  );
+  assert.ok(
+    outlook.summary.includes(`${Math.round(dayRates[dayLeader] * 100)}%`),
+    "the day-level figure must come from rotation.nextDayByDay"
+  );
+  assert.notEqual(
+    rateOf(dayLeader),
+    dayRates[dayLeader],
+    "the chips must still use the per-shift table, not the day-level one"
+  );
+}
+
+// 昼夜をまとめた開店店舗は、両シフトの和集合になる。
+{
+  const union = openStoresOnDay(insights, lastActual);
+  const expected = new Set(insights.shifts.flatMap((shift) => insights.actual[lastActual][shift] ?? []));
+  assert.deepEqual([...union].sort(), [...expected].sort(), "the day view must merge both shifts");
+  assert.equal(
+    openStoresOnDay(insights, "1999-01-01"),
+    null,
+    "a day with no record has no day-level open set"
+  );
+  const partial = Object.keys(insights.actual).find(
+    (date) => Object.keys(insights.actual[date]).length < insights.shifts.length
+  );
+  assert.ok(
+    openStoresOnDay(insights, partial).size > 0,
+    "a single-shift day still has a day-level open set"
   );
 }
 

@@ -468,6 +468,9 @@ def build():
         'openCountPerShift': open_count,
         'shiftSplitGivenOpen': shift_split,
         'rotation': {
+            # nextDayByDay は日単位の参考値。app.js は「その日どちらの店が開くか」の補足にだけ使い、
+            # チップの数値にはシフト別の nextDay を使う。日単位の表をシフト別に流用すると
+            # 昼 38.3%->43.9% と改善する一方で夜 43.0%->33.6% と悪化し、合計では有意差が無かったため。
             'nextDayByDay': next_day_by_day,
             'nextDayByDayS4': next_day_by_day_s4,
             'nextDay': next_day,
