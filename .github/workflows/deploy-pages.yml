@@ -30,9 +30,6 @@ jobs:
 
   deploy:
     name: Deploy static site
-    # このリポジトリは非公開のため、無料プランでは GitHub Pages を使えません。
-    # 公開し直すときだけ Actions タブから手動実行してください。
-    if: github.event_name == 'workflow_dispatch'
     needs: validate
     permissions:
       contents: read

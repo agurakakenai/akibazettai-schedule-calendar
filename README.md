@@ -2,7 +2,7 @@
 
 アキバ絶対領域の公開情報を、昼・夜に分けた月間カレンダーで閲覧するための静的サイトです。メイド・日付で絞り込めます。
 
-**このリポジトリは非公開（private）です。** 一般公開していた GitHub Pages は停止済みで、閲覧はローカルプレビューで行います。
+公開サイト: <https://agurakakenai.github.io/akibazettai-schedule-calendar/>
 
 ## ローカルプレビュー
 
@@ -46,11 +46,17 @@ node tests/range-rendering.js
 
 ## 公開状態
 
-リポジトリは非公開です。無料プランの GitHub Pages は公開リポジトリでしか使えないため、Pages は無効化してあります。
+リポジトリは公開（public）で、GitHub Pages でサイトを公開しています。無料プランの GitHub Pages は公開リポジトリでしか使えないため、非公開にすると Pages も停止します。
 
-`main` への push では [ワークフロー](.github/workflows/deploy-pages.yml)の検証ジョブだけが動き、サイトは公開されません。再び一般公開する場合だけ、リポジトリを公開に戻したうえで Actions タブからワークフローを手動実行してください。
+`main` への push で [ワークフロー](.github/workflows/deploy-pages.yml)が動き、データ検証に成功した場合だけサイトが更新されます。
 
 HTML、CSS、JavaScript、予定データはリポジトリのプロジェクトパスで動作する相対パスを使用しています。
+
+### 非公開に戻す場合
+
+1. リポジトリを private にすると、GitHub Pages は自動的に停止します（サイトは 404 になります）。
+2. その状態で push すると deploy ジョブが失敗するため、deploy ジョブに `if: github.event_name == 'workflow_dispatch'` を付けて手動実行専用にします。
+3. 閲覧は [`preview.cmd`](preview.cmd) でのローカルプレビューに切り替えます。
 
 ### 自分だけが見られる形で公開したい場合
 
