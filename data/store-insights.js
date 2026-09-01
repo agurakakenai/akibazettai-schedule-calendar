@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-02 04:08",
+  "generatedAt": "2026-09-02 04:37",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-08-30"
@@ -613,7 +613,85 @@ window.STORE_INSIGHTS = {
     },
     "maidStoreGivenOpen": 0.656,
     "maidStoreTop1": 0.532,
-    "maidStoreTop2": 0.75
+    "maidStoreTop2": 0.75,
+    "calibration": {
+      "from": "2025-11-23",
+      "to": "2026-08-30",
+      "brier": 0.2179,
+      "n": 8694,
+      "buckets": [
+        {
+          "from": 0.0,
+          "to": 0.1,
+          "n": 241,
+          "said": 0.059,
+          "actual": 0.212
+        },
+        {
+          "from": 0.1,
+          "to": 0.2,
+          "n": 594,
+          "said": 0.155,
+          "actual": 0.204
+        },
+        {
+          "from": 0.2,
+          "to": 0.3,
+          "n": 974,
+          "said": 0.254,
+          "actual": 0.248
+        },
+        {
+          "from": 0.3,
+          "to": 0.4,
+          "n": 1371,
+          "said": 0.352,
+          "actual": 0.317
+        },
+        {
+          "from": 0.4,
+          "to": 0.5,
+          "n": 1634,
+          "said": 0.45,
+          "actual": 0.447
+        },
+        {
+          "from": 0.5,
+          "to": 0.6,
+          "n": 1543,
+          "said": 0.549,
+          "actual": 0.576
+        },
+        {
+          "from": 0.6,
+          "to": 0.7,
+          "n": 1118,
+          "said": 0.646,
+          "actual": 0.678
+        },
+        {
+          "from": 0.7,
+          "to": 0.8,
+          "n": 674,
+          "said": 0.746,
+          "actual": 0.721
+        },
+        {
+          "from": 0.8,
+          "to": 0.9,
+          "n": 385,
+          "said": 0.844,
+          "actual": 0.74
+        },
+        {
+          "from": 0.9,
+          "to": 1.0,
+          "n": 160,
+          "said": 0.943,
+          "actual": 0.756
+        }
+      ]
+    }
   },
   "actual": {
     "2026-03-03": {

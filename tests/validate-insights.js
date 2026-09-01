@@ -667,6 +667,52 @@ assert.equal(
   "the per-store unlisted counts must add up to the total"
 );
 
+// 確率チップの較正。端は当てにならないので、UI が「この帯は過剰」と断れるようにする。
+{
+  const cal = insights.accuracy?.calibration;
+  assert.ok(cal, "accuracy.calibration must exist");
+  assert.match(cal.from, /^\d{4}-\d{2}-\d{2}$/, "calibration must say when it starts");
+  assert.match(cal.to, /^\d{4}-\d{2}-\d{2}$/, "calibration must say when it ends");
+  assert.ok(cal.from < cal.to, "the calibration window must move forwards");
+  assert.ok(cal.n > 1000, `calibration needs a real sample, got ${cal.n}`);
+  assert.ok(cal.brier > 0 && cal.brier < 0.25, `Brier must be sane, got ${cal.brier}`);
+
+  assert.ok(Array.isArray(cal.buckets) && cal.buckets.length >= 5, "buckets must be usable");
+  let previous = -1;
+  let sampled = 0;
+  for (const bucket of cal.buckets) {
+    assert.ok(bucket.from > previous, "buckets must climb without overlapping");
+    previous = bucket.from;
+    assert.ok(bucket.to > bucket.from, "each bucket must span a range");
+    assert.ok(bucket.n >= 100, `a bucket needs enough samples to quote, got ${bucket.n}`);
+    assert.ok(
+      bucket.said >= bucket.from && bucket.said <= bucket.to,
+      `${bucket.from}-${bucket.to} must say a figure inside its own range, got ${bucket.said}`
+    );
+    assert.ok(bucket.actual >= 0 && bucket.actual <= 1, "actual must be a rate");
+    sampled += bucket.n;
+  }
+  assert.ok(sampled <= cal.n, "buckets cannot hold more than was measured");
+
+  // 端が過剰であること自体を固定する。崩れたら注記を出す意味が変わる。
+  const top = cal.buckets.at(-1);
+  assert.ok(top.from >= 0.8, "the last bucket must cover the confident end");
+  assert.ok(
+    top.actual < top.said - 0.05,
+    `the confident end must still overstate itself, said ${top.said} got ${top.actual}`
+  );
+  // 真ん中は当たること。ここまで外れていたら確率で見せる意味が無い。
+  const middle = cal.buckets.filter((bucket) => bucket.from >= 0.2 && bucket.to <= 0.8);
+  assert.ok(middle.length >= 4, "the middle must be measured");
+  for (const bucket of middle) {
+    assert.ok(
+      Math.abs(bucket.actual - bucket.said) < 0.1,
+      `${bucket.from}-${bucket.to} must land within ten points, ` +
+        `said ${bucket.said} got ${bucket.actual}`
+    );
+  }
+}
+
 console.log(
   `Store insights valid: ${insights.stores.length} stores, ` +
     `${actualEntries.length} recorded dates through ${Object.keys(insights.actual).sort().at(-1)}, ` +

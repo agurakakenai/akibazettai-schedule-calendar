@@ -748,6 +748,36 @@
   }
 
   // 割り振り結果を、そのメイドさんの行に出すチップに変換する。
+  // 表示した確率が実測とどれだけ離れているか。真ん中は5ポイント以内に収まるが、
+  // 両端は自信過剰で、「97%」と出しても実測は74%ほどしか当たらない。
+  // 帯そのものはデータ側の測定（accuracy.calibration）から引く。
+  const CALIBRATION_DRIFT = 0.1;
+  // 標本の少ないバケットは実測値自体が揺れるので、注記の根拠にしない。
+  const CALIBRATION_MIN_SAMPLE = 100;
+
+  function calibrationNote(insights, rate) {
+    const buckets = insights?.accuracy?.calibration?.buckets;
+    if (!Array.isArray(buckets) || typeof rate !== "number") {
+      return null;
+    }
+    const bucket = buckets.find(
+      (candidate) => rate >= candidate.from && (rate < candidate.to || candidate.to >= 1)
+    );
+    if (!bucket || !(bucket.n >= CALIBRATION_MIN_SAMPLE) || typeof bucket.actual !== "number") {
+      return null;
+    }
+    const drift = bucket.actual - rate;
+    if (Math.abs(drift) < CALIBRATION_DRIFT) {
+      return null;
+    }
+    const band = bucket.to >= 1
+      ? `${toPercent(bucket.from)}以上`
+      : `${toPercent(bucket.from)}〜${toPercent(bucket.to - 0.01)}`;
+    return drift < 0
+      ? `ただしこのくらい高い数字は自信過剰で、${band}と出したときに実際に当たったのは${toPercent(bucket.actual)}です`
+      : `ただしこのくらい低い数字は控えめすぎて、${band}と出した店にも実際は${toPercent(bucket.actual)}の割合で入っています`;
+  }
+
   function getMaidStoreOutlook({ insights, name, shift, outlook, assignment }) {
     const tendency = insights?.maidTendency?.[name];
     if (!tendency || !assignment) {
@@ -826,6 +856,7 @@
       title: [
         `この${shift}に開きそうな店にいる確率：${everyStore}（${scopeNote}）`,
         postedNote,
+        calibrationNote(insights, probabilities[top.id]),
         "どの店にも入る可能性があります。実際、在籍35名は全員が4店舗すべてに入った実績があります",
         "いちばん高い店だけを見ると、たまに入る店を取りこぼします"
       ]
@@ -842,6 +873,7 @@
       addDays,
       applyEventCertainty,
       assignShiftStores,
+      calibrationNote,
       dateKey,
       eventStorePins,
       expectedOpenStores,

@@ -9,6 +9,7 @@ const {
   addDays,
   applyEventCertainty,
   assignShiftStores,
+  calibrationNote,
   eventStorePins,
   expectedOpenStores,
   getMaidStoreOutlook,
@@ -1187,6 +1188,68 @@ assert.equal(
     !outlookFor(fullyRecorded, "昼").summary.includes("誰がいたかの記録はありません"),
     `${fullyRecorded} has a line-up, so it must not carry the caveat`
   );
+}
+
+// 端の確率は自信過剰なので、そこに落ちたときだけツールチップで断る。
+// 帯そのものは data 側の測定（accuracy.calibration）から引き、閾値は app.js に持たない。
+{
+  const buckets = [
+    { from: 0, to: 0.1, n: 526, actual: 0.226 },
+    { from: 0.2, to: 0.3, n: 1130, actual: 0.243 },
+    { from: 0.4, to: 0.5, n: 2081, actual: 0.448 },
+    { from: 0.6, to: 0.7, n: 1595, actual: 0.693 },
+    { from: 0.9, to: 1, n: 401, actual: 0.738 }
+  ];
+  const measured = { accuracy: { calibration: { buckets } } };
+
+  // 真ん中はずれが小さいので何も言わない。
+  for (const rate of [0.25, 0.45, 0.65]) {
+    assert.equal(
+      calibrationNote(measured, rate),
+      null,
+      `${rate} sits in the range that holds up, so it needs no caveat`
+    );
+  }
+
+  // 高すぎる側。実測を添えて「4回に1回外す」ことが読めるようにする。
+  const high = calibrationNote(measured, 0.97);
+  assert.ok(high, "a figure in the nineties must carry a caveat");
+  assert.ok(high.includes("自信過剰"), "the caveat must say the figure is too confident");
+  assert.ok(high.includes("74%"), "the caveat must quote what actually happened");
+  assert.ok(high.includes("90%以上"), "the caveat must name the band it is talking about");
+
+  // 低すぎる側。「行かない」と読まれないようにする。
+  const low = calibrationNote(measured, 0.03);
+  assert.ok(low, "a single-digit figure must carry a caveat");
+  assert.ok(low.includes("23%"), "the caveat must say how often it actually happens");
+
+  // 標本の少ないバケットは実測が揺れるので、根拠にしない。
+  const thin = { accuracy: { calibration: { buckets: [{ from: 0.9, to: 1, n: 12, actual: 0.4 }] } } };
+  assert.equal(calibrationNote(thin, 0.95), null, "12 samples cannot support a caveat");
+
+  // 測定が無ければ黙る。データを消しても壊れない。
+  assert.equal(calibrationNote({}, 0.97), null, "no measurement, no claim");
+  assert.equal(calibrationNote(insights, null), null, "no rate, no claim");
+  assert.equal(
+    calibrationNote({ accuracy: { calibration: { buckets: [] } } }, 0.97),
+    null,
+    "an empty table must not throw"
+  );
+
+  // 実データに測定が入ったら、チップの本文にも出ること。
+  if (insights.accuracy?.calibration?.buckets?.length > 0) {
+    const noted = schedule.roster
+      .map((name) =>
+        getMaidStoreOutlook({ insights, name, shift: "昼", outlook: futureOutlook, assignment })
+      )
+      .filter((chip) => chip && calibrationNote(insights, chip.rate));
+    for (const chip of noted) {
+      assert.ok(
+        chip.title.includes("自信過剰") || chip.title.includes("控えめすぎ"),
+        "a chip whose figure lands in an unreliable band must say so in its tooltip"
+      );
+    }
+  }
 }
 
 console.log(

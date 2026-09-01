@@ -130,6 +130,11 @@ POSTED_PRIOR = 2.0
 POSTED_HIT = 0.60    # 配属店にいる割合の目安
 POSTED_MISS = 0.15   # 配属先でない店にいる割合の目安
 
+# チップの確率が言ったとおりに当たるかを測る設定
+CALIBRATION_REFIT_DAYS = 28   # この日数ごとに pickRate を作り直して遡る
+CALIBRATION_MIN_TRAIN = 60    # 訓練に使うシフトがこれ未満なら測らない
+CALIBRATION_MIN_SAMPLE = 100  # この件数未満のバケットは出さない（ぶれが大きい）
+
 
 def pick_rate(hits, chances, posted, sid):
     """その店が開いていた日のうち、その人がその店にいた割合。
@@ -151,6 +156,124 @@ def norm_counter(c):
 def group23(stores):
     a, b = 's2' in stores, 's3' in stores
     return 'both' if a and b else ('s2' if a else ('s3' if b else 'none'))
+
+
+def measure_calibration(cell, last_d, roster_keys, posted_by_key):
+    """チップに出す確率が、言ったとおりの割合で当たるかを測る。
+
+    やっていることは tendency の計算と同じ手順を、過去に遡って繰り返すだけ。
+    その日より前の TENDENCY_DAYS 日だけを使って pickRate を出し、
+    その日に実際に開いていた店の中で正規化して、当たったかどうかを数える。
+    未来を見ないよう、訓練期間は必ず評価日より前で打ち切る。
+
+    端の確率が当てにならないことが分かっているので（90%と言って実測74%）、
+    UI 側がその帯を判定できるように、この表をデータに載せる。
+    """
+    cells = sorted(cell.keys())
+    if not cells:
+        return None
+    first_d = datetime.date.fromisoformat(cells[0][0])
+    # 訓練に TENDENCY_DAYS 日ぶん要るので、その先から評価する
+    eval_from = (first_d + datetime.timedelta(days=TENDENCY_DAYS)).isoformat()
+    buckets = [{'from': i / 10, 'to': (i + 1) / 10, 'hit': 0, 'n': 0, 'said': 0.0}
+               for i in range(10)]
+    brier_sum = 0.0
+    brier_n = 0
+    tables = None
+    built_for = None
+
+    for date, sh in cells:
+        if date < eval_from:
+            continue
+        block = (datetime.date.fromisoformat(date).toordinal() // CALIBRATION_REFIT_DAYS)
+        if block != built_for:
+            lo = (datetime.date.fromisoformat(date)
+                  - datetime.timedelta(days=TENDENCY_DAYS)).isoformat()
+            tables = calibration_tables(cell, lo, date, posted_by_key)
+            built_for = block
+        if not tables:
+            continue
+        stores = cell[(date, sh)]
+        open_ids = [sid for sid in IDS if sid in stores]
+        if len(open_ids) < 2:
+            continue
+        for sid in open_ids:
+            for maid in stores[sid]:
+                if maid not in roster_keys:
+                    continue
+                row = tables[sh].get(maid)
+                if not row:
+                    continue
+                vals = {o: max(row[o], 1e-6) for o in open_ids}
+                total = sum(vals.values())
+                for o in open_ids:
+                    p = vals[o] / total
+                    y = 1 if o == sid else 0
+                    brier_sum += (p - y) ** 2
+                    brier_n += 1
+                    b = buckets[min(int(p * 10), 9)]
+                    b['n'] += 1
+                    b['hit'] += y
+                    b['said'] += p
+
+    if brier_n == 0:
+        return None
+    out = []
+    for b in buckets:
+        if b['n'] < CALIBRATION_MIN_SAMPLE:
+            continue
+        out.append({
+            'from': round(b['from'], 1), 'to': round(b['to'], 1), 'n': b['n'],
+            'said': round(b['said'] / b['n'], 3),
+            'actual': round(b['hit'] / b['n'], 3),
+        })
+    if not out:
+        return None
+    return {
+        'from': eval_from, 'to': last_d.isoformat(),
+        'brier': round(brier_sum / brier_n, 4),
+        'n': brier_n,
+        'buckets': out,
+    }
+
+
+def calibration_tables(cell, lo, hi, posted_by_key):
+    """lo 以上 hi 未満のシフトだけで、シフト別の pickRate を作る。"""
+    at = collections.defaultdict(lambda: collections.Counter())
+    opp = collections.defaultdict(lambda: collections.Counter())
+    at_sh = {sh: collections.defaultdict(collections.Counter) for sh in SHIFTS}
+    opp_sh = {sh: collections.defaultdict(collections.Counter) for sh in SHIFTS}
+    seen = 0
+    for (date, sh), stores in cell.items():
+        if not (lo <= date < hi):
+            continue
+        seen += 1
+        open_ids = [sid for sid in IDS if sid in stores]
+        for sid in open_ids:
+            for maid in stores[sid]:
+                at[maid][sid] += 1
+                at_sh[sh][maid][sid] += 1
+                for other in open_ids:
+                    opp[maid][other] += 1
+                    opp_sh[sh][maid][other] += 1
+    if seen < CALIBRATION_MIN_TRAIN:
+        return None
+    overall = {}
+    for maid in at:
+        posted = posted_by_key.get(maid)
+        overall[maid] = {sid: pick_rate(at[maid][sid], opp[maid][sid], posted, sid)
+                         for sid in IDS}
+    out = {}
+    for sh in SHIFTS:
+        table = {}
+        for maid, base_row in overall.items():
+            table[maid] = {
+                sid: (at_sh[sh][maid][sid] + SHRINK * base_row[sid])
+                     / (opp_sh[sh][maid][sid] + SHRINK)
+                for sid in IDS
+            }
+        out[sh] = table
+    return out
 
 
 def build():
@@ -701,6 +824,8 @@ def build():
             'maidStoreGivenOpen': 0.656,
             'maidStoreTop1': 0.532,
             'maidStoreTop2': 0.750,
+            'calibration': measure_calibration(
+                cell, last_d, {ALIAS.get(n, n) for n in roster}, posted_by_key),
         },
         'actual': actual,
         # 上のうち、メイド単位の記録が無く「開いた店」だけ分かっている日。
