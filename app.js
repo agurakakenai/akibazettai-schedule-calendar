@@ -101,6 +101,24 @@
     return rate >= 0.5 ? "likely" : "unlikely";
   }
 
+  // 予測モードでは、同じ店に入りそうな人がまとまって見えるように並べ替える。
+  function sortByAssignedStore({ insights, entries, assignment }) {
+    if (!assignment) {
+      return [...entries];
+    }
+    const order = new Map(storesOf(insights).map((store, index) => [store.id, index]));
+    return entries
+      .map((entry, index) => ({ entry, index }))
+      .sort((a, b) => {
+        const left = assignment.byMaid.get(a.entry.name);
+        const right = assignment.byMaid.get(b.entry.name);
+        const leftRank = left ? order.get(left.storeId) ?? Infinity : Infinity;
+        const rightRank = right ? order.get(right.storeId) ?? Infinity : Infinity;
+        return leftRank - rightRank || a.index - b.index;
+      })
+      .map(({ entry }) => entry);
+  }
+
   function storesOf(insights) {
     return Array.isArray(insights?.stores) ? insights.stores : [];
   }
@@ -590,6 +608,7 @@
       isDateKeyInRange,
       lastActualDateOf,
       openStoresOn,
+      sortByAssignedStore,
       storeCapacities,
       weekdayBucket,
       weekdayIndex
@@ -685,12 +704,42 @@
     return chip;
   }
 
+  const VIEW_MODES = {
+    forecast: {
+      label: "予測",
+      help: "開いていそうな店舗と、その日出るメンバーの割り振りを出します。"
+    },
+    roster: {
+      label: "誰いるか",
+      help: "店舗の予測を隠して、誰がお給仕に出るかだけを見ます。"
+    }
+  };
+  const VIEW_MODE_KEY = "akibazettai:view-mode";
+
+  function readStoredMode() {
+    try {
+      const stored = window.localStorage?.getItem(VIEW_MODE_KEY);
+      return stored && VIEW_MODES[stored] ? stored : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function storeMode(mode) {
+    try {
+      window.localStorage?.setItem(VIEW_MODE_KEY, mode);
+    } catch {
+      // プライベートモードなどで保存できなくても表示には影響しない。
+    }
+  }
+
   const defaults = getTokyoDateDefaults();
   const state = {
     visibleMonth: new Date(defaults.year, defaults.month - 1, 1),
     selectedMaids: new Set(data.roster),
     dateFrom: defaults.dateFrom,
-    dateTo: defaults.dateTo
+    dateTo: defaults.dateTo,
+    viewMode: hasInsights ? readStoredMode() ?? "forecast" : "roster"
   };
 
   const elements = {
@@ -699,6 +748,8 @@
     resultSummary: document.querySelector("#result-summary"),
     lastUpdated: document.querySelector("#last-updated"),
     insightNotes: document.querySelector("#insight-notes"),
+    modeHelp: document.querySelector("#mode-help"),
+    modeInputs: [...document.querySelectorAll('input[name="view-mode"]')],
     maidCheckboxes: document.querySelector("#maid-checkboxes"),
     maidFilterDetails: document.querySelector("#maid-filter-details"),
     maidFilterSummary: document.querySelector("#maid-filter-summary"),
@@ -725,8 +776,12 @@
     section.className = `shift-section ${shiftDetails[shift].className}`;
     section.setAttribute("aria-label", `${shift}のお給仕`);
 
-    const { outlook, pins } = getShiftOutlook(key, shift);
-    const title = document.createElement("h4");    title.className = "shift-title";
+    const forecasting = state.viewMode === "forecast";
+    const { outlook, pins } = forecasting
+      ? getShiftOutlook(key, shift)
+      : { outlook: null, pins: new Map() };
+    const title = document.createElement("h4");
+    title.className = "shift-title";
     const icon = document.createElement("span");
     icon.className = "shift-icon";
     icon.setAttribute("aria-hidden", "true");
@@ -744,7 +799,7 @@
     }
 
     const allEntries = data.schedule[key]?.[shift] ?? [];
-    const entries = filteredEntries(key, shift);
+    const visible = filteredEntries(key, shift);
     // 割り振りは絞り込みに影響されないよう、その日そのシフトの全員で計算する。
     const assignment = outlook
       ? getShiftAssignment({
@@ -755,6 +810,9 @@
         pins
       })
       : null;
+    const entries = assignment
+      ? sortByAssignedStore({ insights, entries: visible, assignment })
+      : visible;
 
     if (entries.length > 0) {
       const list = document.createElement("ul");
@@ -1009,6 +1067,15 @@
         "その店はその日営業することも確定するので、チップは割合ではなく「確定」と出しています。" +
         "所属店は公式の配属ではなく、その店が開いた日にいちばん入っている店から推定したものです。"
     );
+
+    const s1Day = insights.baseOpenRate?.["昼"]?.s1;
+    const s1Night = insights.baseOpenRate?.["夜"]?.s1;
+    if (typeof s1Day === "number" && typeof s1Night === "number") {
+      lines.push(
+        `1号店もほぼ毎日開いていますが、毎日ではありません（昼${toPercent(s1Day)} / 夜${toPercent(s1Night)}）。` +
+          "夜だけ休みの日がときどきあります。"
+      );
+    }
     if (givenOpen !== null || top1 !== null) {
       const parts = [];
       if (givenOpen !== null) {
@@ -1210,6 +1277,11 @@
     if (!container || !hasInsights) {
       return;
     }
+    if (container.children.length > 1) {
+      // 一度作れば中身は変わらない。モードによる出し入れだけ行う。
+      container.hidden = state.viewMode !== "forecast";
+      return;
+    }
 
     const legend = document.createElement("ul");
     legend.className = "insight-legend";
@@ -1271,7 +1343,28 @@
       ...(unlisted ? [unlisted] : []),
       source
     );
-    container.hidden = false;
+    container.hidden = state.viewMode !== "forecast";
+  }
+
+  function setViewMode(mode) {
+    if (!VIEW_MODES[mode] || (mode === "forecast" && !hasInsights)) {
+      return;
+    }
+    state.viewMode = mode;
+    storeMode(mode);
+    syncViewMode();
+    renderCalendar();
+  }
+
+  function syncViewMode() {
+    elements.modeInputs.forEach((input) => {
+      input.checked = input.value === state.viewMode;
+      input.disabled = input.value === "forecast" && !hasInsights;
+    });
+    if (elements.modeHelp) {
+      elements.modeHelp.textContent = VIEW_MODES[state.viewMode].help;
+    }
+    renderInsightNotes();
   }
 
   function updateMaidFilterSummary() {
@@ -1359,11 +1452,22 @@
     state.selectedMaids = new Set(data.roster);
     state.dateFrom = resetDefaults.dateFrom;
     state.dateTo = resetDefaults.dateTo;
+    state.viewMode = hasInsights ? "forecast" : "roster";
+    storeMode(state.viewMode);
     elements.dateFrom.value = state.dateFrom;
     elements.dateTo.value = state.dateTo;
+    syncViewMode();
     renderMaidFilters();
     renderCalendar();
   }
+
+  elements.modeInputs.forEach((input) => {
+    input.addEventListener("change", () => {
+      if (input.checked) {
+        setViewMode(input.value);
+      }
+    });
+  });
 
   elements.previousMonth.addEventListener("click", () => setVisibleMonth(-1));
   elements.nextMonth.addEventListener("click", () => setVisibleMonth(1));
@@ -1378,7 +1482,7 @@
   elements.lastUpdated.textContent = `最終更新：${data.lastUpdated}`;
   elements.maidFilterDetails.open =
     !window.matchMedia("(max-width: 45rem)").matches;
-  renderInsightNotes();
+  syncViewMode();
   renderMaidFilters();
   renderCalendar();
 })();

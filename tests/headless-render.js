@@ -83,7 +83,16 @@ function makeElement(tagName = "div") {
   return element;
 }
 
-// app.js は querySelector("#id") で要素を引くので、id は必ず同じインスタンスに解決する。
+// index.html に実際にある id と radio を読み、シムがそれ以外を黙って作らないようにする。
+const markup = fs.readFileSync(path.join(repo, "index.html"), "utf8");
+const declaredIds = new Set([...markup.matchAll(/\sid="([\w-]+)"/g)].map((match) => match[1]));
+const viewModeValues = [...markup.matchAll(/<input[^>]*name="view-mode"[^>]*>/g)].map((tag) => {
+  const value = /value="([\w-]+)"/.exec(tag[0]);
+  assert.ok(value, `a view-mode radio in index.html has no value: ${tag[0]}`);
+  return value[1];
+});
+assert.ok(viewModeValues.length >= 2, "index.html must offer at least two view modes");
+
 const byId = new Map();
 function elementById(id) {
   if (!byId.has(id)) {
@@ -91,6 +100,13 @@ function elementById(id) {
   }
   return byId.get(id);
 }
+
+const viewModeInputs = viewModeValues.map((value) => {
+  const input = makeElement("input");
+  input.value = value;
+  input.attributes.name = "view-mode";
+  return input;
+});
 
 const documentShim = {
   createElement: makeElement,
@@ -103,9 +119,20 @@ const documentShim = {
   querySelector: (selector) => {
     const match = /^#([\w-]+)$/.exec(String(selector).trim());
     assert.ok(match, `the shim only resolves id selectors, got "${selector}"`);
+    assert.ok(
+      declaredIds.has(match[1]),
+      `app.js looks up #${match[1]}, which does not exist in index.html`
+    );
     return elementById(match[1]);
   },
-  querySelectorAll: () => [],
+  querySelectorAll: (selector) => {
+    assert.equal(
+      String(selector).trim(),
+      'input[name="view-mode"]',
+      `the shim does not implement "${selector}"`
+    );
+    return viewModeInputs;
+  },
   addEventListener: (type, fn) => listeners.push({ element: "document", type, fn }),
   documentElement: makeElement("html"),
   body: makeElement("body")
@@ -114,6 +141,18 @@ const documentShim = {
 const windowShim = {
   addEventListener: (type, fn) => listeners.push({ element: "window", type, fn }),
   matchMedia: () => ({ matches: false, addEventListener() {}, addListener() {} }),
+  localStorage: {
+    _store: new Map(),
+    getItem(key) {
+      return this._store.has(key) ? this._store.get(key) : null;
+    },
+    setItem(key, value) {
+      this._store.set(key, String(value));
+    },
+    removeItem(key) {
+      this._store.delete(key);
+    }
+  },
   location: { hash: "", search: "" }
 };
 
@@ -154,6 +193,17 @@ function dispatch(id, type) {
   const matched = listeners.filter((entry) => entry.element === target && entry.type === type);
   assert.ok(matched.length > 0, `#${id} has no "${type}" listener`);
   matched.forEach((entry) => entry.fn({ type, target }));
+}
+
+function selectViewMode(mode) {
+  const input = viewModeInputs.find((candidate) => candidate.value === mode);
+  assert.ok(input, `index.html has no "${mode}" view mode`);
+  viewModeInputs.forEach((candidate) => {
+    candidate.checked = candidate === input;
+  });
+  const matched = listeners.filter((entry) => entry.element === input && entry.type === "change");
+  assert.ok(matched.length > 0, `the "${mode}" radio has no change listener`);
+  matched.forEach((entry) => entry.fn({ type: "change", target: input }));
 }
 
 function walk(node, out = []) {
@@ -474,6 +524,82 @@ for (const [name, info] of Object.entries(insights.unlistedMaids)) {
   );
 }
 
+// 予測モードでは、同じ店に入りそうな人がまとまって並ぶ。
+const storeOrder = new Map(insights.stores.map((store, index) => [store.id, index]));
+for (const section of shiftSections) {
+  const assigned = withClass(section, "maid-entry")
+    .map((entry) => withClass(entry, "maid-store-chip")[0]?.dataset.store)
+    .filter(Boolean)
+    .map((id) => storeOrder.get(id));
+  const sorted = [...assigned].sort((a, b) => a - b);
+  assert.deepEqual(
+    assigned,
+    sorted,
+    "maids must be listed in store order so each shop's line-up reads together"
+  );
+}
+
+// --- 表示モードの切り替え -----------------------------------------------
+assert.equal(
+  withClass(calendar, "store-chip").length,
+  shiftSections.length * insights.stores.length,
+  "the forecast mode must show the store outlook"
+);
+
+selectViewMode("roster");
+assert.equal(
+  withClass(calendar, "store-chip").length,
+  0,
+  "the roster mode must not show any store outlook"
+);
+assert.equal(
+  withClass(calendar, "store-status-badge").length,
+  0,
+  "the roster mode must not show the basis badges"
+);
+assert.equal(
+  withClass(calendar, "maid-store-chip").length,
+  0,
+  "the roster mode must not guess where each maid will be"
+);
+assert.equal(
+  elementById("insight-notes").hidden,
+  true,
+  "the forecast notes are meaningless in the roster mode"
+);
+assert.equal(
+  withClass(calendar, "maid-entry").length,
+  maidEntries.length,
+  "switching modes must not change who is on the calendar"
+);
+
+// 素の並びは data/schedule.js の公式順に戻る。
+const rosterOrder = new Map(schedule.roster.map((name, index) => [name, index]));
+for (const cell of withClass(calendar, "calendar-day")) {
+  for (const section of withClass(cell, "shift-section")) {
+    const order = withClass(section, "maid-entry").map((entry) =>
+      rosterOrder.get(withClass(entry, "maid-name")[0].textContent)
+    );
+    assert.deepEqual(
+      order,
+      [...order].sort((a, b) => a - b),
+      "the roster mode must keep the official roster order"
+    );
+  }
+}
+
+selectViewMode("forecast");
+assert.equal(
+  withClass(calendar, "store-chip").length,
+  shiftSections.length * insights.stores.length,
+  "switching back must restore the store outlook"
+);
+assert.equal(
+  elementById("insight-notes").hidden,
+  false,
+  "switching back must restore the notes"
+);
+
 // --- 絞り込みを変えても店舗の見込みは残る -------------------------------
 const beforeChips = withClass(calendar, "store-chip").length;
 dispatch("clear-all", "click");
@@ -546,6 +672,7 @@ if (partialDate) {
 
 console.log(
   `Headless render valid: ${dayCells.length} day cells, ${shiftSections.length} shift sections, ` +
-    `${maidEntries.length} maid entries, ${activeNames.length} unlisted members listed as active ` +
+    `${maidEntries.length} maid entries sorted by assigned store, both view modes, ` +
+    `${activeNames.length} unlisted members listed as active ` +
     `(${graduatedNames.length} graduated kept separate).`
 );

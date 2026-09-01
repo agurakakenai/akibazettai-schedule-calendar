@@ -113,6 +113,21 @@ html[data-theme="dark"] {
           </button>
         </div>
 
+        <fieldset class="mode-filter">
+          <legend>表示モード</legend>
+          <div class="mode-switch">
+            <label>
+              <input type="radio" name="view-mode" value="forecast" checked>
+              <span>予測</span>
+            </label>
+            <label>
+              <input type="radio" name="view-mode" value="roster">
+              <span>誰いるか</span>
+            </label>
+          </div>
+          <p id="mode-help" class="mode-help"></p>
+        </fieldset>
+
         <fieldset class="date-filters">
           <legend>日付</legend>
           <label>
