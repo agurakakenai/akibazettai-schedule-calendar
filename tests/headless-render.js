@@ -461,109 +461,6 @@ for (const entry of featured) {
   );
 }
 
-// --- 凡例と注記 ---------------------------------------------------------
-const notes = elementById("insight-notes");
-assert.equal(notes.hidden, false, "the notes must be revealed once the data loads");
-assert.equal(withClass(notes, "insight-legend").length, 1, "the notes must carry one legend");
-
-// 見習いは事前に分からない、という注意が数値つきで出ていること。
-const coverageNote = withClass(notes, "insight-headline");
-assert.equal(coverageNote.length, 1, "the notes must carry the roster-coverage warning");
-const coverageText = coverageNote[0].textContent;
-assert.ok(
-  coverageText.includes("事前に知る手段がありません"),
-  "the warning must say trainees cannot be known in advance"
-);
-assert.ok(
-  coverageText.includes(String(insights.rosterCoverage.unlistedPerShift)),
-  "the warning must quote the measured per-shift gap rather than a hardcoded number"
-);
-assert.ok(
-  coverageText.includes(
-    `${Math.round(insights.rosterCoverage.shiftsWithUnlisted * 100)}%`
-  ),
-  "the warning must quote the measured share of affected shifts"
-);
-assert.equal(
-  withClass(notes, "insight-legend")[0].children.length,
-  knownBadges.size,
-  "the legend must explain every badge"
-);
-
-const notesText = walk(notes)
-  .map((node) => node._text || "")
-  .join("\n");
-for (const badge of knownBadges) {
-  assert.ok(notesText.includes(badge), `the legend must mention the "${badge}" badge`);
-}
-assert.ok(
-  notesText.includes("2日以上先"),
-  "the notes must say that anything past tomorrow is not a forecast"
-);
-assert.ok(
-  notesText.includes("@akibazettai"),
-  "the notes must credit where the data came from"
-);
-
-const unlistedLists = withClass(notes, "unlisted-maids");
-assert.ok(unlistedLists.length > 0, "the notes must list the members missing from the roster");
-
-const activeList = unlistedLists[0];
-const activeEntries = activeList.children;
-const activeNames = activeEntries.map((item) => withClass(item, "unlisted-name")[0].textContent);
-const graduatedNames = Object.entries(insights.unlistedMaids)
-  .filter(([, info]) => info.status === "graduated")
-  .map(([name]) => name);
-const promotedNames = Object.entries(insights.unlistedMaids)
-  .filter(([, info]) => info.promoted)
-  .map(([name]) => name);
-
-for (const name of promotedNames) {
-  assert.ok(activeNames.includes(name), `${name} is promoted, so she belongs in the active list`);
-  const item = activeEntries[activeNames.indexOf(name)];
-  const link = withClass(item, "unlisted-name")[0];
-  assert.equal(link.tagName, "A", `${name} has a confirmed account, so her name must link to it`);
-  assert.equal(link.href, `https://x.com/${insights.unlistedMaids[name].x}`, "wrong X link");
-}
-
-for (const name of graduatedNames) {
-  assert.ok(
-    !activeNames.includes(name),
-    `${name} has graduated and must not be listed as currently working`
-  );
-}
-
-if (graduatedNames.length > 0) {
-  assert.equal(unlistedLists.length, 2, "graduated members must be listed separately");
-  const graduatedEntries = unlistedLists[1].children;
-  assert.equal(
-    graduatedEntries.length,
-    graduatedNames.length,
-    "every graduated member must appear in the second list"
-  );
-  for (const item of graduatedEntries) {
-    assert.ok(item.classList.contains("is-graduated"), "graduated entries must be marked");
-    assert.equal(
-      withClass(item, "unlisted-name")[0].tagName,
-      "SPAN",
-      "a graduated member must not be linked as if she were still working"
-    );
-  }
-}
-
-// 「新人かも」と言い切ってよいのは likelyNew だけ。
-for (const [name, info] of Object.entries(insights.unlistedMaids)) {
-  if (!activeNames.includes(name)) {
-    continue;
-  }
-  const item = activeEntries[activeNames.indexOf(name)];
-  const detail = withClass(item, "unlisted-detail")[0].textContent;
-  assert.equal(
-    detail.includes("新人"),
-    Boolean(info.likelyNew),
-    `${name} must only be called new when likelyNew is set`
-  );
-}
 
 // 予測モードでは、同じ店に入りそうな人がまとまって並ぶ。
 const storeOrder = new Map(insights.stores.map((store, index) => [store.id, index]));
@@ -604,11 +501,6 @@ assert.equal(
   "the roster mode must not guess where each maid will be"
 );
 assert.equal(
-  elementById("insight-notes").hidden,
-  true,
-  "the forecast notes are meaningless in the roster mode"
-);
-assert.equal(
   withClass(calendar, "maid-entry").length,
   maidEntries.length,
   "switching modes must not change who is on the calendar"
@@ -635,10 +527,14 @@ assert.equal(
   shiftSections.length * insights.stores.length,
   "switching back must restore the store outlook"
 );
+
+// カレンダーの下に解説ブロックは出さない。根拠は README にまとめてある。
 assert.equal(
-  elementById("insight-notes").hidden,
-  false,
-  "switching back must restore the notes"
+  walk(elementById("calendar")).filter((node) =>
+    node.classList && (node.classList.contains("insight-notes") || node.classList.contains("unlisted-maids"))
+  ).length,
+  0,
+  "the long explanation block must stay out of the page"
 );
 
 // --- 絞り込みを変えても店舗の見込みは残る -------------------------------
@@ -714,6 +610,5 @@ if (partialDate) {
 console.log(
   `Headless render valid: ${dayCells.length} day cells, ${shiftSections.length} shift sections, ` +
     `${maidEntries.length} maid entries sorted by assigned store, both view modes, ` +
-    `${activeNames.length} unlisted members listed as active ` +
-    `(${graduatedNames.length} graduated kept separate).`
+    "and no explanation block below the calendar."
 );
