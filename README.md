@@ -128,7 +128,16 @@ node tests/headless-render.js
 
 ### データの出どころ
 
-[`data/store-insights.js`](data/store-insights.js) は、公式X [@akibazettai](https://x.com/akibazettai) の「ひるにゃんこ / よるにゃんこ」投稿を Wayback Machine 経由で復元した出勤実績から作っています。集計期間は 2025-08-30〜2026-08-30（361日）で、カレンダーに持たせている実績は直近180日ぶんです。
+[`data/store-insights.js`](data/store-insights.js) は、公式X [@akibazettai](https://x.com/akibazettai) の「ひるにゃんこ / よるにゃんこ」投稿を Wayback Machine 経由で復元した出勤実績から作っています。カレンダーに持たせている実績は直近180日ぶんです。
+
+**集計期間は用途で分けています。**
+
+| 対象 | 期間 | 理由 |
+|---|---|---|
+| 店舗の営業率・規模・ローテーション・精度 | 直近1年（361日） | 在籍者と無関係なので、長いほうが当たる |
+| **メイド個人の店舗傾向** | **直近120日** | 見習いの研修期間が約3か月。1年で集計すると「当時は見習いだった人」を今の在籍として数えてしまう |
+
+期間は `sampleWindow` と `tendencyWindow` に入っています。個人の傾向だけ期間が短いことは、メイドさんのチップのツールチップにも「直近120日」と明記しています。
 
 ### 再生成
 

@@ -692,9 +692,15 @@
       .sort((a, b) => probabilities[b] - probabilities[a])[0] ?? null;
     const second = runnerUpId ? stores.find((candidate) => candidate.id === runnerUpId) : null;
     const { scope } = tendencyTables(tendency, shift);
-    const scopeNote = scope === shift
-      ? `${shift}の実績`
-      : "昼夜あわせた実績（このシフトは件数が少ないため）";
+    // 個人の傾向だけ集計期間が短い。店舗側の数字と混同されないよう明記する。
+    const days = insights.tendencyWindow?.days;
+    const period = days ? `直近${days}日` : null;
+    const scopeNote = [
+      scope === shift ? `${shift}の実績` : "昼夜あわせた実績（このシフトは件数が少ないため）",
+      period
+    ]
+      .filter(Boolean)
+      .join("・");
     const everyStore = [...assignment.storeIds]
       .sort((a, b) => probabilities[b] - probabilities[a])
       .map((id) => `${shortOf(id)} ${toPercent(probabilities[id])}`)

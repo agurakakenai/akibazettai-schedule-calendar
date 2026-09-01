@@ -428,6 +428,27 @@ assert.match(
   "shiftDataFrom is required so the UI can say how far back firstSeen can reach"
 );
 
+// 個人の傾向だけ集計期間が短い。店舗側の期間と取り違えないよう別のキーで持つ。
+for (const [key, table] of [["sampleWindow", insights.sampleWindow], ["tendencyWindow", insights.tendencyWindow]]) {
+  assert.ok(table, `${key} is required`);
+  for (const field of ["from", "to"]) {
+    assert.match(table[field], /^\d{4}-\d{2}-\d{2}$/, `${key}.${field} must be a date`);
+  }
+  assert.ok(table.from <= table.to, `${key} must not run backwards`);
+  assert.ok(
+    Number.isInteger(table.days) && table.days > 0,
+    `${key}.days must be a positive integer`
+  );
+}
+assert.ok(
+  insights.tendencyWindow.days <= insights.sampleWindow.days,
+  "the per-maid window must not be longer than the shop window"
+);
+assert.ok(
+  insights.tendencyWindow.to === insights.sampleWindow.to,
+  "both windows must end on the same day"
+);
+
 for (const [name, info] of Object.entries(unlisted)) {
   assert.ok(
     !schedule.roster.includes(name),

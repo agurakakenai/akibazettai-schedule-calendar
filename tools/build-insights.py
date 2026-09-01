@@ -35,7 +35,14 @@ SHIFTS = ['昼', '夜']
 # サイトの roster 表記 -> X 投稿での表記
 ALIAS = {'まこっちゃん': 'まこと'}
 
-WINDOW_DAYS = 365      # 傾向を出す対象期間
+WINDOW_DAYS = 365      # 店舗の営業率・規模・ローテーション・精度を測る期間
+# 店舗側の性質は「誰が在籍しているか」と無関係なので、長いほうが安定する。
+# 短くすると翌日予測の標本が減り（365日 n=107 → 120日 n=34）、
+# 的中も 51.4% → 35.3% とノイズに埋もれる。
+TENDENCY_DAYS = 120    # メイド個人の店舗傾向を出す期間
+# 見習いの研修期間は約3か月。365日で集計すると「当時は見習いだった人」を
+# 今の roster で在籍として数えてしまい、未掲載率が 33.9%(2025-09) → 12.7%(2026-06)
+# と実態から乖離する。個人の傾向は直近のほうが実態に近い。
 HISTORY_DAYS = 180     # カレンダーに実績として持たせる期間
 SHRINK = 5.0           # シフト別の比率を全体値へ寄せる強さ（サンプル不足対策）
 GRADUATED_GAP_DAYS = 14  # これ以上お給仕が空いたら卒業とみなす
@@ -307,12 +314,15 @@ def build():
                  'groupBaseline': rate(base_ok, tot)}
 
     # メイド別の店舗傾向（イベント日は除外）
+    # 個人の傾向だけは短い期間で見る。見習いの研修が約3か月なので、
+    # 長く取ると「当時は見習いだった人」を今の roster で在籍として数えてしまう。
+    tendency_cut = (last_d - datetime.timedelta(days=TENDENCY_DAYS)).isoformat()
     worked = collections.defaultdict(set)
     at = collections.defaultdict(lambda: collections.defaultdict(set))
     open_for = collections.defaultdict(set)
     worked_sh = collections.defaultdict(collections.Counter)
     for (d, sh), stores in cell.items():
-        if d < cut or d in events:
+        if d < tendency_cut or d in events:
             continue
         for m in {m for sid in stores for m in stores[sid]}:
             worked[m].add((d, sh))
@@ -536,6 +546,7 @@ def build():
         'generatedAt': datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),
         'historyRange': {'from': all_dates[0], 'to': last},
         'sampleWindow': {'from': cut, 'to': last, 'days': nd},
+        'tendencyWindow': {'from': tendency_cut, 'to': last, 'days': TENDENCY_DAYS},
         'shiftDataFrom': all_dates[0],
         'stores': [{'id': i, 'short': s, 'name': n} for i, _, s, n in STORES],
         'shifts': SHIFTS,

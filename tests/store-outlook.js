@@ -403,6 +403,10 @@ assert.ok(
   "the chip must say every maid has worked every shop"
 );
 assert.ok(chip.alternative, "the chip must offer a runner-up, which covers 97% together");
+assert.ok(
+  chip.title.includes(`直近${insights.tendencyWindow.days}日`),
+  "the chip must say the per-maid figures use the shorter window"
+);
 for (const storeId of assignment.storeIds) {
   assert.ok(
     chip.title.includes(insights.stores.find((store) => store.id === storeId).short),
