@@ -790,9 +790,74 @@
     return lines;
   }
 
+  function createUnlistedEntry(name, info) {
+    const linkable = Boolean(info.hasPublicAccount && info.x && info.status !== "graduated");
+    const item = document.createElement("li");
+    if (!linkable) {
+      item.classList.add("is-unverified");
+    }
+    if (info.status === "graduated") {
+      item.classList.add("is-graduated");
+    }
+
+    const label = document.createElement(linkable ? "a" : "span");
+    label.className = "unlisted-name";
+    label.textContent = name;
+    if (linkable) {
+      label.href = `https://x.com/${info.x}`;
+      label.target = "_blank";
+      label.rel = "noopener noreferrer";
+    }
+
+    const recent = (info.recentShifts31 ?? 0) > 0
+      ? `直近1か月${info.recentShifts31}回`
+      : `直近90日で${info.recentShifts ?? 0}回`;
+    const home = info.home ? `よく${shopName(info.home)}` : null;
+    const facts = [recent, home];
+
+    if (info.status === "graduated") {
+      facts.push(info.graduatedAt ? `卒業 ${info.graduatedAt}` : "卒業・離脱");
+    } else if (info.likelyNew) {
+      facts.push("新人かも");
+    }
+
+    const detail = document.createElement("span");
+    detail.className = "unlisted-detail";
+    detail.textContent = facts.filter(Boolean).join("・");
+
+    // 判定の根拠をそのまま出しておく。断定できるだけの材料はない。
+    const clamped = info.streakStart && insights.shiftDataFrom
+      && info.streakStart <= insights.shiftDataFrom;
+    const evidence = [
+      `${name}：${facts.filter(Boolean).join(" / ")}`,
+      info.streakStart
+        ? `このデータ（${insights.shiftDataFrom ?? "?"}以降）では ${info.streakStart} からお給仕を確認` +
+          (clamped ? "。それ以前は分かりません" : "")
+        : null,
+      typeof info.daysSinceLast === "number" ? `最後のお給仕から${info.daysSinceLast}日` : null,
+      info.otherAccounts?.length > 0
+        ? `以前のアカウント ${info.otherAccounts.join("・")} が見つかったので、新人とは判断していません`
+        : info.likelyNew
+          ? "以前のアカウントも1年より前のお給仕も見つからないため、新しくノーマルにゃんこになった可能性があります"
+          : null,
+      info.xNote ?? null,
+      info.status === "graduated"
+        ? "卒業・離脱と判断したため、在籍中の一覧からは外しています"
+        : linkable
+          ? "Xを開きます"
+          : info.xStatus === "公式サイト"
+            ? "公式サイトには在籍しています"
+            : "公開アカウントを確認できていません"
+    ];
+    item.title = evidence.filter(Boolean).join(" / ");
+
+    item.append(label, detail);
+    return item;
+  }
+
   function createUnlistedMaids() {
     const unlisted = insights.unlistedMaids ?? {};
-    const names = Object.keys(unlisted).sort((a, b) => {
+    const byRecency = (a, b) => {
       const left = unlisted[a] ?? {};
       const right = unlisted[b] ?? {};
       return (
@@ -800,64 +865,45 @@
         (right.recentShifts31 ?? 0) - (left.recentShifts31 ?? 0) ||
         (right.recentShifts ?? 0) - (left.recentShifts ?? 0)
       );
-    });
-    if (names.length === 0) {
+    };
+    const names = Object.keys(unlisted);
+    const active = names.filter((name) => unlisted[name]?.status !== "graduated").sort(byRecency);
+    const graduated = names.filter((name) => unlisted[name]?.status === "graduated").sort(byRecency);
+
+    if (active.length === 0 && graduated.length === 0) {
       return null;
     }
 
     const section = document.createElement("div");
-    const heading = document.createElement("p");
-    heading.className = "insight-subhead";
-    heading.textContent =
-      `このカレンダーに載っていないメンバー（${names.length}名）：` +
-      "公式サイトの在籍一覧には無いものの、最近のお給仕投稿に出ている方です。" +
-      "公開アカウントを確認できた方だけXへのリンクを付けています。カレンダー本体には表示していません。";
 
-    const list = document.createElement("ul");
-    list.className = "unlisted-maids";
+    if (active.length > 0) {
+      const heading = document.createElement("p");
+      heading.className = "insight-subhead";
+      heading.textContent =
+        `このカレンダーに載っていないメンバー（${active.length}名）：` +
+        "公式サイトの在籍一覧には無いものの、最近のお給仕投稿に出ている方です。" +
+        "公開アカウントを確認できた方だけXへのリンクを付けています。カレンダー本体には表示していません。";
 
-    names.forEach((name) => {
-      const info = unlisted[name] ?? {};
-      const linkable = Boolean(info.promoted && info.x);
-      const item = document.createElement("li");
-      if (!linkable) {
-        item.classList.add("is-unverified");
-      }
+      const list = document.createElement("ul");
+      list.className = "unlisted-maids";
+      active.forEach((name) => list.append(createUnlistedEntry(name, unlisted[name] ?? {})));
+      section.append(heading, list);
+    }
 
-      const label = document.createElement(linkable ? "a" : "span");
-      label.className = "unlisted-name";
-      label.textContent = name;
-      if (linkable) {
-        label.href = `https://x.com/${info.x}`;
-        label.target = "_blank";
-        label.rel = "noopener noreferrer";
-      }
+    if (graduated.length > 0) {
+      const heading = document.createElement("p");
+      heading.className = "insight-subhead";
+      heading.textContent =
+        `卒業・離脱と判断した方（${graduated.length}名）：` +
+        "卒業イベント、2週間以上お給仕が無いこと、Xの卒業表記のいずれかで判断しています。" +
+        "上の一覧とは分けています。";
 
-      const recent = (info.recentShifts31 ?? 0) > 0
-        ? `直近1か月${info.recentShifts31}回`
-        : `直近90日で${info.recentShifts ?? 0}回`;
-      const home = info.home ? `よく${shopName(info.home)}` : null;
-      const status = !linkable
-        ? { "公式サイト": "公式サイトには在籍", "卒業済み": "Xでは卒業済み" }[info.xStatus] ?? null
-        : null;
+      const list = document.createElement("ul");
+      list.className = "unlisted-maids";
+      graduated.forEach((name) => list.append(createUnlistedEntry(name, unlisted[name] ?? {})));
+      section.append(heading, list);
+    }
 
-      const detail = document.createElement("span");
-      detail.className = "unlisted-detail";
-      detail.textContent = [recent, home, status].filter(Boolean).join("・");
-
-      item.title = [
-        `${name}：${[recent, home, status].filter(Boolean).join(" / ")}`,
-        info.firstSeen && info.lastSeen ? `確認できた期間 ${info.firstSeen}〜${info.lastSeen}` : null,
-        linkable ? "Xを開きます" : "公開アカウントを確認できていません"
-      ]
-        .filter(Boolean)
-        .join(" / ");
-
-      item.append(label, detail);
-      list.append(item);
-    });
-
-    section.append(heading, list);
     return section;
   }
 

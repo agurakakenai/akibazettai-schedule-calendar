@@ -38,6 +38,8 @@ ALIAS = {'まこっちゃん': 'まこと'}
 WINDOW_DAYS = 365      # 傾向を出す対象期間
 HISTORY_DAYS = 180     # カレンダーに実績として持たせる期間
 SHRINK = 5.0           # シフト別の比率を全体値へ寄せる強さ（サンプル不足対策）
+GRADUATED_GAP_DAYS = 14  # これ以上お給仕が空いたら卒業とみなす
+STREAK_GAP_DAYS = 60     # これ以上空いたら「今の在籍」は別期間とみなす
 
 
 def load_csv(name):
@@ -303,12 +305,42 @@ def build():
         }
 
     # roster に載っていないが最近お給仕に出ているメイド（見習いから昇格した人など）
-    accounts, account_status = {}, {}
+    accounts, account_status, account_created, account_note = {}, {}, {}, {}
+    account_alt = {}
     if os.path.exists(os.path.join(DATA, 'accounts.csv')):
         for a in load_csv('accounts.csv'):
             if a.get('handle'):
                 accounts[a['name']] = a['handle']
                 account_status[a['name']] = a.get('source') or ''
+                account_note[a['name']] = a.get('note') or ''
+                account_alt[a['name']] = [x for x in (a.get('alt') or '').split(';') if x.strip()]
+                try:
+                    account_created[a['name']] = int(a.get('created') or 0) or None
+                except ValueError:
+                    account_created[a['name']] = None
+
+    # 卒業イベント（お給仕投稿から検出したもの）
+    graduated_at = {}
+    for e in load_csv('events.csv'):
+        if e.get('event_type') == '卒業':
+            n = e.get('featured_maid')
+            if n:
+                graduated_at[n] = max(graduated_at.get(n, ''), e['date'])
+
+    # 各メイドの「今の在籍開始日」（STREAK_GAP_DAYS 以上の空白で区切る）
+    days_by = collections.defaultdict(set)
+    for (d, sh), stores in cell.items():
+        for sid in stores:
+            for mm in stores[sid]:
+                days_by[mm].add(d)
+    streak_start = {}
+    for mm, ds in days_by.items():
+        ds = sorted(ds)
+        start = ds[0]
+        for i in range(1, len(ds)):
+            if (datetime.date.fromisoformat(ds[i]) - datetime.date.fromisoformat(ds[i - 1])).days >= STREAK_GAP_DAYS:
+                start = ds[i]
+        streak_start[mm] = start
 
     roster_keys = {ALIAS.get(n, n) for n in roster}
     recent_cut = (last_d - datetime.timedelta(days=90)).isoformat()
@@ -345,12 +377,35 @@ def build():
             'likely': sorted(IDS, key=lambda s: -overall[s])[:2],
             'x': accounts.get(m),
             'xStatus': account_status.get(m) or None,
+            'xCreated': account_created.get(m),
+            'xNote': account_note.get(m) or None,
             'recentShifts31': recent_count31.get(m, 0),
-            # サイト未掲載だが公開の *_zettai アカウントがあり直近1か月にお給仕あり
-            'promoted': bool(accounts.get(m)) and account_status.get(m) == '本人確認済み'
-                        and recent_count31.get(m, 0) > 0,
+            'streakStart': streak_start[m],
+            'daysSinceLast': (last_d - datetime.date.fromisoformat(last_seen[m])).days,
+            'graduatedAt': graduated_at.get(m),
         }
-    unlisted = dict(sorted(unlisted.items(), key=lambda kv: (-kv[1]['promoted'], -kv[1]['recentShifts'])))
+    year_ago = (last_d - datetime.timedelta(days=365)).isoformat()
+    for m, v in unlisted.items():
+        has_account = bool(v['x']) and v['xStatus'] == '本人確認済み'
+        v['hasPublicAccount'] = has_account
+        v['otherAccounts'] = account_alt.get(m, [])
+        # 卒業: 卒業イベントがある / 2週間以上お給仕が無い / プロフィールに卒業表記
+        graduated = bool(v['graduatedAt']) or v['daysSinceLast'] >= GRADUATED_GAP_DAYS \
+            or v['xStatus'] == '卒業済み'
+        v['status'] = 'graduated' if graduated else 'active'
+        # サイト未掲載 + 公開の *_zettai あり + 直近1か月にお給仕あり + 卒業していない
+        v['promoted'] = (not graduated) and has_account and v['recentShifts31'] > 0
+        # さらに「以前の在籍が確認できない」＝新しくノーマルにゃんこになった可能性が高い。
+        # 復帰でもアカウントを取り直す例があるため、作成年ではなく
+        # 「古いアカウントの有無」と「1年より前の出勤記録の有無」で見る。
+        # 古いアカウントの存在は在籍歴の証拠になる（新規取得は復帰でも起きるが、
+        # 何年も前に作られたアカウントを持っているなら以前から在籍している）。
+        old_account = bool(v['otherAccounts']) or (v['xCreated'] or last_d.year) < last_d.year - 1
+        v['likelyNew'] = v['promoted'] and not old_account and v['firstSeen'] >= year_ago
+    order = {'active': 0, 'graduated': 1}
+    unlisted = dict(sorted(unlisted.items(),
+                           key=lambda kv: (order[kv[1]['status']], not kv[1]['promoted'],
+                                           -kv[1]['recentShifts'])))
 
     for nm, t in tendency.items():
         if t is not None:
@@ -369,6 +424,7 @@ def build():
         'generatedAt': datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),
         'historyRange': {'from': all_dates[0], 'to': last},
         'sampleWindow': {'from': cut, 'to': last, 'days': nd},
+        'shiftDataFrom': all_dates[0],
         'stores': [{'id': i, 'short': s, 'name': n} for i, _, s, n in STORES],
         'shifts': SHIFTS,
         'weekdayOrigin': 'sunday',

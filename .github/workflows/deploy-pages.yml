@@ -29,6 +29,7 @@ jobs:
           node tests/range-rendering.js
           node tests/validate-insights.js
           node tests/store-outlook.js
+          node tests/headless-render.js
 
   deploy:
     name: Deploy static site

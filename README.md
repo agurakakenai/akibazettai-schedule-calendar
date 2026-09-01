@@ -26,9 +26,10 @@ node tests/date-defaults.js
 node tests/range-rendering.js
 node tests/validate-insights.js
 node tests/store-outlook.js
+node tests/headless-render.js
 ```
 
-`validate-insights.js` は [`data/store-insights.js`](data/store-insights.js) の形（店舗ID・確率の範囲・`roster` との一致など）を、`store-outlook.js` は `app.js` の「実績 / 翌日見込み / 曜日傾向」を選ぶロジックを検証します。
+`validate-insights.js` は [`data/store-insights.js`](data/store-insights.js) の形（店舗ID・確率の範囲・`roster` との一致など）を、`store-outlook.js` は `app.js` の「実績 / 翌日見込み / 曜日傾向」を選ぶロジックを検証します。`headless-render.js` は最小の DOM シムでカレンダーを実際に描画し、描画時のランタイムエラーやバッジ・チップの中身を確認します（依存パッケージは不要です）。
 
 ## 店舗の見込み表示
 
@@ -80,6 +81,14 @@ py tools/build-insights.py
 
 - `data/schedule.js` の `roster` は35名ですが、公式サイトの在籍は36名で **`まひろ` が `roster` に入っていません**。`roster` に追加すれば `data/store-insights.js` 側は再生成で自動的に追従します。
 - 公式サイトの在籍一覧に無いものの最近お給仕に出ている方は、カレンダー本体には表示せず、凡例の下に一覧として出しています。公開アカウントを確認できた方だけXへリンクしています。
+
+### 在籍・新人の判定について
+
+`unlistedMaids` の判定は控えめにしています。
+
+- **卒業・離脱**（`status: "graduated"`）は、卒業イベント・2週間以上お給仕が無いこと・Xのプロフィールの卒業表記のいずれかで判断します。この方々は「最近お給仕に出ている人」の一覧からは外し、別の見出しにまとめています。
+- **`likelyNew`（新人かも）** は、公開アカウントがあり直近1か月にお給仕があることに加えて、**古いアカウントが見つからず、1年より前の出勤記録も無い**場合だけ立てます。復帰時にアカウントを取り直す実例が複数あるため、**アカウントの作成年が新しいことだけを根拠に新人とは判定していません**。古いアカウントは「以前から在籍していた」という一方向の証拠としてのみ使います。
+- `tools/data/shifts.csv` は直近400日ぶんなので、初出の日付はこの範囲で頭打ちになります。UIのツールチップにも「このデータの範囲では」と明記しています。
 
 ## お給仕情報の更新
 

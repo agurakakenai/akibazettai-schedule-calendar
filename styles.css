@@ -849,6 +849,12 @@ input[type="date"] {
   color: var(--cp-text-muted);
 }
 
+.unlisted-maids li.is-graduated {
+  border-style: dotted;
+  background: var(--cp-surface-soft);
+  color: var(--cp-text-soft);
+}
+
 .unlisted-name {
   color: inherit;
   font-weight: 700;

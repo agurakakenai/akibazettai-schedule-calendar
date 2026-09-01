@@ -329,10 +329,22 @@ for (const name of tendencyNames) {
 // --- サイト未掲載のメンバー ---------------------------------------------
 const unlisted = insights.unlistedMaids ?? {};
 const knownStatuses = new Set(["本人確認済み", "公式サイト", "卒業済み"]);
+const memberStatuses = new Set(["active", "graduated"]);
+
+assert.match(
+  insights.shiftDataFrom,
+  /^\d{4}-\d{2}-\d{2}$/,
+  "shiftDataFrom is required so the UI can say how far back firstSeen can reach"
+);
+
 for (const [name, info] of Object.entries(unlisted)) {
   assert.ok(
     !schedule.roster.includes(name),
     `unlistedMaids must not repeat a rostered maid: ${name}`
+  );
+  assert.ok(
+    memberStatuses.has(info.status),
+    `unlistedMaids.${name}.status must be "active" or "graduated", got ${info.status}`
   );
   assert.ok(
     Number.isInteger(info.recentShifts) && info.recentShifts > 0,
@@ -346,11 +358,21 @@ for (const [name, info] of Object.entries(unlisted)) {
     info.recentShifts31 <= info.recentShifts,
     `unlistedMaids.${name}.recentShifts31 must not exceed recentShifts`
   );
-  assert.equal(
-    typeof info.promoted,
-    "boolean",
-    `unlistedMaids.${name}.promoted must be a boolean`
+  for (const flag of ["promoted", "likelyNew", "hasPublicAccount"]) {
+    assert.equal(
+      typeof info[flag],
+      "boolean",
+      `unlistedMaids.${name}.${flag} must be a boolean`
+    );
+  }
+  assert.ok(
+    Array.isArray(info.otherAccounts),
+    `unlistedMaids.${name}.otherAccounts must be an array`
   );
+  for (const account of info.otherAccounts) {
+    assert.equal(typeof account, "string", `unlistedMaids.${name}.otherAccounts must hold strings`);
+  }
+
   assertStoreRates(info.pickRate, `unlistedMaids.${name}.pickRate`);
   assertDistribution(info.share, `unlistedMaids.${name}.share`, storeIds);
   assert.ok(storeIds.has(info.home), `unlistedMaids.${name}.home must be a known store id`);
@@ -368,23 +390,56 @@ for (const [name, info] of Object.entries(unlisted)) {
     );
   } else {
     assert.equal(info.xStatus, null, `unlistedMaids.${name}.xStatus must be null without an account`);
+    assert.equal(
+      info.hasPublicAccount,
+      false,
+      `unlistedMaids.${name} cannot have a public account without a handle`
+    );
   }
 
-  // promoted はリンクを出す条件そのものなので、アカウントと直近実績の裏づけを必須にする。
+  for (const key of ["firstSeen", "streakStart"]) {
+    assert.match(
+      info[key],
+      /^\d{4}-\d{2}-\d{2}$/,
+      `unlistedMaids.${name}.${key} must be a date`
+    );
+    assert.ok(
+      info[key] >= insights.shiftDataFrom,
+      `unlistedMaids.${name}.${key} cannot predate shiftDataFrom`
+    );
+  }
+  assert.ok(
+    Number.isInteger(info.daysSinceLast) && info.daysSinceLast >= 0,
+    `unlistedMaids.${name}.daysSinceLast must be a non-negative integer`
+  );
+
+  // promoted と likelyNew はリンクや「新人かも」の表示条件そのものなので、裏づけを必須にする。
   if (info.promoted) {
-    assert.ok(info.x, `unlistedMaids.${name} is promoted but has no X account`);
+    assert.ok(info.hasPublicAccount && info.x, `unlistedMaids.${name} is promoted without an account`);
+    assert.equal(info.status, "active", `unlistedMaids.${name} is promoted but not active`);
     assert.ok(
       info.recentShifts31 > 0,
       `unlistedMaids.${name} is promoted but has no shift in the last month`
     );
   }
+  if (info.likelyNew) {
+    assert.ok(info.promoted, `unlistedMaids.${name} is likelyNew without being promoted`);
+    assert.equal(
+      info.otherAccounts.length,
+      0,
+      `unlistedMaids.${name} has an older account, so it must not be called new`
+    );
+  }
 }
 
-const promotedCount = Object.values(unlisted).filter((info) => info.promoted).length;
+const activeCount = Object.values(unlisted).filter((info) => info.status === "active").length;
+const linkableCount = Object.values(unlisted).filter(
+  (info) => info.status === "active" && info.hasPublicAccount && info.x
+).length;
 
 console.log(
   `Store insights valid: ${insights.stores.length} stores, ` +
     `${actualEntries.length} recorded dates through ${Object.keys(insights.actual).sort().at(-1)}, ` +
     `${withTendency}/${tendencyNames.length} rostered maids with a store tendency, ` +
-    `${Object.keys(unlisted).length} unlisted members (${promotedCount} linkable).`
+    `${activeCount}/${Object.keys(unlisted).length} unlisted members still active (${linkableCount} linkable).`
 );

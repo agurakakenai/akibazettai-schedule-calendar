@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-02 01:20",
+  "generatedAt": "2026-09-02 01:23",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-08-30"
@@ -10,6 +10,7 @@ window.STORE_INSIGHTS = {
     "to": "2026-08-30",
     "days": 361
   },
+  "shiftDataFrom": "2025-07-26",
   "stores": [
     {
       "id": "s1",
@@ -4445,8 +4446,17 @@ window.STORE_INSIGHTS = {
       ],
       "x": "nyana_zettai",
       "xStatus": "本人確認済み",
+      "xCreated": 2026,
+      "xNote": null,
       "recentShifts31": 14,
-      "promoted": true
+      "streakStart": "2026-05-14",
+      "daysSinceLast": 5,
+      "graduatedAt": null,
+      "hasPublicAccount": true,
+      "otherAccounts": [],
+      "status": "active",
+      "promoted": true,
+      "likelyNew": true
     },
     "ぴあの": {
       "recentShifts": 30,
@@ -4470,10 +4480,21 @@ window.STORE_INSIGHTS = {
         "s1",
         "s4"
       ],
-      "x": "piano_zettai",
+      "x": "piano1_zettai",
       "xStatus": "本人確認済み",
+      "xCreated": 2026,
+      "xNote": null,
       "recentShifts31": 11,
-      "promoted": true
+      "streakStart": "2026-06-14",
+      "daysSinceLast": 0,
+      "graduatedAt": null,
+      "hasPublicAccount": true,
+      "otherAccounts": [
+        "piano_zettai(2017)"
+      ],
+      "status": "active",
+      "promoted": true,
+      "likelyNew": false
     },
     "ゆめ": {
       "recentShifts": 29,
@@ -4499,8 +4520,17 @@ window.STORE_INSIGHTS = {
       ],
       "x": "yume1_zettai",
       "xStatus": "本人確認済み",
+      "xCreated": 2026,
+      "xNote": null,
       "recentShifts31": 8,
-      "promoted": true
+      "streakStart": "2026-04-18",
+      "daysSinceLast": 0,
+      "graduatedAt": null,
+      "hasPublicAccount": true,
+      "otherAccounts": [],
+      "status": "active",
+      "promoted": true,
+      "likelyNew": true
     },
     "もち": {
       "recentShifts": 22,
@@ -4526,35 +4556,19 @@ window.STORE_INSIGHTS = {
       ],
       "x": "mochi1_zettai",
       "xStatus": "本人確認済み",
+      "xCreated": 2026,
+      "xNote": null,
       "recentShifts31": 7,
-      "promoted": true
-    },
-    "いろは": {
-      "recentShifts": 14,
-      "workShifts": 48,
-      "firstSeen": "2026-01-09",
-      "lastSeen": "2026-08-15",
-      "pickRate": {
-        "s1": 0.5,
-        "s2": 0.684,
-        "s3": 0.538,
-        "s4": 0.286
-      },
-      "share": {
-        "s1": 0.537,
-        "s2": 0.209,
-        "s3": 0.159,
-        "s4": 0.095
-      },
-      "home": "s2",
-      "likely": [
-        "s1",
-        "s2"
+      "streakStart": "2026-06-11",
+      "daysSinceLast": 3,
+      "graduatedAt": null,
+      "hasPublicAccount": true,
+      "otherAccounts": [
+        "mochi2_zettai(2022)"
       ],
-      "x": "iroha_zettai",
-      "xStatus": "本人確認済み",
-      "recentShifts31": 4,
-      "promoted": true
+      "status": "active",
+      "promoted": true,
+      "likelyNew": false
     },
     "のあ": {
       "recentShifts": 14,
@@ -4580,8 +4594,17 @@ window.STORE_INSIGHTS = {
       ],
       "x": "noa_zettai",
       "xStatus": "本人確認済み",
+      "xCreated": 2021,
+      "xNote": null,
       "recentShifts31": 10,
-      "promoted": true
+      "streakStart": "2026-07-17",
+      "daysSinceLast": 1,
+      "graduatedAt": null,
+      "hasPublicAccount": true,
+      "otherAccounts": [],
+      "status": "active",
+      "promoted": true,
+      "likelyNew": false
     },
     "わたげ": {
       "recentShifts": 22,
@@ -4607,8 +4630,17 @@ window.STORE_INSIGHTS = {
       ],
       "x": null,
       "xStatus": null,
+      "xCreated": null,
+      "xNote": null,
       "recentShifts31": 11,
-      "promoted": false
+      "streakStart": "2026-06-25",
+      "daysSinceLast": 0,
+      "graduatedAt": null,
+      "hasPublicAccount": false,
+      "otherAccounts": [],
+      "status": "active",
+      "promoted": false,
+      "likelyNew": false
     },
     "ろぜった": {
       "recentShifts": 19,
@@ -4634,8 +4666,17 @@ window.STORE_INSIGHTS = {
       ],
       "x": null,
       "xStatus": null,
+      "xCreated": null,
+      "xNote": null,
       "recentShifts31": 11,
-      "promoted": false
+      "streakStart": "2026-07-17",
+      "daysSinceLast": 4,
+      "graduatedAt": null,
+      "hasPublicAccount": false,
+      "otherAccounts": [],
+      "status": "active",
+      "promoted": false,
+      "likelyNew": false
     },
     "みらい": {
       "recentShifts": 18,
@@ -4661,35 +4702,17 @@ window.STORE_INSIGHTS = {
       ],
       "x": null,
       "xStatus": null,
+      "xCreated": null,
+      "xNote": null,
       "recentShifts31": 10,
-      "promoted": false
-    },
-    "ときり": {
-      "recentShifts": 16,
-      "workShifts": 14,
-      "firstSeen": "2026-05-23",
-      "lastSeen": "2026-07-26",
-      "pickRate": {
-        "s1": 0.5,
-        "s2": 0.6,
-        "s3": 0.333,
-        "s4": 0.5
-      },
-      "share": {
-        "s1": 0.546,
-        "s2": 0.186,
-        "s3": 0.1,
-        "s4": 0.168
-      },
-      "home": "s2",
-      "likely": [
-        "s1",
-        "s2"
-      ],
-      "x": null,
-      "xStatus": null,
-      "recentShifts31": 0,
-      "promoted": false
+      "streakStart": "2026-07-14",
+      "daysSinceLast": 0,
+      "graduatedAt": null,
+      "hasPublicAccount": false,
+      "otherAccounts": [],
+      "status": "active",
+      "promoted": false,
+      "likelyNew": false
     },
     "まひろ": {
       "recentShifts": 16,
@@ -4715,89 +4738,17 @@ window.STORE_INSIGHTS = {
       ],
       "x": "mahiro1_zettai",
       "xStatus": "公式サイト",
+      "xCreated": 2025,
+      "xNote": null,
       "recentShifts31": 5,
-      "promoted": false
-    },
-    "つくし": {
-      "recentShifts": 11,
-      "workShifts": 82,
-      "firstSeen": "2025-07-30",
-      "lastSeen": "2026-07-03",
-      "pickRate": {
-        "s1": 0.4,
-        "s2": 1.0,
-        "s3": 0.538,
-        "s4": 0.182
-      },
-      "share": {
-        "s1": 0.45,
-        "s2": 0.32,
-        "s3": 0.167,
-        "s4": 0.063
-      },
-      "home": "s2",
-      "likely": [
-        "s1",
-        "s2"
-      ],
-      "x": null,
-      "xStatus": null,
-      "recentShifts31": 0,
-      "promoted": false
-    },
-    "みぞれ": {
-      "recentShifts": 9,
-      "workShifts": 96,
-      "firstSeen": "2025-08-06",
-      "lastSeen": "2026-06-26",
-      "pickRate": {
-        "s1": 0.441,
-        "s2": 0.541,
-        "s3": 0.886,
-        "s4": 0.182
-      },
-      "share": {
-        "s1": 0.493,
-        "s2": 0.172,
-        "s3": 0.273,
-        "s4": 0.063
-      },
-      "home": "s3",
-      "likely": [
-        "s1",
-        "s3"
-      ],
-      "x": null,
-      "xStatus": null,
-      "recentShifts31": 0,
-      "promoted": false
-    },
-    "ひじり": {
-      "recentShifts": 8,
-      "workShifts": 7,
-      "firstSeen": "2026-08-07",
-      "lastSeen": "2026-08-27",
-      "pickRate": {
-        "s1": 0.714,
-        "s2": 0.0,
-        "s3": 0.5,
-        "s4": 0.333
-      },
-      "share": {
-        "s1": 0.748,
-        "s2": 0.0,
-        "s3": 0.144,
-        "s4": 0.108
-      },
-      "home": "s1",
-      "likely": [
-        "s1",
-        "s3"
-      ],
-      "x": "hijiri_zettai",
-      "xStatus": "卒業済み",
-      "recentShifts31": 8,
-      "promoted": false
+      "streakStart": "2025-08-03",
+      "daysSinceLast": 0,
+      "graduatedAt": null,
+      "hasPublicAccount": false,
+      "otherAccounts": [],
+      "status": "active",
+      "promoted": false,
+      "likelyNew": false
     },
     "ねるる": {
       "recentShifts": 6,
@@ -4823,8 +4774,17 @@ window.STORE_INSIGHTS = {
       ],
       "x": null,
       "xStatus": null,
+      "xCreated": null,
+      "xNote": null,
       "recentShifts31": 6,
-      "promoted": false
+      "streakStart": "2026-08-04",
+      "daysSinceLast": 10,
+      "graduatedAt": null,
+      "hasPublicAccount": false,
+      "otherAccounts": [],
+      "status": "active",
+      "promoted": false,
+      "likelyNew": false
     },
     "らん": {
       "recentShifts": 4,
@@ -4850,8 +4810,197 @@ window.STORE_INSIGHTS = {
       ],
       "x": null,
       "xStatus": null,
+      "xCreated": null,
+      "xNote": null,
       "recentShifts31": 4,
-      "promoted": false
+      "streakStart": "2026-08-24",
+      "daysSinceLast": 1,
+      "graduatedAt": null,
+      "hasPublicAccount": false,
+      "otherAccounts": [],
+      "status": "active",
+      "promoted": false,
+      "likelyNew": false
+    },
+    "ときり": {
+      "recentShifts": 16,
+      "workShifts": 14,
+      "firstSeen": "2026-05-23",
+      "lastSeen": "2026-07-26",
+      "pickRate": {
+        "s1": 0.5,
+        "s2": 0.6,
+        "s3": 0.333,
+        "s4": 0.5
+      },
+      "share": {
+        "s1": 0.546,
+        "s2": 0.186,
+        "s3": 0.1,
+        "s4": 0.168
+      },
+      "home": "s2",
+      "likely": [
+        "s1",
+        "s2"
+      ],
+      "x": null,
+      "xStatus": null,
+      "xCreated": null,
+      "xNote": null,
+      "recentShifts31": 0,
+      "streakStart": "2026-05-23",
+      "daysSinceLast": 35,
+      "graduatedAt": null,
+      "hasPublicAccount": false,
+      "otherAccounts": [],
+      "status": "graduated",
+      "promoted": false,
+      "likelyNew": false
+    },
+    "いろは": {
+      "recentShifts": 14,
+      "workShifts": 48,
+      "firstSeen": "2026-01-09",
+      "lastSeen": "2026-08-15",
+      "pickRate": {
+        "s1": 0.5,
+        "s2": 0.684,
+        "s3": 0.538,
+        "s4": 0.286
+      },
+      "share": {
+        "s1": 0.537,
+        "s2": 0.209,
+        "s3": 0.159,
+        "s4": 0.095
+      },
+      "home": "s2",
+      "likely": [
+        "s1",
+        "s2"
+      ],
+      "x": "iroha_zettai",
+      "xStatus": "本人確認済み",
+      "xCreated": 2026,
+      "xNote": null,
+      "recentShifts31": 4,
+      "streakStart": "2026-01-09",
+      "daysSinceLast": 15,
+      "graduatedAt": null,
+      "hasPublicAccount": true,
+      "otherAccounts": [],
+      "status": "graduated",
+      "promoted": false,
+      "likelyNew": false
+    },
+    "つくし": {
+      "recentShifts": 11,
+      "workShifts": 82,
+      "firstSeen": "2025-07-30",
+      "lastSeen": "2026-07-03",
+      "pickRate": {
+        "s1": 0.4,
+        "s2": 1.0,
+        "s3": 0.538,
+        "s4": 0.182
+      },
+      "share": {
+        "s1": 0.45,
+        "s2": 0.32,
+        "s3": 0.167,
+        "s4": 0.063
+      },
+      "home": "s2",
+      "likely": [
+        "s1",
+        "s2"
+      ],
+      "x": null,
+      "xStatus": null,
+      "xCreated": null,
+      "xNote": null,
+      "recentShifts31": 0,
+      "streakStart": "2025-07-30",
+      "daysSinceLast": 58,
+      "graduatedAt": "2026-07-03",
+      "hasPublicAccount": false,
+      "otherAccounts": [],
+      "status": "graduated",
+      "promoted": false,
+      "likelyNew": false
+    },
+    "みぞれ": {
+      "recentShifts": 9,
+      "workShifts": 96,
+      "firstSeen": "2025-08-06",
+      "lastSeen": "2026-06-26",
+      "pickRate": {
+        "s1": 0.441,
+        "s2": 0.541,
+        "s3": 0.886,
+        "s4": 0.182
+      },
+      "share": {
+        "s1": 0.493,
+        "s2": 0.172,
+        "s3": 0.273,
+        "s4": 0.063
+      },
+      "home": "s3",
+      "likely": [
+        "s1",
+        "s3"
+      ],
+      "x": null,
+      "xStatus": null,
+      "xCreated": null,
+      "xNote": null,
+      "recentShifts31": 0,
+      "streakStart": "2025-08-06",
+      "daysSinceLast": 65,
+      "graduatedAt": "2026-06-26",
+      "hasPublicAccount": false,
+      "otherAccounts": [],
+      "status": "graduated",
+      "promoted": false,
+      "likelyNew": false
+    },
+    "ひじり": {
+      "recentShifts": 8,
+      "workShifts": 7,
+      "firstSeen": "2026-08-07",
+      "lastSeen": "2026-08-27",
+      "pickRate": {
+        "s1": 0.714,
+        "s2": 0.0,
+        "s3": 0.5,
+        "s4": 0.333
+      },
+      "share": {
+        "s1": 0.748,
+        "s2": 0.0,
+        "s3": 0.144,
+        "s4": 0.108
+      },
+      "home": "s1",
+      "likely": [
+        "s1",
+        "s3"
+      ],
+      "x": "hijiri_zettai",
+      "xStatus": "卒業済み",
+      "xCreated": 2019,
+      "xNote": "プロフィールに卒業表記",
+      "recentShifts31": 8,
+      "streakStart": "2026-08-07",
+      "daysSinceLast": 3,
+      "graduatedAt": null,
+      "hasPublicAccount": false,
+      "otherAccounts": [],
+      "status": "graduated",
+      "promoted": false,
+      "likelyNew": false
     }
   }
 };
