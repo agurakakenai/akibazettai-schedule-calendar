@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-02 02:55",
+  "generatedAt": "2026-09-02 02:58",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-08-30"
@@ -15,6 +15,7 @@ window.STORE_INSIGHTS = {
     "to": "2026-08-30",
     "days": 120
   },
+  "scheduleSystemChangedAt": "2026-09-01",
   "shiftDataFrom": "2025-07-26",
   "stores": [
     {

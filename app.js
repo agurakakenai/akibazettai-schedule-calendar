@@ -77,6 +77,26 @@
     return keys.length > 0 ? keys.sort().at(-1) : null;
   }
 
+  // 2026-09-01 の制度変更（上旬・下旬をまとめて事前公開）直後は、まだ提出していない
+  // メイドさんがいて予定表が薄い。移行が落ち着けば不要になる注意書きなので、
+  // 変更日から一定期間だけ出して自動で消えるようにする。
+  const SCHEDULE_NOTE_DAYS = 60;
+
+  function scheduleSystemNote(insights, todayKey, windowDays = SCHEDULE_NOTE_DAYS) {
+    const changedAt = insights?.scheduleSystemChangedAt;
+    if (!changedAt || !todayKey || todayKey < changedAt) {
+      return null;
+    }
+    if (todayKey > addDays(changedAt, windowDays)) {
+      return null;
+    }
+    const [year, month] = changedAt.split("-");
+    return (
+      `お給仕予定は${year}年${Number(month)}月から、上旬・下旬をまとめて公開する方式になりました。` +
+      "まだ提出していないメイドさんは、この表に出ていないことがあります。"
+    );
+  }
+
   // 記録が無いシフトは「休み」ではなく「情報なし」なので null を返す。
   function openStoresOn(insights, key, shift) {
     const ids = insights?.actual?.[key]?.[shift];
@@ -744,6 +764,7 @@
       lastActualDateOf,
       openStoresOn,
       openStoresOnDay,
+      scheduleSystemNote,
       sortByAssignedStore,
       storeCapacities,
       storeProbabilities,

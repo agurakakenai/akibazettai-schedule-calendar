@@ -49,11 +49,17 @@ GRADUATED_GAP_DAYS = 14  # これ以上お給仕が空いたら卒業とみな�
 MIN_ACCOUNT_TWEETS = 20  # これ未満のアカウントは休眠（同名の別人）とみなしてリンクしない
 COVERAGE_DAYS = 90       # 公開スケジュールとの人数差を測る期間
 STREAK_GAP_DAYS = 60     # これ以上空いたら「今の在籍」は別期間とみなす
+SCHEDULE_SYSTEM_CHANGED = '2026-09-01'
+# この日から、お給仕予定は上旬・下旬をまとめて事前公開する方式になった。
+# それ以前は当日発表だったため、tools/data/shifts.csv（＝公式Xの当日投稿から
+# 復元した実績）は「事前に分かる情報」ではない。予測の学習には使えるが、
+# 「予定表に何人載るか」の基準としてはそのまま使えない点に注意。
 
 
 def load_csv(name):
     with open(os.path.join(DATA, name), encoding='utf-8-sig', newline='') as f:
         return list(csv.DictReader(f))
+
 
 
 def read_roster():
@@ -224,6 +230,10 @@ def build():
 
     # 開いた店舗数ごとの「カレンダーに出る人数」（roster のみ、見習いを除く）。
     # 前日からのローテーションでは3店舗の日を当てられないので、UI はこの人数で店舗数を決める。
+    # 2026-09-01 から、お給仕予定は上旬・下旬をまとめて事前公開する方式になった
+    # （それ以前は当日発表）。ノーマル以上は全員が提出するので、揃えば roster 全員が
+    # カレンダーに並ぶ。移行直後は未提出の人がいて予定表が薄くなるが、それは一時的な
+    # 状態なので補正しない。roster を母数にしておけば、提出が揃ったあとも破綻しない。
     roster_names = {ALIAS.get(n, n) for n in roster}
     headcount_by_open = {}
     open_by_headcount = {}
@@ -547,6 +557,7 @@ def build():
         'historyRange': {'from': all_dates[0], 'to': last},
         'sampleWindow': {'from': cut, 'to': last, 'days': nd},
         'tendencyWindow': {'from': tendency_cut, 'to': last, 'days': TENDENCY_DAYS},
+        'scheduleSystemChangedAt': SCHEDULE_SYSTEM_CHANGED,
         'shiftDataFrom': all_dates[0],
         'stores': [{'id': i, 'short': s, 'name': n} for i, _, s, n in STORES],
         'shifts': SHIFTS,
