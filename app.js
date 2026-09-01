@@ -278,83 +278,319 @@
     };
   }
 
-  // その日そのシフトで、そのメイドさんがいそうな店舗を1つ返す。
-  function getMaidStoreOutlook({ insights, name, shift, outlook }) {
-    const tendency = insights?.maidTendency?.[name];
+  // 生誕祭・周年・卒業の主役は、その日かならず自分の所属店に立つ。
+  // 所属店は公式の配属ではなく「その店が開いている日にいちばん入っている店」からの推定。
+  function eventStorePins({ insights, entries }) {
+    const pins = new Map();
+    for (const entry of entries ?? []) {
+      if (!entry?.featured) {
+        continue;
+      }
+      const tendency = insights?.maidTendency?.[entry.name];
+      const home = tendency?.home;
+      if (!home) {
+        continue;
+      }
+      pins.set(entry.name, {
+        storeId: home,
+        label: entry.eventLabel ?? "記念日",
+        pickRate: tendency.pickRate?.[home] ?? null
+      });
+    }
+    return pins;
+  }
+
+  // 主役がいる店は開いていることが確定するので、見込みを実績側に寄せる。
+  function applyEventCertainty(insights, outlook, pins) {
+    if (!outlook || !pins || pins.size === 0 || outlook.basis === "actual") {
+      return outlook;
+    }
+    const hosts = new Map();
+    for (const [name, pin] of pins) {
+      if (!hosts.has(pin.storeId)) {
+        hosts.set(pin.storeId, []);
+      }
+      hosts.get(pin.storeId).push({ name, label: pin.label });
+    }
+
+    const reason = [...hosts.entries()]
+      .map(([storeId, people]) =>
+        `${storeShort(insights, storeId)}は${people.map((p) => `${p.name}さんの${p.label}`).join("・")}` +
+        "があるため営業します"
+      )
+      .join("。");
+
+    return {
+      ...outlook,
+      certainStores: [...hosts.keys()],
+      summary: `${reason}。${outlook.summary}`,
+      entries: outlook.entries.map((entry) =>
+        hosts.has(entry.store.id)
+          ? {
+            ...entry,
+            state: "open",
+            rate: 1,
+            text: "営業",
+            srText: `${entry.store.short}は営業（記念日の主役がいるため確定）`
+          }
+          : entry
+      )
+    };
+  }
+  // その日そのシフトに出る顔ぶれを、開いていそうな店舗へ振り分ける。
+  // 1人ずつ独立に「いそうな店」を出すと、営業率の高い1号店に全員が寄ってしまうため、
+  // 店ごとの標準人数を定員として奪い合わせる。
+  function storeCapacities(insights, shift, storeIds, poolSize) {
+    const headcount = insights.typicalHeadcount?.[shift] ?? {};
+    const weights = storeIds.map((id) => Math.max(headcount[id] ?? 1, 0.1));
+    const total = weights.reduce((sum, value) => sum + value, 0);
+    const exact = weights.map((weight) => (weight / total) * poolSize);
+    const capacity = exact.map((value) => Math.floor(value));
+    let remaining = poolSize - capacity.reduce((sum, value) => sum + value, 0);
+
+    // 端数は取りこぼしの大きい店から配る。同点は店舗の並び順で決める。
+    const order = exact
+      .map((value, index) => [index, value - Math.floor(value)])
+      .sort((a, b) => b[1] - a[1] || a[0] - b[0]);
+    for (let step = 0; remaining > 0; step += 1, remaining -= 1) {
+      capacity[order[step % order.length][0]] += 1;
+    }
+    return Object.fromEntries(storeIds.map((id, index) => [id, capacity[index]]));
+  }
+
+  function affinityFor(insights, name, shift, storeIds) {
+    const tendency = insights.maidTendency?.[name];
+    const uniform = 1 / storeIds.length;
     if (!tendency) {
+      return { scores: Object.fromEntries(storeIds.map((id) => [id, uniform])), known: false };
+    }
+    const { pickRate } = tendencyTables(tendency, shift);
+    const raw = storeIds.map((id) => Math.max(pickRate[id] ?? 0, 0));
+    const total = raw.reduce((sum, value) => sum + value, 0);
+    if (total <= 0) {
+      return { scores: Object.fromEntries(storeIds.map((id) => [id, uniform])), known: false };
+    }
+    return {
+      scores: Object.fromEntries(storeIds.map((id, index) => [id, raw[index] / total])),
+      known: true
+    };
+  }
+
+  function assignShiftStores({ insights, members, shift, storeIds, pins }) {
+    if (!insights || !Array.isArray(members) || members.length === 0 || storeIds.length === 0) {
       return null;
     }
-    const stores = storesOf(insights);
-    const { pickRate, share, scope } = tendencyTables(tendency, shift);
-    const scopeNote = scope === shift
-      ? `${shift}の実績`
-      : "昼夜あわせた実績（このシフトは件数が少ないため）";
-    const openIds = outlook?.basis === "actual" ? outlook.openStores ?? [] : [];
+    const pinned = new Map(
+      [...(pins ?? new Map())].filter(
+        ([name, pin]) => members.includes(name) && storeIds.includes(pin.storeId)
+      )
+    );
 
-    if (openIds.length > 0) {
-      const best = openIds.reduce(
-        (top, id) => ((pickRate[id] ?? 0) > (pickRate[top] ?? 0) ? id : top),
-        openIds[0]
-      );
-      const store = stores.find((candidate) => candidate.id === best);
-      if (!store || !(pickRate[best] > 0)) {
-        return null;
-      }
-      const percent = toPercent(pickRate[best]);
+    if (storeIds.length === 1) {
+      const only = storeIds[0];
       return {
-        basis: "pickRate",
-        storeId: store.id,
-        rate: pickRate[best],
-        label: compactStoreLabel(store),
-        percent,
-        title: `${store.short}が開いている${shift}は${percent}の割合でこの店に入っています（${scopeNote}）`,
-        srText: `この${shift}に開いていた店舗のうち、よく入るのは${store.short}、${percent}`
+        storeIds,
+        capacity: { [only]: members.length },
+        byMaid: new Map(
+          members.map((name) => [
+            name,
+            {
+              storeId: only,
+              score: 1,
+              runnerUpId: null,
+              runnerUpScore: 0,
+              known: false,
+              full: false,
+              pin: pinned.get(name) ?? null
+            }
+          ])
+        )
       };
     }
 
-    const ranking = stores
-      .map((store) => [store.id, share[store.id] ?? 0])
-      .filter(([, value]) => value > 0)
-      .sort((a, b) => b[1] - a[1]);
-    const ranked = ranking.length > 0
-      ? ranking.map(([id]) => id)
-      : (Array.isArray(tendency.likely) ? tendency.likely : []);
-    const topId = ranked[0];
-    const store = stores.find((candidate) => candidate.id === topId);
-    if (!store || !(share[topId] > 0)) {
+    const capacity = storeCapacities(insights, shift, storeIds, members.length);
+    const remaining = { ...capacity };
+    const byMaid = new Map();
+
+    // 主役は動かせないので先に席を取る。定員を超えるなら定員のほうを広げる。
+    for (const [name, pin] of pinned) {
+      remaining[pin.storeId] = (remaining[pin.storeId] ?? 0) - 1;
+      capacity[pin.storeId] = Math.max(capacity[pin.storeId] ?? 0, 1);
+      byMaid.set(name, {
+        storeId: pin.storeId,
+        score: 1,
+        runnerUpId: null,
+        runnerUpScore: 0,
+        known: true,
+        full: false,
+        pin
+      });
+    }
+
+    const ranked = members
+      .map((name, index) => ({ name, index }))
+      .filter(({ name }) => !pinned.has(name))
+      .map(({ name, index }) => {
+        const { scores, known } = affinityFor(insights, name, shift, storeIds);
+        const order = [...storeIds].sort(
+          (a, b) => scores[b] - scores[a] || storeIds.indexOf(a) - storeIds.indexOf(b)
+        );
+        return {
+          name,
+          index,
+          scores,
+          order,
+          known,
+          // 迷いの少ない人から先に決める。後回しにすると定員が埋まって押し出される。
+          regret: scores[order[0]] - scores[order[1]]
+        };
+      });
+
+    ranked.sort((a, b) => b.regret - a.regret || a.index - b.index);
+
+    for (const member of ranked) {
+      const target = member.order.find((id) => remaining[id] > 0) ?? member.order[0];
+      remaining[target] = Math.max((remaining[target] ?? 0) - 1, 0);
+      const runnerUp = member.order.find((id) => id !== target) ?? null;
+      byMaid.set(member.name, {
+        storeId: target,
+        score: member.scores[target],
+        runnerUpId: runnerUp,
+        runnerUpScore: runnerUp ? member.scores[runnerUp] : 0,
+        known: member.known,
+        // 本人の一番人気ではなく、定員の都合で押し出された場合。
+        full: target !== member.order[0],
+        pin: null
+      });
+    }
+
+    // 実際に配った人数を定員として持ち直す（主役ぶんで増えていることがある）。
+    const placed = Object.fromEntries(storeIds.map((id) => [id, 0]));
+    for (const entry of byMaid.values()) {
+      placed[entry.storeId] += 1;
+    }
+    return { storeIds, capacity: placed, byMaid };
+  }
+
+  // 開いている店が分からない日は、そのシフトでいちばん多い開店店舗数ぶんだけ上位を採る。
+  function expectedOpenStores(insights, shift, outlook) {
+    if (!outlook) {
+      return [];
+    }
+    if (outlook.basis === "actual") {
+      return outlook.openStores ?? [];
+    }
+    const counts = insights.openCountPerShift?.[shift] ?? {};
+    const modal = Object.entries(counts)
+      .filter(([count]) => Number(count) > 0)
+      .sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]))[0];
+    const target = Math.max(1, modal ? Number(modal[0]) : 2);
+    const certain = outlook.certainStores ?? [];
+    const rest = [...outlook.entries]
+      .sort((a, b) => b.rate - a.rate)
+      .map((entry) => entry.store.id)
+      .filter((id) => !certain.includes(id));
+    const chosen = [...certain, ...rest].slice(0, Math.max(target, certain.length));
+    // 店舗の並び順に戻して、割り振り結果が安定するようにする。
+    return storesOf(insights)
+      .map((store) => store.id)
+      .filter((id) => chosen.includes(id));
+  }
+
+  function getShiftAssignment({ insights, members, shift, outlook, pins }) {
+    const storeIds = expectedOpenStores(insights, shift, outlook);
+    if (storeIds.length === 0) {
       return null;
     }
-    const percent = toPercent(share[topId]);
-    const pair = ranked
-      .slice(0, 2)
-      .map((id) => `${storeShort(insights, id)} ${toPercent(share[id] ?? 0)}`)
+    const assignment = assignShiftStores({ insights, members, shift, storeIds, pins });
+    return assignment ? { ...assignment, basis: outlook.basis } : null;
+  }
+
+  // 割り振り結果を、そのメイドさんの行に出すチップに変換する。
+  function getMaidStoreOutlook({ insights, name, shift, outlook, assignment }) {
+    const tendency = insights?.maidTendency?.[name];
+    if (!tendency || !assignment) {
+      return null;
+    }
+    const placed = assignment.byMaid.get(name);
+    if (!placed) {
+      return null;
+    }
+    const stores = storesOf(insights);
+    const store = stores.find((candidate) => candidate.id === placed.storeId);
+    if (!store) {
+      return null;
+    }
+
+    const { scope } = tendencyTables(tendency, shift);
+    const scopeNote = scope === shift
+      ? `${shift}の実績`
+      : "昼夜あわせた実績（このシフトは件数が少ないため）";
+
+    if (placed.pin) {
+      const strength = typeof placed.pin.pickRate === "number"
+        ? `${store.short}が開いた${shift}の${toPercent(placed.pin.pickRate)}をこの店で過ごしています`
+        : null;
+      return {
+        basis: "event",
+        storeId: store.id,
+        rate: 1,
+        label: compactStoreLabel(store),
+        percent: "確定",
+        title: [
+          `${placed.pin.label}の主役なので、所属店の${store.short}にいます`,
+          `所属店は公式の配属ではなく、出勤実績から推定したものです${strength ? `（${strength}）` : ""}`
+        ].join("。"),
+        srText: `${placed.pin.label}の主役なので所属店の${store.short}にいます`
+      };
+    }
+
+    const roomFor = assignment.storeIds
+      .map((id) => `${storeShort(insights, id)}${assignment.capacity[id]}人`)
       .join(" / ");
-    const coverage = insights.accuracy?.maidStoreTop2;
+    const known = outlook?.basis === "actual"
+      ? `この${shift}に開いていた${assignment.storeIds.length}店`
+      : `この${shift}に開きそうな${assignment.storeIds.length}店`;
+    const percent = toPercent(placed.score);
+    const detail = [
+      `${known}へ、この${shift}に出る${assignment.byMaid.size}名を店ごとの標準人数（${roomFor}）で割り振った結果です`,
+      `${name}さんは${store.short}が${percent}（${scopeNote}）`,
+      placed.runnerUpId
+        ? `次点は${storeShort(insights, placed.runnerUpId)}が${toPercent(placed.runnerUpScore)}`
+        : null,
+      placed.full ? "本人の傾向では別の店が上でしたが、そちらの定員が先に埋まりました" : null,
+      outlook?.basis === "actual" ? null : "開いている店舗自体が見込みなので、外れることがあります"
+    ];
+
     return {
-      basis: "share",
+      basis: "assignment",
       storeId: store.id,
-      rate: share[topId],
+      rate: placed.score,
       label: compactStoreLabel(store),
       percent,
-      title:
-        `${shift}に出勤するときにいそうな店舗：${pair}（${scopeNote}）` +
-        (typeof coverage === "number" ? `。この2店舗で実測${toPercent(coverage)}をカバーします` : ""),
-      srText: `${shift}にいそうな店舗は${store.short}、${percent}`
+      title: detail.filter(Boolean).join("。"),
+      srText: `${shift}の割り振りでは${store.short}、${percent}`
     };
   }
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = {
       addDays,
+      applyEventCertainty,
+      assignShiftStores,
       dateKey,
+      eventStorePins,
+      expectedOpenStores,
       getDateGridColumn,
       getMaidStoreOutlook,
+      getShiftAssignment,
       getStoreOutlook,
       getTokyoDateDefaults,
       getVisibleMonthDates,
       isDateKeyInRange,
       lastActualDateOf,
       openStoresOn,
+      storeCapacities,
       weekdayBucket,
       weekdayIndex
     };
@@ -379,12 +615,15 @@
   const hasInsights = Boolean(insights) && storeList.length > 0;
 
   function getShiftOutlook(key, shift) {
-    return getStoreOutlook({
+    const entries = data.schedule[key]?.[shift] ?? [];
+    const pins = eventStorePins({ insights, entries });
+    const outlook = getStoreOutlook({
       insights,
       dateKey: key,
       shift,
       lastActualDate: lastActualKey
     });
+    return { outlook: applyEventCertainty(insights, outlook, pins), pins };
   }
 
   function createStoreOutlook(outlook, shift) {
@@ -486,9 +725,8 @@
     section.className = `shift-section ${shiftDetails[shift].className}`;
     section.setAttribute("aria-label", `${shift}のお給仕`);
 
-    const outlook = getShiftOutlook(key, shift);
-    const title = document.createElement("h4");
-    title.className = "shift-title";
+    const { outlook, pins } = getShiftOutlook(key, shift);
+    const title = document.createElement("h4");    title.className = "shift-title";
     const icon = document.createElement("span");
     icon.className = "shift-icon";
     icon.setAttribute("aria-hidden", "true");
@@ -507,6 +745,16 @@
 
     const allEntries = data.schedule[key]?.[shift] ?? [];
     const entries = filteredEntries(key, shift);
+    // 割り振りは絞り込みに影響されないよう、その日そのシフトの全員で計算する。
+    const assignment = outlook
+      ? getShiftAssignment({
+        insights,
+        members: allEntries.map((entry) => entry.name),
+        shift,
+        outlook,
+        pins
+      })
+      : null;
 
     if (entries.length > 0) {
       const list = document.createElement("ul");
@@ -527,7 +775,13 @@
         }
         item.append(nameLabel);
         const isKitchen = kitchenStaff.has(entry.name);
-        const chipData = getMaidStoreOutlook({ insights, name: entry.name, shift, outlook });
+        const chipData = getMaidStoreOutlook({
+          insights,
+          name: entry.name,
+          shift,
+          outlook,
+          assignment
+        });
         const titles = [];
         const descriptions = [];
 
@@ -745,6 +999,16 @@
     const givenOpen = accuracyValue("maidStoreGivenOpen");
     const top1 = accuracyValue("maidStoreTop1");
     const top2 = accuracyValue("maidStoreTop2");
+
+    lines.push(
+      "メイドさんのチップは、その日そのシフトに出る顔ぶれを、店ごとの標準人数を定員として割り振った結果です。" +
+        "1人ずつ独立に「いそうな店」を出すと、ほぼ毎日開いている1号店に全員が寄ってしまうため、定員を奪い合わせています。"
+    );
+    lines.push(
+      "生誕祭・周年・卒業の主役だけは確実で、かならず自分の所属店に立ちます。" +
+        "その店はその日営業することも確定するので、チップは割合ではなく「確定」と出しています。" +
+        "所属店は公式の配属ではなく、その店が開いた日にいちばん入っている店から推定したものです。"
+    );
     if (givenOpen !== null || top1 !== null) {
       const parts = [];
       if (givenOpen !== null) {
@@ -753,11 +1017,12 @@
       if (top1 !== null) {
         parts.push(`分からなければ${toPercent(top1)}`);
       }
-      lines.push(`メイドさんの店舗を1店に絞って当たったのは、${parts.join("、")}でした。`);
+      lines.push(`個々のメイドさんの店舗を1店に絞って当たったのは、${parts.join("、")}でした。`);
     }
     if (top2 !== null) {
       lines.push(
-        `候補を2店舗まで広げると${toPercent(top2)}が当たります。チップには最有力の1店だけを出しているので、外れたらもう1店を疑ってください。`
+        `候補を2店舗まで広げると${toPercent(top2)}が当たります。チップに出しているのは1店だけなので、` +
+          "次点はチップにカーソルを合わせると読めます。"
       );
     }
 
@@ -788,6 +1053,38 @@
 
     lines.push("生誕祭・周年・卒業の日は主役のメイドさんが顔ぶれを選べるため、傾向の計算から除いています。");
     return lines;
+  }
+
+  function createCoverageNote() {
+    const coverage = insights.rosterCoverage;
+    if (!coverage || typeof coverage.unlistedPerShift !== "number") {
+      return null;
+    }
+
+    const note = document.createElement("p");
+    note.className = "insight-headline";
+    const perShift = String(coverage.unlistedPerShift);
+    const shiftShare = toPercent(coverage.shiftsWithUnlisted ?? 0);
+    const parts = [
+      "カレンダーに出るのは在籍メイドさんだけです。",
+      "見習いにゃんこがいつお給仕に出るかは当日のお給仕投稿まで分からず、事前に知る手段がありません。",
+      `そのため、ここに出ている人数は実際より1シフトあたり平均${perShift}人（${shiftShare}のシフト）少なくなります。`
+    ];
+
+    if (typeof coverage.unlistedShare === "number" && coverage.shiftCells) {
+      parts.push(
+        `${coverage.from}〜${coverage.to}の${coverage.shiftCells}シフトで、` +
+          `のべ人数の${toPercent(coverage.unlistedShare)}が未掲載でした。`
+      );
+    }
+
+    note.textContent = parts.join("");
+    note.title =
+      `未掲載の人数の内訳：` +
+      Object.entries(coverage.distribution ?? {})
+        .map(([count, days]) => `${count}人が${days}シフト`)
+        .join("、");
+    return note;
   }
 
   function createUnlistedEntry(name, info) {
@@ -880,9 +1177,10 @@
       const heading = document.createElement("p");
       heading.className = "insight-subhead";
       heading.textContent =
-        `このカレンダーに載っていないメンバー（${active.length}名）：` +
+        `事前には分からない人たち（${active.length}名）：` +
         "公式サイトの在籍一覧には無いものの、最近のお給仕投稿に出ている方です。" +
-        "公開アカウントを確認できた方だけXへのリンクを付けています。カレンダー本体には表示していません。";
+        "この方々が出るかどうかは当日まで分からないため、カレンダー本体には表示していません。" +
+        "予定としては使えません。公開アカウントを確認できた方だけXへのリンクを付けています。";
 
       const list = document.createElement("ul");
       list.className = "unlisted-maids";
@@ -965,7 +1263,14 @@
       `。データ生成 ${insights.generatedAt ?? "不明"}。`;
 
     const unlisted = createUnlistedMaids();
-    container.append(legend, accuracy, ...(unlisted ? [unlisted] : []), source);
+    const coverage = createCoverageNote();
+    container.append(
+      ...(coverage ? [coverage] : []),
+      legend,
+      accuracy,
+      ...(unlisted ? [unlisted] : []),
+      source
+    );
     container.hidden = false;
   }
 

@@ -39,6 +39,8 @@ WINDOW_DAYS = 365      # 傾向を出す対象期間
 HISTORY_DAYS = 180     # カレンダーに実績として持たせる期間
 SHRINK = 5.0           # シフト別の比率を全体値へ寄せる強さ（サンプル不足対策）
 GRADUATED_GAP_DAYS = 14  # これ以上お給仕が空いたら卒業とみなす
+MIN_ACCOUNT_TWEETS = 20  # これ未満のアカウントは休眠（同名の別人）とみなしてリンクしない
+COVERAGE_DAYS = 90       # 公開スケジュールとの人数差を測る期間
 STREAK_GAP_DAYS = 60     # これ以上空いたら「今の在籍」は別期間とみなす
 
 
@@ -306,7 +308,7 @@ def build():
 
     # roster に載っていないが最近お給仕に出ているメイド（見習いから昇格した人など）
     accounts, account_status, account_created, account_note = {}, {}, {}, {}
-    account_alt = {}
+    account_alt, account_tweets = {}, {}
     if os.path.exists(os.path.join(DATA, 'accounts.csv')):
         for a in load_csv('accounts.csv'):
             if a.get('handle'):
@@ -314,6 +316,10 @@ def build():
                 account_status[a['name']] = a.get('source') or ''
                 account_note[a['name']] = a.get('note') or ''
                 account_alt[a['name']] = [x for x in (a.get('alt') or '').split(';') if x.strip()]
+                try:
+                    account_tweets[a['name']] = int(a.get('tweets') or 0) or None
+                except ValueError:
+                    account_tweets[a['name']] = None
                 try:
                     account_created[a['name']] = int(a.get('created') or 0) or None
                 except ValueError:
@@ -379,6 +385,7 @@ def build():
             'xStatus': account_status.get(m) or None,
             'xCreated': account_created.get(m),
             'xNote': account_note.get(m) or None,
+            'xTweets': account_tweets.get(m),
             'recentShifts31': recent_count31.get(m, 0),
             'streakStart': streak_start[m],
             'daysSinceLast': (last_d - datetime.date.fromisoformat(last_seen[m])).days,
@@ -386,7 +393,9 @@ def build():
         }
     year_ago = (last_d - datetime.timedelta(days=365)).isoformat()
     for m, v in unlisted.items():
-        has_account = bool(v['x']) and v['xStatus'] == '本人確認済み'
+        # 休眠アカウントは同名の別人であることが多いのでリンクしない
+        active_account = (v['xTweets'] or 0) >= MIN_ACCOUNT_TWEETS if v['xTweets'] else True
+        has_account = bool(v['x']) and v['xStatus'] == '本人確認済み' and active_account
         v['hasPublicAccount'] = has_account
         v['otherAccounts'] = account_alt.get(m, [])
         # 卒業: 卒業イベントがある / 2週間以上お給仕が無い / プロフィールに卒業表記
@@ -410,6 +419,30 @@ def build():
     for nm, t in tendency.items():
         if t is not None:
             t['x'] = accounts.get(nm) or accounts.get(t['alias'] or nm)
+
+    # 公開スケジュール（roster）に載る人数と、実際の顔ぶれの差。
+    # 見習いにゃんこは月間スケジュールに載らず、当日のお給仕投稿で初めて分かる。
+    cov_cut = (last_d - datetime.timedelta(days=COVERAGE_DAYS)).isoformat()
+    cov_cells, cov_total, cov_on = 0, 0, 0
+    cov_dist = collections.Counter()
+    for (d, sh), stores in cell.items():
+        if d < cov_cut:
+            continue
+        for sid, maids in stores.items():
+            cov_cells += 1
+            cov_total += len(maids)
+            on = sum(1 for mm in maids if mm in roster_keys)
+            cov_on += on
+            cov_dist[len(maids) - on] += 1
+    cov_off = cov_total - cov_on
+    roster_coverage = {
+        'from': cov_cut, 'to': last, 'shiftCells': cov_cells, 'totalMaids': cov_total,
+        'rostered': cov_on, 'unlisted': cov_off,
+        'unlistedShare': rate(cov_off, cov_total),
+        'unlistedPerShift': round(cov_off / cov_cells, 2) if cov_cells else 0,
+        'shiftsWithUnlisted': rate(sum(v for k, v in cov_dist.items() if k > 0), cov_cells),
+        'distribution': {str(k): cov_dist[k] for k in sorted(cov_dist)},
+    }
 
     hist_from = (last_d - datetime.timedelta(days=HISTORY_DAYS)).isoformat()
     actual = {}
@@ -451,6 +484,7 @@ def build():
         'actual': actual,
         'maidTendency': tendency,
         'unlistedMaids': unlisted,
+        'rosterCoverage': roster_coverage,
     }
 
 

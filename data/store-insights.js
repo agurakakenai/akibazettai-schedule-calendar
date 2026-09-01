@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-02 01:23",
+  "generatedAt": "2026-09-02 01:30",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-08-30"
@@ -4448,6 +4448,7 @@ window.STORE_INSIGHTS = {
       "xStatus": "本人確認済み",
       "xCreated": 2026,
       "xNote": null,
+      "xTweets": 59,
       "recentShifts31": 14,
       "streakStart": "2026-05-14",
       "daysSinceLast": 5,
@@ -4484,6 +4485,7 @@ window.STORE_INSIGHTS = {
       "xStatus": "本人確認済み",
       "xCreated": 2026,
       "xNote": null,
+      "xTweets": 114,
       "recentShifts31": 11,
       "streakStart": "2026-06-14",
       "daysSinceLast": 0,
@@ -4522,6 +4524,7 @@ window.STORE_INSIGHTS = {
       "xStatus": "本人確認済み",
       "xCreated": 2026,
       "xNote": null,
+      "xTweets": 87,
       "recentShifts31": 8,
       "streakStart": "2026-04-18",
       "daysSinceLast": 0,
@@ -4558,6 +4561,7 @@ window.STORE_INSIGHTS = {
       "xStatus": "本人確認済み",
       "xCreated": 2026,
       "xNote": null,
+      "xTweets": 69,
       "recentShifts31": 7,
       "streakStart": "2026-06-11",
       "daysSinceLast": 3,
@@ -4566,42 +4570,6 @@ window.STORE_INSIGHTS = {
       "otherAccounts": [
         "mochi2_zettai(2022)"
       ],
-      "status": "active",
-      "promoted": true,
-      "likelyNew": false
-    },
-    "のあ": {
-      "recentShifts": 14,
-      "workShifts": 13,
-      "firstSeen": "2026-07-17",
-      "lastSeen": "2026-08-29",
-      "pickRate": {
-        "s1": 0.538,
-        "s2": 0.4,
-        "s3": 0.333,
-        "s4": 0.5
-      },
-      "share": {
-        "s1": 0.599,
-        "s2": 0.126,
-        "s3": 0.102,
-        "s4": 0.172
-      },
-      "home": "s1",
-      "likely": [
-        "s1",
-        "s4"
-      ],
-      "x": "noa_zettai",
-      "xStatus": "本人確認済み",
-      "xCreated": 2021,
-      "xNote": null,
-      "recentShifts31": 10,
-      "streakStart": "2026-07-17",
-      "daysSinceLast": 1,
-      "graduatedAt": null,
-      "hasPublicAccount": true,
-      "otherAccounts": [],
       "status": "active",
       "promoted": true,
       "likelyNew": false
@@ -4632,6 +4600,7 @@ window.STORE_INSIGHTS = {
       "xStatus": null,
       "xCreated": null,
       "xNote": null,
+      "xTweets": null,
       "recentShifts31": 11,
       "streakStart": "2026-06-25",
       "daysSinceLast": 0,
@@ -4668,6 +4637,7 @@ window.STORE_INSIGHTS = {
       "xStatus": null,
       "xCreated": null,
       "xNote": null,
+      "xTweets": null,
       "recentShifts31": 11,
       "streakStart": "2026-07-17",
       "daysSinceLast": 4,
@@ -4704,6 +4674,7 @@ window.STORE_INSIGHTS = {
       "xStatus": null,
       "xCreated": null,
       "xNote": null,
+      "xTweets": null,
       "recentShifts31": 10,
       "streakStart": "2026-07-14",
       "daysSinceLast": 0,
@@ -4740,9 +4711,47 @@ window.STORE_INSIGHTS = {
       "xStatus": "公式サイト",
       "xCreated": 2025,
       "xNote": null,
+      "xTweets": 414,
       "recentShifts31": 5,
       "streakStart": "2025-08-03",
       "daysSinceLast": 0,
+      "graduatedAt": null,
+      "hasPublicAccount": false,
+      "otherAccounts": [],
+      "status": "active",
+      "promoted": false,
+      "likelyNew": false
+    },
+    "のあ": {
+      "recentShifts": 14,
+      "workShifts": 13,
+      "firstSeen": "2026-07-17",
+      "lastSeen": "2026-08-29",
+      "pickRate": {
+        "s1": 0.538,
+        "s2": 0.4,
+        "s3": 0.333,
+        "s4": 0.5
+      },
+      "share": {
+        "s1": 0.599,
+        "s2": 0.126,
+        "s3": 0.102,
+        "s4": 0.172
+      },
+      "home": "s1",
+      "likely": [
+        "s1",
+        "s4"
+      ],
+      "x": null,
+      "xStatus": null,
+      "xCreated": null,
+      "xNote": null,
+      "xTweets": null,
+      "recentShifts31": 10,
+      "streakStart": "2026-07-17",
+      "daysSinceLast": 1,
       "graduatedAt": null,
       "hasPublicAccount": false,
       "otherAccounts": [],
@@ -4776,6 +4785,7 @@ window.STORE_INSIGHTS = {
       "xStatus": null,
       "xCreated": null,
       "xNote": null,
+      "xTweets": null,
       "recentShifts31": 6,
       "streakStart": "2026-08-04",
       "daysSinceLast": 10,
@@ -4812,6 +4822,7 @@ window.STORE_INSIGHTS = {
       "xStatus": null,
       "xCreated": null,
       "xNote": null,
+      "xTweets": null,
       "recentShifts31": 4,
       "streakStart": "2026-08-24",
       "daysSinceLast": 1,
@@ -4848,6 +4859,7 @@ window.STORE_INSIGHTS = {
       "xStatus": null,
       "xCreated": null,
       "xNote": null,
+      "xTweets": null,
       "recentShifts31": 0,
       "streakStart": "2026-05-23",
       "daysSinceLast": 35,
@@ -4884,6 +4896,7 @@ window.STORE_INSIGHTS = {
       "xStatus": "本人確認済み",
       "xCreated": 2026,
       "xNote": null,
+      "xTweets": 224,
       "recentShifts31": 4,
       "streakStart": "2026-01-09",
       "daysSinceLast": 15,
@@ -4920,6 +4933,7 @@ window.STORE_INSIGHTS = {
       "xStatus": null,
       "xCreated": null,
       "xNote": null,
+      "xTweets": null,
       "recentShifts31": 0,
       "streakStart": "2025-07-30",
       "daysSinceLast": 58,
@@ -4956,6 +4970,7 @@ window.STORE_INSIGHTS = {
       "xStatus": null,
       "xCreated": null,
       "xNote": null,
+      "xTweets": null,
       "recentShifts31": 0,
       "streakStart": "2025-08-06",
       "daysSinceLast": 65,
@@ -4992,6 +5007,7 @@ window.STORE_INSIGHTS = {
       "xStatus": "卒業済み",
       "xCreated": 2019,
       "xNote": "プロフィールに卒業表記",
+      "xTweets": 786,
       "recentShifts31": 8,
       "streakStart": "2026-08-07",
       "daysSinceLast": 3,
@@ -5001,6 +5017,24 @@ window.STORE_INSIGHTS = {
       "status": "graduated",
       "promoted": false,
       "likelyNew": false
+    }
+  },
+  "rosterCoverage": {
+    "from": "2026-06-01",
+    "to": "2026-08-30",
+    "shiftCells": 344,
+    "totalMaids": 1941,
+    "rostered": 1649,
+    "unlisted": 292,
+    "unlistedShare": 0.15,
+    "unlistedPerShift": 0.85,
+    "shiftsWithUnlisted": 0.701,
+    "distribution": {
+      "0": 103,
+      "1": 196,
+      "2": 40,
+      "3": 4,
+      "4": 1
     }
   }
 };

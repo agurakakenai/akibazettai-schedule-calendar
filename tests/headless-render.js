@@ -189,67 +189,117 @@ assert.equal(
 const knownBadges = new Set(["実績", "見込み（翌日）", "曜日傾向"]);
 const storeIds = new Set(insights.stores.map((store) => store.id));
 
-for (const section of shiftSections) {
-  const badges = withClass(section, "store-status-badge");
-  assert.equal(badges.length, 1, "each shift section must carry exactly one badge");
-  assert.ok(
-    knownBadges.has(badges[0].textContent),
-    `unexpected badge "${badges[0].textContent}"`
+// 記念日の主役はかならず所属店に立つので、その店だけは見込みの日でも「営業」で確定する。
+function hostingStores(dateKey, shift) {
+  const entries = schedule.schedule[dateKey]?.[shift] ?? [];
+  return new Set(
+    entries
+      .filter((entry) => entry.featured)
+      .map((entry) => insights.maidTendency[entry.name]?.home)
+      .filter(Boolean)
   );
-  assert.equal(
-    badges[0].getAttribute("aria-hidden"),
-    "true",
-    "the badge is decorative; the spoken summary carries the same information"
-  );
+}
 
-  const outlooks = withClass(section, "store-outlook");
-  assert.equal(outlooks.length, 1, "each shift section must carry one store outlook");
-  assert.ok(outlooks[0].title, "the outlook must expose its reasoning as a tooltip");
+for (const cell of dayCells) {
+  const label = cell.getAttribute("aria-label");
+  const [, year, month, day] = /(\d+)年(\d+)月(\d+)日/.exec(label);
+  const cellKey = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  const sections = withClass(cell, "shift-section");
+  assert.equal(sections.length, insights.shifts.length, `${cellKey} must render both shifts`);
 
-  const spoken = withClass(outlooks[0], "visually-hidden");
-  assert.equal(spoken.length, 1, "the outlook must expose exactly one spoken summary");
-  assert.ok(
-    spoken[0].textContent.includes(badges[0].textContent),
-    "the spoken summary must state which basis was used"
-  );
-
-  const chipLists = withClass(section, "store-chips");
-  assert.equal(chipLists.length, 1, "each shift section must carry one chip list");
-  assert.equal(
-    chipLists[0].getAttribute("aria-hidden"),
-    "true",
-    "chips duplicate the spoken summary, so they must be hidden from assistive tech"
-  );
-
-  const chips = withClass(section, "store-chip");
-  assert.equal(chips.length, insights.stores.length, "every store must get a chip");
-  chips.forEach((chip, index) => {
+  sections.forEach((section, shiftIndex) => {
+    const shift = insights.shifts[shiftIndex];
+    const hosts = hostingStores(cellKey, shift);
+    const badges = withClass(section, "store-status-badge");
+    assert.equal(badges.length, 1, "each shift section must carry exactly one badge");
+    assert.ok(knownBadges.has(badges[0].textContent), `unexpected badge "${badges[0].textContent}"`);
     assert.equal(
-      chip.dataset.store,
-      insights.stores[index].id,
-      "chips must stay in store order so position identifies the store"
+      badges[0].getAttribute("aria-hidden"),
+      "true",
+      "the badge is decorative; the spoken summary carries the same information"
     );
-    assert.ok(storeIds.has(chip.dataset.store), `unknown store id "${chip.dataset.store}"`);
-    assert.ok(
-      /^is-(open|closed|likely|unlikely)$/.test(
-        chip.className.split(/\s+/).find((name) => name.startsWith("is-")) ?? ""
-      ),
-      `chip must carry a state class, got "${chip.className}"`
-    );
-    const text = chip.textContent;
-    assert.ok(
-      /^\d号(営業|休み|\d+%)$/.test(text),
-      `chip text must be a store label plus a state or a rate, got "${text}"`
-    );
-  });
 
-  // 実績のシフトは営業/休み、それ以外は割合。混在しない。
-  const states = chips.map((chip) => (chip.classList.contains("is-open") || chip.classList.contains("is-closed")));
-  const isRecord = badges[0].textContent === "実績";
-  assert.ok(
-    states.every((isRecordState) => isRecordState === isRecord),
-    "a shift must not mix recorded states with probabilities"
-  );
+    const outlooks = withClass(section, "store-outlook");
+    assert.equal(outlooks.length, 1, "each shift section must carry one store outlook");
+    assert.ok(outlooks[0].title, "the outlook must expose its reasoning as a tooltip");
+
+    const spoken = withClass(outlooks[0], "visually-hidden");
+    assert.equal(spoken.length, 1, "the outlook must expose exactly one spoken summary");
+    assert.ok(
+      spoken[0].textContent.includes(badges[0].textContent),
+      "the spoken summary must state which basis was used"
+    );
+
+    const chipLists = withClass(section, "store-chips");
+    assert.equal(chipLists.length, 1, "each shift section must carry one chip list");
+    assert.equal(
+      chipLists[0].getAttribute("aria-hidden"),
+      "true",
+      "chips duplicate the spoken summary, so they must be hidden from assistive tech"
+    );
+
+    const chips = withClass(section, "store-chip");
+    assert.equal(chips.length, insights.stores.length, "every store must get a chip");
+
+    const isRecord = badges[0].textContent === "実績";
+    chips.forEach((chip, index) => {
+      const storeId = insights.stores[index].id;
+      assert.equal(
+        chip.dataset.store,
+        storeId,
+        "chips must stay in store order so position identifies the store"
+      );
+      assert.ok(storeIds.has(chip.dataset.store), `unknown store id "${chip.dataset.store}"`);
+
+      const state = chip.className.split(/\s+/).find((name) => name.startsWith("is-")) ?? "";
+      assert.ok(
+        /^is-(open|closed|likely|unlikely)$/.test(state),
+        `chip must carry a state class, got "${chip.className}"`
+      );
+      assert.ok(
+        /^\d号(営業|休み|\d+%)$/.test(chip.textContent),
+        `chip text must be a store label plus a state or a rate, got "${chip.textContent}"`
+      );
+
+      const settled = state === "is-open" || state === "is-closed";
+      if (isRecord) {
+        assert.ok(settled, `${cellKey} ${shift} is recorded, so ${storeId} must be settled`);
+      } else if (hosts.has(storeId)) {
+        assert.equal(
+          state,
+          "is-open",
+          `${cellKey} ${shift} hosts an event at ${storeId}, so it must be certain to be open`
+        );
+      } else {
+        assert.ok(
+          !settled,
+          `${cellKey} ${shift} is not recorded, so ${storeId} must stay a probability`
+        );
+      }
+    });
+
+    // 主役は自分の所属店に割り振られ、確率ではなく確定として出る。
+    for (const entry of schedule.schedule[cellKey]?.[shift] ?? []) {
+      if (!entry.featured) {
+        continue;
+      }
+      const row = withClass(section, "maid-entry").find(
+        (item) => withClass(item, "maid-name")[0].textContent === entry.name
+      );
+      assert.ok(row, `${entry.name} must be rendered on ${cellKey} ${shift}`);
+      const chip = withClass(row, "maid-store-chip")[0];
+      assert.ok(chip, `${entry.name} hosts ${entry.eventLabel}, so her store must be shown`);
+      assert.equal(
+        chip.dataset.store,
+        insights.maidTendency[entry.name].home,
+        `${entry.name} must be placed at her own store on ${cellKey} ${shift}`
+      );
+      assert.ok(
+        row.title.includes(entry.eventLabel),
+        "the tooltip must say the event is what fixes her store"
+      );
+    }
+  });
 }
 
 // --- メイドさんの行 -----------------------------------------------------
@@ -290,6 +340,27 @@ for (const link of linkedNames) {
   assert.equal(link.rel, "noopener noreferrer", "external links must not leak the opener");
 }
 
+// 1人ずつ独立に決めると全員が1号店になるので、同じシフトの中で割れていることを確かめる。
+const busySections = shiftSections.filter((section) => withClass(section, "maid-store-chip").length >= 6);
+assert.ok(busySections.length > 0, "at least one shift must be busy enough to split across stores");
+let splitSections = 0;
+for (const section of busySections) {
+  const assigned = withClass(section, "maid-store-chip").map((chip) => chip.dataset.store);
+  if (new Set(assigned).size > 1) {
+    splitSections += 1;
+  }
+}
+assert.equal(
+  splitSections,
+  busySections.length,
+  "every busy shift must spread its maids over more than one store"
+);
+const allAssigned = withClass(calendar, "maid-store-chip").map((chip) => chip.dataset.store);
+assert.ok(
+  new Set(allAssigned).size >= 2,
+  "the calendar must not send every maid to the same store"
+);
+
 const featured = maidEntries.filter((entry) => entry.classList.contains("is-featured"));
 assert.ok(featured.length > 0, "the September range still contains featured shifts");
 for (const entry of featured) {
@@ -303,6 +374,25 @@ for (const entry of featured) {
 const notes = elementById("insight-notes");
 assert.equal(notes.hidden, false, "the notes must be revealed once the data loads");
 assert.equal(withClass(notes, "insight-legend").length, 1, "the notes must carry one legend");
+
+// 見習いは事前に分からない、という注意が数値つきで出ていること。
+const coverageNote = withClass(notes, "insight-headline");
+assert.equal(coverageNote.length, 1, "the notes must carry the roster-coverage warning");
+const coverageText = coverageNote[0].textContent;
+assert.ok(
+  coverageText.includes("事前に知る手段がありません"),
+  "the warning must say trainees cannot be known in advance"
+);
+assert.ok(
+  coverageText.includes(String(insights.rosterCoverage.unlistedPerShift)),
+  "the warning must quote the measured per-shift gap rather than a hardcoded number"
+);
+assert.ok(
+  coverageText.includes(
+    `${Math.round(insights.rosterCoverage.shiftsWithUnlisted * 100)}%`
+  ),
+  "the warning must quote the measured share of affected shifts"
+);
 assert.equal(
   withClass(notes, "insight-legend")[0].children.length,
   knownBadges.size,

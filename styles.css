@@ -823,6 +823,21 @@ input[type="date"] {
   color: var(--cp-text-muted);
 }
 
+.insight-headline {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--cp-warning);
+  border-radius: 0.625rem;
+  background: var(--cp-surface);
+  color: var(--cp-text);
+}
+
+.insight-headline::before {
+  margin-right: 5px;
+  color: var(--cp-warning);
+  content: "\26A0";
+}
+
 .unlisted-maids {
   display: flex;
   flex-wrap: wrap;

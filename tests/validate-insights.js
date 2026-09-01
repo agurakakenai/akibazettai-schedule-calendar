@@ -412,6 +412,19 @@ for (const [name, info] of Object.entries(unlisted)) {
     Number.isInteger(info.daysSinceLast) && info.daysSinceLast >= 0,
     `unlistedMaids.${name}.daysSinceLast must be a non-negative integer`
   );
+  assert.ok(
+    info.xTweets === null || (Number.isInteger(info.xTweets) && info.xTweets >= 0),
+    `unlistedMaids.${name}.xTweets must be a non-negative integer or null`
+  );
+
+  // 休眠アカウントは同名の別人のことがあるので、リンクの裏づけには使わない。
+  if (info.hasPublicAccount) {
+    assert.ok(info.x, `unlistedMaids.${name} claims a public account without a handle`);
+    assert.ok(
+      Number.isInteger(info.xTweets) && info.xTweets >= 20,
+      `unlistedMaids.${name} has only ${info.xTweets} posts, which is too dormant to trust as hers`
+    );
+  }
 
   // promoted と likelyNew はリンクや「新人かも」の表示条件そのものなので、裏づけを必須にする。
   if (info.promoted) {
@@ -437,9 +450,63 @@ const linkableCount = Object.values(unlisted).filter(
   (info) => info.status === "active" && info.hasPublicAccount && info.x
 ).length;
 
+// --- カレンダーに出ない人がどれだけいるか -------------------------------
+const coverage = insights.rosterCoverage;
+assert.ok(
+  coverage && typeof coverage === "object",
+  "rosterCoverage is required so the UI can warn that trainees are invisible in advance"
+);
+for (const key of ["unlistedShare", "shiftsWithUnlisted"]) {
+  assertRate(coverage[key], `rosterCoverage.${key}`);
+}
+assert.ok(
+  typeof coverage.unlistedPerShift === "number" && coverage.unlistedPerShift >= 0,
+  "rosterCoverage.unlistedPerShift must be a non-negative number"
+);
+for (const key of ["shiftCells", "totalMaids", "rostered", "unlisted"]) {
+  assert.ok(
+    Number.isInteger(coverage[key]) && coverage[key] >= 0,
+    `rosterCoverage.${key} must be a non-negative integer`
+  );
+}
+assert.equal(
+  coverage.rostered + coverage.unlisted,
+  coverage.totalMaids,
+  "rosterCoverage.rostered + unlisted must account for every maid seen"
+);
+const distributionTotal = Object.entries(coverage.distribution).reduce(
+  (sum, [count, cells]) => {
+    assert.match(count, /^\d+$/, `rosterCoverage.distribution has a non-numeric key "${count}"`);
+    assert.ok(
+      Number.isInteger(cells) && cells >= 0,
+      `rosterCoverage.distribution.${count} must be a non-negative integer`
+    );
+    return sum + cells;
+  },
+  0
+);
+assert.equal(
+  distributionTotal,
+  coverage.shiftCells,
+  "rosterCoverage.distribution must cover exactly shiftCells shifts"
+);
+const shiftsWithout = coverage.distribution["0"] ?? 0;
+assert.ok(
+  Math.abs((1 - shiftsWithout / coverage.shiftCells) - coverage.shiftsWithUnlisted) <= 0.01,
+  "rosterCoverage.shiftsWithUnlisted must agree with the distribution"
+);
+for (const key of ["from", "to"]) {
+  assert.match(coverage[key], /^\d{4}-\d{2}-\d{2}$/, `rosterCoverage.${key} must be a date`);
+}
+
 console.log(
   `Store insights valid: ${insights.stores.length} stores, ` +
     `${actualEntries.length} recorded dates through ${Object.keys(insights.actual).sort().at(-1)}, ` +
     `${withTendency}/${tendencyNames.length} rostered maids with a store tendency, ` +
-    `${activeCount}/${Object.keys(unlisted).length} unlisted members still active (${linkableCount} linkable).`
+    `${activeCount}/${Object.keys(unlisted).length} unlisted members still active (${linkableCount} linkable), ` +
+    `${toPercent(coverage.unlistedShare)} of shift slots invisible in advance.`
 );
+
+function toPercent(rate) {
+  return `${Math.round(rate * 100)}%`;
+}
