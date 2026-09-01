@@ -128,6 +128,53 @@ for (const shift of shiftNames) {
       typeof headcount[id] === "number" && headcount[id] > 0,
       `typicalHeadcount.${shift}.${id} must be a positive number`
     );
+
+    // UI は「何人態勢の店か」をチップの補足に出すので、分布まで要る。
+    const profile = insights.headcountProfile[shift][id];
+    assert.ok(profile, `headcountProfile.${shift}.${id} is required`);
+    for (const key of ["median", "mode", "min", "max", "p25", "p75", "shifts"]) {
+      assert.ok(
+        Number.isInteger(profile[key]) && profile[key] > 0,
+        `headcountProfile.${shift}.${id}.${key} must be a positive integer`
+      );
+    }
+    assertRate(profile.modeShare, `headcountProfile.${shift}.${id}.modeShare`);
+    assert.ok(
+      profile.min <= profile.p25 && profile.p25 <= profile.p75 && profile.p75 <= profile.max,
+      `headcountProfile.${shift}.${id} quartiles must be ordered within min..max`
+    );
+    assert.ok(
+      profile.min <= profile.median && profile.median <= profile.max,
+      `headcountProfile.${shift}.${id}.median must sit inside min..max`
+    );
+    assert.ok(
+      profile.min <= profile.mean && profile.mean <= profile.max,
+      `headcountProfile.${shift}.${id}.mean must sit inside min..max`
+    );
+    assert.equal(
+      profile.mean,
+      headcount[id],
+      `headcountProfile.${shift}.${id}.mean must match typicalHeadcount`
+    );
+
+    const distribution = profile.distribution;
+    assert.ok(distribution, `headcountProfile.${shift}.${id}.distribution is required`);
+    const observed = Object.keys(distribution).map(Number);
+    assert.equal(
+      Object.values(distribution).reduce((sum, value) => sum + value, 0),
+      profile.shifts,
+      `headcountProfile.${shift}.${id}.distribution must cover every recorded shift`
+    );
+    assert.equal(Math.min(...observed), profile.min, `${shift}.${id} min must match the distribution`);
+    assert.equal(Math.max(...observed), profile.max, `${shift}.${id} max must match the distribution`);
+    const busiest = observed.reduce((top, size) =>
+      distribution[String(size)] > distribution[String(top)] ? size : top
+    );
+    assert.equal(profile.mode, busiest, `${shift}.${id}.mode must be the commonest headcount`);
+    assert.ok(
+      Math.abs(distribution[String(profile.mode)] / profile.shifts - profile.modeShare) <= 0.01,
+      `${shift}.${id}.modeShare must match the distribution`
+    );
   }
 }
 

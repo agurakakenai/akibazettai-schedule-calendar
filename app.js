@@ -151,6 +151,22 @@
       .join("・");
   }
 
+  // その店がふだん何人態勢なのか。4号店だけ2人少ないので、チップの補足に出す。
+  function storeSizeNote(insights, shift, storeId) {
+    const profile = insights?.headcountProfile?.[shift]?.[storeId];
+    if (!profile) {
+      return null;
+    }
+    const spread = profile.p25 === profile.p75
+      ? `${profile.p25}人`
+      : `${profile.p25}〜${profile.p75}人`;
+    return (
+      `${storeShort(insights, storeId)}の${shift}はふだん${profile.mode}人態勢` +
+      `（${spread}が中心、${toPercent(profile.modeShare ?? 0)}が${profile.mode}人。` +
+      `実績${profile.shifts}シフト）`
+    );
+  }
+
   function actualOutlook(insights, key, shift) {
     const open = openStoresOn(insights, key, shift);
     if (!open) {
@@ -720,6 +736,10 @@
       const chip = document.createElement("li");
       chip.className = `store-chip is-${entry.state}`;
       chip.dataset.store = entry.store.id;
+      const size = storeSizeNote(insights, shift, entry.store.id);
+      if (size) {
+        chip.title = size;
+      }
 
       const name = document.createElement("span");
       name.className = "store-chip-name";
@@ -1169,8 +1189,31 @@
       );
     }
 
-    const headcounts = insights.rosterHeadcountByOpenCount;
-    if (headcounts) {
+    const profile = insights.headcountProfile;
+    if (profile) {
+      const described = shifts
+        .map((shift) => {
+          const parts = storeList
+            .filter((store) => profile[shift]?.[store.id])
+            .map((store) => `${store.short}${profile[shift][store.id].mode}人`);
+          return parts.length > 0 ? `${shift}は${parts.join("・")}` : null;
+        })
+        .filter(Boolean);
+      const sized = storeList.filter((store) => profile["昼"]?.[store.id]);
+      if (described.length > 0 && sized.length > 0) {
+        const smallest = sized.reduce((least, store) =>
+          profile["昼"][store.id].mode < profile["昼"][least.id].mode ? store : least
+        );
+        const smallestProfile = profile["昼"][smallest.id];
+        lines.push(
+          `店の規模も違います。ふだんの人数は${described.join("、")}で、` +
+            `${smallest.short}だけ${smallestProfile.mode}人態勢（昼の${toPercent(smallestProfile.modeShare ?? 0)}）と小さめです。` +
+            "各店のチップにカーソルを合わせると、その店の人数の幅が読めます。"
+        );
+      }
+    }
+
+    const headcounts = insights.rosterHeadcountByOpenCount;    if (headcounts) {
       const described = shifts
         .map((shift) => {
           const table = headcounts[shift] ?? {};

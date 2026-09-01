@@ -300,6 +300,10 @@ for (const cell of dayCells) {
         "chips must stay in store order so position identifies the store"
       );
       assert.ok(storeIds.has(chip.dataset.store), `unknown store id "${chip.dataset.store}"`);
+      assert.ok(
+        chip.title && chip.title.includes(`${insights.headcountProfile[shift][storeId].mode}人態勢`),
+        `${storeId} must explain how many staff it usually runs`
+      );
 
       const state = chip.className.split(/\s+/).find((name) => name.startsWith("is-")) ?? "";
       assert.ok(
