@@ -2,7 +2,7 @@
 
 アキバ絶対領域の公開情報を、昼・夜に分けた月間カレンダーで閲覧するための静的サイトです。メイド・日付で絞り込めます。
 
-公開サイト: <https://agurakakenai.github.io/akibazettai-schedule-calendar/>
+**このリポジトリは非公開（private）です。** 一般公開していた GitHub Pages は停止済みで、閲覧はローカルプレビューで行います。
 
 ## ローカルプレビュー
 
@@ -29,7 +29,7 @@ node tests/range-rendering.js
 1. `lastUpdated` を更新します。
 2. `schedule` の日付に、`昼` と `夜` の配列を追加・編集します。
 3. 記念日・生誕の主役には `featured: true` と、読み上げ・ツールチップ用の `eventLabel` を指定します。
-4. メイド服を着ないキッチンにゃんこは `kitchenStaff` に入れます。カレンダーでは 🍳 が付き、フィルターには「キッチン」バッジが出ます。
+4. メイド服を着ないキッチンにゃんこは `kitchenStaff` に入れます。カレンダーとフィルターに 🍳 が付きます。
 5. `node tests/validate-schedule.js` を実行します。
 
 各シフトの並び順は `roster` の公式順と一致させてください（検証スクリプトが確認します）。
@@ -38,6 +38,12 @@ node tests/range-rendering.js
 
 予定が未確認の日はキーを追加しません。フィルターには `roster` の全員が公式順で表示されるため、予定がないメイドも削除しないでください。
 
-## デプロイ
+絞り込みで誰も残らなかったシフトは `-`、そもそも公開情報を確認できていないシフトは「確認情報なし」と表示します。
 
-`main` への push または手動実行で、[GitHub Pages ワークフロー](.github/workflows/deploy-pages.yml)がデータを検証して静的サイトを公開します。HTML、CSS、JavaScript、予定データはリポジトリのプロジェクトパスで動作する相対パスを使用しています。
+## 公開状態
+
+リポジトリは非公開です。無料プランの GitHub Pages は公開リポジトリでしか使えないため、Pages は無効化してあります。
+
+`main` への push では [ワークフロー](.github/workflows/deploy-pages.yml)の検証ジョブだけが動き、サイトは公開されません。再び一般公開する場合だけ、リポジトリを公開に戻したうえで Actions タブからワークフローを手動実行してください。
+
+HTML、CSS、JavaScript、予定データはリポジトリのプロジェクトパスで動作する相対パスを使用しています。

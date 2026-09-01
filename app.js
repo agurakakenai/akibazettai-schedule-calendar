@@ -166,7 +166,13 @@
     section.classList.add("is-empty");
     empty.className = "empty-shift";
     if (allEntries.length > 0) {
-      empty.textContent = "該当なし";
+      const mark = document.createElement("span");
+      mark.setAttribute("aria-hidden", "true");
+      mark.textContent = "-";
+      const description = document.createElement("span");
+      description.className = "visually-hidden";
+      description.textContent = "該当なし";
+      empty.append(mark, description);
     } else {
       empty.textContent = "確認情報なし";
     }
