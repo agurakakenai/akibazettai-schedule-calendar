@@ -4,6 +4,10 @@
   const data = window.SCHEDULE_DATA;
   const shifts = ["昼", "夜"];
   const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
+  const shiftDetails = {
+    "昼": { icon: "☀", className: "shift-day" },
+    "夜": { icon: "☾", className: "shift-night" }
+  };
   const [initialYear, initialMonth] = data.initialMonth.split("-").map(Number);
   const state = {
     visibleMonth: new Date(initialYear, initialMonth - 1, 1),
@@ -18,6 +22,8 @@
     resultSummary: document.querySelector("#result-summary"),
     lastUpdated: document.querySelector("#last-updated"),
     maidCheckboxes: document.querySelector("#maid-checkboxes"),
+    maidFilterDetails: document.querySelector("#maid-filter-details"),
+    maidFilterSummary: document.querySelector("#maid-filter-summary"),
     dateFrom: document.querySelector("#date-from"),
     dateTo: document.querySelector("#date-to"),
     previousMonth: document.querySelector("#previous-month"),
@@ -47,12 +53,18 @@
 
   function createShiftSection(key, shift, isInRange) {
     const section = document.createElement("section");
-    section.className = "shift-section";
+    section.className = `shift-section ${shiftDetails[shift].className}`;
     section.setAttribute("aria-label", `${shift}のお給仕`);
 
     const title = document.createElement("h4");
     title.className = "shift-title";
-    title.textContent = shift;
+    const icon = document.createElement("span");
+    icon.className = "shift-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = shiftDetails[shift].icon;
+    const label = document.createElement("span");
+    label.textContent = shift;
+    title.append(icon, label);
     section.append(title);
 
     const allEntries = data.schedule[key]?.[shift] ?? [];
@@ -81,6 +93,7 @@
     }
 
     const empty = document.createElement("p");
+    section.classList.add("is-empty");
     empty.className = "empty-shift";
     if (!isInRange) {
       empty.textContent = "期間外";
@@ -111,10 +124,16 @@
 
     const heading = document.createElement("div");
     heading.className = "day-heading";
+    const dateLabel = document.createElement("div");
+    dateLabel.className = "day-date";
     const number = document.createElement("span");
     number.className = "day-number";
     number.textContent = String(date.getDate());
-    heading.append(number);
+    const weekday = document.createElement("span");
+    weekday.className = "day-weekday";
+    weekday.textContent = `${weekdays[date.getDay()]}曜日`;
+    dateLabel.append(number, weekday);
+    heading.append(dateLabel);
 
     if (!isCurrentMonth) {
       day.classList.add("is-outside-month");
@@ -193,6 +212,11 @@
     elements.calendar.replaceChildren(grid);
   }
 
+  function updateMaidFilterSummary() {
+    elements.maidFilterSummary.textContent =
+      `${state.selectedMaids.size}/${data.roster.length}名を表示`;
+  }
+
   function renderMaidFilters() {
     const fragment = document.createDocumentFragment();
 
@@ -210,6 +234,7 @@
         } else {
           state.selectedMaids.delete(name);
         }
+        updateMaidFilterSummary();
         renderCalendar();
       });
 
@@ -218,8 +243,9 @@
       label.append(checkbox, text);
       fragment.append(label);
     });
-
     elements.maidCheckboxes.replaceChildren(fragment);
+    elements.maidCheckboxes.replaceChildren(fragment);
+    updateMaidFilterSummary();
   }
 
   function setAllMaids(selected) {
@@ -276,6 +302,8 @@
   elements.dateFrom.value = state.dateFrom;
   elements.dateTo.value = state.dateTo;
   elements.lastUpdated.textContent = `最終更新：${data.lastUpdated}`;
+  elements.maidFilterDetails.open =
+    !window.matchMedia("(max-width: 45rem)").matches;
   renderMaidFilters();
   renderCalendar();
 })();

@@ -108,15 +108,21 @@ html[data-theme="dark"] {
           </label>
         </fieldset>
 
-        <fieldset class="maid-filters">
-          <legend>メイド</legend>
-          <div class="filter-actions">
-            <button id="select-all" class="text-button" type="button">すべて選択</button>
-            <span aria-hidden="true">／</span>
-            <button id="clear-all" class="text-button" type="button">すべて解除</button>
-          </div>
-          <div id="maid-checkboxes" class="checkbox-grid"></div>
-        </fieldset>
+        <details id="maid-filter-details" class="maid-filter-details" open>
+          <summary>
+            <span>メイド</span>
+            <span id="maid-filter-summary" class="maid-filter-summary"></span>
+          </summary>
+          <fieldset class="maid-filters">
+            <legend class="visually-hidden">メイド</legend>
+            <div class="filter-actions">
+              <button id="select-all" class="text-button" type="button">すべて選択</button>
+              <span aria-hidden="true">／</span>
+              <button id="clear-all" class="text-button" type="button">すべて解除</button>
+            </div>
+            <div id="maid-checkboxes" class="checkbox-grid"></div>
+          </fieldset>
+        </details>
       </aside>
 
       <section class="calendar-card" aria-labelledby="month-title">

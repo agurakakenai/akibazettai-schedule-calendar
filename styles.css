@@ -31,9 +31,21 @@ input {
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
+.maid-filter-details summary:focus-visible,
 .calendar-scroll:focus-visible {
   outline: 3px solid var(--cp-accent);
   outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .skip-link {
@@ -177,7 +189,7 @@ legend {
 
 input[type="date"] {
   width: 100%;
-  min-height: 40px;
+  min-height: 44px;
   padding: 7px 9px;
   border: 1px solid var(--cp-border-strong);
   border-radius: 0.625rem;
@@ -188,13 +200,15 @@ input[type="date"] {
 .filter-actions {
   display: flex;
   align-items: center;
-  margin: -4px 0 10px;
+  flex-wrap: wrap;
+  margin: 0 0 8px;
   color: var(--cp-text-soft);
   font-size: 0.8rem;
 }
 
 .text-button {
-  padding: 4px;
+  min-height: 44px;
+  padding: 8px 4px;
   border: 0;
   background: transparent;
   color: var(--cp-link);
@@ -214,20 +228,22 @@ input[type="date"] {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  padding: 3px 0;
+  min-height: 44px;
+  padding: 6px 0;
   cursor: pointer;
   font-size: 0.875rem;
 }
 
 .checkbox-label input {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   margin: 0;
   accent-color: var(--cp-accent);
 }
 
 .button,
 .icon-button {
+  min-height: 44px;
   border: 1px solid var(--cp-border-strong);
   border-radius: 0.625rem;
   cursor: pointer;
@@ -240,7 +256,7 @@ input[type="date"] {
 }
 
 .button-secondary {
-  padding: 7px 10px;
+  padding: 8px 12px;
   background: var(--cp-surface);
   color: var(--cp-text);
   font-size: 0.8rem;
@@ -260,8 +276,8 @@ input[type="date"] {
 
 .icon-button {
   display: inline-grid;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   place-items: center;
   background: var(--cp-surface);
   color: var(--cp-text);
@@ -332,6 +348,12 @@ input[type="date"] {
   margin-bottom: 8px;
 }
 
+.day-date {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
 .day-number {
   display: inline-grid;
   width: 1.75rem;
@@ -339,6 +361,13 @@ input[type="date"] {
   place-items: center;
   border-radius: 0.625rem;
   font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.day-weekday {
+  display: none;
+  color: var(--cp-text-muted);
+  font-size: 0.78rem;
   font-weight: 700;
 }
 
@@ -351,18 +380,45 @@ input[type="date"] {
   font-size: 0.7rem;
 }
 
+.shift-section {
+  padding: 6px 7px;
+  border-left: 3px solid var(--cp-border-strong);
+  border-radius: 0.625rem;
+}
+
 .shift-section + .shift-section {
   margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--cp-border);
+}
+
+.shift-day {
+  border-left-color: var(--cp-accent);
+  background: var(--cp-accent-soft);
+}
+
+.shift-night {
+  border-left-color: var(--cp-border-strong);
+  background: var(--cp-surface-soft);
 }
 
 .shift-title {
-  margin: 0 0 4px;
-  color: var(--cp-text-muted);
-  font-size: 0.7rem;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 5px;
+  color: var(--cp-text);
+  font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.08em;
+}
+
+.shift-icon {
+  color: var(--cp-accent);
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.shift-night .shift-icon {
+  color: var(--cp-text-muted);
 }
 
 .maid-list {
@@ -377,7 +433,7 @@ input[type="date"] {
 .maid-entry {
   padding: 2px 5px;
   border-radius: 0.625rem;
-  background: var(--cp-surface-soft);
+  background: var(--cp-surface);
   font-size: 0.75rem;
   line-height: 1.45;
 }
@@ -392,6 +448,49 @@ input[type="date"] {
   margin: 0;
   color: var(--cp-text-soft);
   font-size: 0.72rem;
+}
+
+.maid-filter-details {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--cp-border);
+}
+
+.maid-filter-details summary {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  min-height: 44px;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  font-weight: 700;
+  list-style: none;
+}
+
+.maid-filter-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.maid-filter-details summary::after {
+  content: "＋";
+  color: var(--cp-accent);
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.maid-filter-details[open] summary::after {
+  content: "−";
+}
+
+.maid-filter-summary {
+  justify-self: end;
+  color: var(--cp-text-muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+}
+
+.maid-filters {
+  margin-top: 4px;
 }
 
 .calendar-notes {
@@ -442,10 +541,10 @@ input[type="date"] {
   }
 }
 
-@media (max-width: 42rem) {
+@media (max-width: 45rem) {
   .site-header {
     align-items: flex-start;
-    padding: 28px 16px 18px;
+    padding: 24px 16px 16px;
   }
 
   .header-copy {
@@ -457,11 +556,25 @@ input[type="date"] {
   }
 
   .filters-card {
-    padding: 16px;
+    padding: 16px 16px 12px;
+  }
+
+  .filters-heading {
+    margin-bottom: 16px;
+  }
+
+  .date-filters {
+    grid-template-columns: 1fr;
   }
 
   .checkbox-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+    gap: 2px 12px;
+  }
+
+  .maid-filter-details {
+    margin-top: 16px;
+    padding-top: 12px;
   }
 
   .calendar-toolbar {
@@ -469,13 +582,99 @@ input[type="date"] {
     padding-left: 16px;
   }
 
+  .calendar-scroll {
+    overflow-x: hidden;
+    padding: 12px;
+    background: var(--cp-bg-elevated);
+  }
+
   .calendar-grid {
-    grid-template-columns: repeat(7, minmax(6.8rem, 1fr));
-    min-width: 47.6rem;
+    grid-template-columns: minmax(0, 1fr);
+    min-width: 0;
+    gap: 12px;
+    background: var(--cp-bg-elevated);
+  }
+
+  .weekday,
+  .calendar-day.is-outside-month {
+    display: none;
   }
 
   .calendar-day {
-    min-height: 10.5rem;
+    min-width: 0;
+    min-height: 0;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--cp-border);
+    border-radius: 16px;
+    box-shadow: 0 0 2px var(--cp-border), 0 1px 2px var(--cp-border);
+  }
+
+  .day-heading {
+    margin: 0;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--cp-border);
+    background: var(--cp-surface-soft);
+  }
+
+  .day-number {
+    width: auto;
+    height: auto;
+    font-size: 1.35rem;
+    line-height: 1.2;
+  }
+
+  .day-weekday {
+    display: inline;
+    font-size: 0.9rem;
+  }
+
+  .shift-section {
+    padding: 12px 14px;
+    border-left-width: 4px;
+    border-radius: 0;
+  }
+
+  .shift-section + .shift-section {
+    margin-top: 0;
+    border-top: 1px solid var(--cp-border);
+  }
+
+  .shift-title {
+    margin-bottom: 8px;
+    font-size: 0.95rem;
+    letter-spacing: 0.04em;
+  }
+
+  .shift-icon {
+    font-size: 1.05rem;
+  }
+
+  .shift-section.is-empty {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-top: 9px;
+    padding-bottom: 9px;
+  }
+
+  .shift-section.is-empty .shift-title {
+    flex: none;
+    margin: 0;
+  }
+
+  .maid-list {
+    gap: 6px;
+  }
+
+  .maid-entry {
+    padding: 6px 10px;
+    font-size: 1rem;
+    line-height: 1.5;
+  }
+
+  .empty-shift {
+    font-size: 0.82rem;
   }
 
   .calendar-notes {
@@ -489,11 +688,10 @@ input[type="date"] {
   }
 }
 
-@media (max-width: 27rem) {
+@media (max-width: 23rem) {
   .checkbox-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 1fr;
   }
-
 }
 
 @media (prefers-reduced-motion: reduce) {
