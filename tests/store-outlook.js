@@ -1007,14 +1007,25 @@ assert.equal(
     }
   }
 
-  // 第4引数は人数でも顔ぶれでもよい。人数だけなら従来どおりの順位になる。
+  // 第4引数は人数でも顔ぶれでもよい。顔ぶれは「どの店か」だけを動かし、
+  // 「いくつ開くか」は人数から決まったままにする。ここが崩れると、
+  // 顔ぶれの偏りで店舗数まで動いてしまう。
   const future = outlookFor(farFuture, "昼");
   const roster = Object.keys(insights.maidTendency).filter((name) => insights.maidTendency[name]);
-  const bySize = expectedOpenStores(insights, "昼", future, 9);
-  assert.equal(bySize.length, expectedOpenStores(insights, "昼", future, 9).length);
+  const postedTo = (id) => roster.filter((name) => insights.maidTendency[name].posted === id);
+  for (const id of insights.stores.map((store) => store.id)) {
+    const lineUp = postedTo(id);
+    if (lineUp.length === 0) {
+      continue;
+    }
+    assert.equal(
+      expectedOpenStores(insights, "昼", future, lineUp).length,
+      expectedOpenStores(insights, "昼", future, lineUp.length).length,
+      `a line-up posted to ${id} must open as many shops as its headcount alone would`
+    );
+  }
 
   // 2号店配属だけを並べたら、2号店が選ばれること。1号店配属だけなら選ばれないこと。
-  const postedTo = (id) => roster.filter((name) => insights.maidTendency[name].posted === id);
   const s2Only = postedTo("s2").slice(0, 9);
   const s1Only = postedTo("s1").slice(0, 9);
   assert.ok(s2Only.length >= 4 && s1Only.length >= 4, "the roster must cover both shops");
