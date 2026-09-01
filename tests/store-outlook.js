@@ -646,6 +646,37 @@ assert.equal(
   "a maid with no tendency has no known store to pin her to"
 );
 
+// 記念日の主役は所属店に立つ。所属は公式サイトの配属が正で、推定はその代役。
+{
+  const host = [{ name: "える", featured: true, eventLabel: "生誕" }];
+  const official = schedule.homeStore["える"];
+  const guessed = insights.maidTendency["える"].home;
+  assert.notEqual(official, guessed, "える is the case where the site and our guess disagree");
+
+  const pinned = eventStorePins({ insights, entries: host, homeStore: schedule.homeStore }).get("える");
+  assert.equal(pinned.storeId, official, "the site's posting wins over our guess");
+  assert.equal(pinned.official, true, "a pin from the site must say so");
+
+  const fallback = eventStorePins({ insights, entries: host }).get("える");
+  assert.equal(fallback.storeId, guessed, "without a posting we fall back on the tendency");
+  assert.equal(fallback.official, false, "a guessed pin must not claim to be official");
+
+  // 予定表に配属が無い人でも落ちない。
+  const partial = eventStorePins({ insights, entries: host, homeStore: {} }).get("える");
+  assert.equal(partial.storeId, guessed, "an empty posting table falls back too");
+
+  // 公式の配属は全員ぶんあるので、記念日の主役はすべて公式で置ける。
+  for (const [date, day] of Object.entries(schedule.schedule)) {
+    for (const [shift, members] of Object.entries(day)) {
+      const pins = eventStorePins({ insights, entries: members, homeStore: schedule.homeStore });
+      for (const [name, pin] of pins) {
+        assert.equal(pin.official, true, `${date} ${shift}: ${name} must be pinned from the site`);
+        assert.equal(pin.storeId, schedule.homeStore[name], `${name} must stand at her own shop`);
+      }
+    }
+  }
+}
+
 // 開店店舗数は人数から決まる。最頻値で固定すると3店舗の日も1店舗の日も出せない。
 {
   const tendency = outlookFor(farFuture, "昼");

@@ -389,22 +389,25 @@
   }
 
   // 生誕祭・周年・卒業の主役は、その日かならず自分の所属店に立つ。
-  // 所属店は公式の配属ではなく「その店が開いている日にいちばん入っている店」からの推定。
-  function eventStorePins({ insights, entries }) {
+  // 所属店は公式サイトの配属（homeStore）を優先し、載っていない人だけ
+  // 「その店が開いている日にいちばん入っている店」からの推定で補う。
+  function eventStorePins({ insights, entries, homeStore }) {
     const pins = new Map();
     for (const entry of entries ?? []) {
       if (!entry?.featured) {
         continue;
       }
       const tendency = insights?.maidTendency?.[entry.name];
-      const home = tendency?.home;
+      const official = homeStore?.[entry.name];
+      const home = official ?? tendency?.home;
       if (!home) {
         continue;
       }
       pins.set(entry.name, {
         storeId: home,
         label: entry.eventLabel ?? "記念日",
-        pickRate: tendency.pickRate?.[home] ?? null
+        official: Boolean(official),
+        pickRate: tendency?.pickRate?.[home] ?? null
       });
     }
     return pins;
@@ -819,7 +822,7 @@
 
   function getShiftOutlook(key, shift) {
     const entries = data.schedule[key]?.[shift] ?? [];
-    const pins = eventStorePins({ insights, entries });
+    const pins = eventStorePins({ insights, entries, homeStore: data.homeStore });
     const outlook = getStoreOutlook({
       insights,
       dateKey: key,
