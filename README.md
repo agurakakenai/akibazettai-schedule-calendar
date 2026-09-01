@@ -24,7 +24,62 @@ py -m http.server 4173 --bind 127.0.0.1
 node tests/validate-schedule.js
 node tests/date-defaults.js
 node tests/range-rendering.js
+node tests/validate-insights.js
+node tests/store-outlook.js
 ```
+
+`validate-insights.js` は [`data/store-insights.js`](data/store-insights.js) の形（店舗ID・確率の範囲・`roster` との一致など）を、`store-outlook.js` は `app.js` の「実績 / 翌日見込み / 曜日傾向」を選ぶロジックを検証します。
+
+## 店舗の見込み表示
+
+カレンダーの昼・夜それぞれに、その時間帯にどの店舗が開いていたか（開きそうか）を表示します。バッジは3種類です。
+
+| バッジ | 意味 |
+|---|---|
+| 実績 | 公式Xの投稿で確認できた、その日そのシフトの営業店舗 |
+| 見込み（翌日） | 実績の最終日の翌日だけ、前日からのローテーションで見積もった値 |
+| 曜日傾向 | 曜日ごとの過去1年の営業率。その日の予測ではありません |
+
+メイドさん1人ずつには、よく入る店舗を小さなチップで表示します。実績のある日は「その日開いていた店舗のうち、いちばん入りやすい店」を、それ以外の日は「出勤するときにその店にいる確率」の最上位を出します。
+
+### 予測精度（実測値・正直な注記）
+
+**このサイトの「見込み」は当たりません。** 実測値は次のとおりです。
+
+- 翌日について「2号店と3号店のどちらが開くか」は、昼夜をまとめて **51.4%**（当てずっぽうは 38.3%）
+- **昼夜まで分けると 2・3号店は昼 38.3% / 夜 43.0%** で、当てずっぽうと変わりません
+- 4号店の翌日は昼 63.6% / 夜 70.1% で、こちらは多少あてになります
+- **2日以上先はベースライン並み**です。曜日ごとの平均を出しているだけで、その日の予想には使えません
+- メイドさんの店舗を1店に絞って当たるのは、開いている店舗が分かっていれば 65.6%、分からなければ 53.2%（「常に1号店」の 54.2% と同等）。**候補を2店舗まで広げると 75.0%**
+- 生誕祭・周年・卒業の日は主役のメイドさんが顔ぶれを選べるため、傾向の計算から除いています
+
+また、営業の仕方にも偏りがあります。2〜4号店は片方のシフトだけ開ける日が多数派で（4号店は 84.3%）、昼と夜で開店店舗が違う日が 73% あります。同じ日の中で2号店と3号店が入れ替わった例は 0 件で、入れ替わるのは翌日です。
+
+### データの出どころ
+
+[`data/store-insights.js`](data/store-insights.js) は、公式X [@akibazettai](https://x.com/akibazettai) の「ひるにゃんこ / よるにゃんこ」投稿を Wayback Machine 経由で復元した出勤実績から作っています。集計期間は 2025-08-30〜2026-08-30（361日）で、カレンダーに持たせている実績は直近180日ぶんです。
+
+### 再生成
+
+```powershell
+py tools/build-insights.py
+```
+
+[`tools/build-insights.py`](tools/build-insights.py) が次を読み、`data/store-insights.js` を書き出します。
+
+| ファイル | 内容 |
+|---|---|
+| [`tools/data/shifts.csv`](tools/data/shifts.csv) | 日付・シフト・店舗・メイド名の出勤実績 |
+| [`tools/data/events.csv`](tools/data/events.csv) | 生誕祭・周年・卒業イベント（顔ぶれが変わるため傾向計算から除外） |
+| [`tools/data/accounts.csv`](tools/data/accounts.csv) | 名前とXアカウントの対応。手で追記できます |
+| [`data/schedule.js`](data/schedule.js) | `roster` の読み取りにのみ使用 |
+
+生成物はブラウザーが読むだけの静的テーブルです。表示時に重い計算はしません。
+
+### 既知の差分
+
+- `data/schedule.js` の `roster` は35名ですが、公式サイトの在籍は36名で **`まひろ` が `roster` に入っていません**。`roster` に追加すれば `data/store-insights.js` 側は再生成で自動的に追従します。
+- 公式サイトの在籍一覧に無いものの最近お給仕に出ている方は、カレンダー本体には表示せず、凡例の下に一覧として出しています。公開アカウントを確認できた方だけXへリンクしています。
 
 ## お給仕情報の更新
 
@@ -35,6 +90,7 @@ node tests/range-rendering.js
 3. 記念日・生誕の主役には `featured: true` と、読み上げ・ツールチップ用の `eventLabel` を指定します。
 4. メイド服を着ないキッチンにゃんこは `kitchenStaff` に入れます。カレンダーとフィルターに 🍳 が付きます。
 5. `node tests/validate-schedule.js` を実行します。
+6. `roster` を変更したときは `py tools/build-insights.py` で `data/store-insights.js` を作り直し、`node tests/validate-insights.js` を実行します。
 
 各シフトの並び順は `roster` の公式順と一致させてください（検証スクリプトが確認します）。
 

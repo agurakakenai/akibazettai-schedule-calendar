@@ -27,6 +27,8 @@ jobs:
           node tests/validate-schedule.js
           node tests/date-defaults.js
           node tests/range-rendering.js
+          node tests/validate-insights.js
+          node tests/store-outlook.js
 
   deploy:
     name: Deploy static site
