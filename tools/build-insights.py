@@ -231,6 +231,10 @@ def measure_calibration(cell, last_d, roster_keys, posted_by_key):
         return None
     return {
         'from': eval_from, 'to': last_d.isoformat(),
+        # 1店舗しか開かない日は、その人がその店にいるのが定義上100%になり、
+        # バケットを不当に良く見せるので測っていない。チップが候補1店で 100% と
+        # 出すときの不確かさは「店舗予測が当たるか」であって、ここの数字ではない。
+        'scope': 'twoOrMoreOpen',
         'brier': round(brier_sum / brier_n, 4),
         'n': brier_n,
         'buckets': out,

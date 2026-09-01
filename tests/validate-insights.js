@@ -676,6 +676,13 @@ assert.equal(
   assert.ok(cal.from < cal.to, "the calibration window must move forwards");
   assert.ok(cal.n > 1000, `calibration needs a real sample, got ${cal.n}`);
   assert.ok(cal.brier > 0 && cal.brier < 0.25, `Brier must be sane, got ${cal.brier}`);
+  // 適用範囲を明記させる。1店舗しか開かない日は測っていないので、
+  // チップが候補1店で 100% と出すときの根拠には使えない。
+  assert.equal(
+    cal.scope,
+    "twoOrMoreOpen",
+    "calibration must say it only covers shifts where two or more shops opened"
+  );
 
   assert.ok(Array.isArray(cal.buckets) && cal.buckets.length >= 5, "buckets must be usable");
   let previous = -1;
