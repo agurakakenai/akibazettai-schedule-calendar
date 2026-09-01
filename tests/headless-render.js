@@ -390,26 +390,63 @@ for (const link of linkedNames) {
   assert.equal(link.rel, "noopener noreferrer", "external links must not leak the opener");
 }
 
-// 1人ずつ独立に決めると全員が1号店になるので、同じシフトの中で割れていることを確かめる。
-const busySections = shiftSections.filter((section) => withClass(section, "maid-store-chip").length >= 6);
-assert.ok(busySections.length > 0, "at least one shift must be busy enough to split across stores");
+// 1人ずつ独立に決めると全員が1号店になるので、複数店に割れることを確かめる。
+// ただし少人数のシフトは1店で収まるのが正しいので、標準人数を超えた場合だけ2店以上を要求する。
 let splitSections = 0;
-for (const section of busySections) {
-  const assigned = withClass(section, "maid-store-chip").map((chip) => chip.dataset.store);
-  if (new Set(assigned).size > 1) {
-    splitSections += 1;
-  }
+let forcedSections = 0;
+for (const cell of dayCells) {
+  const [, year, month, day] = /(\d+)年(\d+)月(\d+)日/.exec(cell.getAttribute("aria-label"));
+  const cellKey = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  withClass(cell, "shift-section").forEach((section, shiftIndex) => {
+    const shift = insights.shifts[shiftIndex];
+    const assigned = withClass(section, "maid-store-chip").map((chip) => chip.dataset.store);
+    if (assigned.length === 0) {
+      return;
+    }
+    if (new Set(assigned).size > 1) {
+      splitSections += 1;
+    }
+    const biggestShop = Math.max(...Object.values(insights.typicalHeadcount[shift]));
+    const scheduled = (schedule.schedule[cellKey]?.[shift] ?? []).length;
+    if (scheduled > biggestShop) {
+      forcedSections += 1;
+      assert.ok(
+        new Set(assigned).size > 1,
+        `${cellKey} ${shift} has ${scheduled} maids, more than any single shop holds, so it must open more than one`
+      );
+    }
+  });
 }
-assert.equal(
-  splitSections,
-  busySections.length,
-  "every busy shift must spread its maids over more than one store"
-);
+assert.ok(forcedSections > 0, "the schedule must contain a shift too big for a single shop");
+assert.ok(splitSections > 0, "some shifts must spread across stores");
+
 const allAssigned = withClass(calendar, "maid-store-chip").map((chip) => chip.dataset.store);
 assert.ok(
   new Set(allAssigned).size >= 2,
   "the calendar must not send every maid to the same store"
 );
+
+// 開く店舗の数は日によって変わる。最頻値で固定すると3店舗の日も1店舗の日も出せない。
+const shopCounts = new Set();
+for (const cell of dayCells) {
+  withClass(cell, "shift-section").forEach((section) => {
+    const assigned = withClass(section, "maid-store-chip").map((chip) => chip.dataset.store);
+    if (assigned.length > 0) {
+      shopCounts.add(new Set(assigned).size);
+    }
+  });
+}
+assert.ok(
+  shopCounts.size >= 2,
+  `the calendar must not use the same shop count everywhere, got ${[...shopCounts].join(",")}`
+);
+for (const count of shopCounts) {
+  assert.ok(
+    (insights.openCountPerShift["昼"][String(count)] ?? 0) +
+      (insights.openCountPerShift["夜"][String(count)] ?? 0) > 0,
+    `${count} shops open at once has never actually happened`
+  );
+}
 
 const featured = maidEntries.filter((entry) => entry.classList.contains("is-featured"));
 assert.ok(featured.length > 0, "the September range still contains featured shifts");

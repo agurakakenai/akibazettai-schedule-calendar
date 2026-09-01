@@ -93,7 +93,7 @@ def build():
     def open_at(d, sh):
         return set(cell.get((d, sh), {}))
 
-    base, typical = {}, {}
+    base, typical, headcount = {}, {}, {}
     for sh in SHIFTS:
         cnt = collections.Counter()
         sizes = collections.defaultdict(list)
@@ -103,6 +103,28 @@ def build():
                 sizes[sid].append(len(maids))
         base[sh] = {sid: rate(cnt[sid], nd) for sid in IDS}
         typical[sh] = {sid: (round(sum(sizes[sid]) / len(sizes[sid]), 1) if sizes[sid] else 0) for sid in IDS}
+        # 平均だけだと「何人態勢の店か」が分からないので分布も持たせる。
+        # 4号店は昼4人が57%・夜4人が60%と、他店より2人少ない体制で固定されている。
+        headcount[sh] = {}
+        for sid in IDS:
+            vals = sorted(sizes[sid])
+            if not vals:
+                headcount[sh][sid] = None
+                continue
+            hist = collections.Counter(vals)
+            mode, mode_n = hist.most_common(1)[0]
+            headcount[sh][sid] = {
+                'mean': round(sum(vals) / len(vals), 1),
+                'median': vals[len(vals) // 2],
+                'mode': mode,
+                'modeShare': rate(mode_n, len(vals)),
+                'min': vals[0],
+                'max': vals[-1],
+                'p25': vals[len(vals) // 4],
+                'p75': vals[len(vals) * 3 // 4],
+                'shifts': len(vals),
+                'distribution': {str(k): hist[k] for k in sorted(hist)},
+            }
 
     # 曜日 x シフト（JS の getDay() に合わせて 0=日曜）
     weekday = {}
@@ -192,6 +214,23 @@ def build():
     for sh in SHIFTS:
         c = collections.Counter(len(open_at(d, sh)) for d in dates)
         open_count[sh] = {str(k): c[k] for k in sorted(c)}
+
+    # 開いた店舗数ごとの「カレンダーに出る人数」（roster のみ、見習いを除く）。
+    # 前日からのローテーションでは3店舗の日を当てられないので、UI はこの人数で店舗数を決める。
+    roster_names = {ALIAS.get(n, n) for n in roster}
+    headcount_by_open = {}
+    for sh in SHIFTS:
+        buckets = collections.defaultdict(list)
+        for d in dates:
+            stores = cell.get((d, sh), {})
+            if not stores:
+                continue
+            listed = {m for maids in stores.values() for m in maids if m in roster_names}
+            buckets[len(stores)].append(len(listed))
+        headcount_by_open[sh] = {
+            str(k): {'mean': round(sum(v) / len(v), 2), 'n': len(v)}
+            for k, v in sorted(buckets.items()) if v
+        }
 
     # 翌日予測の的中率（前半で学習・後半で検証）
     acc = {}
@@ -435,6 +474,31 @@ def build():
             cov_on += on
             cov_dist[len(maids) - on] += 1
     cov_off = cov_total - cov_on
+    # 店舗ごとの見習い人数。全体平均（unlistedPerShift）はシフト単位なので、
+    # 店舗ごとの人数とは意味が違う（実測で店あたり 0.7〜1.6 人）。
+    per_store = {}
+    for sid in IDS:
+        cells = rostered_here = unlisted_here = 0
+        zero = 0
+        for (d, sh), stores in cell.items():
+            if d < cov_cut or sid not in stores:
+                continue
+            maids = stores[sid]
+            on = sum(1 for mm in maids if mm in roster_keys)
+            cells += 1
+            rostered_here += on
+            unlisted_here += len(maids) - on
+            if len(maids) == on:
+                zero += 1
+        per_store[sid] = {
+            'shifts': cells,
+            'rostered': rostered_here,
+            'unlisted': unlisted_here,
+            'unlistedShare': rate(unlisted_here, rostered_here + unlisted_here),
+            'unlistedPerShift': round(unlisted_here / cells, 2) if cells else 0,
+            'shiftsWithoutUnlisted': rate(zero, cells),
+        }
+
     roster_coverage = {
         'from': cov_cut, 'to': last, 'shiftCells': cov_cells, 'totalMaids': cov_total,
         'rostered': cov_on, 'unlisted': cov_off,
@@ -442,6 +506,7 @@ def build():
         'unlistedPerShift': round(cov_off / cov_cells, 2) if cov_cells else 0,
         'shiftsWithUnlisted': rate(sum(v for k, v in cov_dist.items() if k > 0), cov_cells),
         'distribution': {str(k): cov_dist[k] for k in sorted(cov_dist)},
+        'byStore': per_store,
     }
 
     hist_from = (last_d - datetime.timedelta(days=HISTORY_DAYS)).isoformat()
@@ -463,9 +528,11 @@ def build():
         'weekdayOrigin': 'sunday',
         'baseOpenRate': base,
         'typicalHeadcount': typical,
+        'headcountProfile': headcount,
         'weekdayOpenRate': weekday,
         'shiftPattern': shift_pattern,
         'openCountPerShift': open_count,
+        'rosterHeadcountByOpenCount': headcount_by_open,
         'shiftSplitGivenOpen': shift_split,
         'rotation': {
             # nextDayByDay は日単位の参考値。app.js は「その日どちらの店が開くか」の補足にだけ使い、

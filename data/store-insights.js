@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-02 01:30",
+  "generatedAt": "2026-09-02 02:07",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-08-30"
@@ -64,6 +64,167 @@ window.STORE_INSIGHTS = {
       "s2": 6.3,
       "s3": 6.2,
       "s4": 4.2
+    }
+  },
+  "headcountProfile": {
+    "昼": {
+      "s1": {
+        "mean": 6.1,
+        "median": 6,
+        "mode": 6,
+        "modeShare": 0.359,
+        "min": 3,
+        "max": 13,
+        "p25": 5,
+        "p75": 7,
+        "shifts": 354,
+        "distribution": {
+          "3": 3,
+          "4": 25,
+          "5": 100,
+          "6": 127,
+          "7": 57,
+          "8": 26,
+          "9": 3,
+          "10": 1,
+          "11": 4,
+          "12": 3,
+          "13": 5
+        }
+      },
+      "s2": {
+        "mean": 6.0,
+        "median": 6,
+        "mode": 5,
+        "modeShare": 0.333,
+        "min": 3,
+        "max": 8,
+        "p25": 5,
+        "p75": 7,
+        "shifts": 111,
+        "distribution": {
+          "3": 1,
+          "4": 2,
+          "5": 37,
+          "6": 33,
+          "7": 28,
+          "8": 10
+        }
+      },
+      "s3": {
+        "mean": 6.1,
+        "median": 6,
+        "mode": 6,
+        "modeShare": 0.382,
+        "min": 4,
+        "max": 10,
+        "p25": 5,
+        "p75": 7,
+        "shifts": 110,
+        "distribution": {
+          "4": 3,
+          "5": 30,
+          "6": 42,
+          "7": 22,
+          "8": 11,
+          "9": 1,
+          "10": 1
+        }
+      },
+      "s4": {
+        "mean": 4.1,
+        "median": 4,
+        "mode": 4,
+        "modeShare": 0.581,
+        "min": 3,
+        "max": 6,
+        "p25": 4,
+        "p75": 5,
+        "shifts": 105,
+        "distribution": {
+          "3": 17,
+          "4": 61,
+          "5": 26,
+          "6": 1
+        }
+      }
+    },
+    "夜": {
+      "s1": {
+        "mean": 5.8,
+        "median": 6,
+        "mode": 6,
+        "modeShare": 0.437,
+        "min": 3,
+        "max": 13,
+        "p25": 5,
+        "p75": 6,
+        "shifts": 339,
+        "distribution": {
+          "3": 4,
+          "4": 26,
+          "5": 91,
+          "6": 148,
+          "7": 53,
+          "8": 15,
+          "9": 1,
+          "13": 1
+        }
+      },
+      "s2": {
+        "mean": 6.3,
+        "median": 6,
+        "mode": 6,
+        "modeShare": 0.442,
+        "min": 4,
+        "max": 12,
+        "p25": 6,
+        "p75": 7,
+        "shifts": 86,
+        "distribution": {
+          "4": 1,
+          "5": 17,
+          "6": 38,
+          "7": 21,
+          "8": 7,
+          "9": 1,
+          "12": 1
+        }
+      },
+      "s3": {
+        "mean": 6.2,
+        "median": 6,
+        "mode": 6,
+        "modeShare": 0.519,
+        "min": 5,
+        "max": 9,
+        "p25": 6,
+        "p75": 7,
+        "shifts": 81,
+        "distribution": {
+          "5": 15,
+          "6": 42,
+          "7": 18,
+          "8": 5,
+          "9": 1
+        }
+      },
+      "s4": {
+        "mean": 4.2,
+        "median": 4,
+        "mode": 4,
+        "modeShare": 0.606,
+        "min": 3,
+        "max": 5,
+        "p25": 4,
+        "p75": 5,
+        "shifts": 109,
+        "distribution": {
+          "3": 8,
+          "4": 66,
+          "5": 35
+        }
+      }
     }
   },
   "weekdayOpenRate": {
@@ -202,6 +363,36 @@ window.STORE_INSIGHTS = {
       "1": 97,
       "2": 247,
       "3": 8
+    }
+  },
+  "rosterHeadcountByOpenCount": {
+    "昼": {
+      "1": {
+        "mean": 4.32,
+        "n": 65
+      },
+      "2": {
+        "mean": 9.06,
+        "n": 267
+      },
+      "3": {
+        "mean": 13.33,
+        "n": 27
+      }
+    },
+    "夜": {
+      "1": {
+        "mean": 4.26,
+        "n": 97
+      },
+      "2": {
+        "mean": 8.47,
+        "n": 247
+      },
+      "3": {
+        "mean": 12.75,
+        "n": 8
+      }
     }
   },
   "shiftSplitGivenOpen": {
@@ -5035,6 +5226,40 @@ window.STORE_INSIGHTS = {
       "2": 40,
       "3": 4,
       "4": 1
+    },
+    "byStore": {
+      "s1": {
+        "shifts": 172,
+        "rostered": 879,
+        "unlisted": 142,
+        "unlistedShare": 0.139,
+        "unlistedPerShift": 0.83,
+        "shiftsWithoutUnlisted": 0.32
+      },
+      "s2": {
+        "shifts": 58,
+        "rostered": 291,
+        "unlisted": 65,
+        "unlistedShare": 0.183,
+        "unlistedPerShift": 1.12,
+        "shiftsWithoutUnlisted": 0.155
+      },
+      "s3": {
+        "shifts": 56,
+        "rostered": 274,
+        "unlisted": 54,
+        "unlistedShare": 0.165,
+        "unlistedPerShift": 0.96,
+        "shiftsWithoutUnlisted": 0.214
+      },
+      "s4": {
+        "shifts": 58,
+        "rostered": 205,
+        "unlisted": 31,
+        "unlistedShare": 0.131,
+        "unlistedPerShift": 0.53,
+        "shiftsWithoutUnlisted": 0.466
+      }
     }
   }
 };

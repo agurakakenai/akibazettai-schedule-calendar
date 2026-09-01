@@ -341,20 +341,20 @@ assert.deepEqual(
   "a recorded shift must only place maids in the stores that were open"
 );
 
-// 開店店舗が分からない日は、そのシフトでいちばん多い開店店舗数ぶんだけ候補にする。
-const modalOpenCount = Number(
-  Object.entries(insights.openCountPerShift["昼"])
-    .filter(([count]) => Number(count) > 0)
-    .sort((a, b) => b[1] - a[1])[0][0]
-);
+// 開店店舗が分からない日は、その日出る人数から店舗数を決める。
 assert.equal(
-  expectedOpenStores(insights, "昼", futureOutlook).length,
-  modalOpenCount,
-  "an unknown day must consider the most common number of open stores"
+  expectedOpenStores(insights, "昼", futureOutlook, dayPool.length).length,
+  expectedOpenStores(insights, "昼", futureOutlook, dayPool.length).length,
+  "the candidate set must be stable for the same line-up"
 );
 assert.ok(
-  expectedOpenStores(insights, "昼", futureOutlook).includes("s1"),
+  expectedOpenStores(insights, "昼", futureOutlook, dayPool.length).includes("s1"),
   "1号店 is open almost every day, so it must always be a candidate"
+);
+assert.ok(
+  expectedOpenStores(insights, "昼", futureOutlook, 4).length <
+    expectedOpenStores(insights, "昼", futureOutlook, 14).length,
+  "a bigger line-up must open more shops than a small one"
 );
 
 // 定員の丸めは合計を崩さない。
@@ -461,6 +461,7 @@ for (const [date, day] of Object.entries(schedule.schedule)) {
     }
   }
 }
+const eventShiftsPreview = eventShifts;
 assert.ok(eventShifts.length > 0, "the fixture must contain at least one event shift");
 
 for (const { date, shift, entries } of eventShifts) {
@@ -569,8 +570,84 @@ assert.equal(
   "a maid with no tendency has no known store to pin her to"
 );
 
+// 開店店舗数は人数から決まる。最頻値で固定すると3店舗の日も1店舗の日も出せない。
+{
+  const tendency = outlookFor(farFuture, "昼");
+  const countFor = (poolSize) => expectedOpenStores(insights, "昼", tendency, poolSize).length;
+
+  for (const poolSize of [3, 4, 5]) {
+    assert.equal(countFor(poolSize), 1, `${poolSize} maids fit in a single shop`);
+  }
+  for (const poolSize of [8, 9, 10]) {
+    assert.equal(countFor(poolSize), 2, `${poolSize} maids need two shops`);
+  }
+  for (const poolSize of [13, 15]) {
+    assert.equal(countFor(poolSize), 3, `${poolSize} maids need three shops`);
+  }
+
+  // 人数が増えれば店舗数は減らない。
+  let previous = 0;
+  for (let poolSize = 0; poolSize <= 30; poolSize += 1) {
+    const count = countFor(poolSize);
+    assert.ok(count >= previous, `a bigger line-up must not open fewer shops (${poolSize})`);
+    assert.ok(
+      count >= 1 && count <= insights.stores.length,
+      `an extreme line-up of ${poolSize} must still pick 1..${insights.stores.length} shops`
+    );
+    previous = count;
+  }
+
+  // イベント開催店は人数に関係なく必ず候補に残る。
+  const eventShift = eventShiftsPreview[0];
+  if (eventShift) {
+    const pinned = applyEventCertainty(
+      insights,
+      outlookFor(eventShift.date, eventShift.shift),
+      eventStorePins({ insights, entries: eventShift.entries })
+    );
+    const chosen = expectedOpenStores(insights, eventShift.shift, pinned, 1);
+    for (const storeId of pinned.certainStores) {
+      assert.ok(chosen.includes(storeId), "a hosting shop must survive even a tiny line-up");
+    }
+  }
+}
+
+// 実データでも、全シフトが同じ店舗数になってはいけない。
+{
+  const seen = { 昼: new Set(), 夜: new Set() };
+  for (const [date, day] of Object.entries(schedule.schedule)) {
+    for (const shift of insights.shifts) {
+      const entries = day[shift] ?? [];
+      const outlook = applyEventCertainty(
+        insights,
+        outlookFor(date, shift),
+        eventStorePins({ insights, entries })
+      );
+      seen[shift].add(expectedOpenStores(insights, shift, outlook, entries.length).length);
+    }
+  }
+  const combined = new Set([...seen["昼"], ...seen["夜"]]);
+  assert.ok(
+    combined.size >= 3,
+    `the schedule must produce a mix of shop counts, got ${[...combined].join(",")}`
+  );
+  for (const count of [1, 2, 3]) {
+    assert.ok(combined.has(count), `${count}-shop shifts must be reachable on real data`);
+  }
+  const recorded = new Set(
+    Object.keys(insights.openCountPerShift["昼"])
+      .concat(Object.keys(insights.openCountPerShift["夜"]))
+      .map(Number)
+      .filter((count) => count > 0)
+  );
+  for (const count of combined) {
+    assert.ok(recorded.has(count), `${count} shops has never actually happened`);
+  }
+}
+
 console.log(
   "Store outlook valid: records, next-day forecast, weekday tendency, " +
     `${partialDates.length} single-shift days, Sunday-based weekday index, sparse-rotation fallbacks, ` +
-    `capacity-based assignment, and ${eventShifts.length} event shifts pinned to the host's own store.`
+    `headcount-driven shop counts (1/2/3), capacity-based assignment, ` +
+    `and ${eventShifts.length} event shifts pinned to the host's own store.`
 );

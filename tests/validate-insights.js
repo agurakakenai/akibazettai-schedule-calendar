@@ -170,6 +170,29 @@ for (const shift of shiftNames) {
       `openCountPerShift.${shift}.${key} must be a non-negative integer`
     );
   }
+
+  // UI は「その日出る人数」で開店店舗数を決めるので、その根拠となる実測が要る。
+  const headcounts = insights.rosterHeadcountByOpenCount[shift];
+  assert.ok(headcounts, `rosterHeadcountByOpenCount.${shift} is required`);
+  const openCounts = Object.keys(headcounts).map(Number).sort((a, b) => a - b);
+  assert.ok(openCounts.length >= 2, `${shift} must record more than one open-shop count`);
+  let previousMean = 0;
+  for (const count of openCounts) {
+    const bucket = headcounts[String(count)];
+    assert.ok(
+      typeof bucket.mean === "number" && bucket.mean > 0,
+      `rosterHeadcountByOpenCount.${shift}.${count}.mean must be positive`
+    );
+    assert.ok(
+      Number.isInteger(bucket.n) && bucket.n > 0,
+      `rosterHeadcountByOpenCount.${shift}.${count}.n must be a positive integer`
+    );
+    assert.ok(
+      bucket.mean > previousMean,
+      `${shift}: opening more shops must mean more maids, ${count} shops gave ${bucket.mean}`
+    );
+    previousMean = bucket.mean;
+  }
 }
 
 // --- ローテーション -----------------------------------------------------
@@ -498,6 +521,41 @@ assert.ok(
 for (const key of ["from", "to"]) {
   assert.match(coverage[key], /^\d{4}-\d{2}-\d{2}$/, `rosterCoverage.${key} must be a date`);
 }
+
+// 「カレンダーの顔ぶれ＋何人か」を店ごとに言うための実測。
+assert.ok(coverage.byStore, "rosterCoverage.byStore is required");
+for (const id of storeIdList) {
+  const store = coverage.byStore[id];
+  assert.ok(store, `rosterCoverage.byStore.${id} is required`);
+  for (const key of ["shifts", "rostered", "unlisted"]) {
+    assert.ok(
+      Number.isInteger(store[key]) && store[key] >= 0,
+      `rosterCoverage.byStore.${id}.${key} must be a non-negative integer`
+    );
+  }
+  assertRate(store.unlistedShare, `rosterCoverage.byStore.${id}.unlistedShare`);
+  assertRate(store.shiftsWithoutUnlisted, `rosterCoverage.byStore.${id}.shiftsWithoutUnlisted`);
+  assert.ok(
+    typeof store.unlistedPerShift === "number" && store.unlistedPerShift >= 0,
+    `rosterCoverage.byStore.${id}.unlistedPerShift must be a non-negative number`
+  );
+  if (store.shifts > 0) {
+    assert.ok(
+      Math.abs(store.unlisted / store.shifts - store.unlistedPerShift) <= 0.01,
+      `rosterCoverage.byStore.${id}.unlistedPerShift must match unlisted / shifts`
+    );
+  }
+}
+assert.equal(
+  storeIdList.reduce((sum, id) => sum + coverage.byStore[id].shifts, 0),
+  coverage.shiftCells,
+  "the per-store shift counts must add up to shiftCells"
+);
+assert.equal(
+  storeIdList.reduce((sum, id) => sum + coverage.byStore[id].unlisted, 0),
+  coverage.unlisted,
+  "the per-store unlisted counts must add up to the total"
+);
 
 console.log(
   `Store insights valid: ${insights.stores.length} stores, ` +

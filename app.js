@@ -521,25 +521,49 @@
     return { storeIds, capacity: placed, byMaid };
   }
 
-  // 開いている店が分からない日は、そのシフトでいちばん多い開店店舗数ぶんだけ上位を採る。
-  function expectedOpenStores(insights, shift, outlook) {
+  // その日出る人数が標準人数を超えるなら、その人数を収めるだけの店が開いているはず。
+  // 実測では、この定員方式だけで店舗数の的中が昼85.5% / 夜85.8%（1店舗の日も3店舗の日も拾える）。
+  // ローテーション確率は1号店が高すぎてほぼ常に「2店」になり、少人数の日を潰すので使わない。
+  function capacityCountFor(insights, shift, orderedIds, poolSize) {
+    if (!(poolSize > 0)) {
+      return 1;
+    }
+    const headcount = insights.typicalHeadcount?.[shift] ?? {};
+    // typicalHeadcount は見習い込みの人数。カレンダーに出るのは在籍だけなので、
+    // その差（2割ほど）が「見習いが何人来るか分からない」ぶんの緩衝として働く。
+    // ここにさらに見習いぶんを足すと過大評価になり、実測でも精度が落ちる（84.4%→82.5%）。
+    const needed = poolSize;
+    let seats = 0;
+    for (let index = 0; index < orderedIds.length; index += 1) {
+      seats += headcount[orderedIds[index]] ?? 0;
+      if (seats >= needed) {
+        return index + 1;
+      }
+    }
+    return orderedIds.length;
+  }
+
+  // 開いている店が分からない日は、その日出る人数から店舗数を決める。
+  function expectedOpenStores(insights, shift, outlook, poolSize) {
     if (!outlook) {
       return [];
     }
     if (outlook.basis === "actual") {
       return outlook.openStores ?? [];
     }
-    const counts = insights.openCountPerShift?.[shift] ?? {};
-    const modal = Object.entries(counts)
-      .filter(([count]) => Number(count) > 0)
-      .sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]))[0];
-    const target = Math.max(1, modal ? Number(modal[0]) : 2);
     const certain = outlook.certainStores ?? [];
-    const rest = [...outlook.entries]
-      .sort((a, b) => b.rate - a.rate)
-      .map((entry) => entry.store.id)
-      .filter((id) => !certain.includes(id));
-    const chosen = [...certain, ...rest].slice(0, Math.max(target, certain.length));
+    const ordered = [
+      ...certain,
+      ...[...outlook.entries]
+        .sort((a, b) => b.rate - a.rate)
+        .map((entry) => entry.store.id)
+        .filter((id) => !certain.includes(id))
+    ];
+    const target = Math.min(
+      ordered.length,
+      Math.max(1, certain.length, capacityCountFor(insights, shift, ordered, poolSize))
+    );
+    const chosen = ordered.slice(0, target);
     // 店舗の並び順に戻して、割り振り結果が安定するようにする。
     return storesOf(insights)
       .map((store) => store.id)
@@ -547,7 +571,7 @@
   }
 
   function getShiftAssignment({ insights, members, shift, outlook, pins }) {
-    const storeIds = expectedOpenStores(insights, shift, outlook);
+    const storeIds = expectedOpenStores(insights, shift, outlook, members?.length ?? 0);
     if (storeIds.length === 0) {
       return null;
     }
@@ -1126,7 +1150,43 @@
     }
 
     const split = insights.shiftSplitGivenOpen;
-    if (split) {
+    const counts = insights.openCountPerShift;
+    if (counts) {
+      const shareOf = (shift, wanted) => {
+        const table = counts[shift] ?? {};
+        const total = Object.values(table).reduce((sum, value) => sum + value, 0);
+        return total > 0 ? (table[String(wanted)] ?? 0) / total : 0;
+      };
+      const three = shifts
+        .map((shift) => `${shift}${toPercent(shareOf(shift, 3))}`)
+        .join(" / ");
+      const one = shifts
+        .map((shift) => `${shift}${toPercent(shareOf(shift, 1))}`)
+        .join(" / ");
+      lines.push(
+        `開く店舗の数は日によって違います。3店舗開く日は${three}、1店舗だけの日は${one}で、` +
+          "夜のほうが閉まりやすい傾向です。"
+      );
+    }
+
+    const headcounts = insights.rosterHeadcountByOpenCount;
+    if (headcounts) {
+      const described = shifts
+        .map((shift) => {
+          const table = headcounts[shift] ?? {};
+          const parts = Object.keys(table)
+            .sort()
+            .map((count) => `${count}店舗なら${table[count].mean}人`);
+          return parts.length > 0 ? `${shift}は${parts.join("・")}` : null;
+        })
+        .filter(Boolean);
+      if (described.length > 0) {
+        lines.push(
+          `いくつ開くかは、その日カレンダーに出る人数から見積もっています（${described.join("、")}）。` +
+            "ローテーションの確率からは3店舗の日を当てられなかったためです。"
+        );
+      }
+    }    if (split) {
       const described = storeList
         .filter((store) => split[store.id])
         .map((store) => {
@@ -1167,7 +1227,7 @@
     const parts = [
       "カレンダーに出るのは在籍メイドさんだけです。",
       "見習いにゃんこがいつお給仕に出るかは当日のお給仕投稿まで分からず、事前に知る手段がありません。",
-      `そのため、ここに出ている人数は実際より1シフトあたり平均${perShift}人（${shiftShare}のシフト）少なくなります。`
+      `そのため、ここに出ている人数は実際より少なく、開いている店1つあたり平均${perShift}人ぶん足りません（${shiftShare}のシフトで発生）。`
     ];
 
     if (typeof coverage.unlistedShare === "number" && coverage.shiftCells) {
@@ -1175,6 +1235,25 @@
         `${coverage.from}〜${coverage.to}の${coverage.shiftCells}シフトで、` +
           `のべ人数の${toPercent(coverage.unlistedShare)}が未掲載でした。`
       );
+    }
+
+    const byStore = coverage.byStore;
+    if (byStore) {
+      const described = storeList
+        .filter((store) => byStore[store.id])
+        .map((store) => `${store.short}${byStore[store.id].unlistedPerShift}人`)
+        .join(" / ");
+      if (described) {
+        const quietest = storeList
+          .filter((store) => byStore[store.id])
+          .reduce((least, store) =>
+            byStore[store.id].unlistedPerShift < byStore[least.id].unlistedPerShift ? store : least
+          );
+        parts.push(
+          `店ごとの見習いの人数は${described}で、${quietest.short}だけ少なめです` +
+            `（見習いがいないシフトが${toPercent(byStore[quietest.id].shiftsWithoutUnlisted ?? 0)}）。`
+        );
+      }
     }
 
     note.textContent = parts.join("");
