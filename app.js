@@ -1,6 +1,40 @@
 (() => {
   "use strict";
 
+  function getTokyoDateDefaults(now = new Date()) {
+    const parts = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
+      timeZone: "Asia/Tokyo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(now);
+    const dateParts = Object.fromEntries(
+      parts
+        .filter(({ type }) => ["year", "month", "day"].includes(type))
+        .map(({ type, value }) => [type, Number(value)])
+    );
+    const { year, month, day } = dateParts;
+    const isLeapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const daysInMonth = [31, isLeapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    const pad = (value) => String(value).padStart(2, "0");
+    const datePrefix = `${year}-${pad(month)}`;
+
+    return {
+      year,
+      month,
+      dateFrom: `${datePrefix}-${pad(day)}`,
+      dateTo: `${datePrefix}-${pad(day <= 15 ? 15 : daysInMonth[month - 1])}`
+    };
+  }
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = { getTokyoDateDefaults };
+  }
+
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return;
+  }
+
   const data = window.SCHEDULE_DATA;
   const shifts = ["昼", "夜"];
   const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
@@ -8,12 +42,12 @@
     "昼": { icon: "☀", className: "shift-day" },
     "夜": { icon: "☾", className: "shift-night" }
   };
-  const [initialYear, initialMonth] = data.initialMonth.split("-").map(Number);
+  const defaults = getTokyoDateDefaults();
   const state = {
-    visibleMonth: new Date(initialYear, initialMonth - 1, 1),
+    visibleMonth: new Date(defaults.year, defaults.month - 1, 1),
     selectedMaids: new Set(data.roster),
-    dateFrom: data.defaultDateFrom,
-    dateTo: data.defaultDateTo
+    dateFrom: defaults.dateFrom,
+    dateTo: defaults.dateTo
   };
 
   const elements = {
@@ -281,10 +315,11 @@
   }
 
   function resetFilters() {
-    state.visibleMonth = new Date(initialYear, initialMonth - 1, 1);
+    const resetDefaults = getTokyoDateDefaults();
+    state.visibleMonth = new Date(resetDefaults.year, resetDefaults.month - 1, 1);
     state.selectedMaids = new Set(data.roster);
-    state.dateFrom = data.defaultDateFrom;
-    state.dateTo = data.defaultDateTo;
+    state.dateFrom = resetDefaults.dateFrom;
+    state.dateTo = resetDefaults.dateTo;
     elements.dateFrom.value = state.dateFrom;
     elements.dateTo.value = state.dateTo;
     renderMaidFilters();

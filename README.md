@@ -18,6 +18,7 @@ python -m http.server 4173
 
 ```powershell
 node tests/validate-schedule.js
+node tests/date-defaults.js
 ```
 
 ## お給仕情報の更新
@@ -25,10 +26,11 @@ node tests/validate-schedule.js
 表示データは [`data/schedule.js`](data/schedule.js) だけに集約しています。描画処理は [`app.js`](app.js) に分離されているため、通常の予定更新で HTML や JavaScript のロジックを変更する必要はありません。
 
 1. `lastUpdated` を更新します。
-2. 必要なら `defaultDateFrom` と `defaultDateTo` を更新します。
-3. `schedule` の日付に、`昼` と `夜` の配列を追加・編集します。
-4. 記念日・生誕の主役には `featured: true` と、読み上げ・ツールチップ用の `eventLabel` を指定します。
-5. `node tests/validate-schedule.js` を実行します。
+2. `schedule` の日付に、`昼` と `夜` の配列を追加・編集します。
+3. 記念日・生誕の主役には `featured: true` と、読み上げ・ツールチップ用の `eventLabel` を指定します。
+4. `node tests/validate-schedule.js` を実行します。
+
+初期表示月と日付範囲は、アクセス時の日本時間から自動計算されます。開始日は当日、終了日は当日が1〜15日なら15日、16日以降なら同じ月の末日です。
 
 予定が未確認の日はキーを追加しません。フィルターには `roster` の全員が公式順で表示されるため、予定がないメイドも削除しないでください。
 
