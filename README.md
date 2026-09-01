@@ -63,4 +63,15 @@ HTML、CSS、JavaScript、予定データはリポジトリのプロジェクト
 
 GitHub Pages は Pro にしてもサイト自体は公開されます。サイトを本人だけに限定できるのは GitHub Enterprise Cloud だけです。
 
-[`staticwebapp.config.json`](staticwebapp.config.json) には Azure Static Web Apps 用の設定を用意済みです。全ページを `schedule-reader` ロールに限定し、未認証のアクセスは GitHub ログインへリダイレクトします。Azure サブスクリプションがあれば、この構成のままデプロイして、自分のアカウントにだけロールを付与すれば非公開の閲覧環境になります。
+[`staticwebapp.config.json`](staticwebapp.config.json) には Azure Static Web Apps 用の設定を用意済みです。全ページを `schedule-reader` ロールに限定し、未認証のアクセスは GitHub ログインへリダイレクト、ロールがないアカウントには [`unauthorized.html`](unauthorized.html) を返します。
+
+#### Azure Static Web Apps で非公開のまま閲覧できるようにする手順
+
+1. [Azure Portal](https://portal.azure.com/) で「静的 Web アプリ」を作成し、プランは **Free** を選びます。
+2. デプロイソースに GitHub を選び、このリポジトリと `main` ブランチを指定します。
+3. ビルドのプリセットは「カスタム」、アプリの場所は `/`、API の場所は空、出力先は `/` にします（ビルド不要のため）。
+4. 作成すると `.github/workflows/azure-static-web-apps-*.yml` が自動で追加され、以降は push でデプロイされます。
+5. デプロイ後、リソースの「ロールの管理」から自分を招待し、ロール名に `schedule-reader` を指定します。
+6. 発行された URL を開くと GitHub ログインが求められ、ロールを付与したアカウントだけが閲覧できます。
+
+リポジトリは非公開のままで構いません。GitHub Pages と違い、サイト自体に認証がかかります。
