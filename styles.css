@@ -90,12 +90,6 @@ input:focus-visible,
   margin: 0;
 }
 
-.sign-out-link {
-  flex: none;
-  color: var(--cp-link);
-  font-size: 0.875rem;
-}
-
 .page-shell {
   display: grid;
   grid-template-columns: minmax(15rem, 18rem) minmax(0, 1fr);
@@ -500,9 +494,6 @@ input[type="date"] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .sign-out-link {
-    font-size: 0.75rem;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
