@@ -1,4 +1,4 @@
-(() => {
+﻿(() => {
   "use strict";
 
   function getTokyoDateDefaults(now = new Date()) {
@@ -441,10 +441,16 @@
     };
   }
 
-  function assignShiftStores({ insights, members, shift, storeIds, pins }) {
+  // キッチンにゃんこは料理担当なので、実測でも各店1人ずつが基本（1店1人が77.5%、平均1.05人）。
+  // 禁止ではなく減点にする。実際に13.7%は2人一緒に入っている。
+  // スコアは候補店で合計1に正規化した値なので、減点もその尺度で置く。
+  const KITCHEN_SPREAD_PENALTY = 0.5;
+
+  function assignShiftStores({ insights, members, shift, storeIds, pins, kitchenStaff }) {
     if (!insights || !Array.isArray(members) || members.length === 0 || storeIds.length === 0) {
       return null;
     }
+    const kitchen = kitchenStaff instanceof Set ? kitchenStaff : new Set(kitchenStaff ?? []);
     const pinned = new Map(
       [...(pins ?? new Map())].filter(
         ([name, pin]) => members.includes(name) && storeIds.includes(pin.storeId)
@@ -475,12 +481,16 @@
 
     const capacity = storeCapacities(insights, shift, storeIds, members.length);
     const remaining = { ...capacity };
+    const kitchenPlaced = Object.fromEntries(storeIds.map((id) => [id, 0]));
     const byMaid = new Map();
 
     // 主役は動かせないので先に席を取る。定員を超えるなら定員のほうを広げる。
     for (const [name, pin] of pinned) {
       remaining[pin.storeId] = (remaining[pin.storeId] ?? 0) - 1;
       capacity[pin.storeId] = Math.max(capacity[pin.storeId] ?? 0, 1);
+      if (kitchen.has(name)) {
+        kitchenPlaced[pin.storeId] += 1;
+      }
       byMaid.set(name, {
         storeId: pin.storeId,
         score: 1,
@@ -504,19 +514,35 @@
           name,
           index,
           scores,
-          order,
           known,
+          isKitchen: kitchen.has(name),
           // 迷いの少ない人から先に決める。後回しにすると定員が埋まって押し出される。
           regret: scores[order[0]] - scores[order[1]]
         };
       });
 
-    ranked.sort((a, b) => b.regret - a.regret || a.index - b.index);
+    ranked.sort(
+      (a, b) =>
+        // キッチンにゃんこは各店1人ずつという制約が強いので先に席を決める。
+        // 後回しにすると定員が埋まって、同じ店に押し込まれてしまう。
+        Number(b.isKitchen) - Number(a.isKitchen) ||
+        b.regret - a.regret ||
+        a.index - b.index
+    );
 
     for (const member of ranked) {
-      const target = member.order.find((id) => remaining[id] > 0) ?? member.order[0];
+      const effective = (id) =>
+        member.scores[id] -
+        (member.isKitchen ? KITCHEN_SPREAD_PENALTY * (kitchenPlaced[id] ?? 0) : 0);
+      const order = [...storeIds].sort(
+        (a, b) => effective(b) - effective(a) || storeIds.indexOf(a) - storeIds.indexOf(b)
+      );
+      const target = order.find((id) => remaining[id] > 0) ?? order[0];
       remaining[target] = Math.max((remaining[target] ?? 0) - 1, 0);
-      const runnerUp = member.order.find((id) => id !== target) ?? null;
+      if (member.isKitchen) {
+        kitchenPlaced[target] += 1;
+      }
+      const runnerUp = order.find((id) => id !== target) ?? null;
       byMaid.set(member.name, {
         storeId: target,
         score: member.scores[target],
@@ -524,9 +550,8 @@
         runnerUpScore: runnerUp ? member.scores[runnerUp] : 0,
         known: member.known,
         // 本人の一番人気ではなく、定員の都合で押し出された場合。
-        full: target !== member.order[0],
-        pin: null
-      });
+        full: target !== order[0]
+      , pin: null });
     }
 
     // 実際に配った人数を定員として持ち直す（主役ぶんで増えていることがある）。
@@ -537,22 +562,25 @@
     return { storeIds, capacity: placed, byMaid };
   }
 
-  // その日出る人数が標準人数を超えるなら、その人数を収めるだけの店が開いているはず。
-  // 実測では、この定員方式だけで店舗数の的中が昼85.5% / 夜85.8%（1店舗の日も3店舗の日も拾える）。
-  // ローテーション確率は1号店が高すぎてほぼ常に「2店」になり、少人数の日を潰すので使わない。
+  // その日出る人数から、いくつの店が開くかを決める。
+  // 閾値は実測の多数決（openCountByHeadcount）。typicalHeadcount の累積だと
+  // 1号店が6.1人あるため6人が1店になってしまうが、実測では6人は2店が多数派
+  // （昼61% / 夜73%）。表を使うと的中は昼88.9% / 夜93.2%（累積は84.4% / 91.8%）。
   function capacityCountFor(insights, shift, orderedIds, poolSize) {
     if (!(poolSize > 0)) {
       return 1;
     }
+    const thresholds = insights.openCountByHeadcount?.[shift];
+    if (Array.isArray(thresholds) && thresholds.length > 0) {
+      const index = thresholds.findIndex((limit) => poolSize <= limit);
+      return Math.min(index === -1 ? thresholds.length + 1 : index + 1, orderedIds.length);
+    }
+    // 表が無いデータでも動くよう、標準人数の累積で代用する。
     const headcount = insights.typicalHeadcount?.[shift] ?? {};
-    // typicalHeadcount は見習い込みの人数。カレンダーに出るのは在籍だけなので、
-    // その差（2割ほど）が「見習いが何人来るか分からない」ぶんの緩衝として働く。
-    // ここにさらに見習いぶんを足すと過大評価になり、実測でも精度が落ちる（84.4%→82.5%）。
-    const needed = poolSize;
     let seats = 0;
     for (let index = 0; index < orderedIds.length; index += 1) {
       seats += headcount[orderedIds[index]] ?? 0;
-      if (seats >= needed) {
+      if (seats >= poolSize) {
         return index + 1;
       }
     }
@@ -586,12 +614,19 @@
       .filter((id) => chosen.includes(id));
   }
 
-  function getShiftAssignment({ insights, members, shift, outlook, pins }) {
+  function getShiftAssignment({ insights, members, shift, outlook, pins, kitchenStaff }) {
     const storeIds = expectedOpenStores(insights, shift, outlook, members?.length ?? 0);
     if (storeIds.length === 0) {
       return null;
     }
-    const assignment = assignShiftStores({ insights, members, shift, storeIds, pins });
+    const assignment = assignShiftStores({
+      insights,
+      members,
+      shift,
+      storeIds,
+      pins,
+      kitchenStaff
+    });
     return assignment ? { ...assignment, basis: outlook.basis } : null;
   }
 
@@ -815,6 +850,7 @@
     selectedMaids: new Set(data.roster),
     dateFrom: defaults.dateFrom,
     dateTo: defaults.dateTo,
+    hideKitchen: false,
     viewMode: hasInsights ? readStoredMode() ?? "forecast" : "roster"
   };
 
@@ -834,6 +870,7 @@
     nextMonth: document.querySelector("#next-month"),
     selectAll: document.querySelector("#select-all"),
     clearAll: document.querySelector("#clear-all"),
+    hideKitchen: document.querySelector("#hide-kitchen"),
     resetFilters: document.querySelector("#reset-filters")
   };
 
@@ -841,9 +878,16 @@
     return isDateKeyInRange(key, state.dateFrom, state.dateTo);
   }
 
+  function isVisibleMaid(name) {
+    if (state.hideKitchen && kitchenStaff.has(name)) {
+      return false;
+    }
+    return state.selectedMaids.has(name);
+  }
+
   function filteredEntries(key, shift) {
     const entries = data.schedule[key]?.[shift] ?? [];
-    return entries.filter((entry) => state.selectedMaids.has(entry.name));
+    return entries.filter((entry) => isVisibleMaid(entry.name));
   }
 
   function createShiftSection(key, date, shift) {
@@ -882,7 +926,8 @@
         members: allEntries.map((entry) => entry.name),
         shift,
         outlook,
-        pins
+        pins,
+        kitchenStaff
       })
       : null;
     const entries = assignment
@@ -1066,14 +1111,14 @@
       }
       return total + shifts.reduce(
         (shiftTotal, shift) =>
-          shiftTotal + day[shift].filter((entry) => state.selectedMaids.has(entry.name)).length,
+          shiftTotal + day[shift].filter((entry) => isVisibleMaid(entry.name)).length,
         0
       );
     }, 0);
 
     elements.monthTitle.textContent = `${year}年${monthIndex + 1}月`;
     elements.resultSummary.textContent =
-      `${state.selectedMaids.size}名を選択中・${displayedCount}件のお給仕を表示`;
+      `${visibleMaidCount()}名を選択中・${displayedCount}件のお給仕を表示`;
     elements.calendar.replaceChildren(grid);
   }
 
@@ -1098,9 +1143,13 @@
     }
   }
 
+  function visibleMaidCount() {
+    return data.roster.filter((name) => isVisibleMaid(name)).length;
+  }
+
   function updateMaidFilterSummary() {
     elements.maidFilterSummary.textContent =
-      `${state.selectedMaids.size}/${data.roster.length}名を表示`;
+      `${visibleMaidCount()}/${data.roster.length}名を表示`;
   }
 
   function renderMaidFilters() {
@@ -1130,6 +1179,10 @@
 
       if (kitchenStaff.has(name)) {
         label.classList.add("is-kitchen");
+        checkbox.disabled = state.hideKitchen;
+        if (state.hideKitchen) {
+          label.classList.add("is-muted");
+        }
         const badge = document.createElement("span");
         badge.className = "kitchen-badge";
         badge.textContent = "🍳";
@@ -1183,6 +1236,8 @@
     state.selectedMaids = new Set(data.roster);
     state.dateFrom = resetDefaults.dateFrom;
     state.dateTo = resetDefaults.dateTo;
+    state.hideKitchen = false;
+    elements.hideKitchen.checked = false;
     state.viewMode = hasInsights ? "forecast" : "roster";
     storeMode(state.viewMode);
     elements.dateFrom.value = state.dateFrom;
@@ -1204,6 +1259,11 @@
   elements.nextMonth.addEventListener("click", () => setVisibleMonth(1));
   elements.selectAll.addEventListener("click", () => setAllMaids(true));
   elements.clearAll.addEventListener("click", () => setAllMaids(false));
+  elements.hideKitchen.addEventListener("change", () => {
+    state.hideKitchen = elements.hideKitchen.checked;
+    renderMaidFilters();
+    renderCalendar();
+  });
   elements.resetFilters.addEventListener("click", resetFilters);
   elements.dateFrom.addEventListener("change", () => syncDateRange("from"));
   elements.dateTo.addEventListener("change", () => syncDateRange("to"));

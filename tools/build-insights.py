@@ -219,18 +219,32 @@ def build():
     # 前日からのローテーションでは3店舗の日を当てられないので、UI はこの人数で店舗数を決める。
     roster_names = {ALIAS.get(n, n) for n in roster}
     headcount_by_open = {}
+    open_by_headcount = {}
     for sh in SHIFTS:
         buckets = collections.defaultdict(list)
+        per_headcount = collections.defaultdict(collections.Counter)
         for d in dates:
             stores = cell.get((d, sh), {})
             if not stores:
                 continue
             listed = {m for maids in stores.values() for m in maids if m in roster_names}
+            if not listed:
+                continue
             buckets[len(stores)].append(len(listed))
+            per_headcount[len(listed)][len(stores)] += 1
         headcount_by_open[sh] = {
             str(k): {'mean': round(sum(v) / len(v), 2), 'n': len(v)}
             for k, v in sorted(buckets.items()) if v
         }
+        # 人数ごとの多数決を単調にならし、「この人数までは k 店」という閾値にする。
+        # typicalHeadcount の累積だと1号店が6.1人あるため6人が1店になってしまうが、
+        # 実測では6人は2店が多数派（昼61% / 夜73%）。実測 88.9% / 93.2%。
+        previous, boundary = 1, {}
+        for n in sorted(per_headcount):
+            pick = max(sorted(per_headcount[n]), key=lambda k: per_headcount[n][k])
+            previous = max(previous, min(pick, len(IDS)))
+            boundary[previous] = n
+        open_by_headcount[sh] = [boundary[k] for k in sorted(boundary) if k < max(boundary)]
 
     # 翌日予測の的中率（前半で学習・後半で検証）
     acc = {}
@@ -533,6 +547,7 @@ def build():
         'shiftPattern': shift_pattern,
         'openCountPerShift': open_count,
         'rosterHeadcountByOpenCount': headcount_by_open,
+        'openCountByHeadcount': open_by_headcount,
         'shiftSplitGivenOpen': shift_split,
         'rotation': {
             # nextDayByDay は日単位の参考値。app.js は「その日どちらの店が開くか」の補足にだけ使い、

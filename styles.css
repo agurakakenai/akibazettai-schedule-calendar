@@ -307,6 +307,41 @@ input[type="date"] {
   background: var(--cp-accent-soft);
 }
 
+.checkbox-label.is-muted {
+  border-style: dashed;
+  color: var(--cp-text-soft);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--cp-border);
+  border-radius: 0.625rem;
+  background: var(--cp-surface);
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.toggle-label:has(input:checked) {
+  border-color: var(--cp-accent);
+  border-left-width: 3px;
+  background: var(--cp-accent-soft);
+  font-weight: 700;
+}
+
+.toggle-label input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--cp-accent);
+}
+
 .checkbox-label input {
   width: 18px;
   height: 18px;

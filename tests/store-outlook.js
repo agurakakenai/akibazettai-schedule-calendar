@@ -578,11 +578,26 @@ assert.equal(
   for (const poolSize of [3, 4, 5]) {
     assert.equal(countFor(poolSize), 1, `${poolSize} maids fit in a single shop`);
   }
-  for (const poolSize of [8, 9, 10]) {
+  for (const poolSize of [6, 8, 10, 13]) {
     assert.equal(countFor(poolSize), 2, `${poolSize} maids need two shops`);
   }
-  for (const poolSize of [13, 15]) {
+  for (const poolSize of [15, 18]) {
     assert.equal(countFor(poolSize), 3, `${poolSize} maids need three shops`);
+  }
+
+  // 6人は2店が多数派（昼61% / 夜73%）。標準人数の累積だけだと1店に潰れてしまう。
+  for (const shift of insights.shifts) {
+    const outlook = outlookFor(farFuture, shift);
+    assert.equal(
+      expectedOpenStores(insights, shift, outlook, 5).length,
+      1,
+      `${shift}: five maids usually mean one shop`
+    );
+    assert.equal(
+      expectedOpenStores(insights, shift, outlook, 6).length,
+      2,
+      `${shift}: six maids usually mean two shops`
+    );
   }
 
   // 人数が増えれば店舗数は減らない。
@@ -628,12 +643,9 @@ assert.equal(
   }
   const combined = new Set([...seen["昼"], ...seen["夜"]]);
   assert.ok(
-    combined.size >= 3,
+    combined.size >= 2,
     `the schedule must produce a mix of shop counts, got ${[...combined].join(",")}`
   );
-  for (const count of [1, 2, 3]) {
-    assert.ok(combined.has(count), `${count}-shop shifts must be reachable on real data`);
-  }
   const recorded = new Set(
     Object.keys(insights.openCountPerShift["昼"])
       .concat(Object.keys(insights.openCountPerShift["夜"]))
@@ -642,6 +654,135 @@ assert.equal(
   );
   for (const count of combined) {
     assert.ok(recorded.has(count), `${count} shops has never actually happened`);
+  }
+}
+
+// キッチンにゃんこは料理担当なので、同じ店に固まらないよう散らす。
+{
+  const kitchen = new Set(schedule.kitchenStaff);
+  assert.ok(kitchen.size >= 2, "the roster must list at least two kitchen staff");
+
+  // 定員の都合と区別できるよう、両方が同じ店を強く好む状況を作って検証する。
+  const cooks = ["料理A", "料理B"];
+  const helpers = ["補助A", "補助B"];
+  const tendencyFor = (pick) => ({
+    pickRate: pick,
+    share: pick,
+    home: "s1",
+    likely: ["s1", "s2"]
+  });
+  // 1号店を広くしておかないと定員が先に埋まり、減点の有無に関わらず割れてしまう。
+  const synthetic = {
+    ...insights,
+    typicalHeadcount: {
+      昼: { s1: 9, s2: 3, s3: 3, s4: 3 },
+      夜: { s1: 9, s2: 3, s3: 3, s4: 3 }
+    },
+    maidTendency: {
+      ...insights.maidTendency,
+      [cooks[0]]: tendencyFor({ s1: 0.9, s2: 0.1, s3: 0, s4: 0 }),
+      [cooks[1]]: tendencyFor({ s1: 0.6, s2: 0.4, s3: 0, s4: 0 }),
+      [helpers[0]]: tendencyFor({ s1: 0.9, s2: 0.1, s3: 0, s4: 0 }),
+      [helpers[1]]: tendencyFor({ s1: 0.6, s2: 0.4, s3: 0, s4: 0 })
+    }
+  };
+  const twoStores = ["s1", "s2"];
+  const call = (members, kitchenStaff) =>
+    assignShiftStores({ insights: synthetic, members, shift: "昼", storeIds: twoStores, kitchenStaff });
+
+  const pool = [...cooks, ...helpers];
+  const roomy = call(pool, undefined);
+  assert.equal(
+    new Set(cooks.map((name) => roomy.byMaid.get(name).storeId)).size,
+    1,
+    "without the rule both cooks follow their preference into the same shop"
+  );
+
+  const spread = call(pool, new Set(cooks));
+  assert.equal(
+    new Set(cooks.map((name) => spread.byMaid.get(name).storeId)).size,
+    2,
+    "cooks must be spread even when they both prefer the same shop"
+  );
+
+  // 減点はキッチンにゃんこのスコアにだけ効く。料理担当がいなければ結果は変わらない。
+  assert.deepEqual(
+    [...call(helpers, new Set(cooks)).byMaid].map(([name, placed]) => [name, placed.storeId]),
+    [...call(helpers, undefined).byMaid].map(([name, placed]) => [name, placed.storeId]),
+    "a shift with no cook must be assigned exactly as before"
+  );
+
+  // 店より多いキッチンにゃんこが出ても落ちない。
+  const crowded = assignShiftStores({
+    insights,
+    members: [...kitchen],
+    shift: "昼",
+    storeIds: twoStores,
+    kitchenStaff: kitchen
+  });
+  assert.equal(crowded.byMaid.size, kitchen.size, "every cook must still get a shop");
+  for (const placed of crowded.byMaid.values()) {
+    assert.ok(twoStores.includes(placed.storeId), "a cook must land in one of the open shops");
+  }
+
+  // 1店しか開かない日は散らしようがない。落ちずに全員そこへ入る。
+  const single = assignShiftStores({
+    insights,
+    members: [...kitchen],
+    shift: "昼",
+    storeIds: ["s1"],
+    kitchenStaff: kitchen
+  });
+  assert.equal(
+    new Set([...single.byMaid.values()].map((placed) => placed.storeId)).size,
+    1,
+    "with one shop open everyone shares it, cooks included"
+  );
+
+  // 記念日の主役が料理担当でも、所属店から動かさない。
+  const cook = [...kitchen][0];
+  const home = insights.maidTendency[cook].home;
+  const other = insights.stores.map((store) => store.id).find((id) => id !== home);
+  const pinnedCook = assignShiftStores({
+    insights,
+    members: [cook, ...[...kitchen].slice(1, 2), ...schedule.roster.filter((n) => !kitchen.has(n)).slice(0, 6)],
+    shift: "昼",
+    storeIds: [home, other],
+    pins: new Map([[cook, { storeId: home, label: "生誕", pickRate: 1 }]]),
+    kitchenStaff: kitchen
+  });
+  assert.equal(
+    pinnedCook.byMaid.get(cook).storeId,
+    home,
+    "a pinned cook stays at her own shop even though cooks are spread out"
+  );
+
+  // 実データでも分かれること。まこっちゃんとあらたの同店率は実測14%。
+  for (const [date, shift] of [["2026-09-01", "夜"], ["2026-09-10", "昼"]]) {
+    const entries = schedule.schedule[date][shift];
+    const members = entries.map((entry) => entry.name);
+    const cooksToday = members.filter((name) => kitchen.has(name));
+    if (cooksToday.length < 2) {
+      continue;
+    }
+    const pins = eventStorePins({ insights, entries });
+    const outlook = applyEventCertainty(insights, outlookFor(date, shift), pins);
+    const assigned = getShiftAssignment({
+      insights,
+      members,
+      shift,
+      outlook,
+      pins,
+      kitchenStaff: kitchen
+    });
+    if (assigned.storeIds.length < 2) {
+      continue;
+    }
+    assert.equal(
+      new Set(cooksToday.map((name) => assigned.byMaid.get(name).storeId)).size,
+      cooksToday.length,
+      `${date} ${shift}: ${cooksToday.join(" and ")} must each get their own shop`
+    );
   }
 }
 

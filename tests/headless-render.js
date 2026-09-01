@@ -537,6 +537,59 @@ assert.equal(
   "the long explanation block must stay out of the page"
 );
 
+// --- キッチンにゃんこを隠す ---------------------------------------------
+const kitchenNames = new Set(schedule.kitchenStaff);
+const kitchenBefore = withClass(calendar, "maid-entry").filter((entry) =>
+  kitchenNames.has(withClass(entry, "maid-name")[0].textContent)
+).length;
+assert.ok(kitchenBefore > 0, "the default range must show some kitchen staff");
+
+const chipsBeforeHiding = withClass(calendar, "store-chip").length;
+const assignedBeforeHiding = withClass(calendar, "maid-store-chip").map((chip) => chip.dataset.store);
+
+elementById("hide-kitchen").checked = true;
+dispatch("hide-kitchen", "change");
+
+assert.equal(
+  withClass(calendar, "maid-entry").filter((entry) =>
+    kitchenNames.has(withClass(entry, "maid-name")[0].textContent)
+  ).length,
+  0,
+  "checking the box must hide every kitchen maid"
+);
+assert.equal(
+  withClass(calendar, "maid-entry").length,
+  maidEntries.length - kitchenBefore,
+  "only the kitchen maids may disappear"
+);
+assert.equal(
+  withClass(calendar, "store-chip").length,
+  chipsBeforeHiding,
+  "hiding the kitchen must not change the store outlook"
+);
+
+// 隠しても割り振りは動かない。残った人の店は同じまま。
+const stillShown = withClass(calendar, "maid-entry").map((entry) => ({
+  name: withClass(entry, "maid-name")[0].textContent,
+  store: withClass(entry, "maid-store-chip")[0]?.dataset.store
+}));
+assert.ok(
+  stillShown.every((entry) => assignedBeforeHiding.includes(entry.store)),
+  "the remaining maids must keep the shops they were already assigned to"
+);
+
+// フィルター側でもキッチンは操作できなくなる。
+const mutedLabels = withClass(elementById("maid-checkboxes"), "is-muted");
+assert.equal(mutedLabels.length, kitchenNames.size, "every kitchen row must be greyed out");
+
+elementById("hide-kitchen").checked = false;
+dispatch("hide-kitchen", "change");
+assert.equal(
+  withClass(calendar, "maid-entry").length,
+  maidEntries.length,
+  "unchecking the box must bring the kitchen maids back"
+);
+
 // --- 絞り込みを変えても店舗の見込みは残る -------------------------------
 const beforeChips = withClass(calendar, "store-chip").length;
 dispatch("clear-all", "click");

@@ -240,6 +240,27 @@ for (const shift of shiftNames) {
     );
     previousMean = bucket.mean;
   }
+
+  // 人数から店舗数を引く閾値。単調増加で、店舗数を超えない。
+  const thresholds = insights.openCountByHeadcount[shift];
+  assert.ok(Array.isArray(thresholds), `openCountByHeadcount.${shift} must be an array`);
+  assert.ok(
+    thresholds.length >= 1 && thresholds.length < storeIdList.length,
+    `openCountByHeadcount.${shift} must hold fewer boundaries than there are shops`
+  );
+  let previousLimit = 0;
+  for (const limit of thresholds) {
+    assert.ok(
+      Number.isInteger(limit) && limit > previousLimit,
+      `openCountByHeadcount.${shift} must rise, got ${thresholds.join(",")}`
+    );
+    previousLimit = limit;
+  }
+  // 実測の平均人数と矛盾しないこと（1店舗の平均は最初の境界以下に収まる）。
+  assert.ok(
+    headcounts["1"].mean <= thresholds[0],
+    `${shift}: a one-shop shift averages ${headcounts["1"].mean}, above the boundary ${thresholds[0]}`
+  );
 }
 
 // --- ローテーション -----------------------------------------------------
