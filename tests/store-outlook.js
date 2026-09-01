@@ -508,6 +508,21 @@ for (const storeId of assignment.storeIds) {
   );
   assert.deepEqual(storeProbabilities(insights, schedule.roster[0], "昼", []), {}, "no shops, no probabilities");
 
+  // README は「いちばん低い人でも 0.018」と書いている。配属を事前分布に入れた影響で
+  // 配属外の店の pickRate は下がるので、書いた値と実データがずれていないか見張る。
+  {
+    const lowest = Math.min(
+      ...schedule.roster.flatMap((name) =>
+        insights.stores.map((store) => insights.maidTendency[name].pickRate[store.id])
+      )
+    );
+    assert.ok(lowest > 0, "no maid may read as never having worked a shop");
+    assert.ok(
+      Math.abs(lowest - 0.018) < 0.002,
+      `README says the lowest pickRate is 0.018; it is now ${lowest.toFixed(3)}`
+    );
+  }
+
   // 4号店にあまり入らない人でも 0 にはならない、というのが今回の眼目。
   const rare = schedule.roster
     .map((name) => [name, insights.maidTendency[name].pickRate.s4])
