@@ -13,7 +13,7 @@ window.SCHEDULE_DATA = {
   initialMonth: "2026-09",
   defaultDateFrom: "2026-09-01",
   defaultDateTo: "2026-09-30",
-  lastUpdated: "2026年9月1日 13:10 JST時点",
+  lastUpdated: "2026年9月1日 19:50 JST時点",
 
   roster: [
     "あむ",
@@ -58,7 +58,6 @@ window.SCHEDULE_DATA = {
       "昼": [
         { name: "あらた" },
         { name: "みりあ" },
-        { name: "あめる" },
         { name: "きらり" },
         { name: "すくい" },
         { name: "えみ" },
@@ -70,7 +69,6 @@ window.SCHEDULE_DATA = {
         { name: "あらた" },
         { name: "みりあ" },
         { name: "える" },
-        { name: "あめる" },
         { name: "あくび" },
         { name: "もなか", featured: true, eventLabel: "1周年" },
         { name: "こえび" }
@@ -79,12 +77,15 @@ window.SCHEDULE_DATA = {
     "2026-09-02": {
       "昼": [
         { name: "あらた" },
+        { name: "ちさと" },
         { name: "ねむり" },
+        { name: "あめる" },
         { name: "しゃち" },
         { name: "かなた" },
         { name: "るるか" }
       ],
       "夜": [
+        { name: "あめる" },
         { name: "うな" },
         { name: "こえび" }
       ]
@@ -117,6 +118,7 @@ window.SCHEDULE_DATA = {
     "2026-09-04": {
       "昼": [
         { name: "える" },
+        { name: "あめる" },
         { name: "こい" },
         { name: "かなた" },
         { name: "るるか" },
@@ -124,6 +126,7 @@ window.SCHEDULE_DATA = {
       ],
       "夜": [
         { name: "あむ" },
+        { name: "あめる" },
         { name: "うな" },
         { name: "るるか" },
         { name: "みえる" },
@@ -134,6 +137,7 @@ window.SCHEDULE_DATA = {
       "昼": [
         { name: "あらた" },
         { name: "みりあ" },
+        { name: "ちさと" },
         { name: "こい" },
         { name: "ひなり" },
         { name: "しゃち" },
@@ -148,6 +152,7 @@ window.SCHEDULE_DATA = {
         { name: "あらた" },
         { name: "みりあ" },
         { name: "はぴる" },
+        { name: "あめる" },
         { name: "しゃち" },
         { name: "みえる" },
         { name: "ちゆ" }
@@ -168,6 +173,7 @@ window.SCHEDULE_DATA = {
       "夜": [
         { name: "あむ" },
         { name: "あらた" },
+        { name: "あめる" },
         { name: "きらり" },
         { name: "ひなり" },
         { name: "しゃち" },
@@ -196,6 +202,7 @@ window.SCHEDULE_DATA = {
         { name: "あむ" },
         { name: "あらた", featured: true, eventLabel: "7周年" },
         { name: "みりあ" },
+        { name: "ちさと" },
         { name: "こい" },
         { name: "かなた" },
         { name: "るるか" },
@@ -206,6 +213,7 @@ window.SCHEDULE_DATA = {
         { name: "あらた", featured: true, eventLabel: "7周年" },
         { name: "みりあ" },
         { name: "える" },
+        { name: "あめる" },
         { name: "うな" },
         { name: "かなた" },
         { name: "るるか" }
@@ -215,12 +223,14 @@ window.SCHEDULE_DATA = {
       "昼": [
         { name: "あらた" },
         { name: "ねむり" },
+        { name: "あめる" },
         { name: "こい" },
         { name: "きらり" },
         { name: "ひなり" },
         { name: "ちま" }
       ],
       "夜": [
+        { name: "ちさと" },
         { name: "かなた" },
         { name: "ちゆ" }
       ]
@@ -239,6 +249,7 @@ window.SCHEDULE_DATA = {
       "夜": [
         { name: "あらた" },
         { name: "みりあ" },
+        { name: "ちさと" },
         { name: "るるか" },
         { name: "ちょこ" },
         { name: "ちま" }
@@ -253,6 +264,7 @@ window.SCHEDULE_DATA = {
         { name: "ちゆ" }
       ],
       "夜": [
+        { name: "あめる" },
         { name: "うな" },
         { name: "こえび" },
         { name: "かなた" },
@@ -270,6 +282,7 @@ window.SCHEDULE_DATA = {
       ],
       "夜": [
         { name: "みりあ" },
+        { name: "あめる" },
         { name: "きらり" },
         { name: "るるか" },
         { name: "みえる" },
@@ -281,6 +294,7 @@ window.SCHEDULE_DATA = {
       "昼": [
         { name: "あらた" },
         { name: "みりあ" },
+        { name: "あめる" },
         { name: "すくい" },
         { name: "ひなり" },
         { name: "うな" },
@@ -292,6 +306,7 @@ window.SCHEDULE_DATA = {
       "夜": [
         { name: "あむ" },
         { name: "ねむり" },
+        { name: "あめる" },
         { name: "きらり" },
         { name: "あくび", featured: true, eventLabel: "生誕" },
         { name: "かなた" },
@@ -307,6 +322,7 @@ window.SCHEDULE_DATA = {
         { name: "こん" }
       ],
       "夜": [
+        { name: "あめる" },
         { name: "ひなり" },
         { name: "しゃち" },
         { name: "ちょこ" }
@@ -317,6 +333,7 @@ window.SCHEDULE_DATA = {
         { name: "あむ" },
         { name: "あらた" },
         { name: "みりあ" },
+        { name: "ちさと" },
         { name: "ねむり" },
         { name: "える" },
         { name: "しゃち" },
