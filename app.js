@@ -630,6 +630,20 @@
     return assignment ? { ...assignment, basis: outlook.basis } : null;
   }
 
+  // 候補店の中で pickRate を合計1に正規化する。「この人はこの店」と断定せず、
+  // どの店にもいる可能性があることを示す。実測で35名全員が4店舗すべてに入っている。
+  function storeProbabilities(insights, name, shift, storeIds) {
+    if (!Array.isArray(storeIds) || storeIds.length === 0) {
+      return {};
+    }
+    const tendency = insights?.maidTendency?.[name];
+    const pickRate = tendency ? tendencyTables(tendency, shift).pickRate : {};
+    // 0 の店を完全に消さないよう下限を置く。低くても行かないわけではない。
+    const raw = storeIds.map((id) => Math.max(pickRate[id] ?? 0, 1e-6));
+    const total = raw.reduce((sum, value) => sum + value, 0);
+    return Object.fromEntries(storeIds.map((id, index) => [id, raw[index] / total]));
+  }
+
   // 割り振り結果を、そのメイドさんの行に出すチップに変換する。
   function getMaidStoreOutlook({ insights, name, shift, outlook, assignment }) {
     const tendency = insights?.maidTendency?.[name];
@@ -641,17 +655,13 @@
       return null;
     }
     const stores = storesOf(insights);
-    const store = stores.find((candidate) => candidate.id === placed.storeId);
-    if (!store) {
-      return null;
-    }
-
-    const { scope } = tendencyTables(tendency, shift);
-    const scopeNote = scope === shift
-      ? `${shift}の実績`
-      : "昼夜あわせた実績（このシフトは件数が少ないため）";
+    const shortOf = (id) => storeShort(insights, id);
 
     if (placed.pin) {
+      const store = stores.find((candidate) => candidate.id === placed.storeId);
+      if (!store) {
+        return null;
+      }
       const strength = typeof placed.pin.pickRate === "number"
         ? `${store.short}が開いた${shift}の${toPercent(placed.pin.pickRate)}をこの店で過ごしています`
         : null;
@@ -661,6 +671,7 @@
         rate: 1,
         label: compactStoreLabel(store),
         percent: "確定",
+        alternative: null,
         title: [
           `${placed.pin.label}の主役なので、所属店の${store.short}にいます`,
           `所属店は公式の配属ではなく、出勤実績から推定したものです${strength ? `（${strength}）` : ""}`
@@ -669,31 +680,43 @@
       };
     }
 
-    const roomFor = assignment.storeIds
-      .map((id) => `${storeShort(insights, id)}${assignment.capacity[id]}人`)
+    const probabilities = storeProbabilities(insights, name, shift, assignment.storeIds);
+    // 並びは割り振り結果でまとめているので、チップも同じ店を先頭に出す。
+    // ただし断定はせず、その店にいる確率と、次に可能性の高い店を並べる。
+    const top = stores.find((candidate) => candidate.id === placed.storeId);
+    if (!top) {
+      return null;
+    }
+    const runnerUpId = assignment.storeIds
+      .filter((id) => id !== top.id)
+      .sort((a, b) => probabilities[b] - probabilities[a])[0] ?? null;
+    const second = runnerUpId ? stores.find((candidate) => candidate.id === runnerUpId) : null;
+    const { scope } = tendencyTables(tendency, shift);
+    const scopeNote = scope === shift
+      ? `${shift}の実績`
+      : "昼夜あわせた実績（このシフトは件数が少ないため）";
+    const everyStore = [...assignment.storeIds]
+      .sort((a, b) => probabilities[b] - probabilities[a])
+      .map((id) => `${shortOf(id)} ${toPercent(probabilities[id])}`)
       .join(" / ");
-    const known = outlook?.basis === "actual"
-      ? `この${shift}に開いていた${assignment.storeIds.length}店`
-      : `この${shift}に開きそうな${assignment.storeIds.length}店`;
-    const percent = toPercent(placed.score);
-    const detail = [
-      `${known}へ、この${shift}に出る${assignment.byMaid.size}名を店ごとの標準人数（${roomFor}）で割り振った結果です`,
-      `${name}さんは${store.short}が${percent}（${scopeNote}）`,
-      placed.runnerUpId
-        ? `次点は${storeShort(insights, placed.runnerUpId)}が${toPercent(placed.runnerUpScore)}`
-        : null,
-      placed.full ? "本人の傾向では別の店が上でしたが、そちらの定員が先に埋まりました" : null,
-      outlook?.basis === "actual" ? null : "開いている店舗自体が見込みなので、外れることがあります"
-    ];
 
     return {
-      basis: "assignment",
-      storeId: store.id,
-      rate: placed.score,
-      label: compactStoreLabel(store),
-      percent,
-      title: detail.filter(Boolean).join("。"),
-      srText: `${shift}の割り振りでは${store.short}、${percent}`
+      basis: "probability",
+      storeId: top.id,
+      rate: probabilities[top.id],
+      label: compactStoreLabel(top),
+      percent: toPercent(probabilities[top.id]),
+      alternative: second
+        ? `${compactStoreLabel(second)} ${toPercent(probabilities[second.id])}`
+        : null,
+      title: [
+        `この${shift}に開きそうな店にいる確率：${everyStore}（${scopeNote}）`,
+        "どの店にも入る可能性があります。実際、在籍35名は全員が4店舗すべてに入った実績があります",
+        "いちばん高い店だけを見ると、たまに入る店を取りこぼします"
+      ].join("。"),
+      srText: second
+        ? `${shift}は${top.short}が${toPercent(probabilities[top.id])}、次に${second.short}が${toPercent(probabilities[second.id])}`
+        : `${shift}は${top.short}が${toPercent(probabilities[top.id])}`
     };
   }
 
@@ -717,6 +740,7 @@
       openStoresOnDay,
       sortByAssignedStore,
       storeCapacities,
+      storeProbabilities,
       weekdayBucket,
       weekdayIndex
     };
@@ -810,8 +834,15 @@
     const percent = document.createElement("span");
     percent.className = "maid-store-chip-rate";
     percent.textContent = chipData.percent;
-
     chip.append(label, percent);
+
+    // 上位2店で実測97%をカバーする。狭いセルでは隠し、ツールチップに全店を出す。
+    if (chipData.alternative) {
+      const alternative = document.createElement("span");
+      alternative.className = "maid-store-chip-alt";
+      alternative.textContent = chipData.alternative;
+      chip.append(alternative);
+    }
     return chip;
   }
 

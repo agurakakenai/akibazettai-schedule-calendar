@@ -19,6 +19,7 @@ const {
   openStoresOnDay,
   sortByAssignedStore,
   storeCapacities,
+  storeProbabilities,
   weekdayBucket,
   weekdayIndex
 } = require("../app.js");
@@ -382,7 +383,7 @@ assert.equal(
   "no candidate stores means no assignment"
 );
 
-// チップは割り振りの結果を読む。
+// チップは割り振りではなく確率を出す。「この人はこの店に行かない」と読めてはいけない。
 const chip = getMaidStoreOutlook({
   insights,
   name: dayPool[0],
@@ -390,19 +391,88 @@ const chip = getMaidStoreOutlook({
   outlook: futureOutlook,
   assignment
 });
-assert.equal(chip.basis, "assignment", "the chip must reflect the assignment, not a standalone guess");
+assert.equal(chip.basis, "probability", "the chip must state a probability, not a verdict");
 assert.equal(
   chip.storeId,
   assignment.byMaid.get(dayPool[0]).storeId,
-  "the chip must name the store the maid was assigned to"
+  "the chip must lead with the shop the list is grouped by"
 );
-assert.ok(chip.title.includes("割り振"), "the chip must explain that it is an assignment");
-assert.ok(chip.title.includes("標準人数"), "the chip must say what the capacities came from");
+assert.ok(chip.title.includes("確率"), "the chip must say the figure is a probability");
+assert.ok(
+  chip.title.includes("4店舗すべて"),
+  "the chip must say every maid has worked every shop"
+);
+assert.ok(chip.alternative, "the chip must offer a runner-up, which covers 97% together");
+for (const storeId of assignment.storeIds) {
+  assert.ok(
+    chip.title.includes(insights.stores.find((store) => store.id === storeId).short),
+    `the chip must list ${storeId} so it never reads as "she never goes there"`
+  );
+}
+
+// 確率は候補店で合計1になり、どの店も 0 にはならない。
+{
+  const stores = insights.stores.map((store) => store.id);
+  for (const storeIds of [stores, ["s1", "s4"], ["s3"]]) {
+    for (const name of schedule.roster) {
+      const probabilities = storeProbabilities(insights, name, "昼", storeIds);
+      const total = Object.values(probabilities).reduce((sum, value) => sum + value, 0);
+      assert.ok(
+        Math.abs(total - 1) <= 0.001,
+        `${name}: probabilities over ${storeIds.join("+")} must sum to 1, got ${total}`
+      );
+      for (const id of storeIds) {
+        assert.ok(
+          probabilities[id] > 0,
+          `${name} must never be given a flat 0% for ${id}; every maid has worked every shop`
+        );
+      }
+    }
+  }
+
+  assert.deepEqual(
+    storeProbabilities(insights, schedule.roster[0], "昼", ["s2"]),
+    { s2: 1 },
+    "a single candidate shop takes the whole probability"
+  );
+  assert.deepEqual(storeProbabilities(insights, schedule.roster[0], "昼", []), {}, "no shops, no probabilities");
+
+  // 4号店にあまり入らない人でも 0 にはならない、というのが今回の眼目。
+  const rare = schedule.roster
+    .map((name) => [name, insights.maidTendency[name].pickRate.s4])
+    .sort((a, b) => a[1] - b[1])[0];
+  const rareProbabilities = storeProbabilities(insights, rare[0], "昼", ["s1", "s4"]);
+  assert.ok(
+    rareProbabilities.s4 > 0,
+    `${rare[0]} works 4号店 least often (${rare[1]}), and must still get a non-zero chance`
+  );
+  assert.ok(
+    rareProbabilities.s1 + rareProbabilities.s4 > rareProbabilities.s1,
+    "two shops together must always beat the single most likely one"
+  );
+
+  // 傾向がまったく無くても NaN にならず、均等割りになる。
+  const blank = storeProbabilities(
+    { ...insights, maidTendency: { 無名: { pickRate: { s1: 0, s2: 0, s3: 0, s4: 0 } } } },
+    "無名",
+    "昼",
+    ["s1", "s2"]
+  );
+  assert.ok(
+    Math.abs(blank.s1 - 0.5) <= 0.001 && Math.abs(blank.s2 - 0.5) <= 0.001,
+    "a maid with no history must be split evenly rather than produce NaN"
+  );
+  const unknown = storeProbabilities(insights, "存在しないメイド", "昼", ["s1", "s2"]);
+  assert.ok(
+    Object.values(unknown).every((value) => Number.isFinite(value)),
+    "an unknown maid must not produce NaN"
+  );
+}
 
 assert.equal(
   getMaidStoreOutlook({ insights, name: dayPool[0], shift: "昼", outlook: futureOutlook }),
   null,
-  "without an assignment there is nothing honest to show"
+  "without an assignment there is nothing to place"
 );
 assert.equal(
   getMaidStoreOutlook({ insights, name: "存在しないメイド", shift: "昼", outlook: null, assignment }),

@@ -731,6 +731,14 @@ input[type="date"] {
   margin-left: 3px;
 }
 
+.maid-store-chip-alt {
+  display: none;
+  margin-left: 4px;
+  padding-left: 4px;
+  border-left: 1px solid var(--cp-border);
+  color: var(--cp-text-soft);
+}
+
 .maid-store-chip[data-store="s1"] {
   --chip-color: var(--cp-store-s1);
   --chip-soft: var(--cp-store-s1-soft);
@@ -1037,6 +1045,10 @@ a.maid-name:focus-visible {
   }
 
   .maid-store-chip-rate {
+    display: inline;
+  }
+
+  .maid-store-chip-alt {
     display: inline;
   }
 
