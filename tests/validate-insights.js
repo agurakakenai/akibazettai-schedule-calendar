@@ -407,6 +407,20 @@ for (const name of tendencyNames) {
   );
 
   assert.ok(storeIds.has(tendency.home), `maidTendency.${name}.home must be a known store id`);
+  // 公式サイトの配属。予定表の homeStore と食い違うと、ツールチップが嘘をつく。
+  if (schedule.roster.includes(name)) {
+    assert.equal(
+      tendency.posted,
+      schedule.homeStore[name],
+      `maidTendency.${name}.posted must match the posting in data/schedule.js`
+    );
+  } else {
+    assert.equal(
+      tendency.posted ?? null,
+      null,
+      `${name} is not on the official site, so she must not claim a posting`
+    );
+  }
   assert.ok(
     Number.isInteger(tendency.workShifts) && tendency.workShifts > 0,
     `maidTendency.${name}.workShifts must be a positive integer`

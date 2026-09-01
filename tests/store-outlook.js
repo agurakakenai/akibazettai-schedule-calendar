@@ -435,6 +435,52 @@ for (const storeId of assignment.storeIds) {
   );
 }
 
+// 公式サイトの配属も出す。確率は実績が主なので、配属と食い違う人がいる。
+{
+  const posted = insights.maidTendency[dayPool[0]].posted;
+  assert.ok(posted, "a rostered maid must carry her posting");
+  assert.ok(
+    chip.title.includes(
+      `公式サイトの配属は${insights.stores.find((store) => store.id === posted).short}`
+    ),
+    "the chip must name the shop the site posts her to"
+  );
+
+  // 配属と、いちばん高い確率の店が食い違う人が実際にいる。そこを隠さない。
+  const drifted = schedule.roster.filter((name) => {
+    const tendency = insights.maidTendency[name];
+    return tendency?.posted && tendency.home !== tendency.posted;
+  });
+  assert.ok(
+    drifted.length > 0,
+    "some maids turn up most often somewhere other than their posting, which is why we show both"
+  );
+
+  // 公式サイトに載っていない人には配属が無いので、その一文を出さない。
+  const outsider = Object.keys(insights.maidTendency).find(
+    (name) => !schedule.roster.includes(name)
+  );
+  if (outsider) {
+    const outsiderAssignment = assignShiftStores({
+      insights,
+      members: [outsider],
+      shift: "昼",
+      storeIds: assignment.storeIds
+    });
+    const outsiderChip = getMaidStoreOutlook({
+      insights,
+      name: outsider,
+      shift: "昼",
+      outlook: futureOutlook,
+      assignment: outsiderAssignment
+    });
+    assert.ok(
+      !outsiderChip.title.includes("公式サイトの配属"),
+      `${outsider} is not on the official site, so her chip must not invent a posting`
+    );
+  }
+}
+
 // 確率は候補店で合計1になり、どの店も 0 にはならない。
 {
   const stores = insights.stores.map((store) => store.id);

@@ -765,6 +765,11 @@
       .sort((a, b) => probabilities[b] - probabilities[a])
       .map((id) => `${shortOf(id)} ${toPercent(probabilities[id])}`)
       .join(" / ");
+    // 公式サイトの配属。確率は実績が主で配属は弱い事前分布なので、
+    // 実績の多い人ほど配属から離れる。そのずれを読み手が確かめられるように出す。
+    const postedNote = tendency?.posted
+      ? `公式サイトの配属は${shortOf(tendency.posted)}`
+      : null;
 
     return {
       basis: "probability",
@@ -777,9 +782,12 @@
         : null,
       title: [
         `この${shift}に開きそうな店にいる確率：${everyStore}（${scopeNote}）`,
+        postedNote,
         "どの店にも入る可能性があります。実際、在籍35名は全員が4店舗すべてに入った実績があります",
         "いちばん高い店だけを見ると、たまに入る店を取りこぼします"
-      ].join("。"),
+      ]
+        .filter(Boolean)
+        .join("。"),
       srText: second
         ? `${shift}は${top.short}が${toPercent(probabilities[top.id])}、次に${second.short}が${toPercent(probabilities[second.id])}`
         : `${shift}は${top.short}が${toPercent(probabilities[top.id])}`
