@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <script>
+      (() => {
+        const param = new URLSearchParams(window.location.search).get("scoutTheme");
+        const theme =
+          param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        document.documentElement.setAttribute("data-theme", theme);
+      })();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>閲覧権限がありません | アキバ絶対領域 お給仕カレンダー</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <div>
+        <p class="eyebrow">AKIBA ZETTAI RYOIKI</p>
+        <h1>閲覧権限がありません</h1>
+        <p class="header-copy">
+          このお給仕カレンダーは非公開です。閲覧を許可されたアカウントでログインしてください。
+        </p>
+      </div>
+    </header>
+
+    <main class="page-shell">
+      <section class="calendar-card">
+        <div class="calendar-notes">
+          <p>別のアカウントで入り直す場合は <a href="/.auth/logout">ログアウト</a> してください。</p>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

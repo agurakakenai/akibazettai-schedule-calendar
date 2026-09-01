@@ -6,13 +6,17 @@
 
 ## ローカルプレビュー
 
-依存パッケージやビルドは不要です。リポジトリのルートで静的サーバーを起動します。
+依存パッケージやビルドは不要です。[`preview.cmd`](preview.cmd) をダブルクリックし、ブラウザーで <http://localhost:4173> を開いてください。
+
+コマンドで起動する場合は、リポジトリのルートで次を実行します。
 
 ```powershell
-python -m http.server 4173
+py -m http.server 4173 --bind 127.0.0.1
 ```
 
-ブラウザーで <http://localhost:4173> を開いてください。
+`--bind 127.0.0.1` を付けているため、同じネットワークの他の端末からは見えません。
+
+> Windows で `python` がマイクロソフトストアのスタブになっていることがあります。その場合は `py` を使ってください。
 
 データ検証:
 
@@ -47,3 +51,16 @@ node tests/range-rendering.js
 `main` への push では [ワークフロー](.github/workflows/deploy-pages.yml)の検証ジョブだけが動き、サイトは公開されません。再び一般公開する場合だけ、リポジトリを公開に戻したうえで Actions タブからワークフローを手動実行してください。
 
 HTML、CSS、JavaScript、予定データはリポジトリのプロジェクトパスで動作する相対パスを使用しています。
+
+### 自分だけが見られる形で公開したい場合
+
+| 方法 | リポジトリ | サイト | 費用 |
+|---|---|---|---|
+| GitHub Pages（無料プラン） | 公開が必須 | 誰でも閲覧可 | 無料 |
+| GitHub Pages（Pro） | 非公開にできる | **URL を知っていれば誰でも閲覧可** | 月 $4 |
+| Azure Static Web Apps | 非公開のまま | **許可した本人だけ** | 無料枠 |
+| Cloudflare Tunnel + Access | 非公開のまま | 許可した本人だけ | 無料（独自ドメインが必要） |
+
+GitHub Pages は Pro にしてもサイト自体は公開されます。サイトを本人だけに限定できるのは GitHub Enterprise Cloud だけです。
+
+[`staticwebapp.config.json`](staticwebapp.config.json) には Azure Static Web Apps 用の設定を用意済みです。全ページを `schedule-reader` ロールに限定し、未認証のアクセスは GitHub ログインへリダイレクトします。Azure サブスクリプションがあれば、この構成のままデプロイして、自分のアカウントにだけロールを付与すれば非公開の閲覧環境になります。
