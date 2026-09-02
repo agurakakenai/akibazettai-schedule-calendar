@@ -1176,10 +1176,12 @@ def build():
     # 提出が済めば黙る点でも正しい。
     posted = read_posted_shifts()
     pending = []
+    window_dates = dates[-90:]
+    window_shifts = sum(1 for d in window_dates for sh in SHIFTS if (d, sh) in cell)
     for name in (shown(n) for n in roster):
         if posted.get(name):
             continue
-        recent = sum(1 for d in dates[-90:] for sh in SHIFTS
+        recent = sum(1 for d in window_dates for sh in SHIFTS
                      for maids in cell.get((d, sh), {}).values()
                      if name in {shown(m) for m in maids})
         pending.append({'name': name, 'recentShifts': recent})
@@ -1190,6 +1192,11 @@ def build():
         # 直近90日で何回お給仕に出ていた人か。0回なら、そもそも今月は出ない人かもしれない。
         'recentShifts': {p['name']: p['recentShifts'] for p in pending},
         'postedShifts': sum(posted.values()),
+        # 上の回数を数えた窓。これが無いと、画面側で「1シフトあたり何人ぶん薄いか」を
+        # 出すのに分母を推測することになり、推測した分母で割った数字が測った数字の
+        # 顔をしてしまう。母数を渡しておけば、割り算は事実のまま済む。
+        'windowDays': len(window_dates),
+        'windowShifts': window_shifts,
     }
 
     return {
