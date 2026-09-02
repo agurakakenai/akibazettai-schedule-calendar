@@ -783,6 +783,39 @@ assert.equal(
   );
 }
 
+// spread は「人ごとの画面」で、その人の行き先がどれだけ読めるかを示す。
+// walk-forward の実測的中との相関は r=+0.794（37名）。
+//   0.30以上 -> 76% / 0.20〜0.30 -> 72% / 0.15〜0.20 -> 63% / 0.15未満 -> 55%
+// この対応が崩れたら、画面の一言が実態と合わなくなる。
+{
+  const rows = Object.entries(insights.maidTendency);
+  const withSpread = rows.filter(([, t]) => typeof t.spread === "number");
+  assert.equal(
+    withSpread.length,
+    rows.length,
+    "every maid needs a spread, or the per-maid view has nothing to say about her"
+  );
+  for (const [name, t] of withSpread) {
+    assert.ok(
+      t.spread >= 0 && t.spread <= 0.75,
+      `${name}: spread ${t.spread} is outside what a share of four shops can produce`
+    );
+  }
+  // キッチンにゃんこは4店を均等に回るので、いちばん平らな側にいるはず。
+  const kitchen = new Set(schedule.kitchenStaff ?? []);
+  const cooks = withSpread.filter(([name]) => kitchen.has(name));
+  const floor = withSpread.filter(([name]) => !kitchen.has(name));
+  if (cooks.length && floor.length) {
+    const mean = (list) =>
+      list.reduce((sum, [, t]) => sum + t.spread, 0) / list.length;
+    assert.ok(
+      mean(cooks) < mean(floor),
+      `cooks move between shops more freely, so their spread should be lower ` +
+        `(cooks ${mean(cooks).toFixed(3)} vs floor ${mean(floor).toFixed(3)})`
+    );
+  }
+}
+
 console.log(
   `Store insights valid: ${insights.stores.length} stores, ` +
     `${actualEntries.length} recorded dates through ${Object.keys(insights.actual).sort().at(-1)}, ` +

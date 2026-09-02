@@ -763,6 +763,9 @@ def build():
         mean_base = {sid: (base['昼'][sid] + base['夜'][sid]) / 2 for sid in IDS}
         tot_all = sum(mean_base[sid] * pick[sid] for sid in IDS) or 1.0
         overall = {sid: round(mean_base[sid] * pick[sid] / tot_all, 3) for sid in IDS}
+        # pickRate を4店で正規化したときの、均等（各25%）からの離れ具合。
+        pick_tot = sum(pick.values()) or 1.0
+        norm_pick = {sid: pick[sid] / pick_tot for sid in IDS}
         tendency[name] = {
             'alias': None if key == name else key,
             'workShifts': len(w),
@@ -771,6 +774,13 @@ def build():
             'pickRateByShift': by_shift,
             'sampleByShift': sample_by_shift,
             'share': overall,
+            # その人の行き先がどれだけ偏っているか。0 なら4店を均等に回る。
+            # 「人ごとの画面」で、その人の予測がどれだけ当てになるかを示すのに使う。
+            # walk-forward の実測的中との相関は r=+0.837（50名）で、
+            #   0.28 -> 82%（ちさと） / 0.14 -> 66%（すくい） / 0.07 -> 46%（みりん）
+            # 最大 pickRate（r=+0.683）より説明力が高い。一箇所に強いことより、
+            # 他店に行かないことのほうが効く。
+            'spread': round(sum(abs(v - 0.25) for v in norm_pick.values()) / 2, 3),
             'shareByShift': share_by_shift,
             'posted': posted,
             'home': max(IDS, key=lambda s: pick[s]),
