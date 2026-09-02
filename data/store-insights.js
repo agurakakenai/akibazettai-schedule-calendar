@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-02 11:27",
+  "generatedAt": "2026-09-02 22:27",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-08-30"
@@ -424,6 +424,10 @@ window.STORE_INSIGHTS = {
       "s3": 0.294,
       "s4": 0.1924
     }
+  },
+  "spreadBands": {
+    "settled": 0.3,
+    "mixed": 0.2
   },
   "secondStoreByHome": {
     "s2": {
@@ -2577,6 +2581,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.022,
         "s4": 0.128
       },
+      "spread": 0.339,
       "shareByShift": {
         "昼": {
           "s1": 0.838,
@@ -2643,6 +2648,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.236,
         "s4": 0.096
       },
+      "spread": 0.144,
       "shareByShift": {
         "昼": {
           "s1": 0.43,
@@ -2709,6 +2715,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.06,
         "s4": 0.263
       },
+      "spread": 0.166,
       "shareByShift": {
         "昼": {
           "s1": 0.524,
@@ -2775,6 +2782,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.242,
         "s4": 0.124
       },
+      "spread": 0.132,
       "shareByShift": {
         "昼": {
           "s1": 0.557,
@@ -2841,6 +2849,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.006,
         "s4": 0.043
       },
+      "spread": 0.461,
       "shareByShift": {
         "昼": {
           "s1": 0.893,
@@ -2907,6 +2916,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.174,
         "s4": 0.342
       },
+      "spread": 0.183,
       "shareByShift": {
         "昼": {
           "s1": 0.376,
@@ -2973,6 +2983,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.087,
         "s4": 0.18
       },
+      "spread": 0.117,
       "shareByShift": {
         "昼": {
           "s1": 0.575,
@@ -3039,6 +3050,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.176,
         "s4": 0.053
       },
+      "spread": 0.19,
       "shareByShift": {
         "昼": {
           "s1": 0.652,
@@ -3105,6 +3117,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.317,
         "s4": 0.032
       },
+      "spread": 0.29,
       "shareByShift": {
         "昼": {
           "s1": 0.545,
@@ -3171,6 +3184,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.085,
         "s4": 0.036
       },
+      "spread": 0.348,
       "shareByShift": {
         "昼": {
           "s1": 0.785,
@@ -3237,6 +3251,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.13,
         "s4": 0.276
       },
+      "spread": 0.149,
       "shareByShift": {
         "昼": {
           "s1": 0.478,
@@ -3303,6 +3318,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.261,
         "s4": 0.104
       },
+      "spread": 0.157,
       "shareByShift": {
         "昼": {
           "s1": 0.395,
@@ -3369,6 +3385,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.114,
         "s4": 0.034
       },
+      "spread": 0.283,
       "shareByShift": {
         "昼": {
           "s1": 0.494,
@@ -3435,6 +3452,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.057,
         "s4": 0.051
       },
+      "spread": 0.259,
       "shareByShift": {
         "昼": {
           "s1": 0.721,
@@ -3501,6 +3519,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.201,
         "s4": 0.014
       },
+      "spread": 0.278,
       "shareByShift": {
         "昼": {
           "s1": 0.332,
@@ -3567,6 +3586,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.078,
         "s4": 0.035
       },
+      "spread": 0.323,
       "shareByShift": {
         "昼": {
           "s1": 0.766,
@@ -3633,6 +3653,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.146,
         "s4": 0.29
       },
+      "spread": 0.164,
       "shareByShift": {
         "昼": {
           "s1": 0.328,
@@ -3699,6 +3720,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.062,
         "s4": 0.04
       },
+      "spread": 0.267,
       "shareByShift": {
         "昼": {
           "s1": 0.811,
@@ -3765,6 +3787,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.204,
         "s4": 0.071
       },
+      "spread": 0.229,
       "shareByShift": {
         "昼": {
           "s1": 0.384,
@@ -3831,6 +3854,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.152,
         "s4": 0.231
       },
+      "spread": 0.112,
       "shareByShift": {
         "昼": {
           "s1": 0.558,
@@ -3897,6 +3921,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.056,
         "s4": 0.042
       },
+      "spread": 0.385,
       "shareByShift": {
         "昼": {
           "s1": 0.848,
@@ -3963,6 +3988,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.051,
         "s4": 0.006
       },
+      "spread": 0.462,
       "shareByShift": {
         "昼": {
           "s1": 0.91,
@@ -4029,6 +4055,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.075,
         "s4": 0.008
       },
+      "spread": 0.425,
       "shareByShift": {
         "昼": {
           "s1": 0.869,
@@ -4095,6 +4122,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.144,
         "s4": 0.295
       },
+      "spread": 0.162,
       "shareByShift": {
         "昼": {
           "s1": 0.469,
@@ -4161,6 +4189,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.123,
         "s4": 0.042
       },
+      "spread": 0.265,
       "shareByShift": {
         "昼": {
           "s1": 0.518,
@@ -4227,6 +4256,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.054,
         "s4": 0.037
       },
+      "spread": 0.426,
       "shareByShift": {
         "昼": {
           "s1": 0.801,
@@ -4293,6 +4323,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.115,
         "s4": 0.081
       },
+      "spread": 0.199,
       "shareByShift": {
         "昼": {
           "s1": 0.434,
@@ -4359,6 +4390,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.25,
         "s4": 0.078
       },
+      "spread": 0.165,
       "shareByShift": {
         "昼": {
           "s1": 0.475,
@@ -4425,6 +4457,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.23,
         "s4": 0.114
       },
+      "spread": 0.13,
       "shareByShift": {
         "昼": {
           "s1": 0.427,
@@ -4491,6 +4524,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.124,
         "s4": 0.126
       },
+      "spread": 0.095,
       "shareByShift": {
         "昼": {
           "s1": 0.548,
@@ -4557,6 +4591,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.229,
         "s4": 0.147
       },
+      "spread": 0.112,
       "shareByShift": {
         "昼": {
           "s1": 0.414,
@@ -4623,6 +4658,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.146,
         "s4": 0.137
       },
+      "spread": 0.125,
       "shareByShift": {
         "昼": {
           "s1": 0.605,
@@ -4689,6 +4725,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.134,
         "s4": 0.163
       },
+      "spread": 0.043,
       "shareByShift": {
         "昼": {
           "s1": 0.537,
@@ -4755,6 +4792,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.106,
         "s4": 0.194
       },
+      "spread": 0.1,
       "shareByShift": {
         "昼": {
           "s1": 0.405,
@@ -4821,6 +4859,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.138,
         "s4": 0.147
       },
+      "spread": 0.12,
       "shareByShift": {
         "昼": {
           "s1": 0.417,
@@ -4887,6 +4926,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.205,
         "s4": 0.053
       },
+      "spread": 0.203,
       "shareByShift": {
         "昼": {
           "s1": 0.634,
@@ -4953,6 +4993,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.163,
         "s4": 0.171
       },
+      "spread": 0.079,
       "shareByShift": {
         "昼": {
           "s1": 0.609,
@@ -5019,6 +5060,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.137,
         "s4": 0.221
       },
+      "spread": 0.072,
       "shareByShift": {
         "昼": {
           "s1": 0.424,
@@ -5085,6 +5127,7 @@ window.STORE_INSIGHTS = {
         "s3": 0.043,
         "s4": 0.097
       },
+      "spread": 0.245,
       "shareByShift": {
         "昼": {
           "s1": 0.819,

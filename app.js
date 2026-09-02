@@ -1024,8 +1024,52 @@
     return tilt;
   }
 
+  // 予定表の顔ぶれを画面の数字にも反映させる。
+  //
+  // ここを分けていたのが誤りだった。以前は expectedOpenStores が順位づけのときだけ
+  // この傾きを足していて、画面に出る割合には入っていなかった。結果として
+  // 「48%と出した店が空で、39%と出した店に4人いる」が起きる。読み手には理由がない。
+  //
+  // どちらが正しいかは実測できる（過去1年521シフト）。顔ぶれを入れた順位のほうが
+  // 実際に開いた店をよく当てる（1.36店 対 1.32店、食い違った104件で45勝25敗
+  // p=0.023）。つまり直すべきは順位づけではなく、古いままだった表示のほうだった。
+  //
+  // 対数オッズで足すのは、順位づけがそうしていたから。ここを別の式にすると
+  // 「表示は動いたが選ぶ店は変わらない」という、いま直している状態に戻る。
+  function applyPostedTilt(insights, outlook, shift, members) {
+    const tilt = postedTilt(insights, shift, members);
+    if (!outlook || !tilt || outlook.basis === "actual") {
+      return outlook;
+    }
+    const certain = new Set(outlook.certainStores ?? []);
+    const entries = outlook.entries.map((entry) => {
+      const move = tilt.get(entry.store.id) ?? 0;
+      if (certain.has(entry.store.id) || move === 0 || typeof entry.rate !== "number") {
+        return entry;
+      }
+      const clamped = Math.min(Math.max(entry.rate, 0.005), 0.995);
+      const odds = Math.log(clamped / (1 - clamped)) + move;
+      const rate = 1 / (1 + Math.exp(-odds));
+      return {
+        ...entry,
+        state: stateForRate(rate),
+        rate,
+        text: toPercent(rate),
+        // 読み上げ文の言い回しは元の見込みのものを保ち、割合だけ差し替える。
+        srText: (entry.srText ?? "").includes(entry.text)
+          ? entry.srText.replace(entry.text, toPercent(rate))
+          : `${entry.store.short}が営業する見込みは${toPercent(rate)}`
+      };
+    });
+    return { ...outlook, entries };
+  }
+
   // 開いている店が分からない日は、その日出る人数から店舗数を決める。
-  // 第4引数は人数でも顔ぶれの配列でもよい。配列なら誰が出るかも順位付けに使う。
+  // 第4引数は人数でも顔ぶれの配列でもよい（数えるのは人数だけ）。
+  //
+  // 順位は画面に出している割合そのもので付ける。別の物差しで選ぶと、読み手には
+  // 「低いほうが選ばれた」としか見えない。顔ぶれの効果は applyPostedTilt が
+  // 割合そのものに入れてあるので、ここで二重に足してはいけない。
   function expectedOpenStores(insights, shift, outlook, pool) {
     if (!outlook) {
       return [];
@@ -1033,19 +1077,12 @@
     if (outlook.basis === "actual") {
       return outlook.openStores ?? [];
     }
-    const members = Array.isArray(pool) ? pool : null;
-    const poolSize = members ? members.length : pool ?? 0;
+    const poolSize = Array.isArray(pool) ? pool.length : pool ?? 0;
     const certain = outlook.certainStores ?? [];
-    const tilt = postedTilt(insights, shift, members);
-    const rank = (entry) => {
-      const rate = Math.min(Math.max(entry.rate ?? 0, 0.005), 0.995);
-      const odds = Math.log(rate / (1 - rate));
-      return odds + (tilt?.get(entry.store.id) ?? 0);
-    };
     const ordered = [
       ...certain,
       ...[...outlook.entries]
-        .sort((a, b) => rank(b) - rank(a))
+        .sort((a, b) => (b.rate ?? 0) - (a.rate ?? 0))
         .map((entry) => entry.store.id)
         .filter((id) => !certain.includes(id))
     ];
@@ -1347,11 +1384,101 @@
     };
   }
 
+  // 人ごとの一覧を組み立てる。店ごとの画面と同じ割り振りを引くので、両者は食い違わない。
+  //
+  // この軸には固有の危険がある。1件あたりの的中は、開いている店が分かっている前提で
+  // 66%（accuracy.maidStoreGivenOpen）。店の側も当日決まるので、実際にその人がその店に
+  // いる確率はもっと低い。同じ人の予測を縦に並べると、その外れが一覧で見える。
+  // 店ごとの画面では1行ずつ独立に見えて気づかなかったものが表に出るので、
+  // 件数を数えて「全部当たることはまずない」と先に言う。
+  function maidItinerary({ schedule, name, dates, shifts, resolve }) {
+    const stops = [];
+    for (const key of dates ?? []) {
+      for (const shift of shifts ?? []) {
+        const members = schedule?.[key]?.[shift] ?? [];
+        const entry = members.find((member) => member.name === name);
+        if (!entry) {
+          continue;
+        }
+        const { outlook, assignment } = resolve(key, shift) ?? {};
+        const placed = assignment?.byMaid?.get(name) ?? null;
+        const storeId = placed?.storeId ?? null;
+        const row = storeId
+          ? outlook?.entries?.find((candidate) => candidate.store.id === storeId) ?? null
+          : null;
+        stops.push({
+          dateKey: key,
+          shift,
+          storeId,
+          // 店ごとの画面と同じ三段階を使う。open は実績か記念日で確定、
+          // likely は5割以上、unlikely はそれ未満。別の線を引くと画面が食い違う。
+          state: row?.state ?? null,
+          openRate: row?.rate ?? null,
+          settled: row?.state === "open",
+          eventLabel: entry.eventLabel ?? null
+        });
+      }
+    }
+    return { name, stops, guesses: stops.filter((stop) => !stop.settled).length };
+  }
+
+  // 「n件すべて当たる」確率。並べると外れが見えることを、数で言うために使う。
+  function itineraryConfidence(insights, guesses) {
+    const perStop = insights?.accuracy?.maidStoreGivenOpen;
+    if (!(perStop > 0) || !(guesses > 0)) {
+      return null;
+    }
+    return { perStop, guesses, allRight: Math.pow(perStop, guesses) };
+  }
+
+  // その人の行き先がどれだけ決まっているか（spread）を帯に落とす。
+  // データ側の実測では spread と的中率が r=+0.79 で対応する。区切りは
+  // insights.spreadBands にある。ここに数字を持つと、集計をやり直した日に
+  // 画面の言い分けだけが古くなるので、閾値は必ずデータから読む。
+  function spreadStanding(insights, name) {
+    const spread = insights?.maidTendency?.[name]?.spread;
+    const bands = insights?.spreadBands;
+    if (typeof spread !== "number" || typeof bands?.settled !== "number" || typeof bands?.mixed !== "number") {
+      return null;
+    }
+    const band = spread >= bands.settled ? "settled" : spread >= bands.mixed ? "mixed" : "roving";
+    const all = Object.values(insights.maidTendency ?? {})
+      .map((tendency) => tendency?.spread)
+      .filter((value) => typeof value === "number");
+    return {
+      spread,
+      band,
+      rank: all.filter((value) => value > spread).length + 1,
+      total: all.length
+    };
+  }
+
+  // 上の帯を文にする。人ごとの的中率は測られていないので、そこは言わない。
+  // 言えるのは「行き先が決まっている側か、散らばる側か」までで、踏み越えない。
+  function spreadNote(insights, name, isKitchen) {
+    const standing = spreadStanding(insights, name);
+    if (!standing) {
+      return null;
+    }
+    const place =
+      standing.total > 1
+        ? `行き先が決まっている順で在籍${standing.total}名中${standing.rank}番目です`
+        : null;
+    const body =
+      standing.band === "settled"
+        ? "入る店がはっきりしているので、この一覧は当たりやすい側です"
+        : standing.band === "mixed"
+          ? "だいたい決まっていますが、外れる日もあります"
+          : `${isKitchen ? "キッチンにゃんこは配属と関係なく4店を回るので、" : ""}日によって行き先が変わります。この一覧はとくに当たりません`;
+    return place ? `${place}。${body}` : body;
+  }
+
   if (typeof module !== "undefined" && module.exports) {
     module.exports = {
       addDays,
       applyEventCertainty,
       applyHomeStaff,
+      applyPostedTilt,
       assignShiftStores,
       calibrationNote,
       coOpenRate,
@@ -1366,7 +1493,9 @@
       getVisibleMonthDates,
       groupByAssignedStore,
       isDateKeyInRange,
+      itineraryConfidence,
       lastActualDateOf,
+      maidItinerary,
       nearMissNote,
       nearMissStores,
       openStoresOn,
@@ -1374,6 +1503,8 @@
       sameDayDecisionNote,
       scheduleSystemNote,
       sortByAssignedStore,
+      spreadNote,
+      spreadStanding,
       storeCapacities,
       storeProbabilities,
       storeSizeNote,
@@ -1425,7 +1556,15 @@
       data.homeStore,
       data.kitchenStaff
     );
-    return { outlook: applyEventCertainty(insights, withHome, pins), pins };
+    // 公式配属の顔ぶれも割合そのものに入れる。ここを入れずに順位づけだけで使うと、
+    // 画面の数字と選ばれた店が食い違う。
+    const withPosted = applyPostedTilt(
+      insights,
+      withHome,
+      shift,
+      entries.map((entry) => entry.name)
+    );
+    return { outlook: applyEventCertainty(insights, withPosted, pins), pins };
   }
 
   function createStoreOutlook(outlook, shift, members) {
@@ -1448,7 +1587,18 @@
     list.className = "store-chips";
     list.setAttribute("aria-hidden", "true");
 
-    outlook.entries.forEach((entry) => {
+    // 表に出すのは、開くと見込んだ店だけ。確率は出さない。
+    // どの店を開けるかは当日決まるので、数字を並べても読み手は選べない。
+    // 4店ぶんの割合・根拠・僅差の説明は、上の読み上げ用テキストと title に残す。
+    const opening = new Set(
+      outlook.basis === "actual"
+        ? outlook.openStores ?? []
+        : expectedOpenStores(insights, shift, outlook, members ?? 0)
+    );
+
+    outlook.entries
+      .filter((entry) => opening.has(entry.store.id) || nearMiss.has(entry.store.id))
+      .forEach((entry) => {
       const chip = document.createElement("li");
       chip.className = `store-chip is-${entry.state}`;
       chip.dataset.store = entry.store.id;
@@ -1466,10 +1616,12 @@
       const name = document.createElement("span");
       name.className = "store-chip-name";
       name.textContent = compactStoreLabel(entry.store);
+      chip.append(name);
+      // 割合は表に出さないが、HTML には残す。根拠を確かめたいときの手がかり。
       const value = document.createElement("span");
       value.className = "store-chip-rate";
       value.textContent = entry.text;
-      chip.append(name, value);
+      chip.append(value);
       list.append(chip);
     });
 
@@ -1520,6 +1672,10 @@
     roster: {
       label: "誰いるか",
       help: "店舗の予測を隠して、誰がお給仕に出るかだけを見ます。"
+    },
+    maid: {
+      label: "この人はどこ",
+      help: "メイドさんごとに、その月どこに立ちそうかを並べます。1件ずつは3回に1回ほどしか当たりません。"
     }
   };
   const VIEW_MODE_KEY = "akibazettai:view-mode";
@@ -1671,8 +1827,12 @@
       }
 
       if (chipData) {
-        // 見出しで店が分かっているときは、チップは割合だけにして繰り返さない。
-        item.append(createMaidStoreChip(chipData, groupStoreId !== chipData.storeId));
+        // 見出しがその店を名乗っているなら、チップは割合だけになる。割合は表に
+        // 出さない方針なので、そこでは何も足さない。数字はこの行の title に残る。
+        const showStore = groupStoreId !== chipData.storeId;
+        if (showStore) {
+          item.append(createMaidStoreChip(chipData, true));
+        }
         titles.push(chipData.title);
         descriptions.push(chipData.srText);
       }
@@ -1767,6 +1927,10 @@
   }
 
   function renderCalendar() {
+    if (state.viewMode === "maid") {
+      renderMaidView();
+      return;
+    }
     const year = state.visibleMonth.getFullYear();
     const monthIndex = state.visibleMonth.getMonth();
     const firstDay = new Date(year, monthIndex, 1);
@@ -1841,6 +2005,179 @@
     elements.calendar.replaceChildren(grid);
   }
 
+
+  // 人 → 日付 → 店 の軸。店ごとの画面と同じ割り振りを引くので、両者は食い違わない。
+  function renderMaidView() {
+    const year = state.visibleMonth.getFullYear();
+    const monthIndex = state.visibleMonth.getMonth();
+    const dates = getVisibleMonthDates(year, monthIndex, state.dateFrom, state.dateTo).map(dateKey);
+    const wrapper = document.createElement("div");
+    wrapper.className = "maid-view";
+
+    const shiftCache = new Map();
+    const resolve = (key, shift) => {
+      const id = `${key}|${shift}`;
+      if (!shiftCache.has(id)) {
+        const { outlook, pins } = getShiftOutlook(key, shift);
+        const members = (data.schedule[key]?.[shift] ?? []).map((entry) => entry.name);
+        shiftCache.set(id, {
+          outlook,
+          assignment: outlook
+            ? getShiftAssignment({ insights, members, shift, outlook, pins, kitchenStaff })
+            : null
+        });
+      }
+      return shiftCache.get(id);
+    };
+
+    const shown = data.roster.filter((name) => isVisibleMaid(name));
+    let stopCount = 0;
+
+    shown.forEach((name) => {
+      const plan = maidItinerary({ schedule: data.schedule, name, dates, shifts, resolve });
+      if (plan.stops.length === 0) {
+        return;
+      }
+      stopCount += plan.stops.length;
+      wrapper.append(createMaidPlan(plan));
+    });
+
+    if (wrapper.childElementCount === 0) {
+      const empty = document.createElement("p");
+      empty.className = "calendar-empty";
+      empty.setAttribute("aria-live", "polite");
+      empty.textContent = "この期間に予定のあるメイドさんがいません。";
+      wrapper.append(empty);
+    }
+
+    elements.monthTitle.textContent = `${year}年${monthIndex + 1}月`;
+    elements.resultSummary.textContent =
+      `${visibleMaidCount()}名を選択中・${stopCount}件のお給仕を表示`;
+    elements.calendar.replaceChildren(wrapper);
+  }
+
+  function createMaidPlan(plan) {
+    const block = document.createElement("section");
+    block.className = "maid-plan";
+    block.setAttribute("aria-label", `${plan.name}のお給仕`);
+
+    const heading = document.createElement("h3");
+    heading.className = "maid-plan-name";
+    const account = insights?.maidTendency?.[plan.name]?.x;
+    const nameLabel = document.createElement(account ? "a" : "span");
+    nameLabel.className = "maid-name";
+    nameLabel.textContent = plan.name;
+    if (account) {
+      nameLabel.href = `https://x.com/${account}`;
+      nameLabel.target = "_blank";
+      nameLabel.rel = "noopener noreferrer";
+      nameLabel.title = `${plan.name}のXを開く`;
+    }
+    const count = document.createElement("span");
+    count.className = "maid-plan-count";
+    count.textContent = `${plan.stops.length}件`;
+    heading.append(nameLabel, count);
+    if (kitchenStaff.has(plan.name)) {
+      const cook = document.createElement("span");
+      cook.className = "maid-plan-cook";
+      cook.textContent = "キッチン";
+      cook.title = "キッチンにゃんこは配属と関係なく4店を回ります";
+      heading.append(cook);
+    }
+    block.append(heading);
+
+    const note = document.createElement("p");
+    note.className = "maid-plan-note";
+    note.textContent = maidPlanCaveat(plan);
+    block.append(note);
+
+    const list = document.createElement("ol");
+    list.className = "maid-plan-stops";
+    plan.stops.forEach((stop) => {
+      const item = document.createElement("li");
+      item.className = `maid-plan-stop is-${stop.state ?? "unknown"}`;
+      const when = document.createElement("span");
+      when.className = "maid-plan-when";
+      const [, month, day] = stop.dateKey.split("-");
+      when.textContent = `${Number(month)}/${Number(day)} ${stop.shift}`;
+      const where = document.createElement("span");
+      where.className = "maid-plan-where";
+      where.dataset.store = stop.storeId ?? "";
+      where.textContent = stop.storeId ? storeShort(insights, stop.storeId) : "未定";
+      item.append(when, where);
+      // 割合は表に出さないが、店ごとの画面と同じく HTML には残す。
+      // 順位付けには予定表の顔ぶれも入っているので、この数字だけでは置いた理由に
+      // ならない。根拠を確かめたいときの手がかりとしてだけ持たせる。
+      if (typeof stop.openRate === "number") {
+        const rate = document.createElement("span");
+        rate.className = "maid-plan-rate";
+        rate.textContent = toPercent(stop.openRate);
+        item.append(rate);
+      }
+      if (stop.eventLabel) {
+        const event = document.createElement("span");
+        event.className = "maid-plan-event";
+        event.textContent = stop.eventLabel;
+        item.append(event);
+      }
+      const explanation = stopExplanation(stop);
+      item.title = explanation;
+      // 読み上げは aria-label に一本化する。同じ文を隠し要素にも置くと二度読まれる。
+      item.setAttribute("aria-label", `${when.textContent}は${explanation}`);
+      list.append(item);
+    });
+    block.append(list);
+    return block;
+  }
+
+  // 縦に並べると外れが見える軸なので、先に「全部は当たりません」と言っておく。
+  function maidPlanCaveat(plan) {
+    const settled = plan.stops.length - plan.guesses;
+    const parts = [];
+    if (settled > 0) {
+      parts.push(`${settled}件は記録か記念日で確定`);
+    }
+    if (plan.guesses > 0) {
+      parts.push(
+        `${settled > 0 ? "残り" : ""}${plan.guesses}件はどの店を開けるかが当日決まります`
+      );
+    }
+    const confidence = itineraryConfidence(insights, plan.guesses);
+    if (confidence) {
+      // 1件しかないときに「すべて当たるのは」と続けても同じ数字にしかならない。
+      parts.push(
+        plan.guesses === 1
+          ? `開いた店が分かっていれば${toPercent(confidence.perStop)}ほど当たります`
+          : `開いた店が分かっていれば1件${toPercent(confidence.perStop)}ほど当たりますが、` +
+            `${plan.guesses}件すべて当たるのは${toPercent(confidence.allRight)}です`
+      );
+    }
+    const standing = spreadNote(insights, plan.name, kitchenStaff.has(plan.name));
+    if (standing) {
+      parts.push(standing);
+    }
+    return parts.length > 0 ? `${parts.join("。")}。` : "この期間のお給仕はすべて確定しています。";
+  }
+
+  // 見込みの日に、その店の営業率だけを数字で出さない。順位付けには予定表の顔ぶれも
+  // 入っているので、「4号店が開くのは15%」と書くと、置いた理由と食い違って見える。
+  // 表に出せるのは「開くと見た店のひとつ」までで、確からしさは強弱で伝える。
+  function stopExplanation(stop) {
+    if (!stop.storeId) {
+      return "どこへ立つかは、まだ何も言えません。";
+    }
+    const where = storeShort(insights, stop.storeId);
+    if (stop.settled) {
+      return stop.eventLabel
+        ? `${stop.eventLabel}の主役なので、所属店の${where}にいます。`
+        : `${where}にいた記録があります。`;
+    }
+    const strength =
+      stop.state === "unlikely"
+        ? `${where}は開くと見た店のひとつですが、確からしさは低めです`
+        : `${where}は開くと見た店です`;
+    return `${strength}。どの店を開けるかは当日決まるので、変わることがあります。`;
+  }
 
   function setViewMode(mode) {
     if (!VIEW_MODES[mode] || (mode === "forecast" && !hasInsights)) {
