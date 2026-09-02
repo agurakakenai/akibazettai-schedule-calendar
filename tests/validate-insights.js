@@ -748,6 +748,41 @@ assert.equal(
   }
 }
 
+// 予定表の顔ぶれから相方店舗を読む表。
+// 主張は「2・3号店は配属者が増えると開きやすくなる、4号店は動かない」で、
+// walk-forward で 34.4% -> 42.2%（87勝58敗 p=0.020）だった。
+// 差が消えたら、それは主張が成り立たなくなったということなので気づきたい。
+{
+  const table = insights.secondStoreByHome;
+  assert.ok(table, "secondStoreByHome is missing");
+  const spread = {};
+  for (const id of ["s2", "s3", "s4"]) {
+    const rows = table[id];
+    assert.ok(rows && Object.keys(rows).length >= 3, `${id}: too few rows to read`);
+    const rates = [];
+    for (const [count, row] of Object.entries(rows)) {
+      assert.ok(/^[0-4]$/.test(count), `${id}: unexpected head count ${count}`);
+      assert.ok(row.rate >= 0 && row.rate <= 1, `${id}: rate ${row.rate} out of range`);
+      assert.ok(row.n >= 10, `${id}: ${count} maids rests on only ${row.n} shifts`);
+      rates.push(row.rate);
+    }
+    spread[id] = Math.max(...rates) - Math.min(...rates);
+  }
+  // 2・3号店は動き、4号店は動かない。この差が主張そのもの。
+  for (const id of ["s2", "s3"]) {
+    assert.ok(
+      spread[id] >= 0.15,
+      `${id}: home staff should sway the odds, but the spread is only ` +
+        `${Math.round(spread[id] * 100)} points`
+    );
+  }
+  assert.ok(
+    spread.s4 < spread.s2 && spread.s4 < spread.s3,
+    `s4 is meant to be the one home staff cannot predict, but its spread ` +
+      `${Math.round(spread.s4 * 100)} points is not the smallest`
+  );
+}
+
 console.log(
   `Store insights valid: ${insights.stores.length} stores, ` +
     `${actualEntries.length} recorded dates through ${Object.keys(insights.actual).sort().at(-1)}, ` +

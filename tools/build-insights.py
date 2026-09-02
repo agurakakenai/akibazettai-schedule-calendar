@@ -925,6 +925,38 @@ def build():
             for sid, v in acc_share.items()
         }
 
+    # 予定表の顔ぶれから相方店舗を読む。
+    #
+    # 1号店はほぼ毎シフト開くので、問題は「2番目がどれか」に尽きる。前日から
+    # 当てると 33.5% -> 46.2% になるが、前日の実測が要る。実測が2日前までしか
+    # 無いと 32.7% とベースラインに戻るので、記録が途切れると即座に効かなくなる。
+    # X が読めない今、予定表のある15日のうち前日が分かるのは1日だけである。
+    #
+    # 予定表の配属者数なら実測が要らない。予定表は月初にまとめて手に入るので
+    # 15日ぶん全部に効く。単独で 41.1%（前日方式 46.2% に近い）、前日と併せて
+    # 50.9% だった。
+    #
+    # 出しているのは「その店を本拠とする人が n 人載っているとき、その店が
+    # 相方だった割合」。4号店は n が増えても動かない。当て方の問題ではなく
+    # 当たらないので、n を添えて読む側が判断できるようにしておく。
+    second_by_home = {}
+    for sid in IDS[1:]:
+        tally = collections.defaultdict(lambda: [0, 0])
+        for (d, _sh), stores in cell.items():
+            if d < cut:
+                continue
+            others = [x for x in IDS[1:] if x in stores]
+            if 's1' not in stores or len(others) != 1:
+                continue
+            listed = [m for x in stores for m in stores[x]]
+            k = min(sum(1 for m in listed if posted_by_key.get(m) == sid), 4)
+            tally[k][1] += 1
+            tally[k][0] += 1 if others[0] == sid else 0
+        second_by_home[sid] = {
+            str(k): {'rate': round(v[0] / v[1], 3), 'n': v[1]}
+            for k, v in sorted(tally.items()) if v[1] >= 10
+        }
+
     hist_from = (last_d - datetime.timedelta(days=HISTORY_DAYS)).isoformat()
     actual = {}
     for d in all_dates:
@@ -964,6 +996,7 @@ def build():
         'rosterHeadcountByOpenCount': headcount_by_open,
         'openCountByHeadcount': open_by_headcount,
         'homeStaffShare': home_staff_share,
+        'secondStoreByHome': second_by_home,
         'shiftSplitGivenOpen': shift_split,
         'rotation': {
             # nextDayByDay は日単位の参考値。app.js は「その日どちらの店が開くか」の補足にだけ使い、
