@@ -1006,6 +1006,31 @@ a.maid-name:focus-visible {
   line-height: 1.6;
 }
 
+.maid-plan-days {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* 日付を1行使わず、左に置いて昼・夜を横に並べる。同じ日で日付を2回書かない。 */
+.maid-plan-day {
+  display: grid;
+  grid-template-columns: 4.5rem 1fr;
+  align-items: start;
+  gap: 0 6px;
+}
+
+.maid-plan-date {
+  padding-top: 3px;
+  color: var(--cp-text-soft);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .maid-plan-stops {
   display: flex;
   flex-direction: column;
@@ -1029,7 +1054,6 @@ a.maid-name:focus-visible {
 
 .maid-plan-when {
   color: var(--cp-text-soft);
-  font-variant-numeric: tabular-nums;
 }
 
 .maid-plan-where {

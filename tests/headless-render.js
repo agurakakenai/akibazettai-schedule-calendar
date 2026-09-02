@@ -648,8 +648,28 @@ for (const plan of plans) {
   assert.equal(counted.length, 1, "each plan must show its own shift count");
   assert.equal(counted[0].textContent, `${stops.length}件`, "the count must match the list");
 
+  // 日付は1日につき1回。同じ日の昼と夜で2回書くと、行が増えるだけで何も伝わらない。
+  const dayGroups = withClass(plan, "maid-plan-day");
+  const dates = withClass(plan, "maid-plan-date").map((node) => node.textContent);
+  assert.equal(dayGroups.length, dates.length, "each day group must carry one date label");
+  assert.equal(
+    dayGroups.length,
+    new Set(stops.map((stop) => stop.dataset.date)).size,
+    "the plan must group its shifts by date, one heading per day"
+  );
+  assert.deepEqual(dates, [...new Set(dates)], "a date must not be written twice in one plan");
+  assert.deepEqual(
+    dayGroups.map((group) => withClass(group, "maid-plan-stop")[0].dataset.date),
+    [...new Set(stops.map((stop) => stop.dataset.date))].sort(),
+    "the days must stay in date order"
+  );
+
   for (const stop of stops) {
-    const when = withClass(stop, "maid-plan-when")[0].textContent;
+    const shift = withClass(stop, "maid-plan-when")[0].textContent;
+    // 日付は親の見出しが名乗るので、行には data 属性でだけ持つ。
+    assert.ok(insights.shifts.includes(shift), `a stop must name a real shift, got "${shift}"`);
+    const [, month, day] = stop.dataset.date.split("-").map(Number);
+    const when = `${month}/${day} ${shift}`;
     const where = withClass(stop, "maid-plan-where")[0];
     const storeId = where.dataset.store;
     assert.ok(

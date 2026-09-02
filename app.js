@@ -1422,6 +1422,21 @@
     return { name, stops, guesses: stops.filter((stop) => !stop.settled).length };
   }
 
+  // 日付ごとに束ねる。同じ日の昼と夜で日付を2回書くと、行が増えるだけで
+  // 読み手には同じことしか伝わらない。日付は1回、その下に昼・夜を並べる。
+  function groupStopsByDate(stops) {
+    const days = [];
+    for (const stop of stops ?? []) {
+      const last = days[days.length - 1];
+      if (last && last.dateKey === stop.dateKey) {
+        last.stops.push(stop);
+      } else {
+        days.push({ dateKey: stop.dateKey, stops: [stop] });
+      }
+    }
+    return days;
+  }
+
   // 「n件すべて当たる」確率。並べると外れが見えることを、数で言うために使う。
   function itineraryConfidence(insights, guesses) {
     const perStop = insights?.accuracy?.maidStoreGivenOpen;
@@ -1492,6 +1507,7 @@
       getTokyoDateDefaults,
       getVisibleMonthDates,
       groupByAssignedStore,
+      groupStopsByDate,
       isDateKeyInRange,
       itineraryConfidence,
       lastActualDateOf,
@@ -2092,42 +2108,60 @@
     block.append(note);
 
     const list = document.createElement("ol");
-    list.className = "maid-plan-stops";
-    plan.stops.forEach((stop) => {
-      const item = document.createElement("li");
-      item.className = `maid-plan-stop is-${stop.state ?? "unknown"}`;
-      const when = document.createElement("span");
-      when.className = "maid-plan-when";
-      const [, month, day] = stop.dateKey.split("-");
-      when.textContent = `${Number(month)}/${Number(day)} ${stop.shift}`;
-      const where = document.createElement("span");
-      where.className = "maid-plan-where";
-      where.dataset.store = stop.storeId ?? "";
-      where.textContent = stop.storeId ? storeShort(insights, stop.storeId) : "未定";
-      item.append(when, where);
-      // 割合は表に出さないが、店ごとの画面と同じく HTML には残す。
-      // 順位付けには予定表の顔ぶれも入っているので、この数字だけでは置いた理由に
-      // ならない。根拠を確かめたいときの手がかりとしてだけ持たせる。
-      if (typeof stop.openRate === "number") {
-        const rate = document.createElement("span");
-        rate.className = "maid-plan-rate";
-        rate.textContent = toPercent(stop.openRate);
-        item.append(rate);
-      }
-      if (stop.eventLabel) {
-        const event = document.createElement("span");
-        event.className = "maid-plan-event";
-        event.textContent = stop.eventLabel;
-        item.append(event);
-      }
-      const explanation = stopExplanation(stop);
-      item.title = explanation;
-      // 読み上げは aria-label に一本化する。同じ文を隠し要素にも置くと二度読まれる。
-      item.setAttribute("aria-label", `${when.textContent}は${explanation}`);
-      list.append(item);
+    list.className = "maid-plan-days";
+    groupStopsByDate(plan.stops).forEach((day) => {
+      const dayItem = document.createElement("li");
+      dayItem.className = "maid-plan-day";
+      const label = document.createElement("span");
+      label.className = "maid-plan-date";
+      const [, month, date] = day.dateKey.split("-").map(Number);
+      const weekday = weekdays[new Date(day.dateKey + "T00:00:00").getDay()];
+      label.textContent = `${date}日(${weekday})`;
+      label.title = `${month}月${date}日(${weekday})`;
+      const shiftList = document.createElement("ul");
+      shiftList.className = "maid-plan-stops";
+      day.stops.forEach((stop) => shiftList.append(createMaidStop(stop, `${month}/${date}`)));
+      dayItem.append(label, shiftList);
+      list.append(dayItem);
     });
     block.append(list);
     return block;
+  }
+
+  // 日付は親が名乗るので、行は「昼 3号店」だけ。日付は突き合わせ用に data 属性で持つ。
+  function createMaidStop(stop, dateLabel) {
+    const item = document.createElement("li");
+    item.className = `maid-plan-stop is-${stop.state ?? "unknown"}`;
+    item.dataset.date = stop.dateKey;
+    const when = document.createElement("span");
+    when.className = "maid-plan-when";
+    when.textContent = stop.shift;
+    const where = document.createElement("span");
+    where.className = "maid-plan-where";
+    where.dataset.store = stop.storeId ?? "";
+    where.textContent = stop.storeId ? storeShort(insights, stop.storeId) : "未定";
+    item.append(when, where);
+    // 割合は表に出さないが、店ごとの画面と同じく HTML には残す。
+    // 順位付けには予定表の顔ぶれも入っているので、この数字だけでは置いた理由に
+    // ならない。根拠を確かめたいときの手がかりとしてだけ持たせる。
+    if (typeof stop.openRate === "number") {
+      const rate = document.createElement("span");
+      rate.className = "maid-plan-rate";
+      rate.textContent = toPercent(stop.openRate);
+      item.append(rate);
+    }
+    if (stop.eventLabel) {
+      const event = document.createElement("span");
+      event.className = "maid-plan-event";
+      event.textContent = stop.eventLabel;
+      item.append(event);
+    }
+    const explanation = stopExplanation(stop);
+    item.title = explanation;
+    // 日付は画面では親にしか出ないので、読み上げには入れ直す。
+    // 同じ文を隠し要素にも置くと二度読まれるので、aria-label に一本化する。
+    item.setAttribute("aria-label", `${dateLabel} ${stop.shift}は${explanation}`);
+    return item;
   }
 
   // 縦に並べると外れが見える軸なので、先に「全部は当たりません」と言っておく。
