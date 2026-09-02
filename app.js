@@ -1448,7 +1448,18 @@
     list.className = "store-chips";
     list.setAttribute("aria-hidden", "true");
 
-    outlook.entries.forEach((entry) => {
+    // 表に出すのは、開くと見込んだ店だけ。確率は出さない。
+    // どの店を開けるかは当日決まるので、数字を並べても読み手は選べない。
+    // 4店ぶんの割合・根拠・僅差の説明は、上の読み上げ用テキストと title に残す。
+    const opening = new Set(
+      outlook.basis === "actual"
+        ? outlook.openStores ?? []
+        : expectedOpenStores(insights, shift, outlook, members ?? 0)
+    );
+
+    outlook.entries
+      .filter((entry) => opening.has(entry.store.id) || nearMiss.has(entry.store.id))
+      .forEach((entry) => {
       const chip = document.createElement("li");
       chip.className = `store-chip is-${entry.state}`;
       chip.dataset.store = entry.store.id;
@@ -1466,10 +1477,12 @@
       const name = document.createElement("span");
       name.className = "store-chip-name";
       name.textContent = compactStoreLabel(entry.store);
+      chip.append(name);
+      // 割合は表に出さないが、HTML には残す。根拠を確かめたいときの手がかり。
       const value = document.createElement("span");
       value.className = "store-chip-rate";
       value.textContent = entry.text;
-      chip.append(name, value);
+      chip.append(value);
       list.append(chip);
     });
 
@@ -1671,8 +1684,12 @@
       }
 
       if (chipData) {
-        // 見出しで店が分かっているときは、チップは割合だけにして繰り返さない。
-        item.append(createMaidStoreChip(chipData, groupStoreId !== chipData.storeId));
+        // 見出しがその店を名乗っているなら、チップは割合だけになる。割合は表に
+        // 出さない方針なので、そこでは何も足さない。数字はこの行の title に残る。
+        const showStore = groupStoreId !== chipData.storeId;
+        if (showStore) {
+          item.append(createMaidStoreChip(chipData, true));
+        }
         titles.push(chipData.title);
         descriptions.push(chipData.srText);
       }

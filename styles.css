@@ -628,6 +628,9 @@ input[type="date"] {
 }
 
 .store-chip-rate {
+  /* 割合は HTML に残すが表には出さない。どの店を開けるかは当日決まるので、
+     数字を並べても読み手は選べない。根拠はツールチップと読み上げ文にある。 */
+  display: none;
   color: var(--cp-text-muted);
   font-size: 0.66rem;
   font-variant-numeric: tabular-nums;
@@ -674,11 +677,12 @@ input[type="date"] {
   border-style: dashed;
 }
 
-.store-chip.is-near-miss .store-chip-rate::after {
-  content: "・僅差";
-  margin-left: 2px;
+.store-chip.is-near-miss .store-chip-name::after {
+  content: "・かも";
+  margin-left: 1px;
   color: var(--cp-text-soft);
   font-size: 0.62rem;
+  font-weight: 400;
 }
 
 .maid-group-label {
@@ -1108,14 +1112,6 @@ a.maid-name:focus-visible {
 
   .maid-store-chip {
     font-size: 0.72rem;
-  }
-
-  .maid-store-chip-rate {
-    display: inline;
-  }
-
-  .maid-store-chip-alt {
-    display: inline;
   }
 
   .shift-section.is-empty {

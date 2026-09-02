@@ -288,18 +288,25 @@ for (const cell of dayCells) {
       "chips duplicate the spoken summary, so they must be hidden from assistive tech"
     );
 
+    // 表に出るのは、開くと見込んだ店だけ（と僅差で落とした店）。4店ぶん並べても
+    // どの店を開けるかは当日決まるので、読み手は選べない。割合は HTML に残る。
     const chips = withClass(section, "store-chip");
-    assert.equal(chips.length, insights.stores.length, "every store must get a chip");
+    assert.ok(chips.length > 0, "a shift must show at least one shop");
+    assert.ok(
+      chips.length <= insights.stores.length,
+      "a shift cannot show more shops than exist"
+    );
+    const shownIds = chips.map((chip) => chip.dataset.store);
+    assert.deepEqual(
+      shownIds,
+      [...insights.stores].map((store) => store.id).filter((id) => shownIds.includes(id)),
+      "chips must stay in store order"
+    );
 
     const isRecord = badges[0].textContent === "実績";
-    chips.forEach((chip, index) => {
-      const storeId = insights.stores[index].id;
-      assert.equal(
-        chip.dataset.store,
-        storeId,
-        "chips must stay in store order so position identifies the store"
-      );
-      assert.ok(storeIds.has(chip.dataset.store), `unknown store id "${chip.dataset.store}"`);
+    chips.forEach((chip) => {
+      const storeId = chip.dataset.store;
+      assert.ok(storeIds.has(storeId), `unknown store id "${storeId}"`);
       assert.ok(
         chip.title && chip.title.includes(`${insights.headcountProfile[shift][storeId].mode}人態勢`),
         `${storeId} must explain how many staff it usually runs`
@@ -332,6 +339,15 @@ for (const cell of dayCells) {
       }
     });
 
+    // 表から消えた店の情報は、読み上げ用テキストに残っていること。
+    const described = withClass(section, "visually-hidden")[0]?.textContent ?? "";
+    for (const store of insights.stores) {
+      assert.ok(
+        described.includes(store.short),
+        `${store.short} must still be described even when it has no chip`
+      );
+    }
+
     // 主役は自分の所属店に割り振られ、確率ではなく確定として出る。
     for (const entry of schedule.schedule[cellKey]?.[shift] ?? []) {
       if (!entry.featured) {
@@ -341,16 +357,23 @@ for (const cell of dayCells) {
         (item) => withClass(item, "maid-name")[0].textContent === entry.name
       );
       assert.ok(row, `${entry.name} must be rendered on ${cellKey} ${shift}`);
-      const chip = withClass(row, "maid-store-chip")[0];
-      assert.ok(chip, `${entry.name} hosts ${entry.eventLabel}, so her store must be shown`);
+      // 店は見出しが名乗る。見出しと同じ店ならチップは出さない（繰り返しになる）。
+      const lists = withClass(section, "maid-list");
+      const labels = withClass(section, "maid-group-label");
+      const index = lists.findIndex((list) => withClass(list, "maid-entry").includes(row));
+      assert.ok(index >= 0, `${entry.name} must sit in one of the shop groups`);
       assert.equal(
-        chip.dataset.store,
-        insights.maidTendency[entry.name].home,
+        labels[index].dataset.store,
+        schedule.homeStore[entry.name],
         `${entry.name} must be placed at her own store on ${cellKey} ${shift}`
       );
       assert.ok(
         row.title.includes(entry.eventLabel),
         "the tooltip must say the event is what fixes her store"
+      );
+      assert.ok(
+        row.title.includes("確定") || row.title.includes("所属店"),
+        "the tooltip must say the event is what makes it certain"
       );
     }
   });
@@ -396,6 +419,7 @@ for (const link of linkedNames) {
 
 // 1人ずつ独立に決めると全員が1号店になるので、複数店に割れることを確かめる。
 // ただし少人数のシフトは1店で収まるのが正しいので、標準人数を超えた場合だけ2店以上を要求する。
+// 割り振り先は見出しが名乗る（チップは見出しと違う店のときだけ出る）。
 let splitSections = 0;
 let forcedSections = 0;
 for (const cell of dayCells) {
@@ -403,7 +427,7 @@ for (const cell of dayCells) {
   const cellKey = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   withClass(cell, "shift-section").forEach((section, shiftIndex) => {
     const shift = insights.shifts[shiftIndex];
-    const assigned = withClass(section, "maid-store-chip").map((chip) => chip.dataset.store);
+    const assigned = withClass(section, "maid-group-label").map((label) => label.dataset.store);
     if (assigned.length === 0) {
       return;
     }
@@ -424,7 +448,7 @@ for (const cell of dayCells) {
 assert.ok(forcedSections > 0, "the schedule must contain a shift too big for a single shop");
 assert.ok(splitSections > 0, "some shifts must spread across stores");
 
-const allAssigned = withClass(calendar, "maid-store-chip").map((chip) => chip.dataset.store);
+const allAssigned = withClass(calendar, "maid-group-label").map((label) => label.dataset.store);
 assert.ok(
   new Set(allAssigned).size >= 2,
   "the calendar must not send every maid to the same store"
@@ -434,7 +458,7 @@ assert.ok(
 const shopCounts = new Set();
 for (const cell of dayCells) {
   withClass(cell, "shift-section").forEach((section) => {
-    const assigned = withClass(section, "maid-store-chip").map((chip) => chip.dataset.store);
+    const assigned = withClass(section, "maid-group-label").map((label) => label.dataset.store);
     if (assigned.length > 0) {
       shopCounts.add(new Set(assigned).size);
     }
@@ -502,11 +526,11 @@ for (const section of shiftSections) {
       );
       previousRoster = position;
 
-      const chip = withClass(member, "maid-store-chip")[0];
+      // 見出しがその店を名乗っているので、チップは繰り返さない。
       assert.equal(
-        chip.dataset.store,
-        storeId,
-        `${name} sits under ${storeId} so her chip must agree`
+        withClass(member, "maid-store-chip").length,
+        0,
+        `${name} sits under ${storeId}, so her row must not repeat the shop`
       );
     }
   });
@@ -514,9 +538,8 @@ for (const section of shiftSections) {
 assert.ok(groupedSections > 0, "some shifts must render grouped line-ups");
 
 // --- 表示モードの切り替え -----------------------------------------------
-assert.equal(
-  withClass(calendar, "store-chip").length,
-  shiftSections.length * insights.stores.length,
+assert.ok(
+  withClass(calendar, "store-chip").length > 0,
   "the forecast mode must show the store outlook"
 );
 
@@ -558,9 +581,8 @@ for (const cell of withClass(calendar, "calendar-day")) {
 }
 
 selectViewMode("forecast");
-assert.equal(
-  withClass(calendar, "store-chip").length,
-  shiftSections.length * insights.stores.length,
+assert.ok(
+  withClass(calendar, "store-chip").length > 0,
   "switching back must restore the store outlook"
 );
 
@@ -581,7 +603,9 @@ const kitchenBefore = withClass(calendar, "maid-entry").filter((entry) =>
 assert.ok(kitchenBefore > 0, "the default range must show some kitchen staff");
 
 const chipsBeforeHiding = withClass(calendar, "store-chip").length;
-const assignedBeforeHiding = withClass(calendar, "maid-store-chip").map((chip) => chip.dataset.store);
+const assignedBeforeHiding = withClass(calendar, "maid-group-label").map(
+  (label) => label.dataset.store
+);
 
 elementById("hide-kitchen").checked = true;
 dispatch("hide-kitchen", "change");
@@ -604,13 +628,10 @@ assert.equal(
   "hiding the kitchen must not change the store outlook"
 );
 
-// 隠しても割り振りは動かない。残った人の店は同じまま。
-const stillShown = withClass(calendar, "maid-entry").map((entry) => ({
-  name: withClass(entry, "maid-name")[0].textContent,
-  store: withClass(entry, "maid-store-chip")[0]?.dataset.store
-}));
+// 隠しても割り振りは動かない。残った人の店は同じまま。見出しが名乗る。
+const stillShown = withClass(calendar, "maid-group-label").map((label) => label.dataset.store);
 assert.ok(
-  stillShown.every((entry) => assignedBeforeHiding.includes(entry.store)),
+  stillShown.every((store) => assignedBeforeHiding.includes(store)),
   "the remaining maids must keep the shops they were already assigned to"
 );
 
