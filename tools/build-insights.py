@@ -1202,7 +1202,10 @@ def stamp_assets():
         if not os.path.exists(path):
             return None
         with open(path, 'rb') as f:
-            return hashlib.sha256(f.read()).hexdigest()[:10]
+            raw = f.read()
+        # 手元は CRLF、CI と GitHub Pages は LF なので、生のバイトで取ると
+        # 同じ内容でも値が変わる（実際にデプロイが落ちた）。改行を揃えてから計算する。
+        return hashlib.sha256(raw.replace(b'\r\n', b'\n')).hexdigest()[:10]
 
     def replace(match):
         attr, rel, tail = match.group(1), match.group(2), match.group(3)
