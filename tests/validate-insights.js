@@ -816,6 +816,28 @@ assert.equal(
   }
 }
 
+// spread をどこで区切るかは insights が持つ。UI が別の値を持つと、
+// 集計をやり直したときに一言だけ古くなる。区切りの妥当性もここで見る。
+{
+  const bands = insights.spreadBands;
+  assert.ok(bands, "spreadBands is missing");
+  assert.ok(
+    bands.settled > bands.mixed && bands.mixed > 0,
+    `the bands must descend: settled ${bands.settled} > mixed ${bands.mixed} > 0`
+  );
+  const spreads = Object.values(insights.maidTendency)
+    .map((t) => t.spread)
+    .filter((v) => typeof v === "number");
+  for (const [label, cut] of Object.entries(bands)) {
+    const above = spreads.filter((v) => v >= cut).length;
+    assert.ok(
+      above >= 3 && above <= spreads.length - 3,
+      `${label} (${cut}) puts ${above} of ${spreads.length} maids on one side; ` +
+        "a band that nearly everyone or almost nobody falls into says nothing"
+    );
+  }
+}
+
 console.log(
   `Store insights valid: ${insights.stores.length} stores, ` +
     `${actualEntries.length} recorded dates through ${Object.keys(insights.actual).sort().at(-1)}, ` +

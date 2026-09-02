@@ -780,8 +780,7 @@ def build():
             #   0.28 -> 82%（ちさと） / 0.14 -> 66%（すくい） / 0.07 -> 46%（みりん）
             # 最大 pickRate（r=+0.683）より説明力が高い。一箇所に強いことより、
             # 他店に行かないことのほうが効く。
-            'spread': round(sum(abs(v - 0.25) for v in norm_pick.values()) / 2, 3),
-            'shareByShift': share_by_shift,
+            'spread': round(sum(abs(v - 0.25) for v in norm_pick.values()) / 2, 3),            'shareByShift': share_by_shift,
             'posted': posted,
             'home': max(IDS, key=lambda s: pick[s]),
             'likely': sorted(IDS, key=lambda s: -overall[s])[:2],
@@ -1048,6 +1047,17 @@ def build():
         'rosterHeadcountByOpenCount': headcount_by_open,
         'openCountByHeadcount': open_by_headcount,
         'homeStaffShare': home_staff_share,
+        # spread をどこで区切ると、人ごとの画面の一言が実態と合うか。
+        # 実測（walk-forward で 20 シフト以上ある 37 名）から決めた。
+        #
+        #   区切り        人数  行き先を当てられる  いちばん多い店の割合
+        #   0.30 以上      8名        76%              74%
+        #   0.20〜0.30     9名        72%              53%
+        #   0.20 未満     20名        59%              43%
+        #
+        # 0.30/0.15 では中位が 17 名と重くなり、的中も 68% と上位に寄る。
+        # 0.35/0.20 では上位が 5 名しか残らない。0.30/0.20 がいちばん素直に割れる。
+        'spreadBands': {'settled': 0.30, 'mixed': 0.20},
         'secondStoreByHome': second_by_home,
         'shiftSplitGivenOpen': shift_split,
         'rotation': {
