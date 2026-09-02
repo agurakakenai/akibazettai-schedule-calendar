@@ -571,10 +571,12 @@
     for (const id of ids) {
       const rate = secondStoreRate(insights, id, counts.get(id) ?? 0);
       const average = averageSecondStoreRate(insights, id);
-      if (rate === null || !(average > 0)) {
-        return outlook;
-      }
-      shifted.set(id, rate / average);
+      // 引けない店は「動かさない」（係数1）。ここで全体を諦めると、
+      // 標本の薄いバケットを1つ引いただけで読み取りが丸ごと黙って止まる。
+      shifted.set(id, rate === null || !(average > 0) ? 1 : rate / average);
+    }
+    if ([...shifted.values()].every((factor) => factor === 1)) {
+      return outlook;
     }
     const certain = new Set(outlook.certainStores ?? []);
     const movable = outlook.entries.filter(
@@ -609,6 +611,13 @@
     const named = ids
       .map((id) => `${storeShort(insights, id)}に${counts.get(id) ?? 0}人`)
       .join("・");
+    // 読み手が画面の顔ぶれを数えると合わないので、いる日だけ理由を断る。
+    // キッチンにゃんこは配属店に入る率がフロアより13.3pt低く、どこにでも入る。
+    const kitchen = kitchenStaff instanceof Set ? kitchenStaff : new Set(kitchenStaff ?? []);
+    const cooksHere = (members ?? []).filter((name) => kitchen.has(name)).length;
+    const cookNote = cooksHere > 0
+      ? `キッチンにゃんこ${cooksHere}人は、配属と実際が合わないためこの数に入れていません。`
+      : "";
     // 振れ幅は表から出す。直書きすると集計をやり直したときに古くなるし、
     // 古くなったことに誰も気づかない（「在籍35名」と同じ轍）。
     const spreads = ids
@@ -640,6 +649,7 @@
       summary:
         `${outlook.summary.replace(RAW_WEEKDAY_CLAIM, "")}` +
         `この予定表の配属は${named}で、そのぶん配分を寄せています。` +
+        cookNote +
         (movesText ? `配属者の人数で${movesText}と動きます。` : "") +
         flatText
     };

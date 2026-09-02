@@ -1685,7 +1685,90 @@ assert.equal(
   const strangers = applyHomeStaff(insights, base, ["知らない人", "べつのだれか"], homeStore);
   assert.ok(strangers.entries.every((entry) => entry.rate >= 0 && entry.rate <= 1), "rates stay sane");
 
-  // 出どころが違えば、同じ数字でも重みが違う。本文で見分けられること。
+  // 標本の薄いバケットを1つ引いただけで、読み取りが丸ごと止まってはいけない。
+  // 止まっても画面は何も言わないので、黙って効かなくなるのがいちばん困る。
+  {
+    const thin = JSON.parse(JSON.stringify(insights));
+    thin.secondStoreByHome.s3 = { "0": { rate: 0.2, n: 5 } };
+    const lots = lineUp({ s2: 1, s3: 4, s4: 1 });
+    const readable = applyHomeStaff(insights, base, lots, homeStore);
+    const partial = applyHomeStaff(thin, base, lots, homeStore);
+    assert.notEqual(partial, base, "one unreadable shop must not switch the whole thing off");
+
+    // 引けない店は、自分の配属者数では動かない。4人いても持ち上がらないこと。
+    assert.ok(
+      rateOf(partial, "s3") < rateOf(readable, "s3"),
+      "a shop we cannot read must not be lifted by its own count"
+    );
+    assert.ok(
+      Math.abs(rateOf(partial, "s3") - rateOf(base, "s3")) <
+        Math.abs(rateOf(readable, "s3") - rateOf(base, "s3")),
+      "it must stay near where it was, moving only with the renormalisation"
+    );
+    // 引ける店は動く。
+    assert.notEqual(
+      rateOf(partial, "s2"),
+      rateOf(base, "s2"),
+      "the shops we can read must still move"
+    );
+
+    // どの店も引けないなら、何もしないで返す。
+    const allThin = JSON.parse(JSON.stringify(insights));
+    for (const id of Object.keys(allThin.secondStoreByHome)) {
+      allThin.secondStoreByHome[id] = { "0": { rate: 0.2, n: 1 } };
+    }
+    assert.equal(
+      applyHomeStaff(allThin, base, lineUp({ s2: 4 }), homeStore),
+      base,
+      "nothing readable, nothing to say"
+    );
+  }
+
+  // キッチンにゃんこは配属と実際が合わないので数から外す。画面の顔ぶれを
+  // 数えた読み手が混乱しないよう、いる日だけその旨を書く。
+  {
+    const cooks = schedule.kitchenStaff;
+    assert.ok(cooks.length > 0, "the fixture must have kitchen staff");
+    const cook = cooks[0];
+    const floor = schedule.roster.find(
+      (name) => !cooks.includes(name) && schedule.homeStore[name] === schedule.homeStore[cook]
+    );
+    assert.ok(floor, "the fixture must have a floor maid posted to the same shop");
+
+    // キッチンを足しても数字は動かない。動くのは注記だけ。data 側も同じ数え方を
+    // しているので、ここがずれると引くバケットがずれて黙って別の答えになる。
+    const withoutCook = applyHomeStaff(insights, base, [floor], homeStore, cooks);
+    const withCook = applyHomeStaff(insights, base, [floor, cook], homeStore, cooks);
+    assert.deepEqual(
+      withCook.entries.map((entry) => entry.rate),
+      withoutCook.entries.map((entry) => entry.rate),
+      "adding a cook must not change the figures"
+    );
+
+    // 同じ配属のフロアを足すと動く。つまり「数えていない」のはキッチンだけ。
+    const floor2 = schedule.roster.find(
+      (name) =>
+        name !== floor && !cooks.includes(name) && schedule.homeStore[name] === schedule.homeStore[cook]
+    );
+    if (floor2) {
+      assert.notDeepEqual(
+        applyHomeStaff(insights, base, [floor, floor2], homeStore, cooks).entries.map((e) => e.rate),
+        withoutCook.entries.map((entry) => entry.rate),
+        "a second floor maid at the same shop must move the figures"
+      );
+    }
+
+    assert.ok(
+      withCook.summary.includes("キッチンにゃんこ1人"),
+      "a shift with a cook must say she was not counted"
+    );
+    assert.ok(
+      !withoutCook.summary.includes("キッチン"),
+      "a shift without cooks must not mention them"
+    );
+  }
+
+
   {
     // 前日の実績がある日は、その日付を名指しする。
     const afterRecord = outlookFor(addDays(lastActual, 1), insights.shifts[0]);
