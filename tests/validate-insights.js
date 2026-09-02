@@ -988,6 +988,37 @@ assert.equal(
         "so it must not be read as her promotion"
     );
   }
+
+  // 予定表がまだ揃っていないぶん。人数で店舗数を決めている以上、揃っていない
+  // 予定表をそのまま読むと店を少なく見積もる。数えられているかを両向きに見る。
+  const pending = insights.schedulePending;
+  assert.ok(pending, "there must be a count of who has not posted a schedule yet");
+  assert.equal(
+    pending.rostered,
+    schedule.roster.length,
+    "the pending count must be measured against the whole roster"
+  );
+  const postedNames = new Set(
+    Object.values(schedule.schedule).flatMap((byShift) =>
+      Object.values(byShift).flatMap((entries) => entries.map((entry) => entry.name))
+    )
+  );
+  for (const name of pending.pending) {
+    assert.ok(
+      schedule.roster.includes(name),
+      `${name} is listed as not having posted, but she is not on the roster`
+    );
+    assert.ok(!postedNames.has(name), `${name} is listed as not having posted, but she is on it`);
+  }
+  for (const name of schedule.roster) {
+    if (!postedNames.has(name)) {
+      assert.ok(
+        pending.pending.includes(name),
+        `${name} appears nowhere in the schedule but is not counted as pending; ` +
+          "the page would read as though the schedule were complete"
+      );
+    }
+  }
 }
 
 console.log(
