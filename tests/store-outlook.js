@@ -1352,11 +1352,31 @@ assert.equal(
     note.long.includes("店も少なめ"),
     "the detail must say that the shop count leans the same way"
   );
-  // 窓の長さはデータに入っていない。1シフトあたりに直すと分母を推測することになる。
+  // 1シフトあたりの人数は windowShifts で割って出す。ここが合っていないと、
+  // 別の窓で割った数字が「測った数字」の顔をして出てしまう。
+  const worked = pending.pending.reduce(
+    (sum, name) => sum + (pending.recentShifts[name] ?? 0),
+    0
+  );
+  assert.ok(pending.windowShifts > 0, "the window must be published, or the figure cannot be derived");
+  assert.ok(
+    worked <= pending.windowShifts * pending.pending.length,
+    "nobody can have worked more shifts than the window holds"
+  );
+  const perShift = (worked / pending.windowShifts).toFixed(1);
+  assert.ok(
+    note.long.includes(`1シフトあたり${perShift}人`),
+    `the per-shift figure must come from windowShifts, expected ${perShift}`
+  );
+  // 窓が無ければ黙る。分母を推測して割らない。
+  const noWindow = schedulePendingNote({
+    schedulePending: { ...pending, windowShifts: undefined }
+  });
+  assert.ok(noWindow, "the names are still worth reporting without a window");
   assert.doesNotMatch(
-    note.long,
-    /1シフト|\d+日|\d+人ぶん/,
-    "the note must not invent a per-shift figure from a window it cannot see"
+    noWindow.long,
+    /1シフトあたり/,
+    "without a published denominator the note must not divide by one it guessed"
   );
 
   // 揃えば黙る。時間ではなく提出状況で消えるのが、この注意書きの取り柄。
