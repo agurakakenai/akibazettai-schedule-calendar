@@ -875,17 +875,55 @@
     return Object.fromEntries(storeIds.map((id, index) => [id, capacity[index]]));
   }
 
-  function affinityFor(insights, name, shift, storeIds) {
+  // 同じ日の早いシフトの記録から、遅いシフトの行き先を読み直す。
+  //
+  // 通しで働いた1238人のうち68.7%が昼と別の店にいる。昼の店が夜も開いていても
+  // 56.4%が移るので、「開いているから残る」ではない。移り先には向きがあり、
+  // 夜はどの店からも1号店に吸われる（昼s4→夜s1 が84%）。
+  //
+  // 人ごとの表があればそれを使う。無ければ全体の表。人ごとは n が小さい組み
+  // 合わせがあるので（あむさんの昼s4は6回）、n も返して読み手側で判断できる形。
+  function sameDayMoveOdds(insights, name, fromStoreId) {
+    const perMaid = insights?.maidTendency?.[name]?.sameDayMove?.[fromStoreId];
+    if (perMaid?.to && perMaid.n > 0) {
+      return { to: perMaid.to, n: perMaid.n, source: "maid" };
+    }
+    const overall = insights?.sameDayMaidMove?.[fromStoreId];
+    if (overall?.to && overall.n > 0) {
+      return { to: overall.to, n: overall.n, source: "all" };
+    }
+    return null;
+  }
+
+  // この移り先の表は「早いシフト → 遅いシフト」の向きに作ってある。
+  // 逆に当てると別の分布になるので、遅いシフトを組むときにしか使わない。
+  function isLaterShift(insights, shift) {
+    const shifts = insights?.shifts;
+    return Array.isArray(shifts) && shifts.indexOf(shift) === shifts.length - 1;
+  }
+
+  function affinityFor(insights, name, shift, storeIds, movedFrom) {
     const tendency = insights.maidTendency?.[name];
     const uniform = 1 / storeIds.length;
     if (!tendency) {
       return { scores: Object.fromEntries(storeIds.map((id) => [id, uniform])), known: false };
     }
     const { pickRate } = tendencyTables(tendency, shift);
-    const raw = storeIds.map((id) => Math.max(pickRate[id] ?? 0, 0));
+    // 昼にどこにいたか分かっているなら、その人の傾向に移り先の確率を掛ける。
+    // 掛けるのは、傾向を捨てずに向きだけ足したいから。置き換えると
+    // 「夜はみんな1号店」になって、その人の癖が消える。
+    const move = movedFrom ? sameDayMoveOdds(insights, name, movedFrom)?.to : null;
+    const raw = storeIds.map((id) => {
+      const base = Math.max(pickRate[id] ?? 0, 0);
+      return move ? base * (move[id] ?? 0) : base;
+    });
     const total = raw.reduce((sum, value) => sum + value, 0);
     if (total <= 0) {
-      return { scores: Object.fromEntries(storeIds.map((id) => [id, uniform])), known: false };
+      // 掛けた結果が全滅することがある（その店に移った記録が1件も無い場合）。
+      // そのときは傾向だけに戻す。移り先が読めないことと、行かないことは違う。
+      return move
+        ? affinityFor(insights, name, shift, storeIds, null)
+        : { scores: Object.fromEntries(storeIds.map((id) => [id, uniform])), known: false };
     }
     return {
       scores: Object.fromEntries(storeIds.map((id, index) => [id, raw[index] / total])),
@@ -898,7 +936,7 @@
   // スコアは候補店で合計1に正規化した値なので、減点もその尺度で置く。
   const KITCHEN_SPREAD_PENALTY = 0.5;
 
-  function assignShiftStores({ insights, members, shift, storeIds, pins, kitchenStaff }) {
+  function assignShiftStores({ insights, members, shift, storeIds, pins, kitchenStaff, movedFrom }) {
     if (!insights || !Array.isArray(members) || members.length === 0 || storeIds.length === 0) {
       return null;
     }
@@ -958,7 +996,8 @@
       .map((name, index) => ({ name, index }))
       .filter(({ name }) => !pinned.has(name))
       .map(({ name, index }) => {
-        const { scores, known } = affinityFor(insights, name, shift, storeIds);
+        const cameFrom = movedFrom?.get?.(name) ?? movedFrom?.[name] ?? null;
+        const { scores, known } = affinityFor(insights, name, shift, storeIds, cameFrom);
         const order = [...storeIds].sort(
           (a, b) => scores[b] - scores[a] || storeIds.indexOf(a) - storeIds.indexOf(b)
         );
@@ -1252,7 +1291,7 @@
     );
   }
 
-  function getShiftAssignment({ insights, members, shift, outlook, pins, kitchenStaff }) {
+  function getShiftAssignment({ insights, members, shift, outlook, pins, kitchenStaff, movedFrom }) {
     const storeIds = expectedOpenStores(insights, shift, outlook, members ?? 0);
     if (storeIds.length === 0) {
       return null;
@@ -1263,9 +1302,24 @@
       shift,
       storeIds,
       pins,
-      kitchenStaff
+      kitchenStaff,
+      movedFrom
     });
     return assignment ? { ...assignment, basis: outlook.basis } : null;
+  }
+
+  // 同じ日の早いシフトの記録から「誰がどこにいたか」を取る。
+  // 記録が無ければ null。推測した昼の店を渡すと、誤差が二重に乗る。
+  function earlierShiftPlaces(insights, dateKey, shift) {
+    if (!isLaterShift(insights, shift)) {
+      return null;
+    }
+    const earlier = insights.shifts[insights.shifts.indexOf(shift) - 1];
+    const record = recordedAssignment(insights, dateKey, earlier);
+    if (!record) {
+      return null;
+    }
+    return new Map([...record.byMaid].map(([name, placed]) => [name, placed.storeId]));
   }
 
   // 候補店の中で pickRate を合計1に正規化する。「この人はこの店」と断定せず、
@@ -1327,6 +1381,31 @@
     return drift < 0
       ? `ただしこのくらい高い数字は自信過剰で、${band}と出したときに実際に当たったのは${toPercent(bucket.actual)}です（${measured}）`
       : `ただしこのくらい低い数字は控えめすぎて、${band}と出した店にも実際は${toPercent(bucket.actual)}の割合で入っています（${measured}）`;
+  }
+
+  // 「昼の店が夜も開いているのに、なぜ別の店にいるのか」への答え。
+  // 通しで働いた方の68.7%が昼と別の店にいて、昼の店が夜も開いていた場合でも
+  // 56.4%が移る。読み手が不思議に思う場所なので、移り先を出したときは理由も書く。
+  function sameDayMoveNote(insights, name, fromStoreId, toStoreId) {
+    const odds = sameDayMoveOdds(insights, name, fromStoreId);
+    const rate = odds?.to?.[toStoreId];
+    if (!odds || typeof rate !== "number") {
+      return null;
+    }
+    const from = storeShort(insights, fromStoreId);
+    const to = storeShort(insights, toStoreId);
+    const who = odds.source === "maid" ? "この方は" : "全体では";
+    const stay = odds.to[fromStoreId] ?? 0;
+    // 同じ店に残るほうが少ないことを併記する。ここを書かないと、
+    // 「開いているのになぜ」が残ったままになる。
+    const staying = fromStoreId === toStoreId
+      ? ""
+      : `${from}に残るのは${toPercent(stay)}です。`;
+    return (
+      `昼は${from}にいた記録があります。${who}昼に${from}だったとき、` +
+      `夜は${to}が${toPercent(rate)}でした（${odds.n}件）。${staying}` +
+      `${from}が夜も開いているかどうかとは別に、移ることのほうが多くなっています`
+    );
   }
 
   // 記録のある日は、予定表からの割り振りではなく実際の顔ぶれを出す。
@@ -1653,6 +1732,7 @@
       calibrationNote,
       coOpenRate,
       dateKey,
+      earlierShiftPlaces,
       eventStorePins,
       expectedOpenStores,
       expectedTrainees,
@@ -1677,6 +1757,8 @@
       recordedAssignment,
       recordedRoster,
       sameDayDecisionNote,
+      sameDayMoveNote,
+      sameDayMoveOdds,
       schedulePendingNote,
       scheduleSystemNote,
       sortByAssignedStore,
@@ -1990,6 +2072,8 @@
     section.append(title);
 
     const roster = shiftRoster(key, shift);
+    // 同じ日の昼に誰がどこにいたか。記録があるときだけ、夜の割り振りに使う。
+    const movedFrom = earlierShiftPlaces(insights, key, shift);
     // 見込みの計算には予定表の顔ぶれを使う。記録のある日は使われないが、
     // 記録の顔ぶれを入れると「答えを見て予測する」ことになる。
     const postedNames = (data.schedule[key]?.[shift] ?? []).map((entry) => entry.name);
@@ -2009,7 +2093,9 @@
           shift,
           outlook,
           pins,
-          kitchenStaff
+          kitchenStaff,
+          // 同じ日の昼に誰がどこにいたか記録があれば、夜の割り振りに使う。
+          movedFrom
         })
         : null);
     // 記録の並びは掲載順で確定しているので、割り振り順に組み直すのは見込みの日だけ。
@@ -2076,6 +2162,20 @@
         item.classList.add("is-featured");
         titles.unshift(entry.eventLabel);
         descriptions.unshift(`${entry.eventLabel}の主役`);
+      }
+
+      // 昼の記録を使って夜を組んだ人には、そのことと移り先の実績を書く。
+      // 「所属店が開いているのになぜ別の店」は、読み手が実際に持った疑問。
+      // 夜も記録がある日は書かない。どこにいたか分かっているので確率の出番がない。
+      const cameFrom = assignment?.recorded ? null : movedFrom?.get(entry.name);
+      const placedAt = assignment?.byMaid?.get(entry.name)?.storeId;
+      if (cameFrom && placedAt) {
+        const move = sameDayMoveNote(insights, entry.name, cameFrom, placedAt);
+        if (move) {
+          item.classList.add("is-moved");
+          titles.push(move);
+          descriptions.push(move);
+        }
       }
 
       if (chipData) {
@@ -2316,7 +2416,15 @@
           members: roster.entries.map((entry) => entry.name),
           assignment: roster.assignment
             ?? (outlook
-              ? getShiftAssignment({ insights, members, shift, outlook, pins, kitchenStaff })
+              ? getShiftAssignment({
+                insights,
+                members,
+                shift,
+                outlook,
+                pins,
+                kitchenStaff,
+                movedFrom: earlierShiftPlaces(insights, key, shift)
+              })
               : null)
         });
       }

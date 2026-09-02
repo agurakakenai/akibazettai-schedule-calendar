@@ -13,6 +13,7 @@ const {
   assignShiftStores,
   calibrationNote,
   coOpenRate,
+  earlierShiftPlaces,
   eventStorePins,  expectedOpenStores,
   expectedTrainees,
   getMaidStoreOutlook,
@@ -32,6 +33,8 @@ const {
   recordedAssignment,
   recordedRoster,
   sameDayDecisionNote,
+  sameDayMoveNote,
+  sameDayMoveOdds,
   schedulePendingNote,
   scheduleSystemNote,
   sortByAssignedStore,
@@ -2324,6 +2327,97 @@ assert.equal(
     "a day we have no record for must fall back to the rota"
   );
   assert.equal(recordedAssignment(insights, future, shift), null, "no record, no recorded placement");
+
+  // 同じ日の昼の記録から、夜の行き先を読み直す。
+  {
+    const overall = insights.sameDayMaidMove;
+    assert.ok(overall, "sameDayMaidMove must be published");
+    for (const [from, row] of Object.entries(overall)) {
+      const total = Object.values(row.to).reduce((sum, value) => sum + value, 0);
+      assert.ok(Math.abs(total - 1) < 0.02, `${from} の移り先が確率分布になっていない: ${total}`);
+      assert.ok(row.n > 0, `${from} の母数が正でない`);
+    }
+    // 夜はどの店からも1号店に吸われる。ここが崩れたら表の意味が変わっている。
+    const pulled = Object.entries(overall).filter(([from]) => from !== "s1");
+    assert.ok(pulled.length > 0, "there must be shops other than the first to move away from");
+    for (const [from, row] of pulled) {
+      assert.ok(
+        row.to.s1 > row.to[from],
+        `${from} からは、残るより1号店へ移るほうが多いはず（残る ${row.to[from]} / 移る ${row.to.s1}）`
+      );
+    }
+
+    // 人ごとの表があればそれを、無ければ全体の表を使う。
+    const withOwn = schedule.roster.find((name) => insights.maidTendency[name]?.sameDayMove?.s3);
+    assert.ok(withOwn, "someone must carry their own move table, or the branch is untested");
+    const own = sameDayMoveOdds(insights, withOwn, "s3");
+    assert.equal(own.source, "maid", "her own table must win over the overall one");
+    assert.equal(own.n, insights.maidTendency[withOwn].sameDayMove.s3.n, "the sample size must be hers");
+    const borrowed = sameDayMoveOdds(insights, "いない人", "s3");
+    assert.equal(borrowed.source, "all", "without her own table, fall back to the overall one");
+    assert.equal(borrowed.n, overall.s3.n, "the borrowed sample size must be the overall one");
+    assert.equal(sameDayMoveOdds({}, "だれか", "s3"), null, "with no table at all, say nothing");
+
+    // 表は「早いシフト → 遅いシフト」の向きに作ってある。昼を組むときには使わない。
+    assert.equal(
+      earlierShiftPlaces(insights, lastActual, insights.shifts[0]),
+      null,
+      "the earliest shift has nothing before it to read"
+    );
+    const places = earlierShiftPlaces(insights, lastActual, insights.shifts.at(-1));
+    assert.ok(places && places.size > 0, "the last recorded day must expose its earlier shift");
+    const lunch = insights.actualRoster[lastActual][insights.shifts[0]];
+    for (const [id, names] of Object.entries(lunch.stores)) {
+      for (const name of names) {
+        assert.equal(places.get(name), id, `${name} は昼に ${id} にいた`);
+      }
+    }
+
+    // 渡すと割り振りが変わること。変わらないなら繋がっていない。
+    // 定員の都合で吸収される日もあるので、候補日を全部見て1件でも動けばよい。
+    const night = insights.shifts.at(-1);
+    const candidates = Object.keys(schedule.schedule).sort().filter((key) =>
+      (schedule.schedule[key]?.[night] ?? []).some((entry) => places.has(entry.name))
+    );
+    assert.ok(candidates.length > 0, "no rota night overlaps the recorded lunch, so the wiring is untested");
+    const moved = candidates.filter((key) => {
+      const members = schedule.schedule[key][night].map((entry) => entry.name);
+      const common = {
+        insights,
+        members,
+        shift: night,
+        outlook: outlookFor(key, night),
+        pins: new Map(),
+        kitchenStaff: new Set(schedule.kitchenStaff)
+      };
+      const before = getShiftAssignment(common);
+      const after = getShiftAssignment({ ...common, movedFrom: places });
+      if (!before || !after) {
+        return false;
+      }
+      return members.some(
+        (name) => before.byMaid.get(name)?.storeId !== after.byMaid.get(name)?.storeId
+      );
+    });
+    assert.ok(
+      moved.length > 0,
+      `supplying the lunch record changed nothing on any of ${candidates.length} nights, so it is not being read`
+    );
+
+    // 説明文。移り先だけ出して「なぜ移るのか」を書かないと、疑問が残る。
+    const note = sameDayMoveNote(insights, withOwn, "s3", "s1");
+    assert.ok(note.includes("昼は"), "the note must say where she was at lunch");
+    assert.ok(note.includes("残るのは"), "the note must say how often she stays put");
+    assert.ok(
+      note.includes("開いているかどうかとは別に"),
+      "the note must answer why she moves even when her own shop opens"
+    );
+    assert.equal(
+      sameDayMoveNote(insights, withOwn, "s3", "いない店"),
+      null,
+      "a shop she never moved to has no figure to quote"
+    );
+  }
 
   // 予定表に出ない見習いにゃんこ。1店あたりの人数に、開く店の数を掛けて丸める。
   for (const s of insights.shifts) {
