@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-03 01:18",
+  "generatedAt": "2026-09-03 01:43",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-09-02"
@@ -10006,6 +10006,10 @@ window.STORE_INSIGHTS = {
   "maidTendency": {
     "ひかり": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.674,
+        "n": 89
+      },
       "workShifts": 52,
       "nightShare": 0.538,
       "pickRate": {
@@ -10073,6 +10077,10 @@ window.STORE_INSIGHTS = {
     },
     "あむ": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.669,
+        "n": 124
+      },
       "workShifts": 72,
       "nightShare": 0.514,
       "pickRate": {
@@ -10140,6 +10148,10 @@ window.STORE_INSIGHTS = {
     },
     "みりあ": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.705,
+        "n": 176
+      },
       "workShifts": 99,
       "nightShare": 0.333,
       "pickRate": {
@@ -10207,6 +10219,10 @@ window.STORE_INSIGHTS = {
     },
     "はぴる": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.491,
+        "n": 53
+      },
       "workShifts": 35,
       "nightShare": 0.543,
       "pickRate": {
@@ -10274,6 +10290,10 @@ window.STORE_INSIGHTS = {
     },
     "ちさと": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.779,
+        "n": 68
+      },
       "workShifts": 41,
       "nightShare": 0.463,
       "pickRate": {
@@ -10341,6 +10361,10 @@ window.STORE_INSIGHTS = {
     },
     "ねむり": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.673,
+        "n": 49
+      },
       "workShifts": 26,
       "nightShare": 0.115,
       "pickRate": {
@@ -10408,6 +10432,10 @@ window.STORE_INSIGHTS = {
     },
     "える": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.645,
+        "n": 31
+      },
       "workShifts": 20,
       "nightShare": 0.25,
       "pickRate": {
@@ -10475,6 +10503,10 @@ window.STORE_INSIGHTS = {
     },
     "あめる": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.609,
+        "n": 110
+      },
       "workShifts": 55,
       "nightShare": 0.527,
       "pickRate": {
@@ -10542,6 +10574,10 @@ window.STORE_INSIGHTS = {
     },
     "こい": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.781,
+        "n": 73
+      },
       "workShifts": 36,
       "nightShare": 0.056,
       "pickRate": {
@@ -10609,6 +10645,10 @@ window.STORE_INSIGHTS = {
     },
     "きらり": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.806,
+        "n": 36
+      },
       "workShifts": 20,
       "nightShare": 0.35,
       "pickRate": {
@@ -10676,6 +10716,10 @@ window.STORE_INSIGHTS = {
     },
     "すくい": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.66,
+        "n": 97
+      },
       "workShifts": 54,
       "nightShare": 0.204,
       "pickRate": {
@@ -10743,6 +10787,10 @@ window.STORE_INSIGHTS = {
     },
     "ひなり": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.655,
+        "n": 113
+      },
       "workShifts": 61,
       "nightShare": 0.393,
       "pickRate": {
@@ -10810,6 +10858,10 @@ window.STORE_INSIGHTS = {
     },
     "のの": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.767,
+        "n": 60
+      },
       "workShifts": 31,
       "nightShare": 0.258,
       "pickRate": {
@@ -10877,6 +10929,10 @@ window.STORE_INSIGHTS = {
     },
     "しゃち": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.688,
+        "n": 77
+      },
       "workShifts": 50,
       "nightShare": 0.44,
       "pickRate": {
@@ -10944,6 +11000,10 @@ window.STORE_INSIGHTS = {
     },
     "あくび": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.742,
+        "n": 31
+      },
       "workShifts": 17,
       "nightShare": 0.824,
       "pickRate": {
@@ -11011,6 +11071,10 @@ window.STORE_INSIGHTS = {
     },
     "うな": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.736,
+        "n": 91
+      },
       "workShifts": 52,
       "nightShare": 0.385,
       "pickRate": {
@@ -11078,6 +11142,10 @@ window.STORE_INSIGHTS = {
     },
     "こえび": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.607,
+        "n": 56
+      },
       "workShifts": 31,
       "nightShare": 0.645,
       "pickRate": {
@@ -11145,6 +11213,10 @@ window.STORE_INSIGHTS = {
     },
     "もなか": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.764,
+        "n": 148
+      },
       "workShifts": 98,
       "nightShare": 0.429,
       "pickRate": {
@@ -11212,6 +11284,10 @@ window.STORE_INSIGHTS = {
     },
     "かなた": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.757,
+        "n": 74
+      },
       "workShifts": 46,
       "nightShare": 0.587,
       "pickRate": {
@@ -11279,6 +11355,10 @@ window.STORE_INSIGHTS = {
     },
     "るるか": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.589,
+        "n": 129
+      },
       "workShifts": 76,
       "nightShare": 0.618,
       "pickRate": {
@@ -11346,6 +11426,10 @@ window.STORE_INSIGHTS = {
     },
     "こん": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.758,
+        "n": 66
+      },
       "workShifts": 37,
       "nightShare": 0.351,
       "pickRate": {
@@ -11413,6 +11497,10 @@ window.STORE_INSIGHTS = {
     },
     "えみ": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.8,
+        "n": 60
+      },
       "workShifts": 32,
       "nightShare": 0.062,
       "pickRate": {
@@ -11480,6 +11568,10 @@ window.STORE_INSIGHTS = {
     },
     "つぼみ": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.778,
+        "n": 54
+      },
       "workShifts": 24,
       "nightShare": 0.125,
       "pickRate": {
@@ -11547,6 +11639,10 @@ window.STORE_INSIGHTS = {
     },
     "みえる": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.549,
+        "n": 51
+      },
       "workShifts": 33,
       "nightShare": 0.848,
       "pickRate": {
@@ -11614,6 +11710,10 @@ window.STORE_INSIGHTS = {
     },
     "ちょこ": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.687,
+        "n": 67
+      },
       "workShifts": 42,
       "nightShare": 0.595,
       "pickRate": {
@@ -11681,6 +11781,10 @@ window.STORE_INSIGHTS = {
     },
     "ちゆ": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.694,
+        "n": 98
+      },
       "workShifts": 74,
       "nightShare": 0.595,
       "pickRate": {
@@ -11748,6 +11852,10 @@ window.STORE_INSIGHTS = {
     },
     "ららこ": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.589,
+        "n": 56
+      },
       "workShifts": 37,
       "nightShare": 0.595,
       "pickRate": {
@@ -11815,6 +11923,10 @@ window.STORE_INSIGHTS = {
     },
     "ちま": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.547,
+        "n": 64
+      },
       "workShifts": 51,
       "nightShare": 0.49,
       "pickRate": {
@@ -11882,6 +11994,10 @@ window.STORE_INSIGHTS = {
     },
     "ちぇる": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.611,
+        "n": 36
+      },
       "workShifts": 32,
       "nightShare": 0.312,
       "pickRate": {
@@ -11949,6 +12065,10 @@ window.STORE_INSIGHTS = {
     },
     "いと": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.486,
+        "n": 37
+      },
       "workShifts": 33,
       "nightShare": 0.424,
       "pickRate": {
@@ -12016,6 +12136,10 @@ window.STORE_INSIGHTS = {
     },
     "ゆめ": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.39,
+        "n": 41
+      },
       "workShifts": 32,
       "nightShare": 0.312,
       "pickRate": {
@@ -12083,6 +12207,10 @@ window.STORE_INSIGHTS = {
     },
     "にゃな": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.512,
+        "n": 41
+      },
       "workShifts": 39,
       "nightShare": 0.615,
       "pickRate": {
@@ -12150,6 +12278,10 @@ window.STORE_INSIGHTS = {
     },
     "ぴあの": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.4,
+        "n": 25
+      },
       "workShifts": 27,
       "nightShare": 0.704,
       "pickRate": {
@@ -12217,6 +12349,7 @@ window.STORE_INSIGHTS = {
     },
     "もち": {
       "alias": null,
+      "accuracy": null,
       "workShifts": 16,
       "nightShare": 0.562,
       "pickRate": {
@@ -12284,6 +12417,10 @@ window.STORE_INSIGHTS = {
     },
     "まこっちゃん": {
       "alias": "まこと",
+      "accuracy": {
+        "rate": 0.605,
+        "n": 177
+      },
       "workShifts": 105,
       "nightShare": 0.524,
       "pickRate": {
@@ -12351,6 +12488,10 @@ window.STORE_INSIGHTS = {
     },
     "あらた": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.651,
+        "n": 106
+      },
       "workShifts": 54,
       "nightShare": 0.222,
       "pickRate": {
@@ -12418,6 +12559,10 @@ window.STORE_INSIGHTS = {
     },
     "うる": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.516,
+        "n": 159
+      },
       "workShifts": 81,
       "nightShare": 0.457,
       "pickRate": {
@@ -12485,6 +12630,10 @@ window.STORE_INSIGHTS = {
     },
     "みりん": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.545,
+        "n": 154
+      },
       "workShifts": 95,
       "nightShare": 0.516,
       "pickRate": {
@@ -12552,6 +12701,10 @@ window.STORE_INSIGHTS = {
     },
     "けだま": {
       "alias": null,
+      "accuracy": {
+        "rate": 0.618,
+        "n": 34
+      },
       "workShifts": 23,
       "nightShare": 0.304,
       "pickRate": {

@@ -96,6 +96,58 @@ def load_csv(name, optional=False):
         return list(csv.DictReader(f))
 
 
+def maid_accuracy(cell, ids, last_d, eval_days=180, tendency_days=120, min_n=20):
+    """メイドさんごとの「行き先を当てられる率」を、訓練と評価を分けて測る。
+
+    spread（行き先の偏り）は実測と r=+0.837 で相関する良い代理だが、代理は代理で、
+    「この人は何%当たるのか」には答えられない。ここでは各シフトについて、その手前
+    tendency_days だけから傾向を作り、開いている店のうちいちばん行きそうな店を答えて、
+    実際と比べる。評価するシフトの記録は使わない。
+
+    1店しか開いていないシフトは、定義上必ず当たるので数えない。
+    """
+    eval_from = (last_d - datetime.timedelta(days=eval_days)).isoformat()
+    hit = collections.Counter()
+    seen = collections.Counter()
+    cached_day, at, chance = None, None, None
+    for (d, sh) in sorted(cell):
+        if d < eval_from:
+            continue
+        stores = cell[(d, sh)]
+        if len(stores) < 2:
+            continue
+        if d != cached_day:
+            lo = (datetime.date.fromisoformat(d)
+                  - datetime.timedelta(days=tendency_days)).isoformat()
+            at = collections.defaultdict(collections.Counter)
+            chance = collections.defaultdict(collections.Counter)
+            for (d0, _sh0), st0 in cell.items():
+                if not (lo <= d0 < d):
+                    continue
+                who = {m for ms in st0.values() for m in ms}
+                for sid0, ms in st0.items():
+                    for m in ms:
+                        at[m][sid0] += 1
+                for m in who:
+                    for sid0 in st0:
+                        chance[m][sid0] += 1
+            cached_day = d
+        open_ids = [sid for sid in ids if sid in stores]
+        for sid, maids in stores.items():
+            for maid in maids:
+                if sum(chance[maid][x] for x in open_ids) < 5:
+                    continue
+                best = max(open_ids,
+                           key=lambda x: (at[maid][x] + 0.5) / (chance[maid][x] + 2)
+                           if chance[maid][x] else 0.0)
+                seen[maid] += 1
+                if best == sid:
+                    hit[maid] += 1
+    return {m: {'rate': round(hit[m] / seen[m], 3), 'n': seen[m]}
+            for m in seen if seen[m] >= min_n}
+
+
+
 def read_debuts():
     """新人にゃんこの告知から取れた「お給仕を始めた日」。
 
@@ -793,6 +845,7 @@ def build():
                 at[m][sid].add((d, sh))
 
     tendency = {}
+    measured_accuracy = maid_accuracy(cell, IDS, last_d, tendency_days=TENDENCY_DAYS)
     home_store = read_home_store()
     for name in roster:
         key = ALIAS.get(name, name)
@@ -824,6 +877,10 @@ def build():
         norm_pick = {sid: pick[sid] / pick_tot for sid in IDS}
         tendency[name] = {
             'alias': None if key == name else key,
+            # 「この人の行き先はどれだけ当たるか」を実測で。spread は代理指標で
+            # 実測と r=+0.837 だが、代理は「何%当たるのか」には答えられない。
+            # 記録が薄い人（min_n 未満）には付かない。
+            'accuracy': measured_accuracy.get(key),
             'workShifts': len(w),
             'nightShare': rate(worked_sh[key]['夜'], len(w)),
             'pickRate': pick,
