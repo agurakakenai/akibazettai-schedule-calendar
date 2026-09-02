@@ -368,7 +368,76 @@
     };
   }
 
-  // 実績 → 翌日見込み → 曜日傾向 の順に、確かなものから採用する。
+  // 同じ日のもう片方のシフトに実績があるとき、そこから見る。
+  // 昼に2号店が開いていれば夜も2号店、という結びつきが強く、
+  // 3号店に入れ替わることはほぼ無い（rotation.sameDay.s2.s3 は 0 件）。
+  //
+  // 2・3号店だけに使い、1・4号店は曜日傾向のままにしている。実測で、
+  // 全店に使うと4号店の F1 が 51.2% -> 46.3% と落ちるが、2・3号店に限れば
+  // 46.7% とほぼ保ったまま、2号店が 7.8% -> 47.4% に上がる。
+  // 夜の店舗の組み合わせを丸ごと当てる的中は 23.8% -> 30.4%（n=349, p=0.015）。
+  const SAME_DAY_STORES = ["s2", "s3"];
+
+  function sameDayOutlook(insights, key, shift, lastActualDate) {
+    const other = otherShiftOf(insights, shift);
+    if (!other) {
+      return null;
+    }
+    const known = openStoresOn(insights, key, other);
+    const bucket = weekdayBucket(insights, key);
+    const weekday = insights.weekdayOpenRate?.[shift]?.[bucket];
+    if (!known || !weekday) {
+      return null;
+    }
+    const transitions = insights.rotation?.sameDay?.[groupStateOf(known)];
+    if (!transitions) {
+      return null;
+    }
+    const rates = {
+      s2: (transitions.s2 ?? 0) + (transitions.both ?? 0),
+      s3: (transitions.s3 ?? 0) + (transitions.both ?? 0)
+    };
+    const entries = storesOf(insights).map((store) => {
+      const rate = SAME_DAY_STORES.includes(store.id)
+        ? rates[store.id] ?? 0
+        : weekday[store.id] ?? 0;
+      return {
+        store,
+        state: stateForRate(rate),
+        rate,
+        text: toPercent(rate),
+        srText: `${store.short}が${shift}に営業する見込みは${toPercent(rate)}`
+      };
+    });
+    const rivals = entries.filter((entry) => SAME_DAY_STORES.includes(entry.store.id));
+    const leader = rivals.reduce((best, entry) => (entry.rate > best.rate ? entry : best));
+    // 過ぎた日にこれが出るのは、その日のもう片方の記録だけが欠けているとき。
+    // 見込みを実績と読まれると「休みだった」ことになってしまうので、先に断る。
+    const isPast = Boolean(lastActualDate) && key <= lastActualDate;
+    const lead = isPast
+      ? `この日の${shift}の記録だけが手元にありません（休みとは限りません）。`
+      : "";
+    return {
+      basis: "sameDay",
+      badge: "同日の実績",
+      badgeClass: "is-forecast",
+      knownShift: other,
+      knownStores: [...known],
+      summary:
+        `${lead}同じ日の${other}に${joinStoreNames(insights, known)}が営業していた実績から見た、` +
+        `${shift}の見込みです。2・3号店は同じ日のうちに入れ替わることがほとんど無いため、` +
+        `${leader.store.short}が${toPercent(leader.rate)}で最有力です。` +
+        `1号店と4号店は${WEEKDAY_LABELS[weekdayIndex(key)]}曜日の営業率です。`,
+      entries
+    };
+  }
+
+  function otherShiftOf(insights, shift) {
+    const shifts = insights?.shifts ?? [];
+    return shifts.find((candidate) => candidate !== shift) ?? null;
+  }
+
+  // 実績 → 翌日見込み → 同日の実績 → 曜日傾向 の順に、確かなものから採用する。
   function getStoreOutlook({ insights, dateKey: key, shift, lastActualDate }) {
     if (!insights || storesOf(insights).length === 0) {
       return null;
@@ -377,6 +446,7 @@
     return (
       actualOutlook(insights, key, shift) ??
       forecastOutlook(insights, key, shift, last) ??
+      sameDayOutlook(insights, key, shift, last) ??
       tendencyOutlook(insights, key, shift, last)
     );
   }

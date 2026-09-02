@@ -202,10 +202,11 @@ for (const date of partialDates) {
     if (recorded) {
       assert.equal(outlook.basis, "actual", `${date} ${shift} has a record and must use it`);
     } else {
-      // 記録が無い側は、前日の同じシフトが分かっていれば見込み、分からなければ
-      // 曜日傾向になる。どちらにせよ「実績」を名乗ってはいけない。
+      // 記録が無い側は、前日の同じシフトが分かっていれば見込み、同じ日のもう片方が
+      // 分かっていれば同日の実績から、どちらも無ければ曜日傾向になる。
+      // どれであっても「実績」を名乗ってはいけない。
       assert.ok(
-        ["forecast", "tendency"].includes(outlook.basis),
+        ["forecast", "sameDay", "tendency"].includes(outlook.basis),
         `${date} ${shift} has no record, so it must not be treated as a record`
       );
       assert.equal(
@@ -1063,6 +1064,62 @@ assert.equal(
     expectedOpenStores(insights, "昼", future, unknown.length),
     "unknown names must fall back to the headcount-only ordering"
   );
+}
+
+// 同じ日のもう片方に実績があれば、曜日傾向ではなくそこから見る。
+// 2号店と3号店は同じ日のうちに入れ替わらないので、これがいちばん効く。
+{
+  const partial = Object.keys(insights.actual).filter(
+    (date) => Object.keys(insights.actual[date]).length === 1
+  );
+  assert.ok(partial.length > 0, "the fixture must contain a single-shift day");
+
+  let seen = 0;
+  for (const date of partial) {
+    const recorded = insights.shifts.find((shift) => insights.actual[date][shift]);
+    const missing = insights.shifts.find((shift) => shift !== recorded);
+    const outlook = outlookFor(date, missing);
+    if (outlook.basis !== "sameDay") {
+      continue;   // 前日の実績があればそちらが優先される
+    }
+    seen += 1;
+    assert.deepEqual(
+      [...outlook.knownStores].sort(),
+      [...insights.actual[date][recorded]].sort(),
+      `${date} must quote the shift it actually knows`
+    );
+    assert.equal(outlook.knownShift, recorded, "it must name which shift it read");
+
+    // 昼に2号店が開いていたなら、夜の3号店はほぼ無い。逆も同じ。
+    const known = new Set(outlook.knownStores);
+    const rateOf = (id) => outlook.entries.find((entry) => entry.store.id === id).rate;
+    if (known.has("s2") && !known.has("s3")) {
+      assert.ok(
+        rateOf("s3") < rateOf("s2"),
+        `${date} ${missing}: 2号店が開いていた日に3号店を上に置いてはいけない`
+      );
+      assert.ok(rateOf("s3") <= 0.05, `${date} ${missing}: 3号店はほぼ無いはず`);
+    }
+    if (known.has("s3") && !known.has("s2")) {
+      assert.ok(
+        rateOf("s2") < rateOf("s3"),
+        `${date} ${missing}: 3号店が開いていた日に2号店を上に置いてはいけない`
+      );
+    }
+    // 1号店と4号店は曜日傾向のまま。全店に同日ルールを当てると4号店が悪化する。
+    const weekday = insights.weekdayOpenRate[missing][weekdayBucket(insights, date)];
+    for (const id of ["s1", "s4"]) {
+      assert.equal(rateOf(id), weekday[id], `${date} ${missing}: ${id} は曜日傾向のまま`);
+    }
+    // 過ぎた日に出るときは、記録が無いだけで休みではないと断る。
+    if (date <= lastActual) {
+      assert.ok(
+        outlook.summary.includes("休みとは限りません"),
+        `${date} ${missing} must say the missing record is not a closure`
+      );
+    }
+  }
+  assert.ok(seen > 0, "the fixture must exercise the same-day path at least once");
 }
 
 // 制度変更（上旬・下旬をまとめて事前公開）直後だけ出す注意書き。移行が落ち着けば自動で消える。

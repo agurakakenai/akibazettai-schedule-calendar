@@ -236,7 +236,7 @@ assert.equal(
   `each day must render ${insights.shifts.length} shift sections`
 );
 
-const knownBadges = new Set(["実績", "翌日見込み", "曜日傾向"]);
+const knownBadges = new Set(["実績", "翌日見込み", "同日の実績", "曜日傾向"]);
 const storeIds = new Set(insights.stores.map((store) => store.id));
 
 // 記念日の主役はかならず所属店に立つので、その店だけは見込みの日でも「営業」で確定する。
@@ -724,10 +724,17 @@ if (partialDate) {
     1,
     `${partialDate} has one recorded shift, so exactly one 実績 badge is correct`
   );
+  // 記録の無い側は、同じ日のもう片方の実績から見込むか、曜日傾向に落ちる。
+  // どちらでもよいが、「実績」を名乗ってはいけない（＝休みと読まれてはいけない）。
+  const fallback = cell.badges.filter((badge) => badge !== "実績");
   assert.equal(
-    cell.badges.filter((badge) => badge === "曜日傾向").length,
+    fallback.length,
     1,
     `${partialDate}'s missing shift must fall back instead of being called closed`
+  );
+  assert.ok(
+    knownBadges.has(fallback[0]),
+    `${partialDate}'s fallback badge must be one we know, got "${fallback[0]}"`
   );
 }
 
