@@ -309,8 +309,11 @@ def debut_dates(cell):
     別の人（あるいは別の在籍期間）とみなして区切る。
 
     復帰はほとんど無く、確認できているのは1件だけ（もなか、2025-09-01デビュー。
-    この区切りでも 2025-09-02 と出る）。したがって、この日付はそのまま
-    「その人がメイドさんになった日」として読める。
+    この区切りでも 2025-09-02 と出る）。
+
+    ただし「記録が無い」は「働いていない」ではない。記録そのものが途切れている
+    期間の直後は、誰もが初出に見える。信用できるかどうかは trusted_debut() で
+    別に判定すること。
     """
     days_by = collections.defaultdict(set)
     for (d, sh), stores in cell.items():
@@ -330,6 +333,26 @@ def debut_dates(cell):
     return out
 
 
+def trusted_debut(start, recorded):
+    """その日をデビューと呼んでよいか。
+
+    「STREAK_GAP_DAYS 日あいたから別の在籍」と判定するには、その手前の
+    STREAK_GAP_DAYS 日ぶんが実際に記録されている必要がある。記録が
+    無いだけの期間を「不在」と読むと、記録が再開した日が全員のデビューになる。
+
+    実例: 手元の全期間データは 2023-09-30 から 2024-05-03 まで 216 日ぶん
+    記録が無い。この区切りをそのまま使うと 2024-05 に 64 人が「デビュー」する。
+    ひかりは実際には 2017 年 2 月からいる方である。
+
+    リポジトリの shifts.csv は直近ぶんだけなので、内部に空白は無いが左端がある。
+    そこに張りついている人も同じ理由で信用できない。
+    """
+    s = datetime.date.fromisoformat(start)
+    window = [s - datetime.timedelta(days=k) for k in range(1, STREAK_GAP_DAYS + 1)]
+    have = sum(1 for d in window if d.isoformat() in recorded)
+    return have >= STREAK_GAP_DAYS // 2
+
+
 def promotion_dates(cell, roster, known):
     """各メイドが見習いを終えた日。
 
@@ -340,13 +363,52 @@ def promotion_dates(cell, roster, known):
     分かっている日付（data/schedule.js の promotedAt）を優先し、
     残りは「デビュー + TRAINING_DAYS」で埋める。実測できている4名は
     デビューから 68 / 75 / 82 / 91 日で昇格しており、平均 79 日だった。
+
+    デビュー日を信用できない人（→ trusted_debut）は昇格日を作らない。
+    「もう見習いではない」として扱う。作ってしまうと、実際には何年も前から
+    いる方の出勤がまるごと母数から外れる（実測で 39 名中 21 名、最大 450 日）。
     """
     debut = debut_dates(cell)
+    recorded = {d for d, _ in cell}
     out = {}
     for name in roster:
         key = ALIAS.get(name, name)
         start = debut.get(key)
-        if start:
+        if start and trusted_debut(start, recorded):
+            out[key] = (datetime.date.fromisoformat(start)
+                        + datetime.timedelta(days=TRAINING_DAYS)).isoformat()
+    out.update(known)
+    return out
+
+
+def promotion_dates(cell, roster, known):
+    """各メイドが見習いを終えた日。
+
+    見習いは予定表に載らない。店舗数はその日の予定表に何人載るかで決めるので、
+    過去の人数を数えるときも昇格前の出勤は数えてはいけない。数えると
+    「事前に分かっていた人数」が実際より多く見え、閾値が上にずれる。
+
+    分かっている日付（data/schedule.js の promotedAt）を優先し、
+    残りは「デビュー + TRAINING_DAYS」で埋める。実測できている4名は
+    デビューから 68 / 75 / 82 / 91 日で昇格しており、平均 79 日だった。
+
+    ただし shifts.csv は直近ぶんしか無い（2019年からの全記録は持っていない）。
+    記録の左端に張りついている人は、そこでデビューしたのか、その前から
+    働いていたのかを区別できない。デビュー日が記録の開始から
+    STREAK_GAP_DAYS 以内の人は「もう見習いではない」として扱い、
+    昇格日を作らない。作ると、実際には何年も前からいる方の出勤が
+    まるごと母数から外れる（実測では 39 名中 21 名、最大 450 日ずれた）。
+    """
+    debut = debut_dates(cell)
+    first = min(d for d, _ in cell) if cell else None
+    horizon = ((datetime.date.fromisoformat(first)
+                + datetime.timedelta(days=STREAK_GAP_DAYS)).isoformat()
+               if first else None)
+    out = {}
+    for name in roster:
+        key = ALIAS.get(name, name)
+        start = debut.get(key)
+        if start and horizon and start >= horizon:
             out[key] = (datetime.date.fromisoformat(start)
                         + datetime.timedelta(days=TRAINING_DAYS)).isoformat()
     out.update(known)

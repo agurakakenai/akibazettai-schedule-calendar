@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-02 09:55",
+  "generatedAt": "2026-09-02 10:22",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-08-30"
@@ -374,26 +374,26 @@ window.STORE_INSIGHTS = {
   "rosterHeadcountByOpenCount": {
     "昼": {
       "1": {
-        "mean": 3.94,
-        "n": 50
+        "mean": 4.02,
+        "n": 65
       },
       "2": {
-        "mean": 8.59,
-        "n": 237
+        "mean": 8.48,
+        "n": 267
       },
       "3": {
-        "mean": 12.78,
+        "mean": 12.81,
         "n": 27
       }
     },
     "夜": {
       "1": {
         "mean": 3.95,
-        "n": 80
+        "n": 97
       },
       "2": {
         "mean": 8.0,
-        "n": 220
+        "n": 247
       },
       "3": {
         "mean": 12.5,
