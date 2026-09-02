@@ -14,7 +14,7 @@
 集計はすべて「日」ではなく「シフト（昼/夜）」単位です。2〜4号店は片シフトのみの営業が
 7〜8割を占めるため、日単位でまとめると実態とずれます。
 """
-import csv, os, json, collections, datetime, re
+import csv, os, json, collections, datetime, hashlib, re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -1183,6 +1183,44 @@ def build():
     }
 
 
+def stamp_assets():
+    """index.html の読み込みに中身のハッシュを付ける。
+
+    GitHub Pages は `max-age=600` を返すので、データを更新しても
+    ブラウザーは最大10分ぶん古いファイルを使い続ける。ファイル名は変えたくないし、
+    更新のたびに手で番号を上げるのも忘れる。中身から出したハッシュを付けておけば、
+    変わったファイルだけが取り直され、変わっていなければキャッシュが効いたままになる。
+
+    実際に、9月1日と2日の実績を反映したあと、画面には予測が出たままだった。
+    """
+    index = os.path.join(ROOT, 'index.html')
+    with open(index, encoding='utf-8') as f:
+        html = f.read()
+
+    def digest(rel):
+        path = os.path.join(ROOT, *rel.split('/'))
+        if not os.path.exists(path):
+            return None
+        with open(path, 'rb') as f:
+            return hashlib.sha256(f.read()).hexdigest()[:10]
+
+    def replace(match):
+        attr, rel, tail = match.group(1), match.group(2), match.group(3)
+        stamp = digest(rel)
+        return match.group(0) if stamp is None else f'{attr}="{rel}?v={stamp}"{tail}'
+
+    updated = re.sub(
+        r'(href|src)="([^"?]+\.(?:js|css))(?:\?v=[0-9a-f]+)?"([^>]*)',
+        replace,
+        html,
+    )
+    if updated == html:
+        return False
+    with open(index, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(updated)
+    return True
+
+
 def main():
     out = build()
     js = ('/* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */\n'
@@ -1190,6 +1228,8 @@ def main():
     path = os.path.join(ROOT, 'data', 'store-insights.js')
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         f.write(js)
+    if stamp_assets():
+        print('index.html の読み込みにハッシュを付け直しました')
     miss = [k for k, v in out['maidTendency'].items() if v is None]
     print(f'書き出し: {path} ({os.path.getsize(path)/1024:.1f} KB)')
     print(f'集計期間: {out["sampleWindow"]["from"]} .. {out["sampleWindow"]["to"]} ({out["sampleWindow"]["days"]}日)')

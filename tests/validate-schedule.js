@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
@@ -216,6 +217,30 @@ assert.deepEqual(
   ],
   "ひかり's shifts do not match her published 9月前半 post"
 );
+
+// --- キャッシュ避け -----------------------------------------------------
+// GitHub Pages は max-age=600 を返すので、読み込みにハッシュが付いていないと、
+// データを更新してもブラウザーは古いファイルを使い続ける。実際に9月1日と2日の
+// 実績を反映したあと、画面には予測が出たままだった。
+// ハッシュは tools/build-insights.py が中身から付け直す。
+{
+  const indexPath = path.join(__dirname, "..", "index.html");
+  const html = fs.readFileSync(indexPath, "utf8");
+  const refs = [...html.matchAll(/(?:href|src)="([^"]+\.(?:js|css))(\?v=([0-9a-f]+))?"/g)];
+  assert.ok(refs.length >= 4, "index.html must load the stylesheet, both data files and the app");
+
+  for (const [, file, , stamp] of refs) {
+    assert.ok(stamp, `${file} is loaded without a version, so a stale copy can survive a deploy`);
+    const onDisk = path.join(__dirname, "..", ...file.split("/"));
+    assert.ok(fs.existsSync(onDisk), `index.html loads ${file}, which is not in the repository`);
+    const digest = crypto.createHash("sha256").update(fs.readFileSync(onDisk)).digest("hex");
+    assert.equal(
+      stamp,
+      digest.slice(0, stamp.length),
+      `${file} has changed since index.html was stamped; run tools/build-insights.py`
+    );
+  }
+}
 
 console.log(
   `Schedule valid: ${data.roster.length} rostered maids ` +
