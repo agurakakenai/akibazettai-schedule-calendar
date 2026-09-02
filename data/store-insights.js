@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-02 23:49",
+  "generatedAt": "2026-09-02 23:55",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-09-02"
@@ -8933,7 +8933,9 @@ window.STORE_INSIGHTS = {
             "もなか"
           ]
         },
-        "trainees": []
+        "trainees": [
+          "ひじり"
+        ]
       }
     },
     "2026-08-09": {
@@ -9027,7 +9029,9 @@ window.STORE_INSIGHTS = {
             "るるか"
           ]
         },
-        "trainees": []
+        "trainees": [
+          "ひじり"
+        ]
       }
     },
     "2026-08-11": {
@@ -9171,7 +9175,8 @@ window.STORE_INSIGHTS = {
           ]
         },
         "trainees": [
-          "のあ"
+          "のあ",
+          "ひじり"
         ]
       }
     },
@@ -9239,7 +9244,9 @@ window.STORE_INSIGHTS = {
             "ららこ"
           ]
         },
-        "trainees": []
+        "trainees": [
+          "ひじり"
+        ]
       },
       "夜": {
         "stores": {
@@ -9407,7 +9414,9 @@ window.STORE_INSIGHTS = {
             "みりん"
           ]
         },
-        "trainees": []
+        "trainees": [
+          "ひじり"
+        ]
       },
       "夜": {
         "stores": {
@@ -9527,7 +9536,9 @@ window.STORE_INSIGHTS = {
             "るるか"
           ]
         },
-        "trainees": []
+        "trainees": [
+          "ひじり"
+        ]
       }
     },
     "2026-08-23": {
@@ -9614,7 +9625,8 @@ window.STORE_INSIGHTS = {
           ]
         },
         "trainees": [
-          "あずち"
+          "あずち",
+          "ひじり"
         ]
       }
     },
@@ -9754,7 +9766,9 @@ window.STORE_INSIGHTS = {
             "るるか"
           ]
         },
-        "trainees": []
+        "trainees": [
+          "ひじり"
+        ]
       }
     },
     "2026-08-28": {
@@ -9872,6 +9886,7 @@ window.STORE_INSIGHTS = {
           ]
         },
         "trainees": [
+          "ひじり",
           "みおり"
         ]
       },

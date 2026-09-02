@@ -1051,11 +1051,18 @@ def build():
                     first_shift[m0] = d0
 
     def is_trainee(name, on_date):
-        if accounts.get(name):
-            return False
         started = debuts.get(name) or first_shift.get(name)
         if not started:
             return False
+        # アカウントがあっても、それが本人のものとは限らない。同じ名前で
+        # 卒業した方のアカウントが残っていることがある（ひじりさんがそうで、
+        # プロフィールに卒業表記があり、作成は 2019 年、いまのひじりさんの
+        # 初日は 2026 年）。卒業表記のあるものと、初日より前に作られたものは、
+        # 昇格の証拠として数えない。
+        if accounts.get(name) and account_status.get(name) != '卒業済み':
+            made = account_created.get(name)
+            if not made or made >= int(started[:4]):
+                return False
         age = (datetime.date.fromisoformat(on_date)
                - datetime.date.fromisoformat(started)).days
         return 0 <= age < TRAINEE_MAX_DAYS

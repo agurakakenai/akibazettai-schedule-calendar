@@ -897,6 +897,52 @@ assert.equal(
     `  actualRoster: ${judgedShifts} shifts judged (${unjudgedShifts} outside the window), ` +
       `${(traineeTotal / judgedShifts).toFixed(2)} trainees per shift`
   );
+
+  // 同じ名前で、卒業した方のアカウントが残っていることがある。それを昇格の
+  // 証拠に使うと、いまお給仕に出ている見習いさんが印を失う。ひじりさんが実例で、
+  // hijiri_zettai は 2019 年作成・プロフィールに卒業表記、いまのひじりさんの
+  // 初日は 2026-08-03。ここを間違えると画面からは気づけないので、名簿を読んで見る。
+  const readCsv = (name) => {
+    const file = path.join(__dirname, "..", "tools", "data", name);
+    if (!fs.existsSync(file)) {
+      return [];
+    }
+    const rows = fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "").trim().split(/\r?\n/);
+    const head = (rows[0].match(/"([^"]*)"/g) ?? []).map((s) => s.slice(1, -1));
+    return rows.slice(1).map((line) => {
+      const cells = (line.match(/"([^"]*)"/g) ?? []).map((s) => s.slice(1, -1));
+      return Object.fromEntries(head.map((key, i) => [key, cells[i] ?? ""]));
+    });
+  };
+  const debuts = new Map(readCsv("debuts.csv").map((row) => [row.name, row.date]));
+  const stale = readCsv("accounts.csv").filter(
+    (row) => row.handle && (row.source === "卒業済み" || (row.created && debuts.get(row.name)
+      && Number(row.created) < Number(debuts.get(row.name).slice(0, 4))))
+  );
+  for (const row of stale) {
+    const debut = debuts.get(row.name);
+    if (!debut) {
+      continue;
+    }
+    const worked = Object.entries(insights.actualRoster).filter(
+      ([date, byShift]) =>
+        date >= debut &&
+        Object.values(byShift).some(
+          (value) => value.trainees && Object.values(value.stores).flat().includes(row.name)
+        )
+    );
+    if (worked.length === 0) {
+      continue;
+    }
+    const marked = worked.some(([, byShift]) =>
+      Object.values(byShift).some((value) => (value.trainees ?? []).includes(row.name))
+    );
+    assert.ok(
+      marked,
+      `${row.name} has an account (${row.handle}) that predates her debut on ${debut}, ` +
+        "so it must not be read as her promotion"
+    );
+  }
 }
 
 console.log(
