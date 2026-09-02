@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-03 00:19",
+  "generatedAt": "2026-09-03 00:32",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-09-02"
@@ -9955,6 +9955,16 @@ window.STORE_INSIGHTS = {
           "みらい"
         ]
       }
+    }
+  },
+  "traineeOutlook": {
+    "昼": {
+      "perStore": 0.421,
+      "halfLifeDays": 30
+    },
+    "夜": {
+      "perStore": 0.472,
+      "halfLifeDays": 30
     }
   },
   "actualWithoutRoster": {},

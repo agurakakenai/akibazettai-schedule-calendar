@@ -918,6 +918,31 @@ assert.equal(
       `${(traineeTotal / judgedShifts).toFixed(2)} trainees per shift`
   );
 
+  // 見込みのシフトに置く人数。実測から出しているので、実測とかけ離れていたら
+  // 数え方かデータのどちらかが壊れている。
+  const outlook = insights.traineeOutlook ?? {};
+  assert.ok(Object.keys(outlook).length > 0, "there must be a trainee outlook for the forecast");
+  for (const shift of insights.shifts) {
+    const entry = outlook[shift];
+    assert.ok(entry, `${shift} must have a trainee outlook`);
+    assert.ok(
+      entry.perStore > 0 && entry.perStore < 3,
+      `${shift} expects ${entry.perStore} trainees per shop, which is not a shop we recognise`
+    );
+    // 半減期が短いぶん直近に寄るので、期間全体の平均より下がることはない。
+    const judged = Object.values(insights.actualRoster)
+      .map((byShift) => byShift[shift])
+      .filter((value) => value && value.trainees);
+    const overall =
+      judged.reduce((sum, value) => sum + value.trainees.length, 0) /
+      judged.reduce((sum, value) => sum + Object.keys(value.stores).length, 0);
+    assert.ok(
+      entry.perStore >= overall * 0.5 && entry.perStore <= overall * 3,
+      `${shift} expects ${entry.perStore} per shop but the record averages ${overall.toFixed(2)}; ` +
+        "the weighting has drifted away from what actually happened"
+    );
+  }
+
   // 同じ名前で、卒業した方のアカウントが残っていることがある。それを昇格の
   // 証拠に使うと、いまお給仕に出ている見習いさんが印を失う。ひじりさんが実例で、
   // hijiri_zettai は 2019 年作成・プロフィールに卒業表記、いまのひじりさんの
