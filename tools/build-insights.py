@@ -87,6 +87,22 @@ def load_csv(name, optional=False):
         return list(csv.DictReader(f))
 
 
+def read_debuts():
+    """新人にゃんこの告知から取れた「お給仕を始めた日」。
+
+    公式Xが「新人にゃんこの『◯◯』ちゃん」と紹介するので、その日付を初日とする。
+    記録の空白を初日と読み違える streak_start と違い、お店が言った日そのもの。
+    告知が無い人は記録上の初出で代用する（呼び出し側の責任）。
+    """
+    out = {}
+    for row in load_csv('debuts.csv', optional=True):
+        name = ALIAS.get(row.get('name'), row.get('name'))
+        date = row.get('date')
+        if name and date and (name not in out or date < out[name]):
+            out[name] = date
+    return out
+
+
 def read_openings():
     """「開いた店は分かるが、誰が出たかは分からない」日を読む。
 
@@ -164,6 +180,13 @@ CALIBRATION_MIN_SAMPLE = 100  # この件数未満のバケットは出さない
 # n=12 のバケットを出して、そうなった）。テストで両者の一致を見ている。
 SECOND_STORE_MIN_SAMPLE = 20
 
+# 見習いにゃんこの見分け方。お店のやり方に合わせている。
+# 見習いのうちは X のアカウントを持たず、できたら昇格。初日から
+# TRAINEE_MAX_DAYS 経ってもアカウントが無い人は、昇格せずにいなくなったと見る。
+TRAINEE_MAX_DAYS = 90
+# 判定するのは直近このぶんだけ。これより前まで遡ると、卒業したメイドさんが
+# 「アカウントが無い（消えた）人」として、いつまでも見習いに数えられてしまう。
+TRAINEE_WINDOW_DAYS = 120
 
 def pick_rate(hits, chances, posted, sid):
     """その店が開いていた日のうち、その人がその店にいた割合。
@@ -1009,6 +1032,34 @@ def build():
         }
 
     hist_from = (last_d - datetime.timedelta(days=HISTORY_DAYS)).isoformat()
+    # 見習いにゃんこの見分け方は、お店のやり方に合わせる。
+    #
+    #   - 見習いのうちは X のアカウントを持たない。アカウントができたら昇格。
+    #   - 見つけた初日から TRAINEE_MAX_DAYS 経ってもアカウントが無い人は、
+    #     昇格せずにいなくなったと見る（ずっと見習いのままにはしない）。
+    #   - 判定するのは直近 TRAINEE_WINDOW_DAYS だけ。それより前まで遡ると、
+    #     もう卒業したメイドさんを見習いとして数え続けることになる。
+    #
+    # 初日は新人にゃんこの告知（debuts.csv）を優先し、無ければ記録上の初出を使う。
+    trainee_from = (last_d - datetime.timedelta(days=TRAINEE_WINDOW_DAYS)).isoformat()
+    debuts = read_debuts()
+    first_shift = {}
+    for (d0, _sh0), stores0 in cell.items():
+        for maids0 in stores0.values():
+            for m0 in maids0:
+                if m0 not in first_shift or d0 < first_shift[m0]:
+                    first_shift[m0] = d0
+
+    def is_trainee(name, on_date):
+        if accounts.get(name):
+            return False
+        started = debuts.get(name) or first_shift.get(name)
+        if not started:
+            return False
+        age = (datetime.date.fromisoformat(on_date)
+               - datetime.date.fromisoformat(started)).days
+        return 0 <= age < TRAINEE_MAX_DAYS
+
     actual = {}
     actual_roster = {}
     for d in all_dates:
@@ -1025,8 +1076,17 @@ def build():
                 continue
             per_store = {sid: sorted(cell[(d, sh)][sid])
                          for sid in IDS if cell[(d, sh)].get(sid)}
-            if per_store:
-                names[sh] = per_store
+            if not per_store:
+                continue
+            shift_entry = {'stores': per_store}
+            # 窓の外は「見習いかどうか分からない」であって「全員ノーマル」ではない。
+            # キーごと落として、印を付けない日だと分かるようにする。
+            if d >= trainee_from:
+                shift_entry['trainees'] = sorted({
+                    m for maids in per_store.values() for m in maids
+                    if is_trainee(m, d)
+                })
+            names[sh] = shift_entry
         if names:
             actual_roster[d] = names
 
@@ -1094,7 +1154,8 @@ def build():
         },
         'actual': actual,
         # 記録のある日の「誰がどこにいたか」。カレンダーが実績と書く日は、
-        # 予定表からの割り振りではなくこちらを出す。
+        # 予定表からの割り振りではなくこちらを出す。trainees は、その日は
+        # 見習いにゃんこだった人（公式サイトの在籍一覧に載らない人）。
         'actualRoster': actual_roster,
         # 上のうち、メイド単位の記録が無く「開いた店」だけ分かっている日。
         # 統計には入っていないので、UI が出典を書き分けたいときに使える。
