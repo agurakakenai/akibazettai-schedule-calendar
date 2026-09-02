@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -11,14 +11,18 @@ const {
   applyHomeStaff,
   assignShiftStores,
   calibrationNote,
+  coOpenRate,
   eventStorePins,  expectedOpenStores,
   getMaidStoreOutlook,
   getShiftAssignment,
   getStoreOutlook,
   groupByAssignedStore,
   lastActualDateOf,
+  nearMissNote,
+  nearMissStores,
   openStoresOn,
   openStoresOnDay,
+  sameDayDecisionNote,
   scheduleSystemNote,
   sortByAssignedStore,
   storeCapacities,
@@ -1806,6 +1810,95 @@ assert.equal(
       "the adjusted summary must say what moved it"
     );
   }
+}
+
+// 境目が僅差のとき、選ばなかった店も同じくらいあり得る。上位k で切る形自体は
+// 妥当（確率で切るとどの閾値でも悪化する）が、境目に根拠がないことは言う。
+{
+  const base = outlookFor(farFuture, "昼");
+  const rateOf = (o, id) => o.entries.find((e) => e.store.id === id).rate;
+
+  // 2位と3位を僅差にすると、3位が僅差として出る。
+  const close = {
+    ...base,
+    entries: base.entries.map((entry) => {
+      const rates = { s1: 0.98, s2: 0.5, s3: 0.47, s4: 0.1 };
+      const rate = rates[entry.store.id];
+      return { ...entry, rate, text: `${Math.round(rate * 100)}%` };
+    })
+  };
+  const chosen = expectedOpenStores(insights, "昼", close, 8);
+  assert.deepEqual(chosen, ["s1", "s2"], "eight maids open the two likeliest shops");
+  assert.deepEqual(
+    nearMissStores(insights, "昼", close, 8),
+    ["s3"],
+    "a shop three points behind the last pick is a near miss"
+  );
+
+  // 大差なら僅差ではない。
+  const clear = {
+    ...base,
+    entries: base.entries.map((entry) => {
+      const rates = { s1: 0.98, s2: 0.6, s3: 0.15, s4: 0.1 };
+      const rate = rates[entry.store.id];
+      return { ...entry, rate, text: `${Math.round(rate * 100)}%` };
+    })
+  };
+  assert.deepEqual(
+    nearMissStores(insights, "昼", clear, 8),
+    [],
+    "a shop far behind was not a close call"
+  );
+
+  // 実績の日には出さない。決まっているので僅差もない。
+  const recordedShift = insights.shifts.find((s) => insights.actual[lastActual][s]);
+  assert.deepEqual(
+    nearMissStores(insights, recordedShift, outlookFor(lastActual, recordedShift), 8),
+    [],
+    "a recorded shift has no near miss"
+  );
+
+  // 本文は、僅差であること・確率を足せないこと・片方にしか出せないことを言う。
+  const note = nearMissNote(insights, "昼", close, 8);
+  assert.ok(note, "a near miss must be explained");
+  assert.ok(note.includes("僅差"), "the note must say the call was close");
+  assert.ok(
+    note.includes("まだ決まっていません"),
+    "a close call is not a bad guess; the shop has not been chosen yet"
+  );
+  assert.ok(note.includes("足さないでください"), "the note must warn against adding the two up");
+  assert.ok(
+    note.includes("一方にしか出せない"),
+    "the note must say why only one shop got a line-up"
+  );  assert.equal(nearMissNote(insights, "昼", clear, 8), null, "no near miss, no note");
+
+  // 同時開店の割合は記録から数える。足し算できない理由の裏づけ。
+  const co = coOpenRate(insights, "s2", "s3");
+  assert.ok(co && co.shifts > 0, "the co-open rate must come from the records");
+  assert.ok(co.rate < 0.1, `2号店と3号店が揃うのは稀なはず、実測 ${co.rate}`);
+  assert.deepEqual(coOpenRate(insights, "s3", "s2"), co, "the pair is unordered");
+  assert.equal(coOpenRate({}, "s2", "s3"), null, "no records, no rate");
+}
+
+// どの店を開けるかは当日決まる。何店開くかは事前に読める。この2つを混ぜない。
+{
+  const guess = outlookFor(farFuture, "昼");
+  const note = sameDayDecisionNote(insights, guess);
+  assert.ok(note, "a guess must say the shop has not been chosen yet");
+  assert.ok(note.includes("当日決まります"), "the note must say when the shop is decided");
+  assert.ok(
+    note.includes("何店開くか"),
+    "the note must separate the count, which is knowable, from the shops, which are not"
+  );
+
+  // 実績の日は決まっている。言うことがない。
+  const recordedShift = insights.shifts.find((s) => insights.actual[lastActual][s]);
+  assert.equal(
+    sameDayDecisionNote(insights, outlookFor(lastActual, recordedShift)),
+    null,
+    "a recorded shift was decided long ago"
+  );
+  assert.equal(sameDayDecisionNote(insights, null), null, "no outlook, no note");
 }
 
 console.log(
