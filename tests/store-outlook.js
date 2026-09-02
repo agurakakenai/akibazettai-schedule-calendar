@@ -1569,10 +1569,27 @@ assert.equal(
   // 文言と突き合わせて、どれかが欠けていたら落とす。
   {
     const summary = manyS2.summary;
+    // 出す/出さないの境目は app.js の SECOND_STORE_MIN_SAMPLE と同じでなければ
+    // ならない。data 側が緩いと、薄いバケットを app が弾いた拍子に「配属を読む」
+    // 処理ごと無効になる。文言から実際に使われている閾値を読み取って照合する。
+    const MIN_BUCKET = 20;
+    // data 側が MIN_BUCKET より薄いバケットを出していたら、そこを引いた瞬間に
+    // app が null を返し、配属の読み取りが丸ごと止まる。実際に n=12 のバケットで
+    // そうなった。データ側の足切りが app と同じであることを直接見る。
+    for (const [id, rows] of Object.entries(insights.secondStoreByHome)) {
+      for (const [count, row] of Object.entries(rows)) {
+        assert.ok(
+          row.n >= MIN_BUCKET,
+          `${id}: the ${count}-maid bucket rests on ${row.n} shifts, below the ` +
+            `${MIN_BUCKET} app.js requires. app will read null and stop reading ` +
+            "the rota at all, for every shop, without saying so."
+        );
+      }
+    }
     const pct = (rate) => `${Math.round(rate * 100)}%`;
     for (const [id, rows] of Object.entries(insights.secondStoreByHome)) {
       const rates = Object.values(rows)
-        .filter((entry) => typeof entry?.rate === "number" && entry.n >= 10)
+        .filter((entry) => typeof entry?.rate === "number" && entry.n >= MIN_BUCKET)
         .map((entry) => entry.rate);
       if (rates.length < 2) {
         continue;
@@ -1589,7 +1606,7 @@ assert.equal(
     const flattest = Object.entries(insights.secondStoreByHome)
       .map(([id, rows]) => {
         const rates = Object.values(rows)
-          .filter((entry) => typeof entry?.rate === "number" && entry.n >= 10)
+          .filter((entry) => typeof entry?.rate === "number" && entry.n >= MIN_BUCKET)
           .map((entry) => entry.rate);
         return { id, width: rates.length >= 2 ? Math.max(...rates) - Math.min(...rates) : 1 };
       })
@@ -1598,6 +1615,38 @@ assert.equal(
     assert.ok(
       summary.includes(`${short}は配属者が何人でも`),
       `${short} moves least, so the tooltip must be the one saying it cannot be read`
+    );
+  }
+
+  // キッチンにゃんこは配属の数に入れない。data 側の表も外して作ってあるので、
+  // ここで数え方がずれると、引くバケットがずれたまま誰も気づかない。
+  // キッチンだけを足しても結果が動かないことで、外れていることを見る。
+  {
+    const kitchen = [...(schedule.kitchenStaff ?? [])];
+    assert.ok(kitchen.length > 0, "there should be cooks to exclude");
+    const cook = kitchen.find((name) => schedule.homeStore?.[name]);
+    assert.ok(cook, "at least one cook must have a posted shop to test with");
+    const plain = lineUp({ s2: 1, s3: 1, s4: 1 });
+    const withCook = [...plain, cook];
+    const a = applyHomeStaff(insights, base, plain, homeStore, schedule.kitchenStaff);
+    const b = applyHomeStaff(insights, base, withCook, homeStore, schedule.kitchenStaff);
+    for (const id of ["s2", "s3", "s4"]) {
+      assert.equal(
+        rateOf(b, id),
+        rateOf(a, id),
+        `adding ${cook}, a cook posted to ${schedule.homeStore[cook]}, must not move ${id}: ` +
+          "the table was built without cooks, so counting them here reads the wrong bucket"
+      );
+    }
+    // フロアの方を足せば動く（検査が素通りしていないことの確認）
+    const floor = schedule.roster.find(
+      (name) => schedule.homeStore?.[name] === "s2" && !kitchen.includes(name)
+    );
+    assert.ok(floor, "expected a floor maid posted to 2号店");
+    const c = applyHomeStaff(insights, base, [...plain, floor], homeStore, schedule.kitchenStaff);
+    assert.ok(
+      rateOf(c, "s2") > rateOf(a, "s2"),
+      "adding a floor maid posted to 2号店 must lift it, or the test proves nothing"
     );
   }
 

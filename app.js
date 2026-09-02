@@ -511,9 +511,19 @@
   // 動かないことをそのまま出します。
   const SECOND_STORE_MIN_SAMPLE = 20;
 
-  function homeStaffCounts(members, homeStore) {
+  // キッチンにゃんこは数から外す。公式サイトには配属が載っているが、実測では
+  // その店に入る率がフロアより 13.3 ポイント低く（62.6% 対 75.9%、p=0.025）、
+  // どこにでも入っている。data/store-insights.js の表も外して作ってあるので、
+  // ここで数え方を合わせないと引く場所がずれる。
+  function homeStaffCounts(members, homeStore, kitchenStaff) {
+    const kitchen = kitchenStaff instanceof Set
+      ? kitchenStaff
+      : new Set(kitchenStaff ?? []);
     const counts = new Map();
     for (const name of members ?? []) {
+      if (kitchen.has(name)) {
+        continue;
+      }
       const home = homeStore?.[name];
       if (home) {
         counts.set(home, (counts.get(home) ?? 0) + 1);
@@ -551,11 +561,11 @@
   // 置き換えると、同日ルールが出した「昼が2号店なら夜の3号店は1%」のような
   // 強い手がかりまで捨ててしまう。この形なら、表が平均どおりの店は動かない
   // ので、4号店が読めないことも特別扱いせずそのまま出る。
-  function applyHomeStaff(insights, outlook, members, homeStore) {
+  function applyHomeStaff(insights, outlook, members, homeStore, kitchenStaff) {
     if (!outlook || outlook.basis === "actual" || !insights?.secondStoreByHome) {
       return outlook;
     }
-    const counts = homeStaffCounts(members, homeStore);
+    const counts = homeStaffCounts(members, homeStore, kitchenStaff);
     const ids = Object.keys(insights.secondStoreByHome);
     const shifted = new Map();
     for (const id of ids) {
@@ -1287,11 +1297,13 @@
       lastActualDate: lastActualKey
     });
     // 顔ぶれの配属から2番手を読み直す。絞り込みに動かされないよう全員で数える。
+    // ただしキッチンにゃんこは配属と実際が合わないので、そこでは数えない。
     const withHome = applyHomeStaff(
       insights,
       outlook,
       entries.map((entry) => entry.name),
-      data.homeStore
+      data.homeStore,
+      data.kitchenStaff
     );
     return { outlook: applyEventCertainty(insights, withHome, pins), pins };
   }

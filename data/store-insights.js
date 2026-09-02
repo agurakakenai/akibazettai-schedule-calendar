@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-02 10:39",
+  "generatedAt": "2026-09-02 11:27",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-08-30"
@@ -374,11 +374,11 @@ window.STORE_INSIGHTS = {
   "rosterHeadcountByOpenCount": {
     "昼": {
       "1": {
-        "mean": 4.02,
+        "mean": 3.95,
         "n": 65
       },
       "2": {
-        "mean": 8.48,
+        "mean": 8.47,
         "n": 267
       },
       "3": {
@@ -388,11 +388,11 @@ window.STORE_INSIGHTS = {
     },
     "夜": {
       "1": {
-        "mean": 3.95,
+        "mean": 3.9,
         "n": 97
       },
       "2": {
-        "mean": 8.0,
+        "mean": 7.95,
         "n": 247
       },
       "3": {
@@ -428,42 +428,42 @@ window.STORE_INSIGHTS = {
   "secondStoreByHome": {
     "s2": {
       "0": {
-        "rate": 0.269,
-        "n": 78
+        "rate": 0.235,
+        "n": 183
       },
       "1": {
-        "rate": 0.282,
-        "n": 181
+        "rate": 0.317,
+        "n": 189
       },
       "2": {
-        "rate": 0.312,
-        "n": 144
+        "rate": 0.452,
+        "n": 93
       },
       "3": {
-        "rate": 0.452,
-        "n": 73
-      },
-      "4": {
-        "rate": 0.543,
-        "n": 35
+        "rate": 0.529,
+        "n": 34
       }
     },
     "s3": {
+      "0": {
+        "rate": 0.114,
+        "n": 35
+      },
       "1": {
-        "rate": 0.23,
-        "n": 74
+        "rate": 0.229,
+        "n": 192
       },
       "2": {
-        "rate": 0.282,
-        "n": 156
+        "rate": 0.378,
+        "n": 172
       },
       "3": {
-        "rate": 0.281,
-        "n": 146
+        "rate": 0.373,
+        "n": 83
       },
       "4": {
-        "rate": 0.476,
-        "n": 126
+        "rate": 0.655,
+        "n": 29
       }
     },
     "s4": {
@@ -5559,26 +5559,26 @@ window.STORE_INSIGHTS = {
     "to": "2026-08-30",
     "shiftCells": 344,
     "totalMaids": 1941,
-    "rostered": 1641,
-    "unlisted": 300,
-    "unlistedShare": 0.155,
-    "unlistedPerShift": 0.87,
-    "shiftsWithUnlisted": 0.712,
+    "rostered": 1646,
+    "unlisted": 295,
+    "unlistedShare": 0.152,
+    "unlistedPerShift": 0.86,
+    "shiftsWithUnlisted": 0.703,
     "distribution": {
-      "0": 99,
-      "1": 199,
+      "0": 102,
+      "1": 197,
       "2": 38,
-      "3": 7,
+      "3": 6,
       "4": 1
     },
     "byStore": {
       "s1": {
         "shifts": 172,
-        "rostered": 879,
-        "unlisted": 142,
-        "unlistedShare": 0.139,
-        "unlistedPerShift": 0.83,
-        "shiftsWithoutUnlisted": 0.314
+        "rostered": 884,
+        "unlisted": 137,
+        "unlistedShare": 0.134,
+        "unlistedPerShift": 0.8,
+        "shiftsWithoutUnlisted": 0.331
       },
       "s2": {
         "shifts": 58,

@@ -158,6 +158,12 @@ CALIBRATION_REFIT_DAYS = 28   # この日数ごとに pickRate を作り直し�
 CALIBRATION_MIN_TRAIN = 60    # 訓練に使うシフトがこれ未満なら測らない
 CALIBRATION_MIN_SAMPLE = 100  # この件数未満のバケットは出さない（ぶれが大きい）
 
+# secondStoreByHome のバケットをいくつ以上の実績で出すか。
+# app.js の SECOND_STORE_MIN_SAMPLE と同じ値でなければならない。こちらが緩いと、
+# app 側が薄いバケットを弾いた拍子に「配属を読む」処理ごと無効になる（実際に
+# n=12 のバケットを出して、そうなった）。テストで両者の一致を見ている。
+SECOND_STORE_MIN_SAMPLE = 20
+
 
 def pick_rate(hits, chances, posted, sid):
     """その店が開いていた日のうち、その人がその店にいた割合。
@@ -373,6 +379,54 @@ def trusted_debut(start, recorded):
     return have >= STREAK_GAP_DAYS // 2
 
 
+def read_kitchen_staff():
+    """メイド服を着ないキッチンにゃんこ（data/schedule.js の kitchenStaff）。
+
+    公式サイトには配属店が載っているが、実測すると**その店に入る率が
+    フロアの方より 13.3 ポイント低い**（62.6% 対 75.9%、並べ替え検定 p=0.025）。
+    店ごとの散らばりも小さく（0.120 対 0.194）、どこにでも入っている。
+    うる（配属3号店）とみりん（配属1号店）は、実績の最多がどちらも4号店。
+
+    したがって「この人が予定表にいるからこの店が開く」の根拠には使えない。
+    """
+    path = os.path.join(ROOT, 'data', 'schedule.js')
+    src = open(path, encoding='utf-8').read()
+    m = re.search(r'kitchenStaff:\s*\[(.*?)\]', src, re.S)
+    if not m:
+        return set()
+    return {ALIAS.get(n, n) for n in re.findall(r'"([^"]+)"', m.group(1))}
+
+
+def read_milestones():
+    """お店の公式な周年表（tools/data/milestones.csv）。
+
+    誕生日と周年（＝初お給仕日）が全員ぶん載っている。お店の掲示をユーザーが
+    渡してくれたもの。`debut` が初お給仕日、`returned` があればそれが
+    「戻ってきてからの周年」で、いまの在籍はそちらから数える。
+
+    これが来るまでは shifts.csv から streak_start で推定していた。答え合わせ
+    すると、記録期間の中にデビューした15名では誤差の中央値 +3日（絶対値の
+    平均3.6日、にゃなは0日）で推定は妥当だった。ただし記録より前からいる
+    21名は当てられない（ひかりは3076日ずれた）。そこは推定の限界であって、
+    いまは日付そのものが分かるので推定しない。
+    """
+    path = os.path.join(ROOT, 'tools', 'data', 'milestones.csv')
+    if not os.path.exists(path):
+        return {}
+    out = {}
+    with open(path, encoding='utf-8-sig', newline='') as fh:
+        for row in csv.DictReader(fh):
+            name = ALIAS.get(row['name'], row['name'])
+            out[name] = {
+                'birthday': row.get('birthday') or None,
+                # 復帰した方は、いまの在籍の開始日を使う（あらた・もなか）
+                'debut': row.get('returned') or row.get('debut') or None,
+                'firstDebut': row.get('debut') or None,
+                'returned': row.get('returned') or None,
+            }
+    return out
+
+
 def promotion_dates(cell, roster, known):
     """各メイドが見習いを終えた日。
 
@@ -380,60 +434,41 @@ def promotion_dates(cell, roster, known):
     過去の人数を数えるときも昇格前の出勤は数えてはいけない。数えると
     「事前に分かっていた人数」が実際より多く見え、閾値が上にずれる。
 
-    分かっている日付（data/schedule.js の promotedAt）を優先し、
-    残りは「デビュー + TRAINING_DAYS」で埋める。実測できている4名は
-    デビューから 68 / 75 / 82 / 91 日で昇格しており、平均 79 日だった。
+    優先順位:
+      1. data/schedule.js の promotedAt（昇格そのものが分かっている4名）
+      2. 公式の周年表の初お給仕日 + TRAINING_DAYS
+      3. 周年表に無い方は shifts.csv からの推定 + TRAINING_DAYS
 
-    デビュー日を信用できない人（→ trusted_debut）は昇格日を作らない。
-    「もう見習いではない」として扱う。作ってしまうと、実際には何年も前から
-    いる方の出勤がまるごと母数から外れる（実測で 39 名中 21 名、最大 450 日）。
+    実測できている4名はデビューから 68 / 75 / 82 / 91 日で昇格しており、
+    平均 79 日だった。
+
+    推定に頼る場合は trusted_debut を通す。記録の空白の直後は誰もが初出に
+    見えるので、そこを在籍の開始と読むと、実際には何年も前からいる方の出勤が
+    まるごと母数から外れる。公式の周年表があればこの判定は要らない。
+    日付そのものが分かるので、記録開始より前ならとっくに昇格済みだと分かる。
     """
     debut = debut_dates(cell)
+    milestones = read_milestones()
     recorded = {d for d, _ in cell}
+    first = min(recorded) if recorded else None
     out = {}
     for name in roster:
         key = ALIAS.get(name, name)
+        official = (milestones.get(key) or {}).get('debut')
+        if official:
+            promoted = (datetime.date.fromisoformat(official)
+                        + datetime.timedelta(days=TRAINING_DAYS)).isoformat()
+            # 記録が始まる前に昇格済みなら、母数から外す理由がない
+            if first and promoted <= first:
+                continue
+            out[key] = promoted
+            continue
         start = debut.get(key)
         if start and trusted_debut(start, recorded):
             out[key] = (datetime.date.fromisoformat(start)
                         + datetime.timedelta(days=TRAINING_DAYS)).isoformat()
     out.update(known)
     return out
-
-
-def promotion_dates(cell, roster, known):
-    """各メイドが見習いを終えた日。
-
-    見習いは予定表に載らない。店舗数はその日の予定表に何人載るかで決めるので、
-    過去の人数を数えるときも昇格前の出勤は数えてはいけない。数えると
-    「事前に分かっていた人数」が実際より多く見え、閾値が上にずれる。
-
-    分かっている日付（data/schedule.js の promotedAt）を優先し、
-    残りは「デビュー + TRAINING_DAYS」で埋める。実測できている4名は
-    デビューから 68 / 75 / 82 / 91 日で昇格しており、平均 79 日だった。
-
-    ただし shifts.csv は直近ぶんしか無い（2019年からの全記録は持っていない）。
-    記録の左端に張りついている人は、そこでデビューしたのか、その前から
-    働いていたのかを区別できない。デビュー日が記録の開始から
-    STREAK_GAP_DAYS 以内の人は「もう見習いではない」として扱い、
-    昇格日を作らない。作ると、実際には何年も前からいる方の出勤が
-    まるごと母数から外れる（実測では 39 名中 21 名、最大 450 日ずれた）。
-    """
-    debut = debut_dates(cell)
-    first = min(d for d, _ in cell) if cell else None
-    horizon = ((datetime.date.fromisoformat(first)
-                + datetime.timedelta(days=STREAK_GAP_DAYS)).isoformat()
-               if first else None)
-    out = {}
-    for name in roster:
-        key = ALIAS.get(name, name)
-        start = debut.get(key)
-        if start and horizon and start >= horizon:
-            out[key] = (datetime.date.fromisoformat(start)
-                        + datetime.timedelta(days=TRAINING_DAYS)).isoformat()
-    out.update(known)
-    return out
-
 
 def build():
     rows = load_csv('shifts.csv')
@@ -937,9 +972,16 @@ def build():
     # 50.9% だった。
     #
     # 出しているのは「その店を本拠とする人が n 人載っているとき、その店が
-    # 相方だった割合」。4号店は n が増えても動かない。当て方の問題ではなく
-    # 当たらないので、n を添えて読む側が判断できるようにしておく。
+    # 相方だった割合」。キッチンにゃんこは数から外す。公式サイトには配属が
+    # 載っているが、実測ではその店に入る率がフロアより 13.3pt 低く
+    # （62.6% 対 75.9%、p=0.025）、どこにでも入っている。「この人がいるから
+    # この店が開く」の根拠にならない。外すと 3号店の振れ幅が 21% -> 67% に
+    # 広がる（うる・みりんの配属が 3号店・1号店なのに実績最多が4号店）。
+    #
+    # 4号店は外しても動かない。キッチン5名に4号店配属が一人もいないので、
+    # そもそも4号店の数に影響しない。4号店が読めない理由は別にある。
     second_by_home = {}
+    kitchen = read_kitchen_staff()
     for sid in IDS[1:]:
         tally = collections.defaultdict(lambda: [0, 0])
         for (d, _sh), stores in cell.items():
@@ -948,13 +990,13 @@ def build():
             others = [x for x in IDS[1:] if x in stores]
             if 's1' not in stores or len(others) != 1:
                 continue
-            listed = [m for x in stores for m in stores[x]]
+            listed = [m for x in stores for m in stores[x] if m not in kitchen]
             k = min(sum(1 for m in listed if posted_by_key.get(m) == sid), 4)
             tally[k][1] += 1
             tally[k][0] += 1 if others[0] == sid else 0
         second_by_home[sid] = {
             str(k): {'rate': round(v[0] / v[1], 3), 'n': v[1]}
-            for k, v in sorted(tally.items()) if v[1] >= 10
+            for k, v in sorted(tally.items()) if v[1] >= SECOND_STORE_MIN_SAMPLE
         }
 
     hist_from = (last_d - datetime.timedelta(days=HISTORY_DAYS)).isoformat()

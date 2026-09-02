@@ -763,7 +763,7 @@ assert.equal(
     for (const [count, row] of Object.entries(rows)) {
       assert.ok(/^[0-4]$/.test(count), `${id}: unexpected head count ${count}`);
       assert.ok(row.rate >= 0 && row.rate <= 1, `${id}: rate ${row.rate} out of range`);
-      assert.ok(row.n >= 10, `${id}: ${count} maids rests on only ${row.n} shifts`);
+      assert.ok(row.n >= 20, `${id}: ${count} maids rests on only ${row.n} shifts`);
       rates.push(row.rate);
     }
     spread[id] = Math.max(...rates) - Math.min(...rates);
