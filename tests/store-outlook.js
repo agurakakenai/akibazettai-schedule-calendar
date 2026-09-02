@@ -9,6 +9,7 @@ const {
   addDays,
   applyEventCertainty,
   applyHomeStaff,
+  applyPostedTilt,
   assignShiftStores,
   calibrationNote,
   coOpenRate,
@@ -17,7 +18,9 @@ const {
   getShiftAssignment,
   getStoreOutlook,
   groupByAssignedStore,
+  itineraryConfidence,
   lastActualDateOf,
+  maidItinerary,
   nearMissNote,
   nearMissStores,
   openStoresOn,
@@ -25,6 +28,8 @@ const {
   sameDayDecisionNote,
   scheduleSystemNote,
   sortByAssignedStore,
+  spreadNote,
+  spreadStanding,
   storeCapacities,
   storeProbabilities,
   storeSizeNote,
@@ -1066,7 +1071,11 @@ assert.equal(
   // 第4引数は人数でも顔ぶれでもよい。顔ぶれは「どの店か」だけを動かし、
   // 「いくつ開くか」は人数から決まったままにする。ここが崩れると、
   // 顔ぶれの偏りで店舗数まで動いてしまう。
+  //
+  // 顔ぶれを効かせるのは applyPostedTilt の役目で、割合そのものを動かす。
+  // expectedOpenStores は動いたあとの割合を素直に上から採るだけ。
   const future = outlookFor(farFuture, "昼");
+  const tiltedFor = (lineUp) => applyPostedTilt(insights, future, "昼", lineUp);
   const roster = Object.keys(insights.maidTendency).filter((name) => insights.maidTendency[name]);
   const postedTo = (id) => roster.filter((name) => insights.maidTendency[name].posted === id);
   for (const id of insights.stores.map((store) => store.id)) {
@@ -1075,7 +1084,7 @@ assert.equal(
       continue;
     }
     assert.equal(
-      expectedOpenStores(insights, "昼", future, lineUp).length,
+      expectedOpenStores(insights, "昼", tiltedFor(lineUp), lineUp).length,
       expectedOpenStores(insights, "昼", future, lineUp.length).length,
       `a line-up posted to ${id} must open as many shops as its headcount alone would`
     );
@@ -1085,8 +1094,8 @@ assert.equal(
   const s2Only = postedTo("s2").slice(0, 9);
   const s1Only = postedTo("s1").slice(0, 9);
   assert.ok(s2Only.length >= 4 && s1Only.length >= 4, "the roster must cover both shops");
-  const withS2 = expectedOpenStores(insights, "昼", future, s2Only);
-  const withS1 = expectedOpenStores(insights, "昼", future, s1Only);
+  const withS2 = expectedOpenStores(insights, "昼", tiltedFor(s2Only), s2Only);
+  const withS1 = expectedOpenStores(insights, "昼", tiltedFor(s1Only), s1Only);
   assert.ok(
     withS2.includes("s2"),
     `a line-up posted to 2号店 must open it, got ${withS2.join("+")}`
@@ -1096,12 +1105,39 @@ assert.equal(
     `a line-up with nobody posted to 2号店 must not open it, got ${withS1.join("+")}`
   );
 
+  // 画面に出す割合と、選ばれた店が食い違わないこと。
+  // 以前は順位づけだけが顔ぶれを見ていて、「48%の店が空で39%の店に4人」が出ていた。
+  // 読み手には理由が見えないので、選ぶ物差しは表示している数字そのものにする。
+  for (const lineUp of [s2Only, s1Only, postedTo("s3").slice(0, 9), postedTo("s4").slice(0, 9)]) {
+    if (lineUp.length === 0) {
+      continue;
+    }
+    const shown = tiltedFor(lineUp);
+    const chosen = new Set(expectedOpenStores(insights, "昼", shown, lineUp));
+    const rateOf = (id) => shown.entries.find((entry) => entry.store.id === id)?.rate ?? 0;
+    const lowestChosen = Math.min(...[...chosen].map(rateOf));
+    for (const entry of shown.entries) {
+      if (chosen.has(entry.store.id)) {
+        continue;
+      }
+      assert.ok(
+        entry.rate <= lowestChosen,
+        `${entry.store.id} shows ${entry.text} but was left out while a lower shop was chosen`
+      );
+    }
+  }
+
   // 名前が分からない（配属が引けない）ときは、人数だけのときと同じ結果に戻る。
   const unknown = ["だれか", "べつのだれか", "みっつめ"];
   assert.deepEqual(
-    expectedOpenStores(insights, "昼", future, unknown),
+    expectedOpenStores(insights, "昼", tiltedFor(unknown), unknown),
     expectedOpenStores(insights, "昼", future, unknown.length),
     "unknown names must fall back to the headcount-only ordering"
+  );
+  assert.equal(
+    applyPostedTilt(insights, future, "昼", unknown),
+    future,
+    "with nobody recognisable, the numbers must be left alone"
   );
 }
 
@@ -1901,9 +1937,137 @@ assert.equal(
   assert.equal(sameDayDecisionNote(insights, null), null, "no outlook, no note");
 }
 
+// --- 人ごとの一覧 -------------------------------------------------------
+{
+  // 「うるちゃんは日によって変わります」と言えるかどうかは spread で決まる。
+  // 在籍が実際に3つの帯に割れていないと、その言い分けは飾りになる。
+  const bands = schedule.roster
+    .map((name) => spreadStanding(insights, name))
+    .filter(Boolean);
+  assert.equal(bands.length, schedule.roster.length, "every maid must have a measured spread");
+  assert.deepEqual(
+    [...new Set(bands.map((standing) => standing.band))].sort(),
+    ["mixed", "roving", "settled"],
+    "spread must separate the roster into three bands"
+  );
+  // 区切りはデータ側にある。ここに数字を書くと、集計をやり直した日に画面だけが古くなる。
+  const cuts = insights.spreadBands;
+  assert.ok(cuts.settled > cuts.mixed, "the published bands must be ordered");
+  for (const standing of bands) {
+    const expected =
+      standing.spread >= cuts.settled ? "settled" : standing.spread >= cuts.mixed ? "mixed" : "roving";
+    assert.equal(
+      standing.band,
+      expected,
+      `spread ${standing.spread} must follow the published bands, not a threshold typed into app.js`
+    );
+  }
+  assert.equal(
+    spreadStanding({ maidTendency: { だれか: { spread: 0.5 } } }, "だれか"),
+    null,
+    "without published bands there is nothing to say"
+  );
+  // 順位は散らばりが小さい人ほど後ろ。1番が最も行き先の決まっている人。
+  const ranked = [...bands].sort((a, b) => a.rank - b.rank);
+  assert.deepEqual(
+    ranked.map((standing) => standing.spread),
+    [...ranked.map((standing) => standing.spread)].sort((a, b) => b - a),
+    "rank 1 must be the maid whose destination is most settled"
+  );
+
+  // キッチンにゃんこは配属と関係なく4店を回る。この2つの事実が離れたら落とす。
+  const kitchen = schedule.kitchenStaff.map((name) => spreadStanding(insights, name));
+  assert.ok(kitchen.length > 0 && kitchen.every(Boolean), "the kitchen staff must have spreads");
+  assert.ok(
+    kitchen.every((standing) => standing.band !== "settled"),
+    "the kitchen staff move between all four shops, so none of them can read as settled"
+  );
+  const cook = schedule.kitchenStaff.find(
+    (name) => spreadStanding(insights, name).band === "roving"
+  );
+  assert.ok(cook, "at least one kitchen maid must land in the roving band");
+  assert.ok(
+    spreadNote(insights, cook, true).includes("キッチン"),
+    "a roving kitchen maid must be told apart from a roving floor maid"
+  );
+  assert.equal(spreadStanding(insights, "いない人"), null, "an unknown maid has no standing");
+  assert.equal(spreadNote(insights, "いない人", false), null, "an unknown maid gets no sentence");
+
+  // 一覧は店ごとの画面と同じ割り振りを引く。resolve が返したものをそのまま並べる。
+  const day = lastActual;
+  const shift = insights.shifts.find((s) => insights.actual[day]?.[s]);
+  const name = (schedule.schedule[day]?.[shift] ?? [])[0]?.name;
+  assert.ok(name, "the last recorded day must have someone on the rota");
+  const resolve = (key, s) => {
+    const outlook = outlookFor(key, s);
+    const members = (schedule.schedule[key]?.[s] ?? []).map((entry) => entry.name);
+    return {
+      outlook,
+      assignment: getShiftAssignment({
+        insights,
+        members,
+        shift: s,
+        outlook,
+        pins: eventStorePins({
+          insights,
+          entries: schedule.schedule[key]?.[s] ?? [],
+          homeStore: schedule.homeStore,
+          unpostedMaids: new Set(schedule.unpostedMaids ?? [])
+        }),
+        kitchenStaff: new Set(schedule.kitchenStaff)
+      })
+    };
+  };
+  const plan = maidItinerary({
+    schedule: schedule.schedule,
+    name,
+    dates: [day],
+    shifts: [shift],
+    resolve
+  });
+  assert.equal(plan.stops.length, 1, "the maid must appear once on that shift");
+  assert.equal(plan.stops[0].dateKey, day, "the stop must keep its date");
+  // 実績の日は確定。当日決まる件数に数えてはいけない。
+  assert.equal(plan.stops[0].state, "open", "a recorded shift is settled, not a guess");
+  assert.equal(plan.guesses, 0, "a recorded shift must not count as still open");
+  assert.ok(
+    [...resolve(day, shift).assignment.byMaid.keys()].includes(name),
+    "the assignment the plan read must be the same one the calendar reads"
+  );
+  assert.equal(
+    plan.stops[0].storeId,
+    resolve(day, shift).assignment.byMaid.get(name).storeId,
+    "the per-maid list must not compute its own placement"
+  );
+
+  // 出番のない日は行を作らない。空行は「休み」と読まれてしまう。
+  const absent = maidItinerary({
+    schedule: schedule.schedule,
+    name: "いない人",
+    dates: [day],
+    shifts: [shift],
+    resolve
+  });
+  assert.equal(absent.stops.length, 0, "a maid who is not on the rota gets no rows");
+
+  // 縦に並べると外れが積み上がる。件数が増えるほど「全部当たる」は下がる。
+  const perStop = insights.accuracy.maidStoreGivenOpen;
+  assert.ok(perStop > 0 && perStop < 1, "the per-stop hit rate must be a real probability");
+  const one = itineraryConfidence(insights, 1);
+  const many = itineraryConfidence(insights, 10);
+  assert.equal(one.allRight, perStop, "one open day is just the per-stop rate");
+  assert.ok(
+    many.allRight < one.allRight / 10,
+    "ten open days in a row must read as far less certain than one"
+  );
+  assert.equal(itineraryConfidence(insights, 0), null, "a settled month has nothing to warn about");
+  assert.equal(itineraryConfidence({}, 5), null, "without a measured rate, say nothing");
+}
+
 console.log(
   "Store outlook valid: records, next-day forecast, weekday tendency, " +
     `${partialDates.length} single-shift days, Sunday-based weekday index, sparse-rotation fallbacks, ` +
     `headcount-driven shop counts (1/2/3), capacity-based assignment, store-by-store grouping, ` +
+    `per-maid itineraries banded by spread, ` +
     `and ${eventShifts.length} event shifts pinned to the host's own store.`
 );

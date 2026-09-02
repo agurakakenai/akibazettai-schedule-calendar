@@ -957,6 +957,137 @@ a.maid-name:focus-visible {
   }
 }
 
+/* 人 → 日付 → 店 の一覧。カレンダーの格子ではなく、人ごとの縦並び。 */
+.maid-view {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 12px;
+}
+
+.maid-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--cp-border);
+  border-radius: 0.875rem;
+  background: var(--cp-surface);
+}
+
+.maid-plan-name {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 6px;
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.maid-plan-count {
+  color: var(--cp-text-soft);
+  font-size: 0.68rem;
+  font-weight: 400;
+}
+
+.maid-plan-cook {
+  padding: 0 6px;
+  border: 1px solid var(--cp-border);
+  border-radius: 999px;
+  color: var(--cp-text-soft);
+  font-size: 0.62rem;
+  font-weight: 400;
+}
+
+.maid-plan-note {
+  margin: 0;
+  color: var(--cp-text-soft);
+  font-size: 0.68rem;
+  line-height: 1.6;
+}
+
+.maid-plan-stops {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.maid-plan-stop {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--cp-highlight);
+  border-radius: 0.625rem;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.maid-plan-when {
+  color: var(--cp-text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.maid-plan-where {
+  font-weight: 700;
+}
+
+.maid-plan-where[data-store="s1"] {
+  color: var(--cp-store-s1);
+}
+
+.maid-plan-where[data-store="s2"] {
+  color: var(--cp-store-s2);
+}
+
+.maid-plan-where[data-store="s3"] {
+  color: var(--cp-store-s3);
+}
+
+.maid-plan-where[data-store="s4"] {
+  color: var(--cp-store-s4);
+}
+
+/* 色だけで確度を伝えないよう、確定は実線・見込みは破線・5割未満は「かも」を添える。 */
+.maid-plan-stop.is-open {
+  border-color: var(--cp-accent);
+  border-left: 3px solid var(--cp-accent);
+  background: var(--cp-highlight);
+}
+
+.maid-plan-stop.is-likely,
+.maid-plan-stop.is-unlikely {
+  border-style: dashed;
+}
+
+.maid-plan-stop.is-unlikely .maid-plan-where::after {
+  content: "・かも";
+  color: var(--cp-text-soft);
+  font-size: 0.68rem;
+  font-weight: 400;
+}
+
+.maid-plan-stop.is-unknown .maid-plan-where {
+  color: var(--cp-text-soft);
+  font-weight: 400;
+}
+
+.maid-plan-event {
+  color: var(--cp-accent);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+/* 割合は読み手に出さない。どの店を開けるかは当日決まるので、数字を並べても選べない。
+   店ごとの画面と同じく、根拠を確かめたいときのために HTML には残す。 */
+.maid-plan-rate {
+  display: none;
+}
+
 @media (max-width: 45rem) {
   .site-header {
     align-items: flex-start;
@@ -964,7 +1095,6 @@ a.maid-name:focus-visible {
     margin: 12px auto;
     padding: 20px 16px 16px;
   }
-
   .header-copy {
     font-size: 0.875rem;
   }

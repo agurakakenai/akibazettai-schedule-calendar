@@ -586,6 +586,147 @@ assert.ok(
   "switching back must restore the store outlook"
 );
 
+// --- 人 → 日付 → 店 のモード -------------------------------------------
+// この画面は店ごとの画面と同じ割り振りを引く約束になっている。別々に計算すると
+// 「カレンダーでは2号店、人の一覧では3号店」という食い違いが黙って出るので、
+// 二つの画面から同じ (人・日付・シフト) を拾って突き合わせる。
+const placementsByView = new Map();
+for (const cell of withClass(calendar, "calendar-day")) {
+  const [, , month, day] = /(\d+)年(\d+)月(\d+)日/.exec(cell.getAttribute("aria-label"));
+  const stopKey = `${Number(month)}/${Number(day)}`;
+  withClass(cell, "shift-section").forEach((section, shiftIndex) => {
+    const shift = insights.shifts[shiftIndex];
+    // 割り振り先は見出しが名乗る。チップは見出しと違う店のときしか出ない。
+    let current = null;
+    for (const node of walk(section)) {
+      if (!node.classList) {
+        continue;
+      }
+      if (node.classList.contains("maid-group-label")) {
+        current = node.dataset.store || null;
+      } else if (node.classList.contains("maid-name") && current) {
+        placementsByView.set(`${node.textContent}|${stopKey} ${shift}`, current);
+      }
+    }
+  });
+}
+assert.ok(placementsByView.size > 0, "the forecast mode must place maids in shops");
+
+selectViewMode("maid");
+assert.equal(
+  withClass(calendar, "calendar-day").length,
+  0,
+  "the maid mode replaces the calendar grid"
+);
+
+const plans = withClass(calendar, "maid-plan");
+assert.ok(plans.length > 0, "the maid mode must list some maids");
+assert.ok(
+  plans.length <= schedule.roster.length,
+  "the maid mode cannot list more maids than the roster holds"
+);
+
+const stopStates = new Set();
+const planNames = [];
+let agreed = 0;
+for (const plan of plans) {
+  const heading = withClass(plan, "maid-name");
+  assert.equal(heading.length, 1, "each plan must name exactly one maid");
+  const name = heading[0].textContent;
+  assert.ok(roster.has(name), `unknown maid "${name}" in the maid mode`);
+  planNames.push(name);
+
+  const stops = withClass(plan, "maid-plan-stop");
+  assert.ok(stops.length > 0, "a plan with no shifts must not be rendered at all");
+
+  // 件数を先に言っておかないと、外れが縦に積み上がったときに裏切りに見える。
+  const notes = withClass(plan, "maid-plan-note");
+  assert.equal(notes.length, 1, "each plan must carry exactly one caveat");
+  assert.match(notes[0].textContent, /\d+件/, "the caveat must count the days it is guessing at");
+
+  const counted = withClass(plan, "maid-plan-count");
+  assert.equal(counted.length, 1, "each plan must show its own shift count");
+  assert.equal(counted[0].textContent, `${stops.length}件`, "the count must match the list");
+
+  for (const stop of stops) {
+    const when = withClass(stop, "maid-plan-when")[0].textContent;
+    const where = withClass(stop, "maid-plan-where")[0];
+    const storeId = where.dataset.store;
+    assert.ok(
+      storeId === "" || storeIds.has(storeId),
+      `the maid mode named an unknown shop "${storeId}"`
+    );
+    // 確度の低い日を空欄にすると「出ない日」と読まれる。かならず何か書く。
+    assert.ok(where.textContent.length > 0, "a stop must never render an empty shop");
+    if (storeId === "") {
+      assert.equal(where.textContent, "未定", "an unplaced stop must say so in words");
+    }
+    // 色だけで確度を伝えないよう、状態はクラスで分け、読み上げ文も添える。
+    const state = ["open", "likely", "unlikely", "unknown"].find((candidate) =>
+      stop.classList.contains(`is-${candidate}`)
+    );
+    assert.ok(state, `a stop carries no state class: ${stop.classList.value}`);
+    stopStates.add(state);
+    assert.ok(stop.title, "a stop must explain itself in a tooltip");
+    // 置いた理由には予定表の顔ぶれも入っている。営業率だけを表に出すと
+    // 「15%の店になぜ置いたのか」と読まれるので、本文では数字を名乗らない。
+    assert.doesNotMatch(
+      stop.title,
+      /\d+%/,
+      "a stop must not quote a bare opening rate it did not decide on"
+    );
+    const kept = withClass(stop, "maid-plan-rate");
+    assert.ok(kept.length <= 1, "a stop must not carry more than one hidden rate");
+    if (kept.length === 1) {
+      assert.match(kept[0].textContent, /^\d+%$/, "the hidden rate must stay readable in the markup");
+    }
+    // 読み上げは aria-label だけ。同じ文を隠し要素にも置くと二度読まれる。
+    const spoken = stop.getAttribute("aria-label");
+    assert.ok(spoken, "a stop must expose its explanation to screen readers");
+    assert.ok(spoken.includes(when), "the spoken text must say which day it is talking about");
+    assert.ok(spoken.endsWith(stop.title), "the spoken text and the tooltip must not drift apart");
+    assert.equal(
+      withClass(stop, "visually-hidden").length,
+      0,
+      "the aria-label already carries the explanation; a hidden copy would be read twice"
+    );
+
+    const seen = placementsByView.get(`${name}|${when}`);
+    if (seen !== undefined) {
+      agreed += 1;
+      assert.equal(
+        storeId,
+        seen,
+        `${name} ${when}: the maid mode says ${storeId} but the calendar says ${seen}`
+      );
+    }
+  }
+}
+assert.ok(agreed > 0, "the two views must overlap enough to be compared at all");
+assert.ok(
+  stopStates.size >= 2,
+  `every stop looks equally certain (${[...stopStates].join(",")}), so the reader cannot tell them apart`
+);
+
+// 並びは公式の掲載順のまま。モードを変えても顔ぶれの順序は変わらない。
+const planOrder = planNames.map((name) => rosterOrder.get(name));
+assert.deepEqual(
+  planOrder,
+  [...planOrder].sort((a, b) => a - b),
+  "the maid mode must keep the official roster order"
+);
+
+selectViewMode("forecast");
+assert.equal(
+  withClass(calendar, "maid-plan").length,
+  0,
+  "switching back must clear the per-maid list"
+);
+assert.ok(
+  withClass(calendar, "calendar-day").length > 0,
+  "switching back must restore the calendar grid"
+);
+
 // カレンダーの下に解説ブロックは出さない。根拠は README にまとめてある。
 assert.equal(
   walk(elementById("calendar")).filter((node) =>
@@ -761,6 +902,7 @@ if (partialDate) {
 
 console.log(
   `Headless render valid: ${dayCells.length} day cells, ${shiftSections.length} shift sections, ` +
-    `${maidEntries.length} maid entries sorted by assigned store, both view modes, ` +
+    `${maidEntries.length} maid entries sorted by assigned store, ` +
+    `${viewModeValues.length} view modes with ${plans.length} per-maid plans agreeing with the calendar, ` +
     "and no explanation block below the calendar."
 );
