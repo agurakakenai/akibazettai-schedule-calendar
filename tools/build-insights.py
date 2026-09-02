@@ -280,6 +280,24 @@ def calibration_tables(cell, lo, hi, posted_by_key):
     return out
 
 
+def read_promoted_at():
+    """見習いを終えてノーマルになった日（data/schedule.js の promotedAt）。
+
+    その日より前は見習いなので、予定表には載らなかった。「予定表に何人載るか」で
+    店舗数を決めている以上、過去の人数を数えるときも昇格前の出勤は数えてはいけない。
+    数えると、事前に分かっていた人数が実際より多く見え、閾値が上にずれる。
+    """
+    path = os.path.join(ROOT, 'data', 'schedule.js')
+    src = open(path, encoding='utf-8').read()
+    m = re.search(r'promotedAt:\s*\{(.*?)\n  \}', src, re.S)
+    if not m:
+        return {}
+    out = {}
+    for name, date in re.findall(r'"([^"]+)":\s*"(\d{4}-\d{2}-\d{2})"', m.group(1)):
+        out[ALIAS.get(name, name)] = date
+    return out
+
+
 def build():
     rows = load_csv('shifts.csv')
     events = {e['date'] for e in load_csv('events.csv')}
@@ -431,6 +449,13 @@ def build():
     # カレンダーに並ぶ。移行直後は未提出の人がいて予定表が薄くなるが、それは一時的な
     # 状態なので補正しない。roster を母数にしておけば、提出が揃ったあとも破綻しない。
     roster_names = {ALIAS.get(n, n) for n in roster}
+    promoted_at = read_promoted_at()
+
+    def listed_on(d, stores):
+        """その日の予定表に載っていたはずの人。昇格前の見習いは載らない。"""
+        return {m for maids in stores.values() for m in maids
+                if m in roster_names and d >= promoted_at.get(m, '')}
+
     headcount_by_open = {}
     open_by_headcount = {}
     for sh in SHIFTS:
@@ -440,7 +465,7 @@ def build():
             stores = cell.get((d, sh), {})
             if not stores:
                 continue
-            listed = {m for maids in stores.values() for m in maids if m in roster_names}
+            listed = listed_on(d, stores)
             if not listed:
                 continue
             buckets[len(stores)].append(len(listed))
@@ -704,7 +729,7 @@ def build():
         for sid, maids in stores.items():
             cov_cells += 1
             cov_total += len(maids)
-            on = sum(1 for mm in maids if mm in roster_keys)
+            on = sum(1 for mm in maids if mm in roster_keys and d >= promoted_at.get(mm, ''))
             cov_on += on
             cov_dist[len(maids) - on] += 1
     cov_off = cov_total - cov_on
@@ -718,7 +743,7 @@ def build():
             if d < cov_cut or sid not in stores:
                 continue
             maids = stores[sid]
-            on = sum(1 for mm in maids if mm in roster_keys)
+            on = sum(1 for mm in maids if mm in roster_keys and d >= promoted_at.get(mm, ''))
             cells += 1
             rostered_here += on
             unlisted_here += len(maids) - on

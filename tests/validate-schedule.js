@@ -41,13 +41,42 @@ assert.deepEqual(
 );
 
 // 公式サイトの配属。roster と過不足なく揃っていないと、記念日の主役を置く店が
-// 静かに推定へ落ちるので、そこを見張る。
+// 静かに推定へ落ちるので、そこを見張る。公式サイトにまだ載っていない人だけは
+// 配属が分からないので、`unpostedMaids` に名前を書いて明示的に外す。
 const homeStore = data.homeStore ?? {};
+const unposted = data.unpostedMaids ?? [];
+for (const name of unposted) {
+  assert.ok(roster.has(name), `unpostedMaids has "${name}", who is not on the roster`);
+  assert.ok(
+    !(name in homeStore),
+    `${name} is listed as not yet posted, so homeStore must not claim a shop for her`
+  );
+}
 assert.deepEqual(
   Object.keys(homeStore),
-  [...data.roster],
-  "homeStore must list every rostered maid, in the same order as the roster"
+  [...data.roster].filter((name) => !unposted.includes(name)),
+  "homeStore must list every rostered maid the site posts, in the same order as the roster"
 );
+
+// 昇格日。見習いだったころの出勤を「事前に分かっていた人数」に数えると、
+// 店舗数の閾値が上にずれる（実測で夜の3店舗判定が13名から15名に動く）。
+const promotedAt = data.promotedAt ?? {};
+for (const [name, date] of Object.entries(promotedAt)) {
+  assert.ok(roster.has(name), `promotedAt has "${name}", who is not on the roster`);
+  assert.match(date, /^\d{4}-\d{2}-\d{2}$/, `${name}'s promotion date must be a date`);
+  assert.ok(
+    date <= data.defaultDateTo,
+    `${name} cannot be promoted after the calendar ends`
+  );
+}
+// 公式サイトに載っていない人は、載っていないこと自体が最近の昇格を示すので、
+// いつ昇格したかが要る。載っている人は昔から在籍しているので要らない。
+for (const name of unposted) {
+  assert.ok(
+    promotedAt[name],
+    `${name} is not on the site yet, so promotedAt must say when she stopped being a trainee`
+  );
+}
 const storeIds = new Set(["s1", "s2", "s3", "s4"]);
 for (const [name, store] of Object.entries(homeStore)) {
   assert.ok(storeIds.has(store), `${name} is posted to an unknown store "${store}"`);

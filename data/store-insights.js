@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-02 09:29",
+  "generatedAt": "2026-09-02 09:39",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-08-30"
@@ -378,25 +378,25 @@ window.STORE_INSIGHTS = {
         "n": 65
       },
       "2": {
-        "mean": 9.06,
+        "mean": 9.09,
         "n": 267
       },
       "3": {
-        "mean": 13.33,
+        "mean": 13.52,
         "n": 27
       }
     },
     "夜": {
       "1": {
-        "mean": 4.26,
+        "mean": 4.27,
         "n": 97
       },
       "2": {
-        "mean": 8.47,
+        "mean": 8.5,
         "n": 247
       },
       "3": {
-        "mean": 12.75,
+        "mean": 12.88,
         "n": 8
       }
     }
@@ -618,64 +618,64 @@ window.STORE_INSIGHTS = {
       "from": "2025-11-23",
       "to": "2026-08-30",
       "scope": "twoOrMoreOpen",
-      "brier": 0.2179,
-      "n": 8694,
+      "brier": 0.2221,
+      "n": 8964,
       "buckets": [
         {
           "from": 0.0,
           "to": 0.1,
-          "n": 241,
-          "said": 0.059,
-          "actual": 0.212
+          "n": 285,
+          "said": 0.05,
+          "actual": 0.267
         },
         {
           "from": 0.1,
           "to": 0.2,
-          "n": 594,
+          "n": 596,
           "said": 0.155,
-          "actual": 0.204
+          "actual": 0.205
         },
         {
           "from": 0.2,
           "to": 0.3,
-          "n": 974,
+          "n": 996,
           "said": 0.254,
-          "actual": 0.248
+          "actual": 0.252
         },
         {
           "from": 0.3,
           "to": 0.4,
-          "n": 1371,
+          "n": 1416,
           "said": 0.352,
-          "actual": 0.317
+          "actual": 0.32
         },
         {
           "from": 0.4,
           "to": 0.5,
-          "n": 1634,
+          "n": 1679,
           "said": 0.45,
-          "actual": 0.447
+          "actual": 0.449
         },
         {
           "from": 0.5,
           "to": 0.6,
-          "n": 1543,
+          "n": 1583,
           "said": 0.549,
-          "actual": 0.576
+          "actual": 0.572
         },
         {
           "from": 0.6,
           "to": 0.7,
-          "n": 1118,
+          "n": 1145,
           "said": 0.646,
-          "actual": 0.678
+          "actual": 0.675
         },
         {
           "from": 0.7,
           "to": 0.8,
-          "n": 674,
+          "n": 680,
           "said": 0.746,
-          "actual": 0.721
+          "actual": 0.718
         },
         {
           "from": 0.8,
@@ -687,9 +687,9 @@ window.STORE_INSIGHTS = {
         {
           "from": 0.9,
           "to": 1.0,
-          "n": 160,
-          "said": 0.943,
-          "actual": 0.756
+          "n": 199,
+          "said": 0.954,
+          "actual": 0.688
         }
       ]
     }
@@ -4449,6 +4449,270 @@ window.STORE_INSIGHTS = {
       ],
       "x": "ito_zettai"
     },
+    "ゆめ": {
+      "alias": null,
+      "workShifts": 34,
+      "nightShare": 0.324,
+      "pickRate": {
+        "s1": 0.382,
+        "s2": 0.5,
+        "s3": 0.769,
+        "s4": 0.429
+      },
+      "pickRateByShift": {
+        "昼": {
+          "s1": 0.354,
+          "s2": 0.409,
+          "s3": 0.856,
+          "s4": 0.384
+        },
+        "夜": {
+          "s1": 0.432,
+          "s2": 0.611,
+          "s3": 0.606,
+          "s4": 0.518
+        }
+      },
+      "sampleByShift": {
+        "昼": {
+          "s1": 23,
+          "s2": 6,
+          "s3": 10,
+          "s4": 11
+        },
+        "夜": {
+          "s1": 11,
+          "s2": 4,
+          "s3": 3,
+          "s4": 3
+        }
+      },
+      "share": {
+        "s1": 0.44,
+        "s2": 0.163,
+        "s3": 0.244,
+        "s4": 0.153
+      },
+      "shareByShift": {
+        "昼": {
+          "s1": 0.411,
+          "s2": 0.148,
+          "s3": 0.309,
+          "s4": 0.132
+        },
+        "夜": {
+          "s1": 0.481,
+          "s2": 0.172,
+          "s3": 0.161,
+          "s4": 0.186
+        }
+      },
+      "posted": null,
+      "home": "s3",
+      "likely": [
+        "s1",
+        "s3"
+      ],
+      "x": "yume1_zettai"
+    },
+    "にゃな": {
+      "alias": null,
+      "workShifts": 39,
+      "nightShare": 0.615,
+      "pickRate": {
+        "s1": 0.59,
+        "s2": 0.25,
+        "s3": 0.533,
+        "s4": 0.455
+      },
+      "pickRateByShift": {
+        "昼": {
+          "s1": 0.547,
+          "s2": 0.271,
+          "s3": 0.472,
+          "s4": 0.475
+        },
+        "夜": {
+          "s1": 0.619,
+          "s2": 0.232,
+          "s3": 0.59,
+          "s4": 0.44
+        }
+      },
+      "sampleByShift": {
+        "昼": {
+          "s1": 15,
+          "s2": 7,
+          "s3": 7,
+          "s4": 4
+        },
+        "夜": {
+          "s1": 24,
+          "s2": 9,
+          "s3": 8,
+          "s4": 7
+        }
+      },
+      "share": {
+        "s1": 0.622,
+        "s2": 0.075,
+        "s3": 0.155,
+        "s4": 0.148
+      },
+      "shareByShift": {
+        "昼": {
+          "s1": 0.595,
+          "s2": 0.092,
+          "s3": 0.16,
+          "s4": 0.153
+        },
+        "夜": {
+          "s1": 0.645,
+          "s2": 0.061,
+          "s3": 0.147,
+          "s4": 0.147
+        }
+      },
+      "posted": null,
+      "home": "s1",
+      "likely": [
+        "s1",
+        "s3"
+      ],
+      "x": "nyana_zettai"
+    },
+    "ぴあの": {
+      "alias": null,
+      "workShifts": 26,
+      "nightShare": 0.692,
+      "pickRate": {
+        "s1": 0.5,
+        "s2": 0.571,
+        "s3": 0.5,
+        "s4": 0.571
+      },
+      "pickRateByShift": {
+        "昼": {
+          "s1": 0.5,
+          "s2": 0.408,
+          "s3": 0.45,
+          "s4": 0.607
+        },
+        "夜": {
+          "s1": 0.5,
+          "s2": 0.685,
+          "s3": 0.55,
+          "s4": 0.539
+        }
+      },
+      "sampleByShift": {
+        "昼": {
+          "s1": 8,
+          "s2": 2,
+          "s3": 5,
+          "s4": 3
+        },
+        "夜": {
+          "s1": 18,
+          "s2": 5,
+          "s3": 5,
+          "s4": 4
+        }
+      },
+      "share": {
+        "s1": 0.512,
+        "s2": 0.166,
+        "s3": 0.141,
+        "s4": 0.181
+      },
+      "shareByShift": {
+        "昼": {
+          "s1": 0.528,
+          "s2": 0.135,
+          "s3": 0.148,
+          "s4": 0.19
+        },
+        "夜": {
+          "s1": 0.511,
+          "s2": 0.177,
+          "s3": 0.134,
+          "s4": 0.177
+        }
+      },
+      "posted": null,
+      "home": "s2",
+      "likely": [
+        "s1",
+        "s4"
+      ],
+      "x": "piano1_zettai"
+    },
+    "もち": {
+      "alias": null,
+      "workShifts": 16,
+      "nightShare": 0.562,
+      "pickRate": {
+        "s1": 0.467,
+        "s2": 0.6,
+        "s3": 0.4,
+        "s4": 0.667
+      },
+      "pickRateByShift": {
+        "昼": {
+          "s1": 0.361,
+          "s2": 0.625,
+          "s3": 0.5,
+          "s4": 0.667
+        },
+        "夜": {
+          "s1": 0.564,
+          "s2": 0.571,
+          "s3": 0.333,
+          "s4": 0.667
+        }
+      },
+      "sampleByShift": {
+        "昼": {
+          "s1": 7,
+          "s2": 3,
+          "s3": 1,
+          "s4": 3
+        },
+        "夜": {
+          "s1": 8,
+          "s2": 2,
+          "s3": 4,
+          "s4": 3
+        }
+      },
+      "share": {
+        "s1": 0.49,
+        "s2": 0.179,
+        "s3": 0.116,
+        "s4": 0.216
+      },
+      "shareByShift": {
+        "昼": {
+          "s1": 0.397,
+          "s2": 0.215,
+          "s3": 0.171,
+          "s4": 0.217
+        },
+        "夜": {
+          "s1": 0.562,
+          "s2": 0.144,
+          "s3": 0.079,
+          "s4": 0.214
+        }
+      },
+      "posted": null,
+      "home": "s4",
+      "likely": [
+        "s1",
+        "s4"
+      ],
+      "x": "mochi1_zettai"
+    },
     "まこっちゃん": {
       "alias": "まこと",
       "workShifts": 107,
@@ -4781,158 +5045,6 @@ window.STORE_INSIGHTS = {
     }
   },
   "unlistedMaids": {
-    "にゃな": {
-      "recentShifts": 41,
-      "workShifts": 39,
-      "firstSeen": "2026-05-14",
-      "lastSeen": "2026-08-25",
-      "pickRate": {
-        "s1": 0.59,
-        "s2": 0.25,
-        "s3": 0.533,
-        "s4": 0.455
-      },
-      "share": {
-        "s1": 0.622,
-        "s2": 0.075,
-        "s3": 0.155,
-        "s4": 0.148
-      },
-      "home": "s1",
-      "likely": [
-        "s1",
-        "s3"
-      ],
-      "x": "nyana_zettai",
-      "xStatus": "本人確認済み",
-      "xCreated": 2026,
-      "xNote": null,
-      "xTweets": 59,
-      "recentShifts31": 14,
-      "streakStart": "2026-05-14",
-      "daysSinceLast": 5,
-      "graduatedAt": null,
-      "hasPublicAccount": true,
-      "otherAccounts": [],
-      "status": "active",
-      "promoted": true,
-      "likelyNew": true
-    },
-    "ぴあの": {
-      "recentShifts": 30,
-      "workShifts": 26,
-      "firstSeen": "2026-06-14",
-      "lastSeen": "2026-08-30",
-      "pickRate": {
-        "s1": 0.5,
-        "s2": 0.571,
-        "s3": 0.5,
-        "s4": 0.571
-      },
-      "share": {
-        "s1": 0.512,
-        "s2": 0.166,
-        "s3": 0.141,
-        "s4": 0.181
-      },
-      "home": "s2",
-      "likely": [
-        "s1",
-        "s4"
-      ],
-      "x": "piano1_zettai",
-      "xStatus": "本人確認済み",
-      "xCreated": 2026,
-      "xNote": null,
-      "xTweets": 114,
-      "recentShifts31": 11,
-      "streakStart": "2026-06-14",
-      "daysSinceLast": 0,
-      "graduatedAt": null,
-      "hasPublicAccount": true,
-      "otherAccounts": [
-        "piano_zettai(2017)"
-      ],
-      "status": "active",
-      "promoted": true,
-      "likelyNew": false
-    },
-    "ゆめ": {
-      "recentShifts": 29,
-      "workShifts": 34,
-      "firstSeen": "2026-04-18",
-      "lastSeen": "2026-08-30",
-      "pickRate": {
-        "s1": 0.382,
-        "s2": 0.5,
-        "s3": 0.769,
-        "s4": 0.429
-      },
-      "share": {
-        "s1": 0.44,
-        "s2": 0.163,
-        "s3": 0.244,
-        "s4": 0.153
-      },
-      "home": "s3",
-      "likely": [
-        "s1",
-        "s3"
-      ],
-      "x": "yume1_zettai",
-      "xStatus": "本人確認済み",
-      "xCreated": 2026,
-      "xNote": null,
-      "xTweets": 87,
-      "recentShifts31": 8,
-      "streakStart": "2026-04-18",
-      "daysSinceLast": 0,
-      "graduatedAt": null,
-      "hasPublicAccount": true,
-      "otherAccounts": [],
-      "status": "active",
-      "promoted": true,
-      "likelyNew": true
-    },
-    "もち": {
-      "recentShifts": 22,
-      "workShifts": 16,
-      "firstSeen": "2026-06-11",
-      "lastSeen": "2026-08-27",
-      "pickRate": {
-        "s1": 0.467,
-        "s2": 0.6,
-        "s3": 0.4,
-        "s4": 0.667
-      },
-      "share": {
-        "s1": 0.49,
-        "s2": 0.179,
-        "s3": 0.116,
-        "s4": 0.216
-      },
-      "home": "s4",
-      "likely": [
-        "s1",
-        "s4"
-      ],
-      "x": "mochi1_zettai",
-      "xStatus": "本人確認済み",
-      "xCreated": 2026,
-      "xNote": null,
-      "xTweets": 69,
-      "recentShifts31": 7,
-      "streakStart": "2026-06-11",
-      "daysSinceLast": 3,
-      "graduatedAt": null,
-      "hasPublicAccount": true,
-      "otherAccounts": [
-        "mochi2_zettai(2022)"
-      ],
-      "status": "active",
-      "promoted": true,
-      "likelyNew": false
-    },
     "わたげ": {
       "recentShifts": 22,
       "workShifts": 20,
@@ -5383,50 +5495,50 @@ window.STORE_INSIGHTS = {
     "to": "2026-08-30",
     "shiftCells": 344,
     "totalMaids": 1941,
-    "rostered": 1649,
-    "unlisted": 292,
-    "unlistedShare": 0.15,
-    "unlistedPerShift": 0.85,
-    "shiftsWithUnlisted": 0.701,
+    "rostered": 1674,
+    "unlisted": 267,
+    "unlistedShare": 0.138,
+    "unlistedPerShift": 0.78,
+    "shiftsWithUnlisted": 0.666,
     "distribution": {
-      "0": 103,
+      "0": 115,
       "1": 196,
-      "2": 40,
-      "3": 4,
+      "2": 29,
+      "3": 3,
       "4": 1
     },
     "byStore": {
       "s1": {
         "shifts": 172,
-        "rostered": 879,
-        "unlisted": 142,
-        "unlistedShare": 0.139,
-        "unlistedPerShift": 0.83,
-        "shiftsWithoutUnlisted": 0.32
+        "rostered": 895,
+        "unlisted": 126,
+        "unlistedShare": 0.123,
+        "unlistedPerShift": 0.73,
+        "shiftsWithoutUnlisted": 0.372
       },
       "s2": {
         "shifts": 58,
-        "rostered": 291,
-        "unlisted": 65,
-        "unlistedShare": 0.183,
-        "unlistedPerShift": 1.12,
+        "rostered": 293,
+        "unlisted": 63,
+        "unlistedShare": 0.177,
+        "unlistedPerShift": 1.09,
         "shiftsWithoutUnlisted": 0.155
       },
       "s3": {
         "shifts": 56,
-        "rostered": 274,
-        "unlisted": 54,
-        "unlistedShare": 0.165,
-        "unlistedPerShift": 0.96,
-        "shiftsWithoutUnlisted": 0.214
+        "rostered": 280,
+        "unlisted": 48,
+        "unlistedShare": 0.146,
+        "unlistedPerShift": 0.86,
+        "shiftsWithoutUnlisted": 0.25
       },
       "s4": {
         "shifts": 58,
-        "rostered": 205,
-        "unlisted": 31,
-        "unlistedShare": 0.131,
-        "unlistedPerShift": 0.53,
-        "shiftsWithoutUnlisted": 0.466
+        "rostered": 206,
+        "unlisted": 30,
+        "unlistedShare": 0.127,
+        "unlistedPerShift": 0.52,
+        "shiftsWithoutUnlisted": 0.483
       }
     }
   }

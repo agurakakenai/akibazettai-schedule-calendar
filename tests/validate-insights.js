@@ -408,10 +408,11 @@ for (const name of tendencyNames) {
 
   assert.ok(storeIds.has(tendency.home), `maidTendency.${name}.home must be a known store id`);
   // 公式サイトの配属。予定表の homeStore と食い違うと、ツールチップが嘘をつく。
+  // 公式サイトにまだ載っていない人（unpostedMaids）は、roster にいても配属を持たない。
   if (schedule.roster.includes(name)) {
     assert.equal(
-      tendency.posted,
-      schedule.homeStore[name],
+      tendency.posted ?? null,
+      schedule.homeStore[name] ?? null,
       `maidTendency.${name}.posted must match the posting in data/schedule.js`
     );
   } else {
