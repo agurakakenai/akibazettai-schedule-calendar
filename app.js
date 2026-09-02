@@ -1280,7 +1280,93 @@
       : `ただしこのくらい低い数字は控えめすぎて、${band}と出した店にも実際は${toPercent(bucket.actual)}の割合で入っています（${measured}）`;
   }
 
+  // 記録のある日は、予定表からの割り振りではなく実際の顔ぶれを出す。
+  // 戻り値は assignShiftStores と同じ形にして、並べ替え・グループ化・人ごとの
+  // 一覧がそのまま動くようにする。別の形にすると2つの画面が食い違う。
+  function recordedAssignment(insights, dateKey, shift) {
+    const record = insights?.actualRoster?.[dateKey]?.[shift];
+    if (!record?.stores) {
+      return null;
+    }
+    const storeIds = storesOf(insights)
+      .map((store) => store.id)
+      .filter((id) => Array.isArray(record.stores[id]) && record.stores[id].length > 0);
+    if (storeIds.length === 0) {
+      return null;
+    }
+    // trainees キーが無い日は「まだ判定していない」。全員が昇格済みという意味では
+    // ないので、誰にも印を付けない。?? [] で潰すと、その区別が黙って消える。
+    const judged = Array.isArray(record.trainees);
+    const trainees = new Set(judged ? record.trainees : []);
+    const byMaid = new Map();
+    const capacity = {};
+    for (const id of storeIds) {
+      capacity[id] = record.stores[id].length;
+      for (const name of record.stores[id]) {
+        byMaid.set(name, {
+          storeId: id,
+          score: 1,
+          runnerUpId: null,
+          runnerUpScore: 0,
+          known: true,
+          full: false,
+          pin: null,
+          trainee: judged ? trainees.has(name) : null
+        });
+      }
+    }
+    return { storeIds, capacity, byMaid, recorded: true, traineesJudged: judged };
+  }
+
+  // 記録の顔ぶれを、画面のほかの場所と同じ並びに直す。公式の掲載順に合わせ、
+  // 予定表に載らない方（見習いなど）はその後ろに、記録の並びのまま置く。
+  //
+  // 記録がある日は、その日の顔ぶれを記録がすべて決める。予定表に名前があっても
+  // 記録に無ければ出さない（実際にお休みだったのを「未定」と書くことになる）。
+  function recordedRoster({ insights, dateKey, shift, schedule, roster }) {
+    const assignment = recordedAssignment(insights, dateKey, shift);
+    if (!assignment) {
+      return null;
+    }
+    const posted = new Map(
+      (schedule?.[dateKey]?.[shift] ?? []).map((entry) => [entry.name, entry])
+    );
+    const order = new Map((roster ?? []).map((name, index) => [name, index]));
+    const entries = [...assignment.byMaid.keys()]
+      .map((name, index) => ({
+        name,
+        listed: order.has(name),
+        rank: order.has(name) ? order.get(name) : (roster?.length ?? 0) + index
+      }))
+      .sort((a, b) => a.rank - b.rank)
+      .map(({ name, listed }) => ({
+        ...(posted.get(name) ?? {}),
+        name,
+        listed,
+        trainee: assignment.byMaid.get(name).trainee
+      }));
+    return { assignment, entries };
+  }
+
   function getMaidStoreOutlook({ insights, name, shift, outlook, assignment, unpostedMaids }) {
+    const placedInRecord = assignment?.recorded ? assignment.byMaid.get(name) : null;
+    if (placedInRecord) {
+      const store = storesOf(insights).find((c) => c.id === placedInRecord.storeId);
+      if (!store) {
+        return null;
+      }
+      // 記録のある日に確率を語らない。この人がこの店にいたことは分かっている。
+      return {
+        basis: "actual",
+        storeId: store.id,
+        rate: 1,
+        label: compactStoreLabel(store),
+        percent: "実績",
+        alternative: null,
+        title: `${shift}は${store.short}にいた記録があります`,
+        srText: `${shift}は${store.short}にいた記録があります`
+      };
+    }
     const tendency = insights?.maidTendency?.[name];
     if (!tendency || !assignment) {
       return null;
@@ -1395,12 +1481,15 @@
     const stops = [];
     for (const key of dates ?? []) {
       for (const shift of shifts ?? []) {
-        const members = schedule?.[key]?.[shift] ?? [];
-        const entry = members.find((member) => member.name === name);
-        if (!entry) {
+        const { outlook, assignment, members } = resolve(key, shift) ?? {};
+        // 記録のある日は、その日の顔ぶれを記録が決める。予定表を見ると、
+        // お休みだった方に行を作り、記録にしかいない方を落とすことになる。
+        const roll = assignment?.recorded
+          ? (assignment.byMaid.has(name) ? { name } : null)
+          : (schedule?.[key]?.[shift] ?? []).find((member) => member.name === name);
+        if (!roll) {
           continue;
         }
-        const { outlook, assignment } = resolve(key, shift) ?? {};
         const placed = assignment?.byMaid?.get(name) ?? null;
         const storeId = placed?.storeId ?? null;
         const row = storeId
@@ -1415,7 +1504,8 @@
           state: row?.state ?? null,
           openRate: row?.rate ?? null,
           settled: row?.state === "open",
-          eventLabel: entry.eventLabel ?? null
+          trainee: placed?.trainee ?? null,
+          eventLabel: roll.eventLabel ?? null
         });
       }
     }
@@ -1500,6 +1590,8 @@
       nearMissStores,
       openStoresOn,
       openStoresOnDay,
+      recordedAssignment,
+      recordedRoster,
       sameDayDecisionNote,
       scheduleSystemNote,
       sortByAssignedStore,
@@ -1520,6 +1612,7 @@
   const data = window.SCHEDULE_DATA;
   const shifts = ["昼", "夜"];
   const kitchenStaff = new Set(data.kitchenStaff ?? []);
+  const rosterNames = new Set(data.roster ?? []);
   // 公式サイト未掲載の人。所属は分かるが出どころがサイトではないので書き分ける。
   const unpostedMaids = new Set(data.unpostedMaids ?? []);
   const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
@@ -1736,12 +1829,29 @@
     if (state.hideKitchen && kitchenStaff.has(name)) {
       return false;
     }
+    // 記録には、予定表に載らない方（見習いなど）も出てくる。その方たちには
+    // チェックボックスが無いので、絞り込みを始めた時点で隠す。残したままだと
+    // 「1人だけ選んだのに他の名前が出る」ことになり、絞り込みが効いて見えない。
+    if (!rosterNames.has(name)) {
+      return state.selectedMaids.size === data.roster.length;
+    }
     return state.selectedMaids.has(name);
   }
 
+  // その日そのシフトの顔ぶれ。記録があればそれを、無ければ予定表を使う。
+  function shiftRoster(key, shift) {
+    const recorded = recordedRoster({
+      insights,
+      dateKey: key,
+      shift,
+      schedule: data.schedule,
+      roster: data.roster
+    });
+    return recorded ?? { assignment: null, entries: data.schedule[key]?.[shift] ?? [] };
+  }
+
   function filteredEntries(key, shift) {
-    const entries = data.schedule[key]?.[shift] ?? [];
-    return entries.filter((entry) => isVisibleMaid(entry.name));
+    return shiftRoster(key, shift).entries.filter((entry) => isVisibleMaid(entry.name));
   }
 
   function createShiftSection(key, date, shift) {
@@ -1767,24 +1877,31 @@
     }
     section.append(title);
 
-    const allEntries = data.schedule[key]?.[shift] ?? [];
+    const roster = shiftRoster(key, shift);
+    // 見込みの計算には予定表の顔ぶれを使う。記録のある日は使われないが、
+    // 記録の顔ぶれを入れると「答えを見て予測する」ことになる。
+    const postedNames = (data.schedule[key]?.[shift] ?? []).map((entry) => entry.name);
     if (outlook) {
-      section.append(createStoreOutlook(outlook, shift, allEntries.map((entry) => entry.name)));
+      section.append(createStoreOutlook(outlook, shift, postedNames));
     }
 
-    const visible = filteredEntries(key, shift);
+    const allEntries = roster.entries;
+    const visible = allEntries.filter((entry) => isVisibleMaid(entry.name));
     // 割り振りは絞り込みに影響されないよう、その日そのシフトの全員で計算する。
-    const assignment = outlook
-      ? getShiftAssignment({
-        insights,
-        members: allEntries.map((entry) => entry.name),
-        shift,
-        outlook,
-        pins,
-        kitchenStaff
-      })
-      : null;
-    const entries = assignment
+    // 記録のある日は割り振らない。誰がどこにいたかは分かっている。
+    const assignment = roster.assignment
+      ?? (outlook
+        ? getShiftAssignment({
+          insights,
+          members: postedNames,
+          shift,
+          outlook,
+          pins,
+          kitchenStaff
+        })
+        : null);
+    // 記録の並びは掲載順で確定しているので、割り振り順に組み直すのは見込みの日だけ。
+    const entries = assignment && !assignment.recorded
       ? sortByAssignedStore({ insights, entries: visible, assignment })
       : visible;
 
@@ -1818,6 +1935,19 @@
         item.classList.add("is-kitchen");
         titles.push("キッチンにゃんこ");
         descriptions.push("キッチンにゃんこ");
+      }
+
+      // 見習いにゃんこ。判定できた日だけ印を付ける。trainee が null の日は
+      // 「まだ判定していない」で、「昇格済み」ではない。そこを混ぜない。
+      if (entry.trainee === true) {
+        item.classList.add("is-trainee");
+        const mark = document.createElement("span");
+        mark.className = "maid-trainee";
+        mark.textContent = "🔰";
+        mark.setAttribute("aria-hidden", "true");
+        item.append(mark);
+        titles.push("見習いにゃんこ");
+        descriptions.push("見習いにゃんこ");
       }
 
       if (entry.featured) {
@@ -1992,9 +2122,10 @@
       if (!isInDateRange(key)) {
         return total;
       }
+      // 記録のある日は記録の顔ぶれを数える。予定表を数えると、画面に出ている
+      // 見習いにゃんこが抜け、お休みだった方が入って、表示と合わなくなる。
       return total + shifts.reduce(
-        (shiftTotal, shift) =>
-          shiftTotal + day[shift].filter((entry) => isVisibleMaid(entry.name)).length,
+        (shiftTotal, shift) => shiftTotal + filteredEntries(key, shift).length,
         0
       );
     }, 0);
@@ -2019,18 +2150,37 @@
       const id = `${key}|${shift}`;
       if (!shiftCache.has(id)) {
         const { outlook, pins } = getShiftOutlook(key, shift);
+        const roster = shiftRoster(key, shift);
+        // 記録のある日は記録の割り振りを使う。カレンダーと同じものを引かないと、
+        // 同じ人・同じ日で別の店を出してしまう。
         const members = (data.schedule[key]?.[shift] ?? []).map((entry) => entry.name);
         shiftCache.set(id, {
           outlook,
-          assignment: outlook
-            ? getShiftAssignment({ insights, members, shift, outlook, pins, kitchenStaff })
-            : null
+          members: roster.entries.map((entry) => entry.name),
+          assignment: roster.assignment
+            ?? (outlook
+              ? getShiftAssignment({ insights, members, shift, outlook, pins, kitchenStaff })
+              : null)
         });
       }
       return shiftCache.get(id);
     };
 
-    const shown = data.roster.filter((name) => isVisibleMaid(name));
+    // 記録に出てくる方は roster に載っていないことがある（見習いなど）。
+    // カレンダーに出しているなら、この画面からも引けないと辻褄が合わない。
+    const seen = new Set(data.roster);
+    const extra = [];
+    for (const key of dates) {
+      for (const shift of shifts) {
+        for (const name of resolve(key, shift).members) {
+          if (!seen.has(name)) {
+            seen.add(name);
+            extra.push(name);
+          }
+        }
+      }
+    }
+    const shown = [...data.roster, ...extra].filter((name) => isVisibleMaid(name));
     let stopCount = 0;
 
     shown.forEach((name) => {
@@ -2113,6 +2263,14 @@
     where.dataset.store = stop.storeId ?? "";
     where.textContent = stop.storeId ? storeShort(insights, stop.storeId) : "未定";
     item.append(when, where);
+    // 見習いにゃんこ。判定できた日だけ印を付ける。null は「まだ判定していない」。
+    if (stop.trainee === true) {
+      const mark = document.createElement("span");
+      mark.className = "maid-trainee";
+      mark.textContent = "🔰";
+      mark.setAttribute("aria-hidden", "true");
+      item.append(mark);
+    }
     // 割合は表に出さないが、店ごとの画面と同じく HTML には残す。
     // 順位付けには予定表の顔ぶれも入っているので、この数字だけでは置いた理由に
     // ならない。根拠を確かめたいときの手がかりとしてだけ持たせる。
@@ -2168,6 +2326,7 @@
   // 入っているので、「4号店が開くのは15%」と書くと、置いた理由と食い違って見える。
   // 表に出せるのは「開くと見た店のひとつ」までで、確からしさは強弱で伝える。
   function stopExplanation(stop) {
+    const trainee = stop.trainee === true ? "見習いにゃんことして" : "";
     if (!stop.storeId) {
       return "どこへ立つかは、まだ何も言えません。";
     }
@@ -2175,7 +2334,7 @@
     if (stop.settled) {
       return stop.eventLabel
         ? `${stop.eventLabel}の主役なので、所属店の${where}にいます。`
-        : `${where}にいた記録があります。`;
+        : `${trainee}${where}にいた記録があります。`;
     }
     const strength =
       stop.state === "unlikely"

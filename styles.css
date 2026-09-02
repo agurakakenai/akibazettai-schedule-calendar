@@ -772,6 +772,18 @@ input[type="date"] {
   line-height: 1;
 }
 
+/* 見習いにゃんこ。絵文字だけに頼らず、枠線でも他と区別できるようにする。
+   読み上げ用の説明は行の aria-label に入っているので、印は aria-hidden。 */
+.maid-trainee {
+  font-size: 0.9em;
+  line-height: 1;
+}
+
+.maid-entry.is-trainee {
+  border-style: dashed;
+  border-color: var(--cp-text-soft);
+}
+
 .maid-store-chip {
   padding: 0 4px;
   border: 1px solid var(--chip-color, var(--cp-border));

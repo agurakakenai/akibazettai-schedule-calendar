@@ -381,13 +381,23 @@ for (const cell of dayCells) {
 
 // --- メイドさんの行 -----------------------------------------------------
 const roster = new Set(schedule.roster);
+// 記録には、予定表に載らない方（見習いなど）も出てくる。名簿だけで照合すると
+// 記録を出した日に落ちるので、記録に名前がある人も知っている人として扱う。
+const recordedNames = new Set(
+  Object.values(insights.actualRoster ?? {}).flatMap((day) =>
+    Object.values(day).flatMap((entry) => Object.values(entry.stores).flat())
+  )
+);
 const maidEntries = withClass(calendar, "maid-entry");
 assert.ok(maidEntries.length > 0, "the default range must render some maids");
 
 for (const entry of maidEntries) {
   const names = withClass(entry, "maid-name");
   assert.equal(names.length, 1, "each maid entry must render exactly one name");
-  assert.ok(roster.has(names[0].textContent), `unknown maid "${names[0].textContent}"`);
+  assert.ok(
+    roster.has(names[0].textContent) || recordedNames.has(names[0].textContent),
+    `unknown maid "${names[0].textContent}"`
+  );
 
   const chips = withClass(entry, "maid-store-chip");
   assert.ok(chips.length <= 1, "a maid entry must not render more than one store chip");
@@ -569,8 +579,8 @@ assert.equal(
 const rosterOrder = new Map(schedule.roster.map((name, index) => [name, index]));
 for (const cell of withClass(calendar, "calendar-day")) {
   for (const section of withClass(cell, "shift-section")) {
-    const order = withClass(section, "maid-entry").map((entry) =>
-      rosterOrder.get(withClass(entry, "maid-name")[0].textContent)
+    const order = withClass(section, "maid-entry").map(
+      (entry) => rosterOrder.get(withClass(entry, "maid-name")[0].textContent) ?? Infinity
     );
     assert.deepEqual(
       order,
@@ -633,7 +643,10 @@ for (const plan of plans) {
   const heading = withClass(plan, "maid-name");
   assert.equal(heading.length, 1, "each plan must name exactly one maid");
   const name = heading[0].textContent;
-  assert.ok(roster.has(name), `unknown maid "${name}" in the maid mode`);
+  assert.ok(
+    roster.has(name) || recordedNames.has(name),
+    `unknown maid "${name}" in the maid mode`
+  );
   planNames.push(name);
 
   const stops = withClass(plan, "maid-plan-stop");
@@ -731,7 +744,8 @@ assert.ok(
 );
 
 // 並びは公式の掲載順のまま。モードを変えても顔ぶれの順序は変わらない。
-const planOrder = planNames.map((name) => rosterOrder.get(name));
+// 記録にしかいない方は名簿に位置が無いので、最後にまとめて並ぶ。
+const planOrder = planNames.map((name) => rosterOrder.get(name) ?? Infinity);
 assert.deepEqual(
   planOrder,
   [...planOrder].sort((a, b) => a - b),
@@ -921,6 +935,121 @@ if (partialDate) {
     `${partialDate}'s fallback badge must be one we know, got "${fallback[0]}"`
   );
 }
+
+// --- 記録のある日は、記録の顔ぶれを出す ---------------------------------
+// 予測モードに戻して、その日そのシフトに誰が出ていたかを画面から読む。
+selectViewMode("forecast");
+const recordedCells = withClass(calendar, "calendar-day").filter((cell) =>
+  withClass(cell, "store-status-badge").some((badge) => badge.textContent === "実績")
+);
+assert.ok(recordedCells.length > 0, "the recorded window must render some recorded days");
+
+let checkedRecordedShifts = 0;
+let traineesShown = 0;
+for (const cell of recordedCells) {
+  const [, year, month, day] = /(\d+)年(\d+)月(\d+)日/.exec(cell.getAttribute("aria-label"));
+  const cellKey = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  withClass(cell, "shift-section").forEach((section, shiftIndex) => {
+    const shift = insights.shifts[shiftIndex];
+    const record = insights.actualRoster?.[cellKey]?.[shift];
+    if (!record) {
+      return;
+    }
+    checkedRecordedShifts += 1;
+    const shown = withClass(section, "maid-entry").map(
+      (entry) => withClass(entry, "maid-name")[0].textContent
+    );
+    const inRecord = Object.values(record.stores).flat();
+    assert.deepEqual(
+      [...shown].sort(),
+      [...inRecord].sort(),
+      `${cellKey} ${shift}: the calendar must show the maids the record names, no more and no fewer`
+    );
+
+    // 予定表に名前があってもお休みだった方は出さない。出すと「未定」と書くことになる。
+    const posted = (schedule.schedule[cellKey]?.[shift] ?? []).map((entry) => entry.name);
+    for (const name of posted) {
+      if (!inRecord.includes(name)) {
+        assert.ok(
+          !shown.includes(name),
+          `${cellKey} ${shift}: ${name} was on the rota but not in the record, so she must not be shown`
+        );
+      }
+    }
+
+    // 割り振り先も記録どおり。見出しがその店を名乗る。
+    let group = null;
+    for (const node of walk(section)) {
+      if (!node.classList) {
+        continue;
+      }
+      if (node.classList.contains("maid-group-label")) {
+        group = node.dataset.store || null;
+      } else if (node.classList.contains("maid-name") && group) {
+        assert.ok(
+          record.stores[group]?.includes(node.textContent),
+          `${cellKey} ${shift}: ${node.textContent} is under ${group}, which the record does not say`
+        );
+      }
+    }
+
+    // 見習いにゃんこの印。判定した日だけ、判定された人にだけ付く。
+    const judged = Array.isArray(record.trainees);
+    for (const entry of withClass(section, "maid-entry")) {
+      const name = withClass(entry, "maid-name")[0].textContent;
+      const marked = withClass(entry, "maid-trainee");
+      const expected = judged && record.trainees.includes(name);
+      assert.equal(
+        marked.length,
+        expected ? 1 : 0,
+        `${cellKey} ${shift}: ${name} ${expected ? "is" : "is not"} a trainee in the record`
+      );
+      if (marked.length === 1) {
+        traineesShown += 1;
+        assert.equal(marked[0].textContent, "🔰", "the trainee mark must be the badge emoji");
+        assert.equal(
+          marked[0].getAttribute("aria-hidden"),
+          "true",
+          "the mark is decorative; the entry's own label carries the words"
+        );
+        // 色や絵文字だけに頼らない。読み上げにも枠線にも出す。
+        assert.ok(
+          entry.classList.contains("is-trainee"),
+          "a trainee entry must be marked in the class list too, not only by the emoji"
+        );
+        assert.ok(
+          (entry.getAttribute("aria-label") ?? "").includes("見習いにゃんこ"),
+          "a trainee must be described in words for screen readers"
+        );
+        assert.ok(
+          (entry.title ?? "").includes("見習いにゃんこ"),
+          "a trainee must be named in the tooltip too"
+        );
+      }
+    }
+
+    // 記録の日に確率は出さない。誰がどこにいたかは分かっている。
+    for (const entry of withClass(section, "maid-entry")) {
+      assert.doesNotMatch(
+        entry.title ?? "",
+        /\d+%/,
+        `${cellKey} ${shift}: a recorded shift must not quote odds for a maid`
+      );
+    }
+  });
+}
+assert.ok(checkedRecordedShifts > 0, "at least one recorded shift must have been checked");
+assert.ok(traineesShown > 0, "the recorded window must include a trainee, or the mark is untested");
+
+// 判定していない日には印を付けない。「全員が昇格済み」ではなく「分からない」ため。
+const unjudgedDay = Object.keys(insights.actualRoster ?? {}).find((key) =>
+  insights.shifts.some((s) => insights.actualRoster[key][s] && !insights.actualRoster[key][s].trainees)
+);
+assert.ok(unjudgedDay, "the record must reach past the window where trainees are judged");
+assert.ok(
+  unjudgedDay < Object.keys(insights.actualRoster).sort().at(-1),
+  "the unjudged days must be the older ones"
+);
 
 console.log(
   `Headless render valid: ${dayCells.length} day cells, ${shiftSections.length} shift sections, ` +
