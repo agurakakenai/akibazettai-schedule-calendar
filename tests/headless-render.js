@@ -389,11 +389,19 @@ const recordedNames = new Set(
   )
 );
 const maidEntries = withClass(calendar, "maid-entry");
+// 見込みの見習いにゃんこは名前を持たない。実在の顔ぶれを数えるときは外す。
+const realMaidEntries = maidEntries.filter(
+  (entry) => !entry.classList.contains("is-trainee-guess")
+);
 assert.ok(maidEntries.length > 0, "the default range must render some maids");
 
 for (const entry of maidEntries) {
   const names = withClass(entry, "maid-name");
   assert.equal(names.length, 1, "each maid entry must render exactly one name");
+  // 見習いにゃんこの見込みは、誰なのかが分からないので名前を名乗らない。
+  if (entry.classList.contains("is-trainee-guess")) {
+    continue;
+  }
   assert.ok(
     roster.has(names[0].textContent) || recordedNames.has(names[0].textContent),
     `unknown maid "${names[0].textContent}"`
@@ -569,9 +577,16 @@ assert.equal(
   0,
   "the roster mode must not guess where each maid will be"
 );
+// 見込みの見習いにゃんこは予測なので、予測を隠すモードでは出ない。
+// 実在のメイドさんの顔ぶれが変わっていないことだけを見る。
+assert.equal(
+  withClass(calendar, "maid-entry").filter((entry) => entry.classList.contains("is-trainee-guess")).length,
+  0,
+  "the roster mode must not guess at trainees it cannot name"
+);
 assert.equal(
   withClass(calendar, "maid-entry").length,
-  maidEntries.length,
+  realMaidEntries.length,
   "switching modes must not change who is on the calendar"
 );
 
@@ -1040,6 +1055,77 @@ for (const cell of recordedCells) {
 }
 assert.ok(checkedRecordedShifts > 0, "at least one recorded shift must have been checked");
 assert.ok(traineesShown > 0, "the recorded window must include a trainee, or the mark is untested");
+
+// --- 見込みのシフトに、名前の分からない見習いにゃんこを出す -------------
+// 人数は「1店あたり × 開く店の数」を丸めた値。データ側の割合は半減期30日で
+// 動くので、期待値は表から引き直す（数字を書くと集計のたびに落ちる）。
+let guessedShifts = 0;
+let guessedTotal = 0;
+for (const cell of withClass(calendar, "calendar-day")) {
+  const [, year, month, day] = /(\d+)年(\d+)月(\d+)日/.exec(cell.getAttribute("aria-label"));
+  const cellKey = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  withClass(cell, "shift-section").forEach((section, shiftIndex) => {
+    const shift = insights.shifts[shiftIndex];
+    const guesses = withClass(section, "maid-entry").filter((entry) =>
+      entry.classList.contains("is-trainee-guess")
+    );
+    const recorded = Boolean(insights.actualRoster?.[cellKey]?.[shift]);
+    if (recorded) {
+      // 誰がいたか分かっている日に推測を混ぜない。
+      assert.equal(
+        guesses.length,
+        0,
+        `${cellKey} ${shift} is recorded, so it must not guess at trainees`
+      );
+      return;
+    }
+    const shops = new Set(withClass(section, "maid-group-label").map((l) => l.dataset.store));
+    if (shops.size === 0) {
+      return;
+    }
+    const rate = insights.traineeOutlook?.[shift]?.perStore ?? 0;
+    assert.equal(
+      guesses.length,
+      Math.round(rate * shops.size),
+      `${cellKey} ${shift} opens ${shops.size} shop(s), so the trainee count must follow the table`
+    );
+    guessedShifts += 1;
+    guessedTotal += guesses.length;
+    for (const guess of guesses) {
+      // 名前は出さない。誰なのかが分からないため。
+      assert.equal(
+        withClass(guess, "maid-name")[0].textContent,
+        "見習い",
+        "a guessed trainee must not borrow a real maid's name"
+      );
+      assert.equal(withClass(guess, "maid-trainee").length, 1, "a guess must carry the 🔰");
+      assert.equal(
+        withClass(guess, "maid-trainee")[0].getAttribute("aria-hidden"),
+        "true",
+        "the mark is decorative; the row's own label carries the words"
+      );
+      const spoken = guess.getAttribute("aria-label") ?? "";
+      assert.ok(spoken.includes("見習いにゃんこ"), "a guess must say what it is in words");
+      assert.ok(
+        spoken.includes("分かりません"),
+        "a guess must admit it cannot name the maid"
+      );
+      assert.equal(guess.title, spoken, "the tooltip and the spoken text must not drift apart");
+      // 半減期30日で動く値なので、文言に割合を焼き込まない。
+      assert.doesNotMatch(spoken, /\d+%|0\.\d+/, "a guess must not quote a rate that moves monthly");
+    }
+    // どの店にいるかは読めない。店の見出しの下に置くと、その店にいると読まれる。
+    for (const list of withClass(section, "maid-list")) {
+      assert.equal(
+        withClass(list, "maid-entry").filter((e) => e.classList.contains("is-trainee-guess")).length,
+        0,
+        `${cellKey} ${shift}: a guessed trainee must not sit under a shop heading`
+      );
+    }
+  });
+}
+assert.ok(guessedShifts > 0, "some forecast shift must have been checked for trainees");
+assert.ok(guessedTotal > 0, "the forecast window must guess at least one trainee, or this is untested");
 
 // 判定していない日には印を付けない。「全員が昇格済み」ではなく「分からない」ため。
 const unjudgedDay = Object.keys(insights.actualRoster ?? {}).find((key) =>

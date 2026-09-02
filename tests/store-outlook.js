@@ -14,6 +14,7 @@ const {
   calibrationNote,
   coOpenRate,
   eventStorePins,  expectedOpenStores,
+  expectedTrainees,
   getMaidStoreOutlook,
   getShiftAssignment,
   getStoreOutlook,
@@ -2227,6 +2228,26 @@ assert.equal(
     "a day we have no record for must fall back to the rota"
   );
   assert.equal(recordedAssignment(insights, future, shift), null, "no record, no recorded placement");
+
+  // 予定表に出ない見習いにゃんこ。1店あたりの人数に、開く店の数を掛けて丸める。
+  for (const s of insights.shifts) {
+    const rate = insights.traineeOutlook[s].perStore;
+    assert.ok(rate > 0 && rate < 4, `${s} の1店あたり人数が現実的でない: ${rate}`);
+    for (const shops of [1, 2, 3, 4]) {
+      assert.equal(
+        expectedTrainees(insights, s, shops, false),
+        Math.round(rate * shops),
+        `${s} ${shops}店のときの人数は表のとおりでなければならない`
+      );
+    }
+    // 開く店が増えるほど見習いも増える。減ることはない。
+    const counts = [1, 2, 3, 4].map((shops) => expectedTrainees(insights, s, shops, false));
+    assert.deepEqual(counts, [...counts].sort((a, b) => a - b), "more shops cannot mean fewer trainees");
+    // 記録のある日には出さない。誰がいたか分かっているところに推測を混ぜない。
+    assert.equal(expectedTrainees(insights, s, 4, true), 0, "a recorded shift needs no guess");
+    assert.equal(expectedTrainees(insights, s, 0, false), 0, "no shops open, nobody to place");
+  }
+  assert.equal(expectedTrainees({}, "昼", 2, false), 0, "without a measured rate, guess nothing");
 }
 
 console.log(

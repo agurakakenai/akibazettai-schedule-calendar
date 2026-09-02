@@ -196,6 +196,10 @@ TRAINEE_MAX_DAYS = 90
 # 判定するのは直近このぶんだけ。これより前まで遡ると、卒業したメイドさんが
 # 「アカウントが無い（消えた）人」として、いつまでも見習いに数えられてしまう。
 TRAINEE_WINDOW_DAYS = 120
+# 見習いが何人いそうか、は入店のたびに動く。6月末から8月にかけて6名増えており、
+# 90日で均すと 0.70人/シフト、直近14日だけ見ると 1.31人/シフトと倍近く違う。
+# 店舗の規模のように落ち着いた量ではないので、半減期を短く取る。
+TRAINEE_HALF_LIFE = 30
 
 def pick_rate(hits, chances, posted, sid):
     """その店が開いていた日のうち、その人がその店にいた割合。
@@ -1107,6 +1111,31 @@ def build():
         if names:
             actual_roster[d] = names
 
+    # 見込みのシフトに、名前の分からない見習いにゃんこを何人置くか。
+    #
+    # 予定表には見習いが載らないので、そのまま並べると顔ぶれが実際より薄くなる。
+    # 9月1日と2日の記録では、予定表7・8・9・5人に対して実際は9・9・14・7人だった。
+    # 見習いのぶんだけでも置いておけば、読み手が「これで全部」と受け取らずに済む。
+    #
+    # 店ごとに出すのは、開く店が増えれば見習いも増えるため（1店0.34 / 2店0.61 /
+    # 3店1.08人）。1店あたりで持っておけば、何店開くかを決めたあとに掛けられる。
+    trainee_outlook = {}
+    for sh in SHIFTS:
+        num = den = 0.0
+        for d, per_shift in actual_roster.items():
+            entry = per_shift.get(sh)
+            if not entry or 'trainees' not in entry:
+                continue
+            age = (last_d - datetime.date.fromisoformat(d)).days
+            weight = 0.5 ** (age / TRAINEE_HALF_LIFE)
+            num += weight * len(entry['trainees'])
+            den += weight * len(entry['stores'])
+        if den:
+            trainee_outlook[sh] = {
+                'perStore': round(num / den, 3),
+                'halfLifeDays': TRAINEE_HALF_LIFE,
+            }
+
     # 誰が出たかは分からないが開いた店は分かる日を足す。shifts.csv に記録がある
     # シフトは上書きしない（メイド単位の記録のほうが確かなので）。
     openings = read_openings()
@@ -1174,6 +1203,8 @@ def build():
         # 予定表からの割り振りではなくこちらを出す。trainees は、その日は
         # 見習いにゃんこだった人（公式サイトの在籍一覧に載らない人）。
         'actualRoster': actual_roster,
+        # 見込みのシフトに置く、名前の分からない見習いにゃんこの人数（1店あたり）。
+        'traineeOutlook': trainee_outlook,
         # 上のうち、メイド単位の記録が無く「開いた店」だけ分かっている日。
         # 統計には入っていないので、UI が出典を書き分けたいときに使える。
         'actualWithoutRoster': openings_used,
@@ -1205,7 +1236,12 @@ def stamp_assets():
             raw = f.read()
         # 手元は CRLF、CI と GitHub Pages は LF なので、生のバイトで取ると
         # 同じ内容でも値が変わる（実際にデプロイが落ちた）。改行を揃えてから計算する。
-        return hashlib.sha256(raw.replace(b'\r\n', b'\n')).hexdigest()[:10]
+        raw = raw.replace(b'\r\n', b'\n')
+        # generatedAt は回すたびに動くので、これを含めると中身が同じでも刻印が
+        # 変わり、変わっていないファイルまで取り直しになる。刻印の目的は
+        # 「中身が変わったら取り直す」なので、時刻の行は数えない。
+        raw = re.sub(rb'^\s*"generatedAt":.*$', b'', raw, flags=re.M)
+        return hashlib.sha256(raw).hexdigest()[:10]
 
     def replace(match):
         attr, rel, tail = match.group(1), match.group(2), match.group(3)
