@@ -8,6 +8,7 @@ const vm = require("node:vm");
 const {
   addDays,
   applyEventCertainty,
+  applyHomeStaff,
   assignShiftStores,
   calibrationNote,
   eventStorePins,  expectedOpenStores,
@@ -1516,6 +1517,96 @@ assert.equal(
     "without a measurement there is nothing to say about trainees"
   );
   assert.equal(storeSizeNote(bare, "昼", "知らない店"), null, "an unknown shop has no note");
+}
+
+// 2番手の店は、予定表の顔ぶれの配属から読み直す。置き換えではなく尤度比で更新
+// するので、同日ルールのような強い手がかりは残り、読めない店は動かない。
+{
+  const table = insights.secondStoreByHome;
+  assert.ok(table, "secondStoreByHome must exist");
+  assert.ok(!table.s1, "the first shop is not the second shop");
+
+  const homeStore = schedule.homeStore;
+  const base = outlookFor(farFuture, "昼");
+  const rateOf = (outlook, id) => outlook.entries.find((e) => e.store.id === id).rate;
+  const lineUp = (counts) =>
+    Object.entries(counts).flatMap(([id, n]) =>
+      schedule.roster.filter((name) => homeStore[name] === id).slice(0, n)
+    );
+
+  // 配属者が多い店は上がり、少ない店は下がる。
+  const manyS2 = applyHomeStaff(insights, base, lineUp({ s2: 4, s3: 1, s4: 1 }), homeStore);
+  const manyS3 = applyHomeStaff(insights, base, lineUp({ s2: 1, s3: 4, s4: 1 }), homeStore);
+  assert.ok(
+    rateOf(manyS2, "s2") > rateOf(manyS3, "s2"),
+    "four maids posted to 2号店 must lift it above a line-up with one"
+  );
+  assert.ok(
+    rateOf(manyS3, "s3") > rateOf(manyS2, "s3"),
+    "the same must hold for 3号店"
+  );
+
+  // 4号店は読めない。配属者0人と4人でほとんど差が出ないこと。
+  const noS4 = applyHomeStaff(insights, base, lineUp({ s2: 1, s3: 1, s4: 0 }), homeStore);
+  const allS4 = applyHomeStaff(insights, base, lineUp({ s2: 1, s3: 1, s4: 4 }), homeStore);
+  const s4Swing = Math.abs(rateOf(allS4, "s4") - rateOf(noS4, "s4"));
+  const s2Swing = Math.abs(rateOf(manyS2, "s2") - rateOf(manyS3, "s2"));
+  assert.ok(
+    s4Swing < s2Swing,
+    `4号店 must move less than 2号店 (${s4Swing.toFixed(3)} vs ${s2Swing.toFixed(3)})`
+  );
+
+  // 1号店は触らない。開く店の数の見込みも動かさない。
+  assert.equal(rateOf(manyS2, "s1"), rateOf(base, "s1"), "the first shop is left alone");
+  const sumOf = (outlook) =>
+    ["s2", "s3", "s4"].reduce((total, id) => total + rateOf(outlook, id), 0);
+  assert.ok(
+    Math.abs(sumOf(manyS2) - sumOf(base)) < 0.001,
+    "shifting the balance must not change how many shops are expected to open"
+  );
+
+  // 実績の日は書き換えない。
+  const recorded = outlookFor(lastActual, insights.shifts.find((s) => insights.actual[lastActual][s]));
+  assert.equal(
+    applyHomeStaff(insights, recorded, lineUp({ s2: 4 }), homeStore),
+    recorded,
+    "a recorded shift is not a guess to be adjusted"
+  );
+
+  // 同日ルールが出した「ほぼ無い」は、顔ぶれで持ち上げない。
+  const nearZero = {
+    ...base,
+    basis: "sameDay",
+    entries: base.entries.map((entry) => ({
+      ...entry,
+      rate: entry.store.id === "s3" ? 0.01 : entry.rate,
+      text: entry.store.id === "s3" ? "1%" : entry.text
+    }))
+  };
+  const kept = applyHomeStaff(insights, nearZero, lineUp({ s2: 1, s3: 4, s4: 1 }), homeStore);
+  assert.ok(
+    rateOf(kept, "s3") < 0.1,
+    `a shop the same-day rule ruled out must stay ruled out, got ${rateOf(kept, "s3")}`
+  );
+
+  // 測定が無ければ何もしない。
+  assert.equal(
+    applyHomeStaff({ ...insights, secondStoreByHome: undefined }, base, lineUp({ s2: 4 }), homeStore),
+    base,
+    "without the table there is nothing to apply"
+  );
+  assert.equal(applyHomeStaff(insights, null, [], homeStore), null, "no outlook, no work");
+
+  // 配属が引けない顔ぶれでも落ちない（全員0人扱い）。
+  const strangers = applyHomeStaff(insights, base, ["知らない人", "べつのだれか"], homeStore);
+  assert.ok(strangers.entries.every((entry) => entry.rate >= 0 && entry.rate <= 1), "rates stay sane");
+
+  // 出どころを本文に書く。読み手が「なぜ動いたか」を確かめられるように。
+  assert.ok(manyS2.summary.includes("配属"), "the summary must say the line-up moved the figures");
+  assert.ok(
+    manyS2.summary.includes("読めません"),
+    "the summary must admit 4号店 cannot be read this way"
+  );
 }
 
 console.log(

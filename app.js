@@ -494,6 +494,130 @@
     };
   }
 
+  // 2番手の店は、予定表の顔ぶれから読めます。その店を本拠とする人が何人載っているか
+  // で、2号店は27%→54%、3号店は23%→48%と動きます。実測で2番手を当てる的中が
+  // 34.4% → 42.2%（372シフト、87勝58敗、p=0.020）。
+  //
+  // 4号店は動きません（配属者0人で37%、4人で30%）。当て方の問題ではなく読めないので、
+  // 動かないことをそのまま出します。
+  const SECOND_STORE_MIN_SAMPLE = 20;
+
+  function homeStaffCounts(members, homeStore) {
+    const counts = new Map();
+    for (const name of members ?? []) {
+      const home = homeStore?.[name];
+      if (home) {
+        counts.set(home, (counts.get(home) ?? 0) + 1);
+      }
+    }
+    return counts;
+  }
+
+  // 表は「配属者が n 人」で引く。上限より多い人数は上限のバケットに寄せる。
+  function secondStoreRate(insights, storeId, count) {
+    const table = insights?.secondStoreByHome?.[storeId];
+    if (!table) {
+      return null;
+    }
+    const buckets = Object.keys(table)
+      .map(Number)
+      .filter((value) => Number.isFinite(value))
+      .sort((a, b) => a - b);
+    if (buckets.length === 0) {
+      return null;
+    }
+    const capped = Math.min(Math.max(count, buckets[0]), buckets[buckets.length - 1]);
+    // 実際に無いバケット（3号店の0人など）は、いちばん近い下の段に寄せる。
+    const bucket = [...buckets].reverse().find((value) => value <= capped) ?? buckets[0];
+    const entry = table[String(bucket)];
+    if (!entry || !(entry.n >= SECOND_STORE_MIN_SAMPLE) || typeof entry.rate !== "number") {
+      return null;
+    }
+    return entry.rate;
+  }
+
+  // 見込みの日だけ、1号店以外の3店を顔ぶれから引き直す。実績の日には触らない。
+  //
+  // 置き換えではなく、その店の平均からのずれ（尤度比）で元の見込みを更新する。
+  // 置き換えると、同日ルールが出した「昼が2号店なら夜の3号店は1%」のような
+  // 強い手がかりまで捨ててしまう。この形なら、表が平均どおりの店は動かない
+  // ので、4号店が読めないことも特別扱いせずそのまま出る。
+  function applyHomeStaff(insights, outlook, members, homeStore) {
+    if (!outlook || outlook.basis === "actual" || !insights?.secondStoreByHome) {
+      return outlook;
+    }
+    const counts = homeStaffCounts(members, homeStore);
+    const ids = Object.keys(insights.secondStoreByHome);
+    const shifted = new Map();
+    for (const id of ids) {
+      const rate = secondStoreRate(insights, id, counts.get(id) ?? 0);
+      const average = averageSecondStoreRate(insights, id);
+      if (rate === null || !(average > 0)) {
+        return outlook;
+      }
+      shifted.set(id, rate / average);
+    }
+    const certain = new Set(outlook.certainStores ?? []);
+    const movable = outlook.entries.filter(
+      (entry) => shifted.has(entry.store.id) && !certain.has(entry.store.id)
+    );
+    const before = movable.reduce((sum, entry) => sum + (entry.rate ?? 0), 0);
+    const weighted = movable.reduce(
+      (sum, entry) => sum + (entry.rate ?? 0) * shifted.get(entry.store.id),
+      0
+    );
+    if (!(before > 0) || !(weighted > 0)) {
+      return outlook;
+    }
+    // 開く店の数の見込みは変えず、3店のあいだの配分だけ動かす。
+    const scale = before / weighted;
+    const entries = outlook.entries.map((entry) => {
+      if (!shifted.has(entry.store.id) || certain.has(entry.store.id)) {
+        return entry;
+      }
+      const rate = Math.min(1, (entry.rate ?? 0) * shifted.get(entry.store.id) * scale);
+      return {
+        ...entry,
+        state: stateForRate(rate),
+        rate,
+        text: toPercent(rate),
+        // 読み上げ文の言い回しは元の見込みのものを保ち、割合だけ差し替える。
+        srText: (entry.srText ?? "").includes(entry.text)
+          ? entry.srText.replace(entry.text, toPercent(rate))
+          : `${entry.store.short}が営業する見込みは${toPercent(rate)}`
+      };
+    });
+    const named = ids
+      .map((id) => `${storeShort(insights, id)}に${counts.get(id) ?? 0}人`)
+      .join("・");
+    return {
+      ...outlook,
+      basis: `${outlook.basis}+home`,
+      entries,
+      summary:
+        `${outlook.summary}この予定表の配属は${named}で、そのぶん配分を寄せています。` +
+        `2・3号店は配属者の人数でよく動きますが（27%〜54%、23%〜48%）、` +
+        `4号店は0人でも4人でも3割前後で、この見方では読めません。`
+    };
+  }
+
+  // その店が2番手になる平均の率。バケットごとの件数で重み付けする。
+  function averageSecondStoreRate(insights, storeId) {
+    const table = insights?.secondStoreByHome?.[storeId];
+    if (!table) {
+      return null;
+    }
+    let weight = 0;
+    let total = 0;
+    for (const entry of Object.values(table)) {
+      if (typeof entry?.rate === "number" && entry.n > 0) {
+        weight += entry.n;
+        total += entry.rate * entry.n;
+      }
+    }
+    return weight > 0 ? total / weight : null;
+  }
+
   function otherShiftOf(insights, shift) {
     const shifts = insights?.shifts ?? [];
     return shifts.find((candidate) => candidate !== shift) ?? null;
@@ -1050,6 +1174,7 @@
     module.exports = {
       addDays,
       applyEventCertainty,
+      applyHomeStaff,
       assignShiftStores,
       calibrationNote,
       dateKey,
@@ -1110,7 +1235,14 @@
       shift,
       lastActualDate: lastActualKey
     });
-    return { outlook: applyEventCertainty(insights, outlook, pins), pins };
+    // 顔ぶれの配属から2番手を読み直す。絞り込みに動かされないよう全員で数える。
+    const withHome = applyHomeStaff(
+      insights,
+      outlook,
+      entries.map((entry) => entry.name),
+      data.homeStore
+    );
+    return { outlook: applyEventCertainty(insights, withHome, pins), pins };
   }
 
   function createStoreOutlook(outlook, shift) {
