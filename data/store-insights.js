@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-03 00:58",
+  "generatedAt": "2026-09-03 01:01",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-09-02"
@@ -9970,6 +9970,28 @@ window.STORE_INSIGHTS = {
       "perStore": 0.472,
       "halfLifeDays": 30
     }
+  },
+  "schedulePending": {
+    "rostered": 39,
+    "pending": [
+      "みりん",
+      "うる",
+      "にゃな",
+      "いと",
+      "ゆめ",
+      "のの",
+      "もち"
+    ],
+    "recentShifts": {
+      "みりん": 94,
+      "うる": 86,
+      "にゃな": 41,
+      "いと": 29,
+      "ゆめ": 29,
+      "のの": 27,
+      "もち": 22
+    },
+    "postedShifts": 250
   },
   "actualWithoutRoster": {
     "2026-08-28": {

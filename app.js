@@ -1741,7 +1741,11 @@
     const ceiling = outlook.basis === "actual"
       ? null
       : openCountCeilingNote(insights, shift, opening.size);
-    wrapper.title = [outlook.summary, sameDay, missed, ceiling].filter(Boolean).join("");
+    wrapper.title = [outlook.summary, sameDay, missed, ceiling]
+      .filter(Boolean)
+      .join("")
+      // 各文は「。」始まりで書いてあるが、前の文が「。」で終わることもある。
+      .replace(/。+/g, "。");
 
     const nearMiss = new Set(nearMissStores(insights, shift, outlook, members ?? 0));
 
