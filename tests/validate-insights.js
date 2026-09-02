@@ -1003,6 +1003,19 @@ assert.equal(
       Object.values(byShift).flatMap((entries) => entries.map((entry) => entry.name))
     )
   );
+  // 回数を数えた窓。これが無いと「1シフトあたり何人ぶん薄いか」を出すのに
+  // 分母を推測することになり、推測した分母で割った数字が測った数字の顔をする。
+  assert.ok(pending.windowShifts > 0, "the pending count must say how many shifts it looked at");
+  assert.ok(
+    pending.windowDays > 0 && pending.windowShifts <= pending.windowDays * insights.shifts.length,
+    `${pending.windowShifts} shifts cannot fit in ${pending.windowDays} days`
+  );
+  for (const [name, count] of Object.entries(pending.recentShifts)) {
+    assert.ok(
+      count <= pending.windowShifts,
+      `${name} cannot have worked ${count} of ${pending.windowShifts} shifts`
+    );
+  }
   for (const name of pending.pending) {
     assert.ok(
       schedule.roster.includes(name),

@@ -96,6 +96,34 @@
       "まだ提出していないメイドさんは、この表に出ていないことがあります。"
     );
   }
+  // 予定表をまだ出していない在籍者。揃うまで、画面の顔ぶれは実際より薄い。
+  // 人数から店舗数を決めているので、開く店も少なめに出ることがある。
+  //
+  // 「何人ぶん薄いか」は書かない。recentShifts が何日ぶんの回数なのかはデータに
+  // 入っていないので、1シフトあたりに直すには窓の長さを推測することになる。
+  // 推測した分母で割った数字は、根拠のある数字の顔をしてしまう。
+  // 出せるのは「何名が未提出か」と「その方たちが最近どれだけ出ていたか」まで。
+  function schedulePendingNote(insights) {
+    const pending = insights?.schedulePending;
+    const names = pending?.pending;
+    if (!Array.isArray(names) || names.length === 0) {
+      return null;
+    }
+    const counts = pending.recentShifts ?? {};
+    const busiest = [...names].sort((a, b) => (counts[b] ?? 0) - (counts[a] ?? 0));
+    const named = busiest
+      .map((name) => (counts[name] > 0 ? `${name}（最近${counts[name]}回）` : name))
+      .join("・");
+    const total = pending.rostered;
+    return {
+      short: `${total > 0 ? `在籍${total}名のうち` : ""}${names.length}名が、まだ予定を出していません`,
+      long:
+        `${total > 0 ? `在籍${total}名のうち` : ""}${names.length}名が、まだ予定を出していません：${named}。` +
+        "この方たちは表に出ていないので、顔ぶれは実際より少なめです。" +
+        "人数から開く店の数を決めているぶん、店も少なめに出ることがあります。" +
+        "提出が揃えばこの注意書きは消えます"
+    };
+  }
 
   // 記録が無いシフトは「休み」ではなく「情報なし」なので null を返す。
   function openStoresOn(insights, key, shift) {
@@ -1648,6 +1676,7 @@
       recordedAssignment,
       recordedRoster,
       sameDayDecisionNote,
+      schedulePendingNote,
       scheduleSystemNote,
       sortByAssignedStore,
       spreadNote,
@@ -1889,6 +1918,7 @@
     resultSummary: document.querySelector("#result-summary"),
     lastUpdated: document.querySelector("#last-updated"),
     scheduleSystemNote: document.querySelector("#schedule-system-note"),
+    schedulePendingNote: document.querySelector("#schedule-pending-note"),
     modeHelp: document.querySelector("#mode-help"),
     modeInputs: [...document.querySelectorAll('input[name="view-mode"]')],
     maidCheckboxes: document.querySelector("#maid-checkboxes"),
@@ -2623,6 +2653,16 @@
   if (systemNote && elements.scheduleSystemNote) {
     elements.scheduleSystemNote.textContent = systemNote;
     elements.scheduleSystemNote.hidden = false;
+  }
+  // 制度変更の説明は「出していない人がいることがある」までしか言えない。
+  // 実際に誰が出していないかは分かっているので、分かるほうを出す。
+  // 提出が揃えば pending が空になり、この一文は自分で消える。
+  const pendingNote = schedulePendingNote(insights);
+  if (pendingNote && elements.schedulePendingNote) {
+    elements.schedulePendingNote.textContent = pendingNote.short;
+    elements.schedulePendingNote.title = pendingNote.long;
+    elements.schedulePendingNote.setAttribute("aria-label", pendingNote.long);
+    elements.schedulePendingNote.hidden = false;
   }
   elements.maidFilterDetails.open =
     !window.matchMedia("(max-width: 45rem)").matches;
