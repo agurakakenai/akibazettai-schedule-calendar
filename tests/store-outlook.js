@@ -1636,12 +1636,44 @@ assert.equal(
   const strangers = applyHomeStaff(insights, base, ["知らない人", "べつのだれか"], homeStore);
   assert.ok(strangers.entries.every((entry) => entry.rate >= 0 && entry.rate <= 1), "rates stay sane");
 
-  // 出どころを本文に書く。読み手が「なぜ動いたか」を確かめられるように。
-  assert.ok(manyS2.summary.includes("配属"), "the summary must say the line-up moved the figures");
-  assert.ok(
-    manyS2.summary.includes("読めません"),
-    "the summary must admit 4号店 cannot be read this way"
-  );
+  // 出どころが違えば、同じ数字でも重みが違う。本文で見分けられること。
+  {
+    // 前日の実績がある日は、その日付を名指しする。
+    const afterRecord = outlookFor(addDays(lastActual, 1), insights.shifts[0]);
+    assert.equal(afterRecord.basis, "forecast", "the day after a record must forecast from it");
+    assert.ok(
+      afterRecord.summary.includes(lastActual),
+      "a forecast must name the day it read"
+    );
+
+    // 前日が分からない日は、そう書く。曜日の平均しか無いことが読めるように。
+    const far = outlookFor(farFuture, insights.shifts[0]);
+    assert.equal(far.basis, "tendency", "a day with no yesterday falls back on the weekday");
+    assert.ok(
+      far.summary.includes("前日の実績が手元にない"),
+      "the weekday fallback must say why it is only a weekday average"
+    );
+    assert.ok(
+      !far.summary.includes(lastActual),
+      "the weekday fallback must not look like it read a record"
+    );
+
+    // 曜日傾向そのままなら「予測ではありません」と言える。
+    assert.ok(far.summary.includes("予測ではありません"), "an untouched weekday rate is not a guess");
+
+    // 顔ぶれで配分を寄せたら、その一文は外す。表示している数字がもう
+    // 曜日の営業率そのものではないので、残すと本文の中で矛盾する。
+    const adjusted = applyHomeStaff(insights, far, lineUp({ s2: 4, s3: 1, s4: 1 }), homeStore);
+    assert.notEqual(adjusted, far, "the fixture must actually exercise the adjustment");
+    assert.ok(
+      !adjusted.summary.includes("予測ではありません"),
+      "a figure moved by the line-up must not still claim to be no guess at all"
+    );
+    assert.ok(
+      adjusted.summary.includes("配分を寄せています"),
+      "the adjusted summary must say what moved it"
+    );
+  }
 }
 
 console.log(

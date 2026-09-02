@@ -382,6 +382,10 @@
     return asked > latestRecorded && latestRecorded >= 0;
   }
 
+  // 曜日傾向そのままのときだけ言える一文。顔ぶれで配分を寄せたあとは、
+  // 表示している数字がもう「曜日の営業率」ではないので、この文は外す。
+  const RAW_WEEKDAY_CLAIM = "予測ではありません。";
+
   function tendencyOutlook(insights, key, shift, lastActualDate) {
     const bucket = weekdayBucket(insights, key);
     const rates = insights.weekdayOpenRate?.[shift]?.[bucket];
@@ -392,6 +396,11 @@
       Boolean(insights.actual?.[key]) && !isShiftStillToCome(insights, key, shift, lastActualDate);
     const isPast = Boolean(lastActualDate) && key <= lastActualDate;
     const weekdayName = WEEKDAY_LABELS[weekdayIndex(key)];
+    // 前日の実績があれば forecastOutlook が拾っているので、ここに来た時点で
+    // 前日は分かっていない。曜日の平均しか無いことを言っておく。
+    const noYesterday = !openStoresOn(insights, addDays(key, -1), shift)
+      ? "前日の実績が手元にないので、"
+      : "";
     const lead = hasPartialRecord
       ? `この日の${shift}の記録だけが手元にありません（休みとは限りません）。`
       : isPast
@@ -403,8 +412,8 @@
       badgeClass: "is-tendency",
       weekdayBucket: bucket,
       summary:
-        `${lead}${weekdayName}曜日の${shift}の、過去1年の営業率です。` +
-        "予測ではありません。2日以上先は当てになりません。",
+        `${lead}${noYesterday}${weekdayName}曜日の${shift}の、過去1年の営業率です。` +
+        `${RAW_WEEKDAY_CLAIM}2日以上先は当てになりません。`,
       entries: storesOf(insights).map((store) => {
         const rate = rates[store.id] ?? 0;
         return {
@@ -616,8 +625,11 @@
       ...outlook,
       basis: `${outlook.basis}+home`,
       entries,
+      // 曜日傾向を土台にした場合、表示している数字はもう「曜日の営業率そのもの」
+      // ではないので、そう言い切っている一文を外す。残すと本文の中で矛盾する。
       summary:
-        `${outlook.summary}この予定表の配属は${named}で、そのぶん配分を寄せています。` +
+        `${outlook.summary.replace(RAW_WEEKDAY_CLAIM, "")}` +
+        `この予定表の配属は${named}で、そのぶん配分を寄せています。` +
         (movesText ? `配属者の人数で${movesText}と動きます。` : "") +
         flatText
     };
