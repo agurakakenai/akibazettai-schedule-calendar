@@ -1168,6 +1168,26 @@ for (const cell of withClass(calendar, "calendar-day")) {
 }
 assert.ok(cappedShifts > 0, "some shift must hit the ceiling, or this is untested");
 
+// 未提出の注意書きは、カレンダーの下に1行だけ出す。シフトごとに繰り返さない。
+{
+  const line = elementById("schedule-pending-note");
+  const pending = insights.schedulePending?.pending ?? [];
+  if (pending.length > 0) {
+    assert.equal(line.hidden, false, "with names outstanding the line must be shown");
+    assert.ok(line.textContent.includes(`${pending.length}名`), "the line must count them");
+    assert.ok(line.title, "the line must carry the detail in a tooltip");
+    assert.ok(
+      (line.getAttribute("aria-label") ?? "").includes("実際より少なめ"),
+      "screen readers must get the same warning as the tooltip"
+    );
+    for (const name of pending) {
+      assert.ok(line.title.includes(name), `${name} must be named in the detail`);
+    }
+  } else {
+    assert.equal(line.hidden, true, "with nobody outstanding the line must stay hidden");
+  }
+}
+
 // 判定していない日には印を付けない。「全員が昇格済み」ではなく「分からない」ため。
 const unjudgedDay = Object.keys(insights.actualRoster ?? {}).find((key) =>
   insights.shifts.some((s) => insights.actualRoster[key][s] && !insights.actualRoster[key][s].trainees)

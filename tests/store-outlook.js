@@ -30,6 +30,7 @@ const {
   recordedAssignment,
   recordedRoster,
   sameDayDecisionNote,
+  schedulePendingNote,
   scheduleSystemNote,
   sortByAssignedStore,
   spreadNote,
@@ -1317,6 +1318,61 @@ assert.equal(
     "no note without a recorded change"
   );
   assert.equal(scheduleSystemNote(insights, null), null, "no note without a date to compare");
+}
+
+// 予定表をまだ出していない在籍者。揃えば自分で黙る。
+{
+  const pending = insights.schedulePending;
+  assert.ok(Array.isArray(pending?.pending), "schedulePending must list who has not posted");
+  assert.ok(pending.rostered > 0, "schedulePending must say how many are rostered");
+  assert.ok(
+    pending.pending.length > 0,
+    "everyone has posted, so this display is untested — remove the note or seed a case"
+  );
+
+  const note = schedulePendingNote(insights);
+  assert.ok(note, "with names outstanding the page must say so");
+  assert.ok(
+    note.short.includes(`${pending.pending.length}名`),
+    "the visible line must say how many have not posted"
+  );
+  assert.ok(
+    note.short.includes(`${pending.rostered}名`),
+    "the visible line must say how many that is out of"
+  );
+  // 名前と回数は控えめに。読み手が「誰が抜けているか」を確かめられればよい。
+  for (const name of pending.pending) {
+    assert.ok(note.long.includes(name), `${name} must be named in the detail`);
+  }
+  assert.ok(
+    note.long.includes("実際より少なめ"),
+    "the detail must say which way the line-up is wrong"
+  );
+  assert.ok(
+    note.long.includes("店も少なめ"),
+    "the detail must say that the shop count leans the same way"
+  );
+  // 窓の長さはデータに入っていない。1シフトあたりに直すと分母を推測することになる。
+  assert.doesNotMatch(
+    note.long,
+    /1シフト|\d+日|\d+人ぶん/,
+    "the note must not invent a per-shift figure from a window it cannot see"
+  );
+
+  // 揃えば黙る。時間ではなく提出状況で消えるのが、この注意書きの取り柄。
+  assert.equal(
+    schedulePendingNote({ schedulePending: { ...pending, pending: [] } }),
+    null,
+    "once everyone has posted there is nothing to warn about"
+  );
+  assert.equal(schedulePendingNote({}), null, "without the table, say nothing");
+  // 回数が分からない人がいても落ちない。名前だけ出す。
+  const sparse = schedulePendingNote({
+    schedulePending: { rostered: 3, pending: ["だれか"], recentShifts: {} }
+  });
+  assert.ok(sparse, "a name with no recent count is still worth reporting");
+  assert.ok(sparse.long.includes("だれか"), "the name must survive a missing count");
+  assert.doesNotMatch(sparse.long, /だれか（最近/, "a missing count must not print as blank");
 }
 
 // 店舗ごとにまとめる。店は店舗の並び順、店の中はサイト掲載順（渡した順）のまま。
