@@ -218,10 +218,14 @@ for (const date of partialDates) {
         outlook.entries.every((entry) => entry.state !== "closed"),
         `${date} ${shift} must not claim any store was closed`
       );
-      assert.ok(
-        outlook.summary.includes("休みとは限りません"),
-        `${date} ${shift} must say the missing record is not a closure`
-      );
+      // 過ぎた日の抜けは「記録が無いだけ」と断る。ただし記録の最終日そのものは、
+      // 欠けている側がまだ来ていないシフトなので、そう書くと誤解させる。
+      if (date < lastActual) {
+        assert.ok(
+          outlook.summary.includes("休みとは限りません"),
+          `${date} ${shift} must say the missing record is not a closure`
+        );
+      }
     }
   }
 }
@@ -1112,14 +1116,76 @@ assert.equal(
       assert.equal(rateOf(id), weekday[id], `${date} ${missing}: ${id} は曜日傾向のまま`);
     }
     // 過ぎた日に出るときは、記録が無いだけで休みではないと断る。
-    if (date <= lastActual) {
+    // 記録の最終日は別で、欠けている側はまだ来ていないシフトなので断らない。
+    if (date < lastActual) {
       assert.ok(
         outlook.summary.includes("休みとは限りません"),
         `${date} ${missing} must say the missing record is not a closure`
       );
     }
+    if (date === lastActual) {
+      assert.ok(
+        !outlook.summary.includes("休みとは限りません"),
+        `${date} ${missing} has not happened yet, so it is not a missing record`
+      );
+    }
+  }
+
+  // 記録の最終日で欠けているシフトは、どの経路に落ちても「記録がありません」と
+  // 言ってはいけない。まだ来ていないだけで、取りこぼしたわけではない。
+  for (const shift of insights.shifts) {
+    if (insights.actual[lastActual][shift]) {
+      continue;
+    }
+    const outlook = outlookFor(lastActual, shift);
+    assert.ok(
+      !outlook.summary.includes("記録だけが手元にありません"),
+      `${lastActual} ${shift} is still to come, whatever ${outlook.basis} it falls back to`
+    );
+  }
+
+  // 逆に、過ぎた日で片方だけ欠けているなら、どの経路でも必ず断る。
+  for (const date of Object.keys(insights.actual)) {
+    if (date >= lastActual || Object.keys(insights.actual[date]).length !== 1) {
+      continue;
+    }
+    const missing = insights.shifts.find((shift) => !insights.actual[date][shift]);
+    assert.ok(
+      outlookFor(date, missing).summary.includes("休みとは限りません"),
+      `${date} ${missing} is a real gap, so it must not read as a closure`
+    );
   }
   assert.ok(seen > 0, "the fixture must exercise the same-day path at least once");
+
+  // rotation.sameDay は「昼の実績 → 夜の見込み」の向きに作られた表で、
+  // 逆向きの分布とは別物。実測（記録176日）では夜が2号店だった日の昼は
+  // 2号店58%だが、この表を流用すると40%になる。逆向きには使わない。
+  const nightOnly = Object.keys(insights.actual).filter(
+    (date) => insights.actual[date][insights.shifts[1]] && !insights.actual[date][insights.shifts[0]]
+  );
+  for (const date of nightOnly) {
+    const outlook = outlookFor(date, insights.shifts[0]);
+    assert.notEqual(
+      outlook.basis,
+      "sameDay",
+      `${date}: the same-day table only runs ${insights.shifts[0]} to ${insights.shifts[1]}`
+    );
+  }
+
+  // 昼だけ記録のある日は、逆に必ず使う（前日の実績が無いかぎり）。
+  const dayOnly = Object.keys(insights.actual).filter(
+    (date) => insights.actual[date][insights.shifts[0]] && !insights.actual[date][insights.shifts[1]]
+  );
+  const usable = dayOnly.filter(
+    (date) => !openStoresOn(insights, addDays(date, -1), insights.shifts[1])
+  );
+  for (const date of usable) {
+    assert.equal(
+      outlookFor(date, insights.shifts[1]).basis,
+      "sameDay",
+      `${date}: the ${insights.shifts[0]} record must beat the weekday tendency`
+    );
+  }
 }
 
 // 制度変更（上旬・下旬をまとめて事前公開）直後だけ出す注意書き。移行が落ち着けば自動で消える。

@@ -720,6 +720,33 @@ assert.equal(
   }
 }
 
+// 店舗数の閾値は roster の人数で測ってあること。予定表に載るのは roster の人だけなので、
+// 見習いやサイト未掲載の人まで数えた人数で測ると、母数が違うぶん店舗数を読み違える。
+{
+  const byOpen = insights.rosterHeadcountByOpenCount;
+  assert.ok(byOpen, "rosterHeadcountByOpenCount must exist");
+  for (const shift of insights.shifts) {
+    const table = byOpen[shift];
+    assert.ok(table, `${shift} must have headcounts per shop count`);
+    const counts = Object.keys(table).map(Number).sort((a, b) => a - b);
+    assert.ok(counts.length >= 2, `${shift} must cover more than one shop count`);
+    // 店舗が増えれば人数も増える。逆転していたら測り方が壊れている。
+    for (let index = 1; index < counts.length; index += 1) {
+      assert.ok(
+        table[String(counts[index])].mean > table[String(counts[index - 1])].mean,
+        `${shift}: ${counts[index]}店 must need more people than ${counts[index - 1]}店`
+      );
+    }
+    // 1店舗の平均人数は、最初の閾値を超えない。超えていたら別の母数で測っている。
+    const thresholds = insights.openCountByHeadcount[shift];
+    assert.ok(
+      table[String(counts[0])].mean <= thresholds[0] + 1,
+      `${shift}: ${counts[0]}店の平均 ${table[String(counts[0])].mean} 人は ` +
+        `閾値 ${thresholds[0]} と釣り合わない（母数が違う疑い）`
+    );
+  }
+}
+
 console.log(
   `Store insights valid: ${insights.stores.length} stores, ` +
     `${actualEntries.length} recorded dates through ${Object.keys(insights.actual).sort().at(-1)}, ` +

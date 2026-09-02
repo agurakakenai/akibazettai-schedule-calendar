@@ -333,13 +333,31 @@
     };
   }
 
+  // その日の記録が片方だけのとき、欠けている側は「取りこぼした」のか
+  // 「まだ来ていない」のか。記録の最終日で、記録済みより後のシフトを訊かれて
+  // いるなら後者で、「記録がありません」と書くと誤解させる。
+  function isShiftStillToCome(insights, key, shift, lastActualDate) {
+    if (!lastActualDate || key !== lastActualDate) {
+      return false;
+    }
+    const shifts = insights?.shifts ?? [];
+    const asked = shifts.indexOf(shift);
+    const latestRecorded = shifts.reduce(
+      (latest, candidate, index) =>
+        insights.actual?.[key]?.[candidate] ? index : latest,
+      -1
+    );
+    return asked > latestRecorded && latestRecorded >= 0;
+  }
+
   function tendencyOutlook(insights, key, shift, lastActualDate) {
     const bucket = weekdayBucket(insights, key);
     const rates = insights.weekdayOpenRate?.[shift]?.[bucket];
     if (!rates) {
       return null;
     }
-    const hasPartialRecord = Boolean(insights.actual?.[key]);
+    const hasPartialRecord =
+      Boolean(insights.actual?.[key]) && !isShiftStillToCome(insights, key, shift, lastActualDate);
     const isPast = Boolean(lastActualDate) && key <= lastActualDate;
     const weekdayName = WEEKDAY_LABELS[weekdayIndex(key)];
     const lead = hasPartialRecord
@@ -383,6 +401,14 @@
     if (!other) {
       return null;
     }
+    // この表は「昼の実績 → 夜の見込み」の向きに作られている。逆に当てると
+    // 別の分布になる。実測（記録176日）では夜が2号店だった日の昼は2号店が58%
+    // だが、この表を流用すると40%と出る。夜だけ記録のある日は稀なので、
+    // 向きが合わないときは何もせず曜日傾向に落とす。
+    const [fromShift, toShift] = insights.shifts ?? [];
+    if (shift !== toShift || other !== fromShift) {
+      return null;
+    }
     const known = openStoresOn(insights, key, other);
     const bucket = weekdayBucket(insights, key);
     const weekday = insights.weekdayOpenRate?.[shift]?.[bucket];
@@ -413,7 +439,11 @@
     const leader = rivals.reduce((best, entry) => (entry.rate > best.rate ? entry : best));
     // 過ぎた日にこれが出るのは、その日のもう片方の記録だけが欠けているとき。
     // 見込みを実績と読まれると「休みだった」ことになってしまうので、先に断る。
-    const isPast = Boolean(lastActualDate) && key <= lastActualDate;
+    // 記録の最終日で欠けている側は、記録し損ねたのではなくまだ来ていないので除く。
+    const isPast =
+      Boolean(lastActualDate) &&
+      key <= lastActualDate &&
+      !isShiftStillToCome(insights, key, shift, lastActualDate);
     const lead = isPast
       ? `この日の${shift}の記録だけが手元にありません（休みとは限りません）。`
       : "";
