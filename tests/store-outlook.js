@@ -25,6 +25,8 @@ const {
   nearMissStores,
   openStoresOn,
   openStoresOnDay,
+  recordedAssignment,
+  recordedRoster,
   sameDayDecisionNote,
   scheduleSystemNote,
   sortByAssignedStore,
@@ -299,16 +301,18 @@ assert.equal(
 // --- メイドさんの店舗 ---------------------------------------------------
 // ふだんの傾向だけで1人ずつ決めると、ほぼ毎日開いている1号店に全員が寄ってしまう。
 // 割り振りはそれを避けるためのものなので、まず「寄ってしまう」ことを確認しておく。
-const shareWinners = new Set(
-  schedule.roster.map((name) => {
-    const share = insights.maidTendency[name].share;
-    return ["s1", "s2", "s3", "s4"].reduce((top, id) => (share[id] > share[top] ? id : top), "s1");
-  })
-);
-assert.deepEqual(
-  [...shareWinners],
-  ["s1"],
-  "share alone points every maid at the same store, which is why the assignment exists"
+// 「全員が1号店」と書くと、僅差の1人が入れ替わっただけで落ちる。実際に
+// 2026-09-02 の実績を足した時点で、ねむりさんが s4 35.5% / s1 34.5% と逆転した。
+// 見たいのは「傾向だけだと1つの店に潰れる」ことなので、割合で言う。
+const shareWinners = schedule.roster.map((name) => {
+  const share = insights.maidTendency[name].share;
+  return ["s1", "s2", "s3", "s4"].reduce((top, id) => (share[id] > share[top] ? id : top), "s1");
+});
+const towardS1 = shareWinners.filter((id) => id === "s1").length;
+assert.ok(
+  towardS1 >= shareWinners.length * 0.9,
+  "share alone points almost every maid at one store, which is why the assignment exists; " +
+    `got ${towardS1}/${shareWinners.length} at s1`
 );
 
 const dayPool = schedule.schedule["2026-09-03"]["昼"].map((entry) => entry.name);
@@ -367,14 +371,14 @@ for (const name of dayPool) {
 // 実績のある日は、実際に開いていた店にだけ割り振る。
 const recordedPool = schedule.schedule["2026-09-03"]["昼"].map((entry) => entry.name);
 const recordedOutlook = outlookFor(lastActual, "昼");
-const recordedAssignment = getShiftAssignment({
+const recordedPlacement = getShiftAssignment({
   insights,
   members: recordedPool,
   shift: "昼",
   outlook: recordedOutlook
 });
 assert.deepEqual(
-  [...recordedAssignment.storeIds].sort(),
+  [...recordedPlacement.storeIds].sort(),
   [...insights.actual[lastActual]["昼"]].sort(),
   "a recorded shift must only place maids in the stores that were open"
 );
@@ -642,6 +646,11 @@ for (const [date, day] of Object.entries(schedule.schedule)) {
 const eventShiftsPreview = eventShifts;
 assert.ok(eventShifts.length > 0, "the fixture must contain at least one event shift");
 
+// 記念日が過去になった日は確率の検査から外れる。全部が過去になると、この節が
+// 何も見ないまま通ってしまうので、見込みの日が残っていることを最後に確かめる。
+let forecastEventShifts = 0;
+let pastEventShifts = 0;
+
 for (const { date, shift, entries } of eventShifts) {
   // アプリと同じく公式サイトの配属を渡す。推定側の経路は下の単体テストで見る。
   const pins = eventStorePins({ insights, entries, homeStore: schedule.homeStore });
@@ -659,6 +668,14 @@ for (const { date, shift, entries } of eventShifts) {
   }
 
   const base = outlookFor(date, shift);
+  // 記念日が過ぎると、その日は見込みではなく実績になる。実績には確率が無いので
+  // 「確定させる」対象でもない（2026-09-01 のもなかさん周年で実際に起きた）。
+  // 主役の立ち位置はここまでで見ているので、確率の話だけを飛ばす。
+  if (base.basis === "actual") {
+    pastEventShifts += 1;
+    continue;
+  }
+  forecastEventShifts += 1;
   const withEvent = applyEventCertainty(insights, base, pins);
   const pinnedStores = new Set([...pins.values()].map((pin) => pin.storeId));
 
@@ -721,6 +738,12 @@ for (const { date, shift, entries } of eventShifts) {
     "pinning the host must not drop anyone else from the assignment"
   );
 }
+
+assert.ok(
+  forecastEventShifts > 0,
+  `at least one event shift must still be a forecast, or this section checks nothing ` +
+    `(${pastEventShifts} of ${eventShifts.length} have already happened)`
+);
 
 // 実績のある日は記録が最優先で、イベントで上書きしない。
 const recordedShift = outlookFor(lastActual, "昼");
@@ -862,7 +885,10 @@ assert.equal(
   }
 
   // イベント開催店は人数に関係なく必ず候補に残る。
-  const eventShift = eventShiftsPreview[0];
+  // 過ぎた記念日は実績になり applyEventCertainty が素通しするので、見込みの日を選ぶ。
+  const eventShift = eventShiftsPreview.find(
+    (candidate) => outlookFor(candidate.date, candidate.shift).basis !== "actual"
+  );
   if (eventShift) {
     const pinned = applyEventCertainty(
       insights,
@@ -1351,12 +1377,33 @@ assert.equal(
 }
 
 // 店舗だけ分かっていて顔ぶれの記録が無い日は、実績として扱いつつ、その旨を断る。
+// 顔ぶれの記録が届くと、その日は openings.csv から shifts.csv に移り、ここの検体は
+// 消える（2026-09-02 が実際にそうなった）。検体の有無で検査が消えないよう、
+// 合成した1日で仕組みを固定し、実データがあるときは追加で確かめる。
 {
-  const storesOnly = insights.actualWithoutRoster ?? {};
-  const dates = Object.keys(storesOnly);
-  assert.ok(dates.length > 0, "the fixture must contain a stores-only record to exercise this");
+  const probeDate = "2026-08-31";
+  const probe = JSON.parse(JSON.stringify(insights));
+  probe.actual[probeDate] = { 昼: ["s1"] };
+  probe.actualWithoutRoster = { [probeDate]: { 昼: ["s1"] } };
+  const probed = getStoreOutlook({
+    insights: probe,
+    dateKey: probeDate,
+    shift: "昼",
+    lastActualDate: lastActualDateOf(probe)
+  });
+  assert.equal(probed.basis, "actual", "a stores-only day is recorded, even without a line-up");
+  assert.deepEqual(
+    [...probed.openStores].sort(),
+    ["s1"],
+    "a stores-only day must report exactly the stores we were told about"
+  );
+  assert.ok(
+    probed.summary.includes("誰がいたかの記録はありません"),
+    "a stores-only day must admit the line-up is unknown"
+  );
 
-  for (const date of dates) {
+  const storesOnly = insights.actualWithoutRoster ?? {};
+  for (const date of Object.keys(storesOnly)) {
     for (const [shift, stores] of Object.entries(storesOnly[date])) {
       // 顔ぶれが無いだけで営業したことは確かなので、見込みには落とさない。
       const outlook = outlookFor(date, shift);
@@ -2062,6 +2109,124 @@ assert.equal(
   );
   assert.equal(itineraryConfidence(insights, 0), null, "a settled month has nothing to warn about");
   assert.equal(itineraryConfidence({}, 5), null, "without a measured rate, say nothing");
+}
+
+// --- 記録のある日の顔ぶれ ---------------------------------------------
+{
+  const recordedDays = Object.keys(insights.actualRoster ?? {}).sort();
+  assert.ok(recordedDays.length > 0, "the insights must carry some recorded line-ups");
+  const day = recordedDays.at(-1);
+  const shift = insights.shifts.find((s) => insights.actualRoster[day][s]);
+  assert.ok(shift, "the last recorded day must name a shift");
+
+  const record = insights.actualRoster[day][shift];
+  const assignment = recordedAssignment(insights, day, shift);
+  assert.ok(assignment.recorded, "a recorded line-up must say so");
+  assert.deepEqual(
+    [...assignment.storeIds],
+    insights.stores.map((store) => store.id).filter((id) => record.stores[id]),
+    "the shops must stay in store order"
+  );
+  const everyone = Object.values(record.stores).flat();
+  assert.equal(assignment.byMaid.size, everyone.length, "everyone in the record must be placed");
+  for (const [id, names] of Object.entries(record.stores)) {
+    for (const name of names) {
+      assert.equal(assignment.byMaid.get(name).storeId, id, `${name} must stay at ${id}`);
+    }
+    assert.equal(assignment.capacity[id], names.length, "capacity must be what the record says");
+  }
+  // 記録の日に「確率」を語らない。誰がどこにいたかは分かっている。
+  const chip = getMaidStoreOutlook({
+    insights,
+    name: everyone[0],
+    shift,
+    outlook: outlookFor(day, shift),
+    assignment,
+    unpostedMaids: new Set(schedule.unpostedMaids ?? [])
+  });
+  assert.equal(chip.basis, "actual", "a recorded shift must not be described as a probability");
+  assert.doesNotMatch(chip.title, /\d+%/, "a recorded shift must not quote odds");
+
+  // 見習いの印。判定した日だけ付ける。
+  assert.ok(Array.isArray(record.trainees), "the newest record must have been judged");
+  assert.equal(assignment.traineesJudged, true, "a judged day must say it was judged");
+  for (const name of everyone) {
+    assert.equal(
+      assignment.byMaid.get(name).trainee,
+      record.trainees.includes(name),
+      `${name} must carry the record's own verdict`
+    );
+  }
+
+  // 判定していない日は「全員が昇格済み」ではない。誰にも印を付けない。
+  const unjudged = recordedDays.find((key) =>
+    insights.shifts.some((s) => insights.actualRoster[key][s] && !insights.actualRoster[key][s].trainees)
+  );
+  assert.ok(unjudged, "the record must reach back past the window where trainees are judged");
+  const unjudgedShift = insights.shifts.find(
+    (s) => insights.actualRoster[unjudged][s] && !insights.actualRoster[unjudged][s].trainees
+  );
+  const older = recordedAssignment(insights, unjudged, unjudgedShift);
+  assert.equal(older.traineesJudged, false, "an unjudged day must say it was not judged");
+  assert.deepEqual(
+    [...new Set([...older.byMaid.values()].map((placed) => placed.trainee))],
+    [null],
+    "without a verdict every maid must read as unknown, not as promoted"
+  );
+
+  // 並びは公式の掲載順。予定表に載らない方はその後ろ。
+  const listed = new Map(schedule.roster.map((name, index) => [name, index]));
+  const { entries } = recordedRoster({
+    insights,
+    dateKey: day,
+    shift,
+    schedule: schedule.schedule,
+    roster: schedule.roster
+  });
+  assert.equal(entries.length, everyone.length, "the record must not lose anyone on the way out");
+  const ranks = entries.map((entry) => (listed.has(entry.name) ? listed.get(entry.name) : Infinity));
+  assert.deepEqual(
+    ranks.filter(Number.isFinite),
+    [...ranks.filter(Number.isFinite)].sort((a, b) => a - b),
+    "the listed maids must keep the official order"
+  );
+  assert.deepEqual(
+    ranks,
+    [...ranks.filter(Number.isFinite), ...ranks.filter((rank) => !Number.isFinite(rank))],
+    "maids the rota never listed must come after the ones it did"
+  );
+  assert.ok(
+    entries.some((entry) => entry.listed === false),
+    "this record must include someone the rota does not list, or the ordering is untested"
+  );
+
+  // 記録がある日は、記録が顔ぶれを決める。予定表にいてもお休みだった方は出さない。
+  const posted = (schedule.schedule[day]?.[shift] ?? []).map((entry) => entry.name);
+  const missing = posted.filter((name) => !assignment.byMaid.has(name));
+  assert.ok(
+    missing.length > 0,
+    "this day must have someone who was on the rota but not in the record, or the rule is untested"
+  );
+  assert.deepEqual(
+    entries.filter((entry) => missing.includes(entry.name)),
+    [],
+    "someone who did not turn up must not be listed as unfinished business"
+  );
+
+  // 見込みの日には記録が無い。予定表からの割り振りに戻る。
+  const future = Object.keys(schedule.schedule).sort().at(-1);
+  assert.equal(
+    recordedRoster({
+      insights,
+      dateKey: future,
+      shift,
+      schedule: schedule.schedule,
+      roster: schedule.roster
+    }),
+    null,
+    "a day we have no record for must fall back to the rota"
+  );
+  assert.equal(recordedAssignment(insights, future, shift), null, "no record, no recorded placement");
 }
 
 console.log(

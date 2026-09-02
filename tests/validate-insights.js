@@ -838,6 +838,133 @@ assert.equal(
   }
 }
 
+// --- 実績の顔ぶれ -------------------------------------------------------
+// カレンダーが「実績」と書く日に予定表からの割り振りを出すと、店は記録なのに
+// 名前だけ推測、という混ざった状態になる。actualRoster はそれを避けるための
+// 記録なので、actual と食い違っていないことを確かめる。
+{
+  const roster = new Set(insights.actualRoster ? Object.keys(insights.actualRoster) : []);
+  assert.ok(roster.size > 0, "there must be recorded days with a line-up");
+
+  const rosterNames = new Set(Object.keys(insights.maidTendency ?? {}));
+  // build-insights.py の ALIAS。記録側の表記をキーに、名簿の表記を値に持つ。
+  const aliasSources = new Map([["まこと", "まこっちゃん"]]);
+  for (const [recorded, listed] of aliasSources) {
+    assert.ok(
+      schedule.roster.includes(listed),
+      `the roster must still call her ${listed}; if that changed, ` +
+        `the mapping from ${recorded} needs changing with it`
+    );
+  }
+  let traineeTotal = 0;
+  let judgedShifts = 0;
+  let unjudgedShifts = 0;
+  for (const [date, byShift] of Object.entries(insights.actualRoster)) {
+    for (const [shift, value] of Object.entries(byShift)) {
+      assert.ok(value && value.stores, `${date} ${shift} must carry a line-up per shop`);
+      const ids = Object.keys(value.stores);
+      assert.ok(ids.length > 0, `${date} ${shift} must name at least one shop`);
+      assert.deepEqual(
+        [...ids].sort(),
+        [...(insights.actual[date]?.[shift] ?? [])].sort(),
+        `${date} ${shift} must open exactly the shops the record says`
+      );
+      for (const id of ids) {
+        assert.ok(value.stores[id].length > 0, `${date} ${shift} ${id} must not be empty`);
+      }
+      // 同じシフトで2店に名前が出ることは実際にある（応援に入った日など）ので、
+      // 重複そのものは咎めない。見習いの印がその日の顔ぶれから外れていないかだけ見る。
+      const everyone = new Set(Object.values(value.stores).flat());
+      // 記録は公式Xの投稿から起こしているので、表記が名簿と違うことがある
+      // （まこっちゃんさんは記録では「まこと」）。ここで名簿の表記に直しておかないと、
+      // 画面が照合できず、在籍しているのに一覧に無い人として描かれる。この取り違えは
+      // 画面からは「見習いでもない知らない人」に見えるだけで、原因が分からない。
+      for (const name of everyone) {
+        assert.ok(
+          !aliasSources.has(name),
+          `${date} ${shift}: ${name} is the record's spelling; ` +
+            `the roster calls her ${aliasSources.get(name)}, so the calendar cannot match her`
+        );
+      }
+      if (!value.trainees) {
+        // 見習いの判定は直近の窓の中だけ。窓の外は「分からない」であって
+        // 「全員ノーマル」ではないので、キーごと落ちているのが正しい。
+        unjudgedShifts += 1;
+        continue;
+      }
+      for (const name of value.trainees) {
+        assert.ok(everyone.has(name), `${date} ${shift}: ${name} is marked as a trainee but absent`);
+      }
+      traineeTotal += value.trainees.length;
+      judgedShifts += 1;
+    }
+  }
+  // 見習いは X のアカウントを持たない人。全員が見習い、あるいは誰も見習いでない、
+  // という状態は読み違いを疑う。
+  assert.ok(judgedShifts > 0, "the trainee window must cover some of the recorded days");
+  assert.ok(
+    traineeTotal > 0,
+    "no shift in the window has a trainee, which would mean everyone already has an account"
+  );
+  const latest = Object.keys(insights.actualRoster).sort().at(-1);
+  const newest = insights.actualRoster[latest];
+  const anyShift = Object.values(newest)[0];
+  assert.ok(
+    Object.values(anyShift.stores).flat().some((name) => rosterNames.has(name)),
+    `${latest} must still contain maids the site lists, not only trainees`
+  );
+  console.log(
+    `  actualRoster: ${judgedShifts} shifts judged (${unjudgedShifts} outside the window), ` +
+      `${(traineeTotal / judgedShifts).toFixed(2)} trainees per shift`
+  );
+
+  // 同じ名前で、卒業した方のアカウントが残っていることがある。それを昇格の
+  // 証拠に使うと、いまお給仕に出ている見習いさんが印を失う。ひじりさんが実例で、
+  // hijiri_zettai は 2019 年作成・プロフィールに卒業表記、いまのひじりさんの
+  // 初日は 2026-08-03。ここを間違えると画面からは気づけないので、名簿を読んで見る。
+  const readCsv = (name) => {
+    const file = path.join(__dirname, "..", "tools", "data", name);
+    if (!fs.existsSync(file)) {
+      return [];
+    }
+    const rows = fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "").trim().split(/\r?\n/);
+    const head = (rows[0].match(/"([^"]*)"/g) ?? []).map((s) => s.slice(1, -1));
+    return rows.slice(1).map((line) => {
+      const cells = (line.match(/"([^"]*)"/g) ?? []).map((s) => s.slice(1, -1));
+      return Object.fromEntries(head.map((key, i) => [key, cells[i] ?? ""]));
+    });
+  };
+  const debuts = new Map(readCsv("debuts.csv").map((row) => [row.name, row.date]));
+  const stale = readCsv("accounts.csv").filter(
+    (row) => row.handle && (row.source === "卒業済み" || (row.created && debuts.get(row.name)
+      && Number(row.created) < Number(debuts.get(row.name).slice(0, 4))))
+  );
+  for (const row of stale) {
+    const debut = debuts.get(row.name);
+    if (!debut) {
+      continue;
+    }
+    const worked = Object.entries(insights.actualRoster).filter(
+      ([date, byShift]) =>
+        date >= debut &&
+        Object.values(byShift).some(
+          (value) => value.trainees && Object.values(value.stores).flat().includes(row.name)
+        )
+    );
+    if (worked.length === 0) {
+      continue;
+    }
+    const marked = worked.some(([, byShift]) =>
+      Object.values(byShift).some((value) => (value.trainees ?? []).includes(row.name))
+    );
+    assert.ok(
+      marked,
+      `${row.name} has an account (${row.handle}) that predates her debut on ${debut}, ` +
+        "so it must not be read as her promotion"
+    );
+  }
+}
+
 console.log(
   `Store insights valid: ${insights.stores.length} stores, ` +
     `${actualEntries.length} recorded dates through ${Object.keys(insights.actual).sort().at(-1)}, ` +
