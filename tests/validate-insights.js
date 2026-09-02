@@ -1074,6 +1074,41 @@ assert.equal(
     console.log(`  maid accuracy: ${withAcc.length} maids, r=${r.toFixed(3)} against spread`);
   }
 
+// 昼にいた店から夜にいる店への移り方。昼の記録が届いた時点で夜に使える。
+{
+  const all = insights.sameDayMaidMove ?? {};
+  assert.ok(Object.keys(all).length >= 3, "the same-day move table must cover the shops");
+  for (const [from, table] of Object.entries(all)) {
+    assert.ok(table.n > 0, `${from} has no measurements behind it`);
+    const total = Object.values(table.to).reduce((a, b) => a + b, 0);
+    assert.ok(
+      Math.abs(total - 1) < 0.02,
+      `the moves out of ${from} sum to ${total.toFixed(3)}, which is not a distribution`
+    );
+  }
+  // 「開いているから残る」ではない。残るほうが多数派になったら、数え方を疑う。
+  const staying = Object.entries(all).filter(([from, t]) => (t.to[from] ?? 0) > 0.5);
+  assert.ok(
+    staying.length <= 1,
+    `${staying.map(([s]) => s).join(", ")} keep more than half their lunch staff; ` +
+      "the record says most maids move, so this is measuring something else"
+  );
+  const perMaid = Object.entries(insights.maidTendency ?? {})
+    .filter(([, t]) => t && t.sameDayMove);
+  assert.ok(perMaid.length >= 10, "too few maids have their own move table to be worth having");
+  for (const [name, t] of perMaid) {
+    for (const [from, table] of Object.entries(t.sameDayMove)) {
+      assert.ok(table.n >= 3, `${name}'s ${from} table rests on ${table.n} shifts`);
+      const total = Object.values(table.to).reduce((a, b) => a + b, 0);
+      assert.ok(
+        Math.abs(total - 1) < 0.02,
+        `${name}'s moves out of ${from} sum to ${total.toFixed(3)}`
+      );
+    }
+  }
+  console.log(`  same-day moves: ${perMaid.length} maids with their own table`);
+}
+
 console.log(
   `Store insights valid: ${insights.stores.length} stores, ` +
     `${actualEntries.length} recorded dates through ${Object.keys(insights.actual).sort().at(-1)}, ` +
