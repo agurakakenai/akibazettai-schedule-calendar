@@ -99,10 +99,9 @@
   // 予定表をまだ出していない在籍者。揃うまで、画面の顔ぶれは実際より薄い。
   // 人数から店舗数を決めているので、開く店も少なめに出ることがある。
   //
-  // 「何人ぶん薄いか」は書かない。recentShifts が何日ぶんの回数なのかはデータに
-  // 入っていないので、1シフトあたりに直すには窓の長さを推測することになる。
-  // 推測した分母で割った数字は、根拠のある数字の顔をしてしまう。
-  // 出せるのは「何名が未提出か」と「その方たちが最近どれだけ出ていたか」まで。
+  // 「何人ぶん薄いか」は windowShifts で割って出す。この分母はデータに入って
+  // いるので推測にならない。入っていないときは書かない。推測した分母で割った
+  // 数字は、測った数字の顔をしてしまう。
   function schedulePendingNote(insights) {
     const pending = insights?.schedulePending;
     const names = pending?.pending;
@@ -115,11 +114,17 @@
       .map((name) => (counts[name] > 0 ? `${name}（最近${counts[name]}回）` : name))
       .join("・");
     const total = pending.rostered;
+    const window = pending.windowShifts;
+    const worked = names.reduce((sum, name) => sum + (counts[name] ?? 0), 0);
+    const perShift = window > 0 && worked > 0
+      ? `同じペースなら1シフトあたり${(worked / window).toFixed(1)}人ぶんです。`
+      : "";
+    const head = `${total > 0 ? `在籍${total}名のうち` : ""}${names.length}名が、まだ予定を出していません`;
     return {
-      short: `${total > 0 ? `在籍${total}名のうち` : ""}${names.length}名が、まだ予定を出していません`,
+      short: head,
       long:
-        `${total > 0 ? `在籍${total}名のうち` : ""}${names.length}名が、まだ予定を出していません：${named}。` +
-        "この方たちは表に出ていないので、顔ぶれは実際より少なめです。" +
+        `${head}：${named}。` +
+        `この方たちは表に出ていないので、顔ぶれは実際より少なめです。${perShift}` +
         "人数から開く店の数を決めているぶん、店も少なめに出ることがあります。" +
         "提出が揃えばこの注意書きは消えます"
     };
