@@ -1557,17 +1557,52 @@ assert.equal(
   );
 
   // 1号店は触らない。開く店の数の見込みも動かさない。
-  assert.equal(rateOf(manyS2, "s1"), rateOf(base, "s1"), "the first shop is left alone");
-  const sumOf = (outlook) =>
+  assert.equal(rateOf(manyS2, "s1"), rateOf(base, "s1"), "the first shop is left alone");  const sumOf = (outlook) =>
     ["s2", "s3", "s4"].reduce((total, id) => total + rateOf(outlook, id), 0);
   assert.ok(
     Math.abs(sumOf(manyS2) - sumOf(base)) < 0.001,
     "shifting the balance must not change how many shops are expected to open"
   );
 
+  // 文言に出る割合は表から出ていること。直書きだと集計をやり直したときに
+  // 古くなり、しかも古くなったことに誰も気づかない。表の値を1つずつ
+  // 文言と突き合わせて、どれかが欠けていたら落とす。
+  {
+    const summary = manyS2.summary;
+    const pct = (rate) => `${Math.round(rate * 100)}%`;
+    for (const [id, rows] of Object.entries(insights.secondStoreByHome)) {
+      const rates = Object.values(rows)
+        .filter((entry) => typeof entry?.rate === "number" && entry.n >= 10)
+        .map((entry) => entry.rate);
+      if (rates.length < 2) {
+        continue;
+      }
+      const low = Math.min(...rates);
+      const high = Math.max(...rates);
+      assert.ok(
+        summary.includes(pct(low)) && summary.includes(pct(high)),
+        `${id}: the tooltip must quote ${pct(low)}〜${pct(high)} from the table, ` +
+          `not a figure typed in by hand. Got: ${summary}`
+      );
+    }
+    // 読めない店を「読めません」と名指ししていること。
+    const flattest = Object.entries(insights.secondStoreByHome)
+      .map(([id, rows]) => {
+        const rates = Object.values(rows)
+          .filter((entry) => typeof entry?.rate === "number" && entry.n >= 10)
+          .map((entry) => entry.rate);
+        return { id, width: rates.length >= 2 ? Math.max(...rates) - Math.min(...rates) : 1 };
+      })
+      .reduce((a, b) => (a.width <= b.width ? a : b));
+    const short = insights.stores.find((store) => store.id === flattest.id).short;
+    assert.ok(
+      summary.includes(`${short}は配属者が何人でも`),
+      `${short} moves least, so the tooltip must be the one saying it cannot be read`
+    );
+  }
+
   // 実績の日は書き換えない。
-  const recorded = outlookFor(lastActual, insights.shifts.find((s) => insights.actual[lastActual][s]));
-  assert.equal(
+  const recorded = outlookFor(lastActual, insights.shifts.find((s) => insights.actual[lastActual][s]));  assert.equal(
     applyHomeStaff(insights, recorded, lineUp({ s2: 4 }), homeStore),
     recorded,
     "a recorded shift is not a guess to be adjusted"

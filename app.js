@@ -590,15 +590,54 @@
     const named = ids
       .map((id) => `${storeShort(insights, id)}に${counts.get(id) ?? 0}人`)
       .join("・");
+    // 振れ幅は表から出す。直書きすると集計をやり直したときに古くなるし、
+    // 古くなったことに誰も気づかない（「在籍35名」と同じ轍）。
+    const spreads = ids
+      .map((id) => ({ id, spread: secondStoreSpread(insights, id) }))
+      .filter((row) => row.spread);
+    const widest = spreads.filter((row) => row.spread.width >= 0.15);
+    const flattest = spreads.length
+      ? spreads.reduce((a, b) => (a.spread.width <= b.spread.width ? a : b))
+      : null;
+    const movesText = widest
+      .map(
+        (row) =>
+          `${storeShort(insights, row.id)}は${toPercent(row.spread.low)}〜` +
+          `${toPercent(row.spread.high)}`
+      )
+      .join("、");
+    const flatText =
+      flattest && flattest.spread.width < 0.15
+        ? `${storeShort(insights, flattest.id)}は配属者が何人でも` +
+          `${toPercent(flattest.spread.low)}〜${toPercent(flattest.spread.high)}に収まり、` +
+          `この見方では読めません。`
+        : "";
     return {
       ...outlook,
       basis: `${outlook.basis}+home`,
       entries,
       summary:
         `${outlook.summary}この予定表の配属は${named}で、そのぶん配分を寄せています。` +
-        `2・3号店は配属者の人数でよく動きますが（27%〜54%、23%〜48%）、` +
-        `4号店は0人でも4人でも3割前後で、この見方では読めません。`
+        (movesText ? `配属者の人数で${movesText}と動きます。` : "") +
+        flatText
     };
+  }
+
+  // その店が2番手になる率の、いちばん低いバケットと高いバケット。
+  function secondStoreSpread(insights, storeId) {
+    const table = insights?.secondStoreByHome?.[storeId];
+    if (!table) {
+      return null;
+    }
+    const rates = Object.values(table)
+      .filter((entry) => typeof entry?.rate === "number" && entry.n >= SECOND_STORE_MIN_SAMPLE)
+      .map((entry) => entry.rate);
+    if (rates.length < 2) {
+      return null;
+    }
+    const low = Math.min(...rates);
+    const high = Math.max(...rates);
+    return { low, high, width: high - low };
   }
 
   // その店が2番手になる平均の率。バケットごとの件数で重み付けする。
