@@ -24,6 +24,7 @@ const {
   maidItinerary,
   nearMissNote,
   nearMissStores,
+  openCountCeilingNote,
   openStoresOn,
   openStoresOnDay,
   recordedAssignment,
@@ -2248,6 +2249,51 @@ assert.equal(
     assert.equal(expectedTrainees(insights, s, 0, false), 0, "no shops open, nobody to place");
   }
   assert.equal(expectedTrainees({}, "昼", 2, false), 0, "without a measured rate, guess nothing");
+
+  // 表の上限に当たったとき、「これ以上は数えられない」と断る。
+  // 上限は表の要素数+1。要素数はデータ側が決めるので、ここに書かない。
+  for (const s of insights.shifts) {
+    const ceiling = insights.openCountByHeadcount[s].length + 1;
+    assert.ok(
+      ceiling < insights.stores.length,
+      `${s} の上限が全店に届いているなら、断る場面が無い（テストが空回りする）`
+    );
+    for (let shops = 1; shops < ceiling; shops += 1) {
+      assert.equal(
+        openCountCeilingNote(insights, s, shops),
+        null,
+        `${s} ${shops}店はまだ上限ではないので、断ってはいけない`
+      );
+    }
+    const note = openCountCeilingNote(insights, s, ceiling);
+    assert.ok(note, `${s} ${ceiling}店は上限なので断らなければならない`);
+    assert.ok(note.includes(`${ceiling}店`), "断りは上限が何店かを言わなければならない");
+    // 「上限だから3店」と「3店がいちばんありそう」は違う。そこを言い分ける。
+    assert.ok(
+      note.includes("いちばんありそう、という意味ではなく"),
+      "the note must deny that the ceiling is the most likely answer"
+    );
+    // 根拠の件数は表から引く。記録が増えれば動くので、文言に書かない。
+    const seen = insights.openCountPerShift[s];
+    const counted = Object.values(seen).reduce((sum, value) => sum + value, 0);
+    const above = Object.entries(seen)
+      .filter(([count]) => Number(count) > ceiling)
+      .reduce((sum, [, value]) => sum + value, 0);
+    assert.ok(note.includes(`${counted}件`), "断りは母数を名乗らなければならない");
+    assert.ok(note.includes(`${above}件`), "断りは上限超えが何件あったかを言わなければならない");
+  }
+  assert.equal(openCountCeilingNote(insights, "昼", 0), null, "no shops, nothing to cap");
+  assert.equal(openCountCeilingNote({}, "昼", 3), null, "without a table there is no ceiling");
+  // 上限が全店なら、それより多い店は存在しないので断ることが無い。
+  assert.equal(
+    openCountCeilingNote(
+      { ...insights, openCountByHeadcount: { 昼: [5, 8, 12] } },
+      "昼",
+      4
+    ),
+    null,
+    "when the ceiling is every shop there is nothing left to be unable to count"
+  );
 }
 
 console.log(

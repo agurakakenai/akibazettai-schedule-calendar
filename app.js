@@ -1579,6 +1579,43 @@
     return place ? `${place}。${body}` : body;
   }
 
+  // 開く店の数は実測の表（openCountByHeadcount）から決めている。表は
+  // 「何人を超えたら1店増えるか」の区切りなので、言える最大は要素数+1になる。
+  // いま3要素目が無いのは、記録に4店のシフトが一度も無いからで、
+  // 「4店にはならない」と測ったわけではない。
+  //
+  // だから上限に当たったときは「3店が最有力」ではなく「これ以上は数えられない」
+  // と書く。人数がいくら増えても答えが動かなくなる場所なので、そこだけは断る。
+  function openCountCeilingNote(insights, shift, storeCount) {
+    const table = insights?.openCountByHeadcount?.[shift];
+    const stores = storesOf(insights).length;
+    if (!Array.isArray(table) || table.length === 0 || !(storeCount > 0)) {
+      return null;
+    }
+    const ceiling = table.length + 1;
+    // 上限が全店なら、それ以上は存在しないので断ることが無い。
+    if (storeCount !== ceiling || !(stores > ceiling)) {
+      return null;
+    }
+    const seen = insights?.openCountPerShift?.[shift];
+    const counted = seen
+      ? Object.values(seen).reduce((sum, value) => sum + value, 0)
+      : 0;
+    const above = seen
+      ? Object.entries(seen)
+        .filter(([count]) => Number(count) > ceiling)
+        .reduce((sum, [, value]) => sum + value, 0)
+      : 0;
+    const evidence = counted > 0
+      ? `${ceiling}店より多いシフトは${shift}${counted}件の記録に${above}件しかありません`
+      : `${ceiling}店より多いシフトの記録がありません`;
+    return (
+      `。この${shift}は${ceiling}店で、いまの表で言える上限です。` +
+      `${evidence}。${ceiling}店がいちばんありそう、という意味ではなく、` +
+      `これより多いかどうかを数える材料がありません`
+    );
+  }
+
   if (typeof module !== "undefined" && module.exports) {
     module.exports = {
       addDays,
@@ -1605,6 +1642,7 @@
       maidItinerary,
       nearMissNote,
       nearMissStores,
+      openCountCeilingNote,
       openStoresOn,
       openStoresOnDay,
       recordedAssignment,
@@ -1694,7 +1732,16 @@
     // 僅差で顔ぶれを出せなかった店があれば、そのことも本文に書く。
     const missed = nearMissNote(insights, shift, outlook, members ?? 0);
     const sameDay = sameDayDecisionNote(insights, outlook);
-    wrapper.title = [outlook.summary, sameDay, missed].filter(Boolean).join("");
+    const opening = new Set(
+      outlook.basis === "actual"
+        ? outlook.openStores ?? []
+        : expectedOpenStores(insights, shift, outlook, members ?? 0)
+    );
+    // 記録の日は数え直す必要がない。実際に何店開いたか分かっている。
+    const ceiling = outlook.basis === "actual"
+      ? null
+      : openCountCeilingNote(insights, shift, opening.size);
+    wrapper.title = [outlook.summary, sameDay, missed, ceiling].filter(Boolean).join("");
 
     const nearMiss = new Set(nearMissStores(insights, shift, outlook, members ?? 0));
 
@@ -1711,11 +1758,6 @@
     // 表に出すのは、開くと見込んだ店だけ。確率は出さない。
     // どの店を開けるかは当日決まるので、数字を並べても読み手は選べない。
     // 4店ぶんの割合・根拠・僅差の説明は、上の読み上げ用テキストと title に残す。
-    const opening = new Set(
-      outlook.basis === "actual"
-        ? outlook.openStores ?? []
-        : expectedOpenStores(insights, shift, outlook, members ?? 0)
-    );
 
     outlook.entries
       .filter((entry) => opening.has(entry.store.id) || nearMiss.has(entry.store.id))
@@ -1747,6 +1789,15 @@
     });
 
     wrapper.append(description, list);
+    // 上限に当たった日は、そのことを目に見える形でも言う。ツールチップだけだと
+    // 「3店が最有力」としか読めない。読まれ方が変わる情報は表に出す。
+    if (ceiling) {
+      const capped = document.createElement("p");
+      capped.className = "store-outlook-capped";
+      capped.setAttribute("aria-hidden", "true");
+      capped.textContent = `${opening.size}店までしか数えられません`;
+      wrapper.append(capped);
+    }
     return wrapper;
   }
 

@@ -784,9 +784,16 @@ input[type="date"] {
   border-color: var(--cp-text-soft);
 }
 
+/* 表の上限に当たった日。「3店が最有力」ではなく「数えられない」と伝える。 */
+.store-outlook-capped {
+  margin: 3px 0 0;
+  color: var(--cp-text-soft);
+  font-size: 0.62rem;
+  line-height: 1.4;
+}
+
 /* 誰なのかも、どの店かも分からない見込み。実在の記録より弱く見せる。 */
-.maid-trainee-list {
-  display: flex;
+.maid-trainee-list {  display: flex;
   flex-wrap: wrap;
   gap: 3px 4px;
   margin: 5px 0 0;
