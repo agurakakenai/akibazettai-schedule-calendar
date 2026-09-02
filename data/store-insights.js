@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-03 01:43",
+  "generatedAt": "2026-09-03 01:50",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-09-02"
@@ -9971,6 +9971,44 @@ window.STORE_INSIGHTS = {
       "halfLifeDays": 30
     }
   },
+  "sameDayMaidMove": {
+    "s1": {
+      "n": 615,
+      "to": {
+        "s1": 0.4,
+        "s2": 0.185,
+        "s3": 0.18,
+        "s4": 0.234
+      }
+    },
+    "s2": {
+      "n": 196,
+      "to": {
+        "s1": 0.658,
+        "s2": 0.235,
+        "s3": 0.02,
+        "s4": 0.087
+      }
+    },
+    "s3": {
+      "n": 189,
+      "to": {
+        "s1": 0.757,
+        "s2": 0.011,
+        "s3": 0.212,
+        "s4": 0.021
+      }
+    },
+    "s4": {
+      "n": 130,
+      "to": {
+        "s1": 0.838,
+        "s2": 0.108,
+        "s3": 0.031,
+        "s4": 0.023
+      }
+    }
+  },
   "schedulePending": {
     "rostered": 39,
     "pending": [
@@ -10009,6 +10047,22 @@ window.STORE_INSIGHTS = {
       "accuracy": {
         "rate": 0.674,
         "n": 89
+      },
+      "sameDayMove": {
+        "s1": {
+          "n": 22,
+          "to": {
+            "s1": 0.545,
+            "s2": 0.227,
+            "s4": 0.227
+          }
+        },
+        "s2": {
+          "n": 5,
+          "to": {
+            "s1": 1.0
+          }
+        }
       },
       "workShifts": 52,
       "nightShare": 0.538,
@@ -10081,6 +10135,39 @@ window.STORE_INSIGHTS = {
         "rate": 0.669,
         "n": 124
       },
+      "sameDayMove": {
+        "s3": {
+          "n": 27,
+          "to": {
+            "s1": 0.778,
+            "s2": 0.037,
+            "s3": 0.185
+          }
+        },
+        "s1": {
+          "n": 32,
+          "to": {
+            "s1": 0.375,
+            "s2": 0.25,
+            "s3": 0.219,
+            "s4": 0.156
+          }
+        },
+        "s4": {
+          "n": 6,
+          "to": {
+            "s1": 1.0
+          }
+        },
+        "s2": {
+          "n": 13,
+          "to": {
+            "s1": 0.846,
+            "s2": 0.077,
+            "s4": 0.077
+          }
+        }
+      },
       "workShifts": 72,
       "nightShare": 0.514,
       "pickRate": {
@@ -10151,6 +10238,38 @@ window.STORE_INSIGHTS = {
       "accuracy": {
         "rate": 0.705,
         "n": 176
+      },
+      "sameDayMove": {
+        "s4": {
+          "n": 22,
+          "to": {
+            "s1": 0.773,
+            "s2": 0.227
+          }
+        },
+        "s1": {
+          "n": 65,
+          "to": {
+            "s1": 0.154,
+            "s2": 0.154,
+            "s3": 0.092,
+            "s4": 0.6
+          }
+        },
+        "s2": {
+          "n": 12,
+          "to": {
+            "s1": 0.667,
+            "s2": 0.083,
+            "s4": 0.25
+          }
+        },
+        "s3": {
+          "n": 9,
+          "to": {
+            "s1": 1.0
+          }
+        }
       },
       "workShifts": 99,
       "nightShare": 0.333,
@@ -10223,6 +10342,31 @@ window.STORE_INSIGHTS = {
         "rate": 0.491,
         "n": 53
       },
+      "sameDayMove": {
+        "s3": {
+          "n": 14,
+          "to": {
+            "s1": 0.643,
+            "s3": 0.214,
+            "s4": 0.143
+          }
+        },
+        "s1": {
+          "n": 24,
+          "to": {
+            "s1": 0.375,
+            "s2": 0.167,
+            "s3": 0.208,
+            "s4": 0.25
+          }
+        },
+        "s4": {
+          "n": 4,
+          "to": {
+            "s1": 1.0
+          }
+        }
+      },
       "workShifts": 35,
       "nightShare": 0.543,
       "pickRate": {
@@ -10293,6 +10437,23 @@ window.STORE_INSIGHTS = {
       "accuracy": {
         "rate": 0.779,
         "n": 68
+      },
+      "sameDayMove": {
+        "s2": {
+          "n": 5,
+          "to": {
+            "s1": 0.8,
+            "s4": 0.2
+          }
+        },
+        "s1": {
+          "n": 11,
+          "to": {
+            "s1": 0.727,
+            "s2": 0.091,
+            "s4": 0.182
+          }
+        }
       },
       "workShifts": 41,
       "nightShare": 0.463,
@@ -10365,6 +10526,16 @@ window.STORE_INSIGHTS = {
         "rate": 0.673,
         "n": 49
       },
+      "sameDayMove": {
+        "s1": {
+          "n": 6,
+          "to": {
+            "s1": 0.333,
+            "s2": 0.167,
+            "s4": 0.5
+          }
+        }
+      },
       "workShifts": 26,
       "nightShare": 0.115,
       "pickRate": {
@@ -10435,6 +10606,30 @@ window.STORE_INSIGHTS = {
       "accuracy": {
         "rate": 0.645,
         "n": 31
+      },
+      "sameDayMove": {
+        "s3": {
+          "n": 3,
+          "to": {
+            "s1": 0.667,
+            "s3": 0.333
+          }
+        },
+        "s4": {
+          "n": 4,
+          "to": {
+            "s1": 1.0
+          }
+        },
+        "s1": {
+          "n": 10,
+          "to": {
+            "s1": 0.5,
+            "s2": 0.1,
+            "s3": 0.1,
+            "s4": 0.3
+          }
+        }
       },
       "workShifts": 20,
       "nightShare": 0.25,
@@ -10507,6 +10702,38 @@ window.STORE_INSIGHTS = {
         "rate": 0.609,
         "n": 110
       },
+      "sameDayMove": {
+        "s3": {
+          "n": 16,
+          "to": {
+            "s1": 0.75,
+            "s3": 0.25
+          }
+        },
+        "s1": {
+          "n": 33,
+          "to": {
+            "s1": 0.303,
+            "s2": 0.212,
+            "s3": 0.333,
+            "s4": 0.152
+          }
+        },
+        "s2": {
+          "n": 14,
+          "to": {
+            "s1": 0.857,
+            "s2": 0.143
+          }
+        },
+        "s4": {
+          "n": 3,
+          "to": {
+            "s1": 0.667,
+            "s2": 0.333
+          }
+        }
+      },
       "workShifts": 55,
       "nightShare": 0.527,
       "pickRate": {
@@ -10577,6 +10804,16 @@ window.STORE_INSIGHTS = {
       "accuracy": {
         "rate": 0.781,
         "n": 73
+      },
+      "sameDayMove": {
+        "s3": {
+          "n": 3,
+          "to": {
+            "s1": 0.333,
+            "s2": 0.333,
+            "s3": 0.333
+          }
+        }
       },
       "workShifts": 36,
       "nightShare": 0.056,
@@ -10649,6 +10886,7 @@ window.STORE_INSIGHTS = {
         "rate": 0.806,
         "n": 36
       },
+      "sameDayMove": null,
       "workShifts": 20,
       "nightShare": 0.35,
       "pickRate": {
@@ -10719,6 +10957,32 @@ window.STORE_INSIGHTS = {
       "accuracy": {
         "rate": 0.66,
         "n": 97
+      },
+      "sameDayMove": {
+        "s1": {
+          "n": 19,
+          "to": {
+            "s1": 0.368,
+            "s2": 0.211,
+            "s3": 0.053,
+            "s4": 0.368
+          }
+        },
+        "s4": {
+          "n": 7,
+          "to": {
+            "s1": 0.571,
+            "s4": 0.429
+          }
+        },
+        "s2": {
+          "n": 7,
+          "to": {
+            "s1": 0.286,
+            "s2": 0.286,
+            "s4": 0.429
+          }
+        }
       },
       "workShifts": 54,
       "nightShare": 0.204,
@@ -10791,6 +11055,38 @@ window.STORE_INSIGHTS = {
         "rate": 0.655,
         "n": 113
       },
+      "sameDayMove": {
+        "s3": {
+          "n": 9,
+          "to": {
+            "s1": 0.778,
+            "s3": 0.222
+          }
+        },
+        "s1": {
+          "n": 20,
+          "to": {
+            "s1": 0.5,
+            "s2": 0.1,
+            "s3": 0.3,
+            "s4": 0.1
+          }
+        },
+        "s2": {
+          "n": 4,
+          "to": {
+            "s1": 0.25,
+            "s2": 0.5,
+            "s3": 0.25
+          }
+        },
+        "s4": {
+          "n": 3,
+          "to": {
+            "s1": 1.0
+          }
+        }
+      },
       "workShifts": 61,
       "nightShare": 0.393,
       "pickRate": {
@@ -10861,6 +11157,22 @@ window.STORE_INSIGHTS = {
       "accuracy": {
         "rate": 0.767,
         "n": 60
+      },
+      "sameDayMove": {
+        "s2": {
+          "n": 5,
+          "to": {
+            "s1": 0.2,
+            "s2": 0.8
+          }
+        },
+        "s1": {
+          "n": 3,
+          "to": {
+            "s1": 0.667,
+            "s3": 0.333
+          }
+        }
       },
       "workShifts": 31,
       "nightShare": 0.258,
@@ -10933,6 +11245,31 @@ window.STORE_INSIGHTS = {
         "rate": 0.688,
         "n": 77
       },
+      "sameDayMove": {
+        "s1": {
+          "n": 22,
+          "to": {
+            "s1": 0.682,
+            "s2": 0.182,
+            "s3": 0.045,
+            "s4": 0.091
+          }
+        },
+        "s2": {
+          "n": 6,
+          "to": {
+            "s1": 0.833,
+            "s2": 0.167
+          }
+        },
+        "s4": {
+          "n": 3,
+          "to": {
+            "s1": 0.667,
+            "s3": 0.333
+          }
+        }
+      },
       "workShifts": 50,
       "nightShare": 0.44,
       "pickRate": {
@@ -11004,6 +11341,7 @@ window.STORE_INSIGHTS = {
         "rate": 0.742,
         "n": 31
       },
+      "sameDayMove": null,
       "workShifts": 17,
       "nightShare": 0.824,
       "pickRate": {
@@ -11074,6 +11412,15 @@ window.STORE_INSIGHTS = {
       "accuracy": {
         "rate": 0.736,
         "n": 91
+      },
+      "sameDayMove": {
+        "s1": {
+          "n": 6,
+          "to": {
+            "s1": 0.833,
+            "s2": 0.167
+          }
+        }
       },
       "workShifts": 52,
       "nightShare": 0.385,
@@ -11146,6 +11493,15 @@ window.STORE_INSIGHTS = {
         "rate": 0.607,
         "n": 56
       },
+      "sameDayMove": {
+        "s1": {
+          "n": 5,
+          "to": {
+            "s1": 0.4,
+            "s4": 0.6
+          }
+        }
+      },
       "workShifts": 31,
       "nightShare": 0.645,
       "pickRate": {
@@ -11216,6 +11572,36 @@ window.STORE_INSIGHTS = {
       "accuracy": {
         "rate": 0.764,
         "n": 148
+      },
+      "sameDayMove": {
+        "s2": {
+          "n": 7,
+          "to": {
+            "s1": 0.571,
+            "s2": 0.286,
+            "s3": 0.143
+          }
+        },
+        "s1": {
+          "n": 59,
+          "to": {
+            "s1": 0.729,
+            "s2": 0.102,
+            "s3": 0.169
+          }
+        },
+        "s4": {
+          "n": 3,
+          "to": {
+            "s1": 1.0
+          }
+        },
+        "s3": {
+          "n": 7,
+          "to": {
+            "s1": 1.0
+          }
+        }
       },
       "workShifts": 98,
       "nightShare": 0.429,
@@ -11288,6 +11674,29 @@ window.STORE_INSIGHTS = {
         "rate": 0.757,
         "n": 74
       },
+      "sameDayMove": {
+        "s1": {
+          "n": 4,
+          "to": {
+            "s1": 0.5,
+            "s2": 0.5
+          }
+        },
+        "s2": {
+          "n": 7,
+          "to": {
+            "s1": 0.429,
+            "s2": 0.571
+          }
+        },
+        "s3": {
+          "n": 3,
+          "to": {
+            "s1": 0.333,
+            "s3": 0.667
+          }
+        }
+      },
       "workShifts": 46,
       "nightShare": 0.587,
       "pickRate": {
@@ -11358,6 +11767,30 @@ window.STORE_INSIGHTS = {
       "accuracy": {
         "rate": 0.589,
         "n": 129
+      },
+      "sameDayMove": {
+        "s1": {
+          "n": 18,
+          "to": {
+            "s1": 0.278,
+            "s2": 0.056,
+            "s3": 0.278,
+            "s4": 0.389
+          }
+        },
+        "s4": {
+          "n": 5,
+          "to": {
+            "s1": 1.0
+          }
+        },
+        "s2": {
+          "n": 3,
+          "to": {
+            "s1": 0.333,
+            "s2": 0.667
+          }
+        }
       },
       "workShifts": 76,
       "nightShare": 0.618,
@@ -11430,6 +11863,7 @@ window.STORE_INSIGHTS = {
         "rate": 0.758,
         "n": 66
       },
+      "sameDayMove": null,
       "workShifts": 37,
       "nightShare": 0.351,
       "pickRate": {
@@ -11501,6 +11935,7 @@ window.STORE_INSIGHTS = {
         "rate": 0.8,
         "n": 60
       },
+      "sameDayMove": null,
       "workShifts": 32,
       "nightShare": 0.062,
       "pickRate": {
@@ -11572,6 +12007,7 @@ window.STORE_INSIGHTS = {
         "rate": 0.778,
         "n": 54
       },
+      "sameDayMove": null,
       "workShifts": 24,
       "nightShare": 0.125,
       "pickRate": {
@@ -11643,6 +12079,7 @@ window.STORE_INSIGHTS = {
         "rate": 0.549,
         "n": 51
       },
+      "sameDayMove": null,
       "workShifts": 33,
       "nightShare": 0.848,
       "pickRate": {
@@ -11713,6 +12150,14 @@ window.STORE_INSIGHTS = {
       "accuracy": {
         "rate": 0.687,
         "n": 67
+      },
+      "sameDayMove": {
+        "s1": {
+          "n": 3,
+          "to": {
+            "s1": 1.0
+          }
+        }
       },
       "workShifts": 42,
       "nightShare": 0.595,
@@ -11785,6 +12230,15 @@ window.STORE_INSIGHTS = {
         "rate": 0.694,
         "n": 98
       },
+      "sameDayMove": {
+        "s1": {
+          "n": 7,
+          "to": {
+            "s1": 0.857,
+            "s3": 0.143
+          }
+        }
+      },
       "workShifts": 74,
       "nightShare": 0.595,
       "pickRate": {
@@ -11855,6 +12309,16 @@ window.STORE_INSIGHTS = {
       "accuracy": {
         "rate": 0.589,
         "n": 56
+      },
+      "sameDayMove": {
+        "s2": {
+          "n": 4,
+          "to": {
+            "s1": 0.5,
+            "s2": 0.25,
+            "s4": 0.25
+          }
+        }
       },
       "workShifts": 37,
       "nightShare": 0.595,
@@ -11927,6 +12391,15 @@ window.STORE_INSIGHTS = {
         "rate": 0.547,
         "n": 64
       },
+      "sameDayMove": {
+        "s3": {
+          "n": 5,
+          "to": {
+            "s1": 0.6,
+            "s3": 0.4
+          }
+        }
+      },
       "workShifts": 51,
       "nightShare": 0.49,
       "pickRate": {
@@ -11998,6 +12471,7 @@ window.STORE_INSIGHTS = {
         "rate": 0.611,
         "n": 36
       },
+      "sameDayMove": null,
       "workShifts": 32,
       "nightShare": 0.312,
       "pickRate": {
@@ -12069,6 +12543,7 @@ window.STORE_INSIGHTS = {
         "rate": 0.486,
         "n": 37
       },
+      "sameDayMove": null,
       "workShifts": 33,
       "nightShare": 0.424,
       "pickRate": {
@@ -12140,6 +12615,7 @@ window.STORE_INSIGHTS = {
         "rate": 0.39,
         "n": 41
       },
+      "sameDayMove": null,
       "workShifts": 32,
       "nightShare": 0.312,
       "pickRate": {
@@ -12211,6 +12687,7 @@ window.STORE_INSIGHTS = {
         "rate": 0.512,
         "n": 41
       },
+      "sameDayMove": null,
       "workShifts": 39,
       "nightShare": 0.615,
       "pickRate": {
@@ -12282,6 +12759,7 @@ window.STORE_INSIGHTS = {
         "rate": 0.4,
         "n": 25
       },
+      "sameDayMove": null,
       "workShifts": 27,
       "nightShare": 0.704,
       "pickRate": {
@@ -12350,6 +12828,7 @@ window.STORE_INSIGHTS = {
     "もち": {
       "alias": null,
       "accuracy": null,
+      "sameDayMove": null,
       "workShifts": 16,
       "nightShare": 0.562,
       "pickRate": {
@@ -12421,6 +12900,7 @@ window.STORE_INSIGHTS = {
         "rate": 0.605,
         "n": 177
       },
+      "sameDayMove": null,
       "workShifts": 105,
       "nightShare": 0.524,
       "pickRate": {
@@ -12491,6 +12971,37 @@ window.STORE_INSIGHTS = {
       "accuracy": {
         "rate": 0.651,
         "n": 106
+      },
+      "sameDayMove": {
+        "s3": {
+          "n": 20,
+          "to": {
+            "s1": 0.9,
+            "s3": 0.1
+          }
+        },
+        "s2": {
+          "n": 16,
+          "to": {
+            "s1": 0.938,
+            "s2": 0.062
+          }
+        },
+        "s1": {
+          "n": 40,
+          "to": {
+            "s1": 0.375,
+            "s2": 0.225,
+            "s3": 0.25,
+            "s4": 0.15
+          }
+        },
+        "s4": {
+          "n": 5,
+          "to": {
+            "s1": 1.0
+          }
+        }
       },
       "workShifts": 54,
       "nightShare": 0.222,
@@ -12563,6 +13074,42 @@ window.STORE_INSIGHTS = {
         "rate": 0.516,
         "n": 159
       },
+      "sameDayMove": {
+        "s1": {
+          "n": 52,
+          "to": {
+            "s1": 0.077,
+            "s2": 0.269,
+            "s3": 0.308,
+            "s4": 0.346
+          }
+        },
+        "s3": {
+          "n": 16,
+          "to": {
+            "s1": 0.812,
+            "s3": 0.125,
+            "s4": 0.062
+          }
+        },
+        "s4": {
+          "n": 17,
+          "to": {
+            "s1": 0.882,
+            "s2": 0.059,
+            "s3": 0.059
+          }
+        },
+        "s2": {
+          "n": 16,
+          "to": {
+            "s1": 0.562,
+            "s2": 0.25,
+            "s3": 0.062,
+            "s4": 0.125
+          }
+        }
+      },
       "workShifts": 81,
       "nightShare": 0.457,
       "pickRate": {
@@ -12633,6 +13180,38 @@ window.STORE_INSIGHTS = {
       "accuracy": {
         "rate": 0.545,
         "n": 154
+      },
+      "sameDayMove": {
+        "s4": {
+          "n": 22,
+          "to": {
+            "s1": 0.773,
+            "s2": 0.182,
+            "s3": 0.045
+          }
+        },
+        "s1": {
+          "n": 42,
+          "to": {
+            "s1": 0.333,
+            "s2": 0.19,
+            "s3": 0.143,
+            "s4": 0.333
+          }
+        },
+        "s2": {
+          "n": 10,
+          "to": {
+            "s1": 0.9,
+            "s2": 0.1
+          }
+        },
+        "s3": {
+          "n": 8,
+          "to": {
+            "s1": 1.0
+          }
+        }
       },
       "workShifts": 95,
       "nightShare": 0.516,
@@ -12705,6 +13284,7 @@ window.STORE_INSIGHTS = {
         "rate": 0.618,
         "n": 34
       },
+      "sameDayMove": null,
       "workShifts": 23,
       "nightShare": 0.304,
       "pickRate": {

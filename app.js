@@ -1519,13 +1519,58 @@
     };
   }
 
+  // その人の行き先をどれだけ当てられたか。直近180日の各シフトを、その手前
+  // 120日だけを見て答え、実際と突き合わせた実測値（walk-forward）。1店しか
+  // 開かなかったシフトは定義上かならず当たるので除いてある。
+  //
+  // 全体値（accuracy.maidStoreGivenOpen）とは測り方が違うので、混ぜない。
+  // 測れていない人（記録が少ない人）には、全体値で埋めずに測れていないと書く。
+  function maidAccuracy(insights, name) {
+    const measured = insights?.maidTendency?.[name]?.accuracy;
+    if (!measured || typeof measured.rate !== "number" || !(measured.n > 0)) {
+      return null;
+    }
+    return { rate: measured.rate, n: measured.n };
+  }
+
+  // 「n件すべて当たる」確率。並べると外れが見えることを、数で言うために使う。
+  // 実測のある人はその人の値で、無い人は何も言わない。
+  function itineraryConfidence(insights, guesses, name) {
+    const measured = maidAccuracy(insights, name);
+    if (!measured || !(guesses > 0)) {
+      return null;
+    }
+    return {
+      perStop: measured.rate,
+      samples: measured.n,
+      guesses,
+      allRight: Math.pow(measured.rate, guesses)
+    };
+  }
+
+  // 低い数字が出る人もいる。当たらないのはその人のせいではないので、
+  // 主語をこちら側に置く。「この人は読めない」ではなく「私たちが当てられない」。
+  function maidAccuracyNote(insights, name, isKitchen) {
+    const measured = maidAccuracy(insights, name);
+    if (!measured) {
+      return "この方は記録が少なく、行き先をどれだけ当てられるかは測れていません";
+    }
+    const why = isKitchen
+      ? "キッチンにゃんこは配属と関係なく4店を回るので、とくに当てにくくなります。"
+      : "";
+    return (
+      `${why}この方の行き先は、過去${measured.n}件を試して` +
+      `${toPercent(measured.rate)}当てられました`
+    );
+  }
+
   // 人ごとの一覧を組み立てる。店ごとの画面と同じ割り振りを引くので、両者は食い違わない。
   //
-  // この軸には固有の危険がある。1件あたりの的中は、開いている店が分かっている前提で
-  // 66%（accuracy.maidStoreGivenOpen）。店の側も当日決まるので、実際にその人がその店に
-  // いる確率はもっと低い。同じ人の予測を縦に並べると、その外れが一覧で見える。
-  // 店ごとの画面では1行ずつ独立に見えて気づかなかったものが表に出るので、
-  // 件数を数えて「全部当たることはまずない」と先に言う。
+  // この軸には固有の危険がある。1件あたりの的中はその人ごとに 39〜81% と幅があり、
+  // 店の側も当日決まるので、実際にその人がその店にいる確率はもっと低い。
+  // 同じ人の予測を縦に並べると、その外れが一覧で見える。店ごとの画面では
+  // 1行ずつ独立に見えて気づかなかったものが表に出るので、件数を数えて
+  // 「全部当たることはまずない」と先に言う。
   function maidItinerary({ schedule, name, dates, shifts, resolve }) {
     const stops = [];
     for (const key of dates ?? []) {
@@ -1559,57 +1604,6 @@
       }
     }
     return { name, stops, guesses: stops.filter((stop) => !stop.settled).length };
-  }
-
-  // 「n件すべて当たる」確率。並べると外れが見えることを、数で言うために使う。
-  function itineraryConfidence(insights, guesses) {
-    const perStop = insights?.accuracy?.maidStoreGivenOpen;
-    if (!(perStop > 0) || !(guesses > 0)) {
-      return null;
-    }
-    return { perStop, guesses, allRight: Math.pow(perStop, guesses) };
-  }
-
-  // その人の行き先がどれだけ決まっているか（spread）を帯に落とす。
-  // データ側の実測では spread と的中率が r=+0.79 で対応する。区切りは
-  // insights.spreadBands にある。ここに数字を持つと、集計をやり直した日に
-  // 画面の言い分けだけが古くなるので、閾値は必ずデータから読む。
-  function spreadStanding(insights, name) {
-    const spread = insights?.maidTendency?.[name]?.spread;
-    const bands = insights?.spreadBands;
-    if (typeof spread !== "number" || typeof bands?.settled !== "number" || typeof bands?.mixed !== "number") {
-      return null;
-    }
-    const band = spread >= bands.settled ? "settled" : spread >= bands.mixed ? "mixed" : "roving";
-    const all = Object.values(insights.maidTendency ?? {})
-      .map((tendency) => tendency?.spread)
-      .filter((value) => typeof value === "number");
-    return {
-      spread,
-      band,
-      rank: all.filter((value) => value > spread).length + 1,
-      total: all.length
-    };
-  }
-
-  // 上の帯を文にする。人ごとの的中率は測られていないので、そこは言わない。
-  // 言えるのは「行き先が決まっている側か、散らばる側か」までで、踏み越えない。
-  function spreadNote(insights, name, isKitchen) {
-    const standing = spreadStanding(insights, name);
-    if (!standing) {
-      return null;
-    }
-    const place =
-      standing.total > 1
-        ? `行き先が決まっている順で在籍${standing.total}名中${standing.rank}番目です`
-        : null;
-    const body =
-      standing.band === "settled"
-        ? "入る店がはっきりしているので、この一覧は当たりやすい側です"
-        : standing.band === "mixed"
-          ? "だいたい決まっていますが、外れる日もあります"
-          : `${isKitchen ? "キッチンにゃんこは配属と関係なく4店を回るので、" : ""}日によって行き先が変わります。この一覧はとくに当たりません`;
-    return place ? `${place}。${body}` : body;
   }
 
   // 開く店の数は実測の表（openCountByHeadcount）から決めている。表は
@@ -1672,6 +1666,8 @@
       isDateKeyInRange,
       itineraryConfidence,
       lastActualDateOf,
+      maidAccuracy,
+      maidAccuracyNote,
       maidItinerary,
       nearMissNote,
       nearMissStores,
@@ -1684,8 +1680,6 @@
       schedulePendingNote,
       scheduleSystemNote,
       sortByAssignedStore,
-      spreadNote,
-      spreadStanding,
       storeCapacities,
       storeProbabilities,
       storeSizeNote,
@@ -2468,19 +2462,25 @@
         `${settled > 0 ? "残り" : ""}${plan.guesses}件はどの店を開けるかが当日決まります`
       );
     }
-    const confidence = itineraryConfidence(insights, plan.guesses);
+    // 的中はその人ごとに実測してある。全体値で代用すると、当たりにくい方を
+    // 実際より当たるように、当たりやすい方を実際より当たらないように書くことになる。
+    const confidence = itineraryConfidence(insights, plan.guesses, plan.name);
+    const cook = kitchenStaff.has(plan.name)
+      ? "キッチンにゃんこは配属と関係なく4店を回るので、とくに当てにくくなります。"
+      : "";
     if (confidence) {
-      // 1件しかないときに「すべて当たるのは」と続けても同じ数字にしかならない。
+      // 同じ割合を「1件あたり」と「実測」で2回書かない。実測のほうに寄せて、
+      // そこから積み上げた結果を続ける。
+      const measured =
+        `${cook}この方の行き先は過去${confidence.samples}件を試して` +
+        `${toPercent(confidence.perStop)}当てられています`;
       parts.push(
         plan.guesses === 1
-          ? `開いた店が分かっていれば${toPercent(confidence.perStop)}ほど当たります`
-          : `開いた店が分かっていれば1件${toPercent(confidence.perStop)}ほど当たりますが、` +
-            `${plan.guesses}件すべて当たるのは${toPercent(confidence.allRight)}です`
+          ? measured
+          : `${measured}が、${plan.guesses}件すべて当たるのは${toPercent(confidence.allRight)}です`
       );
-    }
-    const standing = spreadNote(insights, plan.name, kitchenStaff.has(plan.name));
-    if (standing) {
-      parts.push(standing);
+    } else {
+      parts.push(maidAccuracyNote(insights, plan.name, kitchenStaff.has(plan.name)));
     }
     return parts.length > 0 ? `${parts.join("。")}。` : "この期間のお給仕はすべて確定しています。";
   }
