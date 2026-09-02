@@ -648,27 +648,29 @@ for (const plan of plans) {
   assert.equal(counted.length, 1, "each plan must show its own shift count");
   assert.equal(counted[0].textContent, `${stops.length}件`, "the count must match the list");
 
-  // 日付は1日につき1回。同じ日の昼と夜で2回書くと、行が増えるだけで何も伝わらない。
-  const dayGroups = withClass(plan, "maid-plan-day");
-  const dates = withClass(plan, "maid-plan-date").map((node) => node.textContent);
-  assert.equal(dayGroups.length, dates.length, "each day group must carry one date label");
-  assert.equal(
-    dayGroups.length,
-    new Set(stops.map((stop) => stop.dataset.date)).size,
-    "the plan must group its shifts by date, one heading per day"
-  );
-  assert.deepEqual(dates, [...new Set(dates)], "a date must not be written twice in one plan");
+  // 日付は行ごとに書く。片シフトだけの日が83%なので、日ごとに束ねても
+  // ほとんどの行は1件のままで、入れ子が増えるだけになる。
   assert.deepEqual(
-    dayGroups.map((group) => withClass(group, "maid-plan-stop")[0].dataset.date),
-    [...new Set(stops.map((stop) => stop.dataset.date))].sort(),
-    "the days must stay in date order"
+    stops.map((stop) => stop.dataset.date),
+    [...stops.map((stop) => stop.dataset.date)].sort(),
+    "a plan must read in date order"
+  );
+  assert.equal(
+    withClass(plan, "maid-plan-stops").length,
+    1,
+    "a plan must keep one flat list of shifts"
   );
 
   for (const stop of stops) {
-    const shift = withClass(stop, "maid-plan-when")[0].textContent;
-    // 日付は親の見出しが名乗るので、行には data 属性でだけ持つ。
-    assert.ok(insights.shifts.includes(shift), `a stop must name a real shift, got "${shift}"`);
+    const label = withClass(stop, "maid-plan-when")[0].textContent;
     const [, month, day] = stop.dataset.date.split("-").map(Number);
+    const shift = insights.shifts.find((candidate) => label.endsWith(candidate));
+    assert.ok(shift, `a stop must name a real shift, got "${label}"`);
+    // 日付は行に書く。曜日も添える（「9/3」だけでは何曜日か分からない）。
+    assert.ok(
+      label.startsWith(`${month}/${day}(`),
+      `a stop must lead with its own date and weekday, got "${label}"`
+    );
     const when = `${month}/${day} ${shift}`;
     const where = withClass(stop, "maid-plan-where")[0];
     const storeId = where.dataset.store;
@@ -703,7 +705,7 @@ for (const plan of plans) {
     // 読み上げは aria-label だけ。同じ文を隠し要素にも置くと二度読まれる。
     const spoken = stop.getAttribute("aria-label");
     assert.ok(spoken, "a stop must expose its explanation to screen readers");
-    assert.ok(spoken.includes(when), "the spoken text must say which day it is talking about");
+    assert.ok(spoken.startsWith(label), "the spoken text must say which day it is talking about");
     assert.ok(spoken.endsWith(stop.title), "the spoken text and the tooltip must not drift apart");
     assert.equal(
       withClass(stop, "visually-hidden").length,

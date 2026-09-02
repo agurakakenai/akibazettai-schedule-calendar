@@ -18,7 +18,6 @@ const {
   getShiftAssignment,
   getStoreOutlook,
   groupByAssignedStore,
-  groupStopsByDate,
   itineraryConfidence,
   lastActualDateOf,
   maidItinerary,
@@ -2050,33 +2049,6 @@ assert.equal(
     resolve
   });
   assert.equal(absent.stops.length, 0, "a maid who is not on the rota gets no rows");
-
-  // 日付ごとに束ねる。同じ日の昼と夜で日付を2回書かない。
-  const grouped = groupStopsByDate([
-    { dateKey: "2026-09-01", shift: "昼" },
-    { dateKey: "2026-09-01", shift: "夜" },
-    { dateKey: "2026-09-03", shift: "夜" }
-  ]);
-  assert.deepEqual(
-    grouped.map((entry) => [entry.dateKey, entry.stops.length]),
-    [["2026-09-01", 2], ["2026-09-03", 1]],
-    "shifts on the same day must share one heading"
-  );
-  assert.deepEqual(groupStopsByDate([]), [], "an empty plan has no days");
-  assert.deepEqual(groupStopsByDate(), [], "a missing plan must not throw");
-  // 束ねても件数は変わらない。見出しの数と行の数を取り違えると「4件」が「2件」になる。
-  const realPlan = maidItinerary({
-    schedule: schedule.schedule,
-    name,
-    dates: Object.keys(schedule.schedule).sort(),
-    shifts: insights.shifts,
-    resolve
-  });
-  assert.equal(
-    groupStopsByDate(realPlan.stops).reduce((sum, entry) => sum + entry.stops.length, 0),
-    realPlan.stops.length,
-    "grouping must not lose or duplicate a shift"
-  );
 
   // 縦に並べると外れが積み上がる。件数が増えるほど「全部当たる」は下がる。
   const perStop = insights.accuracy.maidStoreGivenOpen;

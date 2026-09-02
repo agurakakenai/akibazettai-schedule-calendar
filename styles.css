@@ -1006,31 +1006,6 @@ a.maid-name:focus-visible {
   line-height: 1.6;
 }
 
-.maid-plan-days {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-/* 日付を1行使わず、左に置いて昼・夜を横に並べる。同じ日で日付を2回書かない。 */
-.maid-plan-day {
-  display: grid;
-  grid-template-columns: 4.5rem 1fr;
-  align-items: start;
-  gap: 0 6px;
-}
-
-.maid-plan-date {
-  padding-top: 3px;
-  color: var(--cp-text-soft);
-  font-size: 0.7rem;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
 .maid-plan-stops {
   display: flex;
   flex-direction: column;
@@ -1040,10 +1015,11 @@ a.maid-name:focus-visible {
   list-style: none;
 }
 
+/* 日付を固定幅の列にして、店名を縦に揃える。1か月ぶんを目で追うため。 */
 .maid-plan-stop {
-  display: flex;
+  display: grid;
+  grid-template-columns: 6.5rem 1fr;
   align-items: baseline;
-  flex-wrap: wrap;
   gap: 0 6px;
   padding: 3px 8px;
   border: 1px solid var(--cp-highlight);
@@ -1054,6 +1030,8 @@ a.maid-name:focus-visible {
 
 .maid-plan-when {
   color: var(--cp-text-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .maid-plan-where {
@@ -1079,7 +1057,8 @@ a.maid-name:focus-visible {
 /* 色だけで確度を伝えないよう、確定は実線・見込みは破線・5割未満は「かも」を添える。 */
 .maid-plan-stop.is-open {
   border-color: var(--cp-accent);
-  border-left: 3px solid var(--cp-accent);
+  /* 枠を太くすると中身が2pxずれて、縦に並んだ店名が揃わなくなる。影で出す。 */
+  box-shadow: inset 3px 0 0 var(--cp-accent);
   background: var(--cp-highlight);
 }
 

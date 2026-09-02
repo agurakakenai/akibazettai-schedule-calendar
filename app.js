@@ -1422,21 +1422,6 @@
     return { name, stops, guesses: stops.filter((stop) => !stop.settled).length };
   }
 
-  // 日付ごとに束ねる。同じ日の昼と夜で日付を2回書くと、行が増えるだけで
-  // 読み手には同じことしか伝わらない。日付は1回、その下に昼・夜を並べる。
-  function groupStopsByDate(stops) {
-    const days = [];
-    for (const stop of stops ?? []) {
-      const last = days[days.length - 1];
-      if (last && last.dateKey === stop.dateKey) {
-        last.stops.push(stop);
-      } else {
-        days.push({ dateKey: stop.dateKey, stops: [stop] });
-      }
-    }
-    return days;
-  }
-
   // 「n件すべて当たる」確率。並べると外れが見えることを、数で言うために使う。
   function itineraryConfidence(insights, guesses) {
     const perStop = insights?.accuracy?.maidStoreGivenOpen;
@@ -1507,7 +1492,6 @@
       getTokyoDateDefaults,
       getVisibleMonthDates,
       groupByAssignedStore,
-      groupStopsByDate,
       isDateKeyInRange,
       itineraryConfidence,
       lastActualDateOf,
@@ -2108,34 +2092,22 @@
     block.append(note);
 
     const list = document.createElement("ol");
-    list.className = "maid-plan-days";
-    groupStopsByDate(plan.stops).forEach((day) => {
-      const dayItem = document.createElement("li");
-      dayItem.className = "maid-plan-day";
-      const label = document.createElement("span");
-      label.className = "maid-plan-date";
-      const [, month, date] = day.dateKey.split("-").map(Number);
-      const weekday = weekdays[new Date(day.dateKey + "T00:00:00").getDay()];
-      label.textContent = `${date}日(${weekday})`;
-      label.title = `${month}月${date}日(${weekday})`;
-      const shiftList = document.createElement("ul");
-      shiftList.className = "maid-plan-stops";
-      day.stops.forEach((stop) => shiftList.append(createMaidStop(stop, `${month}/${date}`)));
-      dayItem.append(label, shiftList);
-      list.append(dayItem);
-    });
+    list.className = "maid-plan-stops";
+    plan.stops.forEach((stop) => list.append(createMaidStop(stop)));
     block.append(list);
     return block;
   }
 
-  // 日付は親が名乗るので、行は「昼 3号店」だけ。日付は突き合わせ用に data 属性で持つ。
-  function createMaidStop(stop, dateLabel) {
+  function createMaidStop(stop) {
     const item = document.createElement("li");
     item.className = `maid-plan-stop is-${stop.state ?? "unknown"}`;
     item.dataset.date = stop.dateKey;
     const when = document.createElement("span");
     when.className = "maid-plan-when";
-    when.textContent = stop.shift;
+    const [, month, date] = stop.dateKey.split("-").map(Number);
+    // 曜日はカレンダーと同じ書き方で添える。「9/3」だけでは何曜日か分からない。
+    const weekday = weekdays[new Date(`${stop.dateKey}T00:00:00`).getDay()];
+    when.textContent = `${month}/${date}(${weekday}) ${stop.shift}`;
     const where = document.createElement("span");
     where.className = "maid-plan-where";
     where.dataset.store = stop.storeId ?? "";
@@ -2158,9 +2130,8 @@
     }
     const explanation = stopExplanation(stop);
     item.title = explanation;
-    // 日付は画面では親にしか出ないので、読み上げには入れ直す。
-    // 同じ文を隠し要素にも置くと二度読まれるので、aria-label に一本化する。
-    item.setAttribute("aria-label", `${dateLabel} ${stop.shift}は${explanation}`);
+    // 読み上げは aria-label に一本化する。同じ文を隠し要素にも置くと二度読まれる。
+    item.setAttribute("aria-label", `${when.textContent}は${explanation}`);
     return item;
   }
 
