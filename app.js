@@ -205,11 +205,43 @@
     const spread = profile.p25 === profile.p75
       ? `${profile.p25}人`
       : `${profile.p25}〜${profile.p75}人`;
-    return (
+    return [
       `${storeShort(insights, storeId)}の${shift}はふだん${profile.mode}人態勢` +
-      `（${spread}が中心、${toPercent(profile.modeShare ?? 0)}が${profile.mode}人。` +
-      `実績${profile.shifts}シフト）`
+        `（${spread}が中心、${toPercent(profile.modeShare ?? 0)}が${profile.mode}人。` +
+        `実績${profile.shifts}シフト）`,
+      traineeNote(insights, storeId)
+    ]
+      .filter(Boolean)
+      .join("。");
+  }
+
+  // 見習いにゃんこは予定表に出ないので、カレンダーの人数より実際は多い。
+  // 平均を小数で見せても伝わらないので、「何割の枠にいたか」で言う。
+  // 実測の分布は 0人29% / 1人58% / 2人11% で、ほぼ0か1。
+  function traineeNote(insights, storeId) {
+    const coverage = insights?.rosterCoverage;
+    const store = coverage?.byStore?.[storeId];
+    if (!store || typeof store.shiftsWithoutUnlisted !== "number") {
+      return null;
+    }
+    const withAny = 1 - store.shiftsWithoutUnlisted;
+    if (withAny <= 0) {
+      return null;
+    }
+    const months = monthsBetween(coverage.from, coverage.to);
+    const period = months ? `直近${months}か月` : "この集計期間";
+    return (
+      `予定表に出ない見習いにゃんこがいます。${period}では、この店の` +
+      `${toPercent(withAny)}の枠に1人以上いました（多くはちょうど1人）`
     );
+  }
+
+  function monthsBetween(from, to) {
+    if (!from || !to) {
+      return null;
+    }
+    const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000;
+    return Number.isFinite(days) ? Math.max(1, Math.round(days / 30)) : null;
   }
 
   function actualOutlook(insights, key, shift) {
@@ -1038,6 +1070,7 @@
       sortByAssignedStore,
       storeCapacities,
       storeProbabilities,
+      storeSizeNote,
       weekdayBucket,
       weekdayIndex
     };

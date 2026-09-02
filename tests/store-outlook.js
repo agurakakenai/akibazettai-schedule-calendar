@@ -10,8 +10,7 @@ const {
   applyEventCertainty,
   assignShiftStores,
   calibrationNote,
-  eventStorePins,
-  expectedOpenStores,
+  eventStorePins,  expectedOpenStores,
   getMaidStoreOutlook,
   getShiftAssignment,
   getStoreOutlook,
@@ -23,6 +22,7 @@ const {
   sortByAssignedStore,
   storeCapacities,
   storeProbabilities,
+  storeSizeNote,
   weekdayBucket,
   weekdayIndex
 } = require("../app.js");
@@ -1473,6 +1473,49 @@ assert.equal(
       "the calibration figure excludes single-shop shifts, so it must not be quoted here"
     );
   }
+}
+
+// 見習いにゃんこは予定表に出ないので、カレンダーの人数より実際は多い。
+// 平均（0.83人など）では伝わらないので、「何割の枠にいたか」で言う。
+{
+  const coverage = insights.rosterCoverage;
+  assert.ok(coverage?.byStore, "rosterCoverage must carry a per-store breakdown");
+
+  for (const store of insights.stores) {
+    const note = storeSizeNote(insights, "昼", store.id);
+    const measured = coverage.byStore[store.id];
+    assert.ok(note.includes("見習いにゃんこ"), `${store.id}: the note must mention trainees`);
+    assert.ok(
+      note.includes(`${Math.round((1 - measured.shiftsWithoutUnlisted) * 100)}%の枠`),
+      `${store.id}: the share must come from rosterCoverage, not from prose`
+    );
+  }
+
+  // 4号店だけ見習いが少ない。そこが埋もれていないこと。
+  const withAny = (id) => 1 - coverage.byStore[id].shiftsWithoutUnlisted;
+  assert.ok(
+    withAny("s4") < Math.min(withAny("s1"), withAny("s2"), withAny("s3")),
+    "4号店 must read as the shop that most often has no trainee"
+  );
+
+  // 集計期間も出す。店舗側の数字と個人側で期間が違うので、混同させない。
+  assert.ok(
+    storeSizeNote(insights, "昼", "s1").includes("か月"),
+    "the note must say how long the trainee figure was measured over"
+  );
+
+  // 測定が無ければ何も言わない。人数の話だけ残る。
+  const bare = {
+    stores: insights.stores,
+    headcountProfile: insights.headcountProfile
+  };
+  const withoutCoverage = storeSizeNote(bare, "昼", "s1");
+  assert.ok(withoutCoverage, "the headcount half must survive on its own");
+  assert.ok(
+    !withoutCoverage.includes("見習い"),
+    "without a measurement there is nothing to say about trainees"
+  );
+  assert.equal(storeSizeNote(bare, "昼", "知らない店"), null, "an unknown shop has no note");
 }
 
 console.log(
