@@ -784,6 +784,21 @@ input[type="date"] {
   border-color: var(--cp-text-soft);
 }
 
+/* 誰なのかも、どの店かも分からない見込み。実在の記録より弱く見せる。 */
+.maid-trainee-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 4px;
+  margin: 5px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.maid-entry.is-trainee-guess {
+  border-style: dotted;
+  color: var(--cp-text-soft);
+}
+
 .maid-store-chip {
   padding: 0 4px;
   border: 1px solid var(--chip-color, var(--cp-border));

@@ -181,6 +181,22 @@
     return ordered;
   }
 
+  // 予定表に出ない見習いにゃんこ。名前は分からないので人数だけ出す。
+  //
+  // データ側は「1店あたり何人」で持っている。開く店が増えるほど見習いも増える
+  // ためで、店舗数が決まってから掛ける。店ごとに配らないのは、どの店にいるかが
+  // 読めないから。実測でも1号店0.35 / 2号店0.35 / 3号店0.32と横並びで、
+  // どこかを選ぶ根拠がない。だから店の見出しの下ではなく、シフトの末尾に置く。
+  //
+  // 記録のある日には出さない。誰がいたか分かっているところに推測を混ぜない。
+  function expectedTrainees(insights, shift, storeCount, recorded) {
+    const rate = insights?.traineeOutlook?.[shift]?.perStore;
+    if (recorded || !(rate > 0) || !(storeCount > 0)) {
+      return 0;
+    }
+    return Math.round(rate * storeCount);
+  }
+
   function storesOf(insights) {
     return Array.isArray(insights?.stores) ? insights.stores : [];
   }
@@ -1575,6 +1591,7 @@
       dateKey,
       eventStorePins,
       expectedOpenStores,
+      expectedTrainees,
       getDateGridColumn,
       getMaidStoreOutlook,
       getShiftAssignment,
@@ -1611,6 +1628,17 @@
 
   const data = window.SCHEDULE_DATA;
   const shifts = ["昼", "夜"];
+  const TRAINEE_PLACEHOLDER = "見習い";
+
+  // 見習いの人数は入店で動くので、データ側は半減期30日で見ている（人数の180日
+  // とは別）。落ち着いた量ではなく来月には変わるので、画面に割合そのものを
+  // 書かない。「いそう」までにして、根拠は開く店の数で言う。
+  function traineeGuessNote(shift, storeCount) {
+    const where = storeCount > 1
+      ? `${storeCount}店開けば、そのどこかに`
+      : "この店に";
+    return `予定表に出ない見習いにゃんこです。${where}いそうですが、どなたかは分かりません（${shift}の実績から）`;
+  }
   const kitchenStaff = new Set(data.kitchenStaff ?? []);
   const rosterNames = new Set(data.roster ?? []);
   // 公式サイト未掲載の人。所属は分かるが出どころがサイトではないので書き分ける。
@@ -1904,6 +1932,16 @@
     const entries = assignment && !assignment.recorded
       ? sortByAssignedStore({ insights, entries: visible, assignment })
       : visible;
+    // 予定表に出ない見習いにゃんこ。誰なのかも、どの店かも分からないので、
+    // 店ごとのグループには入れず、シフトの末尾にまとめて置く。
+    const guessedTrainees = isVisibleMaid(TRAINEE_PLACEHOLDER)
+      ? expectedTrainees(
+        insights,
+        shift,
+        assignment?.storeIds?.length ?? 0,
+        Boolean(assignment?.recorded)
+      )
+      : 0;
 
     function createMaidEntry(entry, groupStoreId) {
       const item = document.createElement("li");
@@ -1999,6 +2037,12 @@
         section.append(list);
       });
 
+      appendTraineeGuesses(section, shift, guessedTrainees, assignment?.storeIds?.length ?? 0);
+      return section;
+    }
+
+    if (guessedTrainees > 0) {
+      appendTraineeGuesses(section, shift, guessedTrainees, assignment?.storeIds?.length ?? 0);
       return section;
     }
 
@@ -2018,6 +2062,35 @@
     }
     section.append(empty);
     return section;
+  }
+
+  // 予定表に出ない見習いにゃんこ。店ごとのグループには入れない。
+  // どの店にいるか読めないのに見出しの下に置くと、その店にいると読まれる。
+  function appendTraineeGuesses(section, shift, count, storeCount) {
+    if (!(count > 0)) {
+      return;
+    }
+    const note = traineeGuessNote(shift, storeCount);
+    const list = document.createElement("ul");
+    // 店ごとの一覧（.maid-list）とは別のクラスにする。あちらは「見出しと1対1」を
+    // 保つ約束があり、店を名乗らないこの一覧を混ぜるとその約束が崩れる。
+    list.className = "maid-trainee-list";
+    for (let index = 0; index < count; index += 1) {
+      const item = document.createElement("li");
+      item.className = "maid-entry is-trainee is-trainee-guess";
+      const nameLabel = document.createElement("span");
+      nameLabel.className = "maid-name";
+      nameLabel.textContent = TRAINEE_PLACEHOLDER;
+      const mark = document.createElement("span");
+      mark.className = "maid-trainee";
+      mark.textContent = "🔰";
+      mark.setAttribute("aria-hidden", "true");
+      item.append(nameLabel, mark);
+      item.title = note;
+      item.setAttribute("aria-label", note);
+      list.append(item);
+    }
+    section.append(list);
   }
 
   function createDayCell(date, isFirstRenderedDate) {
