@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-02 04:44",
+  "generatedAt": "2026-09-02 09:29",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-08-30"
@@ -2446,7 +2446,12 @@ window.STORE_INSIGHTS = {
     "2026-09-02": {
       "昼": [
         "s1",
-        "s2"
+        "s2",
+        "s4"
+      ],
+      "夜": [
+        "s1",
+        "s4"
       ]
     }
   },
@@ -2454,7 +2459,12 @@ window.STORE_INSIGHTS = {
     "2026-09-02": {
       "昼": [
         "s1",
-        "s2"
+        "s2",
+        "s4"
+      ],
+      "夜": [
+        "s1",
+        "s4"
       ]
     }
   },
