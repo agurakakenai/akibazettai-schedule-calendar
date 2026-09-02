@@ -22,6 +22,7 @@ const {
   nearMissStores,
   openStoresOn,
   openStoresOnDay,
+  sameDayDecisionNote,
   scheduleSystemNote,
   sortByAssignedStore,
   storeCapacities,
@@ -1861,6 +1862,10 @@ assert.equal(
   const note = nearMissNote(insights, "昼", close, 8);
   assert.ok(note, "a near miss must be explained");
   assert.ok(note.includes("僅差"), "the note must say the call was close");
+  assert.ok(
+    note.includes("まだ決まっていません"),
+    "a close call is not a bad guess; the shop has not been chosen yet"
+  );
   assert.ok(note.includes("足さないでください"), "the note must warn against adding the two up");
   assert.ok(
     note.includes("一方にしか出せない"),
@@ -1873,6 +1878,27 @@ assert.equal(
   assert.ok(co.rate < 0.1, `2号店と3号店が揃うのは稀なはず、実測 ${co.rate}`);
   assert.deepEqual(coOpenRate(insights, "s3", "s2"), co, "the pair is unordered");
   assert.equal(coOpenRate({}, "s2", "s3"), null, "no records, no rate");
+}
+
+// どの店を開けるかは当日決まる。何店開くかは事前に読める。この2つを混ぜない。
+{
+  const guess = outlookFor(farFuture, "昼");
+  const note = sameDayDecisionNote(insights, guess);
+  assert.ok(note, "a guess must say the shop has not been chosen yet");
+  assert.ok(note.includes("当日決まります"), "the note must say when the shop is decided");
+  assert.ok(
+    note.includes("何店開くか"),
+    "the note must separate the count, which is knowable, from the shops, which are not"
+  );
+
+  // 実績の日は決まっている。言うことがない。
+  const recordedShift = insights.shifts.find((s) => insights.actual[lastActual][s]);
+  assert.equal(
+    sameDayDecisionNote(insights, outlookFor(lastActual, recordedShift)),
+    null,
+    "a recorded shift was decided long ago"
+  );
+  assert.equal(sameDayDecisionNote(insights, null), null, "no outlook, no note");
 }
 
 console.log(

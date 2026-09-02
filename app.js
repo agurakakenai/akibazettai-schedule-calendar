@@ -1136,7 +1136,7 @@
       .join("・");
     const parts = [
       `${names}も${storeShort(insights, rival)}（${toPercent(rateOf(rival))}）と僅差で、` +
-        `どちらになってもおかしくありません`
+        `どちらになるかはまだ決まっていません`
     ];
     const co = coOpenRate(insights, rival, missed[0]);
     if (co && co.shifts > 0) {
@@ -1147,6 +1147,23 @@
     }
     parts.push("顔ぶれの割り振りは、どちらか一方にしか出せないので片側だけに出しています");
     return parts.join("。") + "。";
+  }
+
+  // どの店を開けるかは当日決まる。1号店は93%が通しで日単位に動くが、2〜4号店は
+  // 片シフトだけの営業が主で、同じ日でも昼と夜で別の店を開けている（通しで出た人の
+  // 68.6%が昼夜で別の店）。だから「予測を外した」のではなく「まだ決まっていない」。
+  //
+  // 一方、何店開くかはお店が事前に人を組んでいるぶん読める（人数から87.5%）。
+  // 断定してよいのは店の数で、どの店かではない。
+  function sameDayDecisionNote(insights, outlook) {
+    if (!outlook || outlook.basis === "actual") {
+      return null;
+    }
+    return (
+      "何店開くかは、その日に出る人数から読めます（お店が先に人を組むため）。" +
+      "ただし、どの店を開けるかは当日決まります。ここから先は過去の並びから見た可能性で、" +
+      "まだ誰も知りません。"
+    );
   }
 
   function getShiftAssignment({ insights, members, shift, outlook, pins, kitchenStaff }) {
@@ -1354,6 +1371,7 @@
       nearMissStores,
       openStoresOn,
       openStoresOnDay,
+      sameDayDecisionNote,
       scheduleSystemNote,
       sortByAssignedStore,
       storeCapacities,
@@ -1415,7 +1433,8 @@
     wrapper.className = "store-outlook";
     // 僅差で顔ぶれを出せなかった店があれば、そのことも本文に書く。
     const missed = nearMissNote(insights, shift, outlook, members ?? 0);
-    wrapper.title = missed ? `${outlook.summary}${missed}` : outlook.summary;
+    const sameDay = sameDayDecisionNote(insights, outlook);
+    wrapper.title = [outlook.summary, sameDay, missed].filter(Boolean).join("");
 
     const nearMiss = new Set(nearMissStores(insights, shift, outlook, members ?? 0));
 
