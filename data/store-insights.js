@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-02 09:45",
+  "generatedAt": "2026-09-02 09:55",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-08-30"
@@ -374,29 +374,29 @@ window.STORE_INSIGHTS = {
   "rosterHeadcountByOpenCount": {
     "昼": {
       "1": {
-        "mean": 4.32,
-        "n": 65
+        "mean": 3.94,
+        "n": 50
       },
       "2": {
-        "mean": 9.09,
-        "n": 267
+        "mean": 8.59,
+        "n": 237
       },
       "3": {
-        "mean": 13.52,
+        "mean": 12.78,
         "n": 27
       }
     },
     "夜": {
       "1": {
-        "mean": 4.27,
-        "n": 97
+        "mean": 3.95,
+        "n": 80
       },
       "2": {
-        "mean": 8.5,
-        "n": 247
+        "mean": 8.0,
+        "n": 220
       },
       "3": {
-        "mean": 12.88,
+        "mean": 12.5,
         "n": 8
       }
     }
@@ -404,7 +404,7 @@ window.STORE_INSIGHTS = {
   "openCountByHeadcount": {
     "昼": [
       5,
-      14
+      12
     ],
     "夜": [
       5,
@@ -5495,50 +5495,50 @@ window.STORE_INSIGHTS = {
     "to": "2026-08-30",
     "shiftCells": 344,
     "totalMaids": 1941,
-    "rostered": 1674,
-    "unlisted": 267,
-    "unlistedShare": 0.138,
-    "unlistedPerShift": 0.78,
-    "shiftsWithUnlisted": 0.666,
+    "rostered": 1641,
+    "unlisted": 300,
+    "unlistedShare": 0.155,
+    "unlistedPerShift": 0.87,
+    "shiftsWithUnlisted": 0.712,
     "distribution": {
-      "0": 115,
-      "1": 196,
-      "2": 29,
-      "3": 3,
+      "0": 99,
+      "1": 199,
+      "2": 38,
+      "3": 7,
       "4": 1
     },
     "byStore": {
       "s1": {
         "shifts": 172,
-        "rostered": 895,
-        "unlisted": 126,
-        "unlistedShare": 0.123,
-        "unlistedPerShift": 0.73,
-        "shiftsWithoutUnlisted": 0.372
+        "rostered": 879,
+        "unlisted": 142,
+        "unlistedShare": 0.139,
+        "unlistedPerShift": 0.83,
+        "shiftsWithoutUnlisted": 0.314
       },
       "s2": {
         "shifts": 58,
-        "rostered": 293,
-        "unlisted": 63,
-        "unlistedShare": 0.177,
-        "unlistedPerShift": 1.09,
-        "shiftsWithoutUnlisted": 0.155
+        "rostered": 285,
+        "unlisted": 71,
+        "unlistedShare": 0.199,
+        "unlistedPerShift": 1.22,
+        "shiftsWithoutUnlisted": 0.138
       },
       "s3": {
         "shifts": 56,
-        "rostered": 280,
-        "unlisted": 48,
-        "unlistedShare": 0.146,
-        "unlistedPerShift": 0.86,
-        "shiftsWithoutUnlisted": 0.25
+        "rostered": 275,
+        "unlisted": 53,
+        "unlistedShare": 0.162,
+        "unlistedPerShift": 0.95,
+        "shiftsWithoutUnlisted": 0.214
       },
       "s4": {
         "shifts": 58,
-        "rostered": 206,
-        "unlisted": 30,
-        "unlistedShare": 0.127,
-        "unlistedPerShift": 0.52,
-        "shiftsWithoutUnlisted": 0.483
+        "rostered": 202,
+        "unlisted": 34,
+        "unlistedShare": 0.144,
+        "unlistedPerShift": 0.59,
+        "shiftsWithoutUnlisted": 0.431
       }
     }
   }

@@ -807,19 +807,22 @@ assert.equal(
 }
 
 // 開店店舗数は人数から決まる。最頻値で固定すると3店舗の日も1店舗の日も出せない。
+// 境界は実測（openCountByHeadcount）なので、そこから期待値を作る。直書きすると
+// 集計をやり直すたびに落ちるし、落ちても「壊れた」のか「実測が動いた」のか分からない。
 {
   const tendency = outlookFor(farFuture, "昼");
   const countFor = (poolSize) => expectedOpenStores(insights, "昼", tendency, poolSize).length;
+  const limits = insights.openCountByHeadcount["昼"];
+  assert.ok(Array.isArray(limits) && limits.length >= 2, "the 昼 thresholds must span three counts");
 
-  for (const poolSize of [3, 4, 5]) {
-    assert.equal(countFor(poolSize), 1, `${poolSize} maids fit in a single shop`);
-  }
-  for (const poolSize of [6, 8, 10, 13]) {
-    assert.equal(countFor(poolSize), 2, `${poolSize} maids need two shops`);
-  }
-  for (const poolSize of [15, 18]) {
-    assert.equal(countFor(poolSize), 3, `${poolSize} maids need three shops`);
-  }
+  // 境界のすぐ下と、そのひとつ上で、店舗数が1つ増えること。
+  limits.forEach((limit, index) => {
+    assert.equal(countFor(limit), index + 1, `${limit} maids stay at ${index + 1} shop(s)`);
+    assert.equal(countFor(limit + 1), index + 2, `${limit + 1} maids need ${index + 2} shops`);
+  });
+  // 1店舗も3店舗も出せること。どちらかが出ないなら人数を使う意味がない。
+  assert.equal(countFor(1), 1, "a tiny line-up opens one shop");
+  assert.ok(countFor(20) >= 3, "a large line-up opens three shops");
 
   // 6人は2店が多数派（昼61% / 夜73%）。標準人数の累積だけだと1店に潰れてしまう。
   for (const shift of insights.shifts) {

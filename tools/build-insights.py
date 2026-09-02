@@ -49,6 +49,9 @@ GRADUATED_GAP_DAYS = 14  # これ以上お給仕が空いたら卒業とみな�
 MIN_ACCOUNT_TWEETS = 20  # これ未満のアカウントは休眠（同名の別人）とみなしてリンクしない
 COVERAGE_DAYS = 90       # 公開スケジュールとの人数差を測る期間
 STREAK_GAP_DAYS = 60     # これ以上空いたら「今の在籍」は別期間とみなす
+TRAINING_DAYS = 80       # 見習いの期間。研修は約3か月と聞いており、
+# 昇格日が分かっている4名の実測はデビューから 68 / 75 / 82 / 91 日（平均79日）だった。
+# 分かっていない人はこの日数で埋める（data/schedule.js の promotedAt が優先）。
 SCHEDULE_SYSTEM_CHANGED = '2026-09-01'
 # この日から、お給仕予定は上旬・下旬をまとめて事前公開する方式になった。
 # それ以前は当日発表だったため、tools/data/shifts.csv（＝公式Xの当日投稿から
@@ -298,6 +301,58 @@ def read_promoted_at():
     return out
 
 
+def debut_dates(cell):
+    """各メイドの「いまの在籍が始まった日」。
+
+    同じ名前は世代をまたいで使い回される（記録上106件）。卒業した方のアカウントは
+    消えるので、名前だけでは同一人物か分からない。STREAK_GAP_DAYS 以上あいたら
+    別の人（あるいは別の在籍期間）とみなして区切る。
+
+    復帰はほとんど無く、確認できているのは1件だけ（もなか、2025-09-01デビュー。
+    この区切りでも 2025-09-02 と出る）。したがって、この日付はそのまま
+    「その人がメイドさんになった日」として読める。
+    """
+    days_by = collections.defaultdict(set)
+    for (d, sh), stores in cell.items():
+        for sid in stores:
+            for mm in stores[sid]:
+                days_by[mm].add(d)
+    out = {}
+    for mm, ds in days_by.items():
+        ds = sorted(ds)
+        start = ds[0]
+        for i in range(1, len(ds)):
+            gap = (datetime.date.fromisoformat(ds[i])
+                   - datetime.date.fromisoformat(ds[i - 1])).days
+            if gap >= STREAK_GAP_DAYS:
+                start = ds[i]
+        out[mm] = start
+    return out
+
+
+def promotion_dates(cell, roster, known):
+    """各メイドが見習いを終えた日。
+
+    見習いは予定表に載らない。店舗数はその日の予定表に何人載るかで決めるので、
+    過去の人数を数えるときも昇格前の出勤は数えてはいけない。数えると
+    「事前に分かっていた人数」が実際より多く見え、閾値が上にずれる。
+
+    分かっている日付（data/schedule.js の promotedAt）を優先し、
+    残りは「デビュー + TRAINING_DAYS」で埋める。実測できている4名は
+    デビューから 68 / 75 / 82 / 91 日で昇格しており、平均 79 日だった。
+    """
+    debut = debut_dates(cell)
+    out = {}
+    for name in roster:
+        key = ALIAS.get(name, name)
+        start = debut.get(key)
+        if start:
+            out[key] = (datetime.date.fromisoformat(start)
+                        + datetime.timedelta(days=TRAINING_DAYS)).isoformat()
+    out.update(known)
+    return out
+
+
 def build():
     rows = load_csv('shifts.csv')
     events = {e['date'] for e in load_csv('events.csv')}
@@ -449,7 +504,7 @@ def build():
     # カレンダーに並ぶ。移行直後は未提出の人がいて予定表が薄くなるが、それは一時的な
     # 状態なので補正しない。roster を母数にしておけば、提出が揃ったあとも破綻しない。
     roster_names = {ALIAS.get(n, n) for n in roster}
-    promoted_at = read_promoted_at()
+    promoted_at = promotion_dates(cell, roster, read_promoted_at())
 
     def listed_on(d, stores):
         """その日の予定表に載っていたはずの人。昇格前の見習いは載らない。"""
@@ -632,19 +687,7 @@ def build():
                 graduated_at[n] = max(graduated_at.get(n, ''), e['date'])
 
     # 各メイドの「今の在籍開始日」（STREAK_GAP_DAYS 以上の空白で区切る）
-    days_by = collections.defaultdict(set)
-    for (d, sh), stores in cell.items():
-        for sid in stores:
-            for mm in stores[sid]:
-                days_by[mm].add(d)
-    streak_start = {}
-    for mm, ds in days_by.items():
-        ds = sorted(ds)
-        start = ds[0]
-        for i in range(1, len(ds)):
-            if (datetime.date.fromisoformat(ds[i]) - datetime.date.fromisoformat(ds[i - 1])).days >= STREAK_GAP_DAYS:
-                start = ds[i]
-        streak_start[mm] = start
+    streak_start = debut_dates(cell)
 
     roster_keys = {ALIAS.get(n, n) for n in roster}
     recent_cut = (last_d - datetime.timedelta(days=90)).isoformat()
@@ -703,12 +746,14 @@ def build():
         # サイト未掲載 + 公開の *_zettai あり + 直近1か月にお給仕あり + 卒業していない
         v['promoted'] = (not graduated) and has_account and v['recentShifts31'] > 0
         # さらに「以前の在籍が確認できない」＝新しくノーマルにゃんこになった可能性が高い。
-        # 復帰でもアカウントを取り直す例があるため、作成年ではなく
-        # 「古いアカウントの有無」と「1年より前の出勤記録の有無」で見る。
-        # 古いアカウントの存在は在籍歴の証拠になる（新規取得は復帰でも起きるが、
-        # 何年も前に作られたアカウントを持っているなら以前から在籍している）。
-        old_account = bool(v['otherAccounts']) or (v['xCreated'] or last_d.year) < last_d.year - 1
-        v['likelyNew'] = v['promoted'] and not old_account and v['firstSeen'] >= year_ago
+        # 同じ名前は世代をまたいで使い回され（記録上106件）、卒業したメイドさんの
+        # アカウントは消える。したがって「同じ名前の古いアカウント」は別人のもので、
+        # この人の在籍歴の証拠にはならない。いま動いているアカウント自体が
+        # 何年も前に作られているなら、それは本人が長くいる証拠になる。
+        old_account = (v['xCreated'] or last_d.year) < last_d.year - 1
+        # 出勤記録も同じ理由で「初出日」ではなく「今の在籍の開始」で見る。
+        # 初出日は同名の別人のものかもしれない。
+        v['likelyNew'] = v['promoted'] and not old_account and v['streakStart'] >= year_ago
     order = {'active': 0, 'graduated': 1}
     unlisted = dict(sorted(unlisted.items(),
                            key=lambda kv: (order[kv[1]['status']], not kv[1]['promoted'],
