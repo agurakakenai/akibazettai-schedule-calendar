@@ -1060,6 +1060,95 @@
       .filter((id) => chosen.includes(id));
   }
 
+  // 上位k で切る形そのものは妥当（確率で切ると、どの閾値でも現行より悪くなる）。
+  // ただし境目が僅差のときは、選んだ側に根拠がない。実測でも、最後に選んだ店と
+  // 最初に落とした店の差が10ポイント未満のときは、落とした店のほうがよく開いて
+  // いる（42% 対 38%、519シフト）。顔ぶれは片方にしか出せないので、もう一方も
+  // 同じくらいあり得ることを書いておく。
+  //
+  // 比べるのは表示している確率どうし。読み手が「52%と42%なのになぜ」と思う
+  // ところを説明するのが目的なので、内部の順位付けではなく画面の数字で見る。
+  const NEAR_MISS_MARGIN = 0.05;
+
+  function nearMissStores(insights, shift, outlook, pool) {
+    if (!outlook || outlook.basis === "actual") {
+      return [];
+    }
+    const chosen = new Set(expectedOpenStores(insights, shift, outlook, pool));
+    if (chosen.size === 0 || chosen.size === outlook.entries.length) {
+      return [];
+    }
+    const rateOf = (id) => outlook.entries.find((entry) => entry.store.id === id)?.rate ?? 0;
+    const lowestChosen = Math.min(...[...chosen].map(rateOf));
+    return outlook.entries
+      .filter((entry) => !chosen.has(entry.store.id))
+      .filter((entry) => (entry.rate ?? 0) + NEAR_MISS_MARGIN >= lowestChosen)
+      .sort((a, b) => (b.rate ?? 0) - (a.rate ?? 0))
+      .map((entry) => entry.store.id);
+  }
+
+  // 同じシフトに2店が揃った割合。記録から数える（180日ぶんなので軽い）。
+  // 「52%と42%」を足して94%と読まれないよう、実際には揃わないことを示すのに使う。
+  // データごとに覚える。組だけで覚えると、別のデータで呼んだときに前の答えを返す。
+  const coOpenMemo = new WeakMap();
+
+  function coOpenRate(insights, a, b) {
+    if (!insights || typeof insights !== "object") {
+      return null;
+    }
+    if (!coOpenMemo.has(insights)) {
+      coOpenMemo.set(insights, new Map());
+    }
+    const perData = coOpenMemo.get(insights);
+    const key = [a, b].sort().join("|");
+    if (perData.has(key)) {
+      return perData.get(key);
+    }
+    let shifts = 0;
+    let together = 0;
+    for (const day of Object.values(insights.actual ?? {})) {
+      for (const open of Object.values(day)) {
+        if (!Array.isArray(open)) {
+          continue;
+        }
+        shifts += 1;
+        if (open.includes(a) && open.includes(b)) {
+          together += 1;
+        }
+      }
+    }
+    const result = shifts > 0 ? { rate: together / shifts, shifts } : null;
+    perData.set(key, result);
+    return result;
+  }
+
+  // 僅差で落とした店について、読み手に何が起きているかを説明する一文。
+  function nearMissNote(insights, shift, outlook, pool) {
+    const missed = nearMissStores(insights, shift, outlook, pool);
+    if (missed.length === 0) {
+      return null;
+    }
+    const chosen = expectedOpenStores(insights, shift, outlook, pool);
+    const rateOf = (id) => outlook.entries.find((entry) => entry.store.id === id)?.rate ?? 0;
+    const rival = [...chosen].sort((a, b) => rateOf(a) - rateOf(b))[0];
+    const names = missed
+      .map((id) => `${storeShort(insights, id)}（${toPercent(rateOf(id))}）`)
+      .join("・");
+    const parts = [
+      `${names}も${storeShort(insights, rival)}（${toPercent(rateOf(rival))}）と僅差で、` +
+        `どちらになってもおかしくありません`
+    ];
+    const co = coOpenRate(insights, rival, missed[0]);
+    if (co && co.shifts > 0) {
+      parts.push(
+        `${storeShort(insights, rival)}と${storeShort(insights, missed[0])}が同じシフトに揃ったのは` +
+          `記録${co.shifts}シフト中${toPercent(co.rate)}なので、確率を足さないでください`
+      );
+    }
+    parts.push("顔ぶれの割り振りは、どちらか一方にしか出せないので片側だけに出しています");
+    return parts.join("。") + "。";
+  }
+
   function getShiftAssignment({ insights, members, shift, outlook, pins, kitchenStaff }) {
     const storeIds = expectedOpenStores(insights, shift, outlook, members ?? 0);
     if (storeIds.length === 0) {
@@ -1248,6 +1337,7 @@
       applyHomeStaff,
       assignShiftStores,
       calibrationNote,
+      coOpenRate,
       dateKey,
       eventStorePins,
       expectedOpenStores,
@@ -1260,6 +1350,8 @@
       groupByAssignedStore,
       isDateKeyInRange,
       lastActualDateOf,
+      nearMissNote,
+      nearMissStores,
       openStoresOn,
       openStoresOnDay,
       scheduleSystemNote,
@@ -1318,16 +1410,20 @@
     return { outlook: applyEventCertainty(insights, withHome, pins), pins };
   }
 
-  function createStoreOutlook(outlook, shift) {
+  function createStoreOutlook(outlook, shift, members) {
     const wrapper = document.createElement("div");
     wrapper.className = "store-outlook";
-    wrapper.title = outlook.summary;
+    // 僅差で顔ぶれを出せなかった店があれば、そのことも本文に書く。
+    const missed = nearMissNote(insights, shift, outlook, members ?? 0);
+    wrapper.title = missed ? `${outlook.summary}${missed}` : outlook.summary;
+
+    const nearMiss = new Set(nearMissStores(insights, shift, outlook, members ?? 0));
 
     const description = document.createElement("p");
     description.className = "visually-hidden";
     description.textContent =
       `${shift}の店舗（${outlook.badge}）：` +
-      `${outlook.entries.map((entry) => entry.srText).join("、")}。${outlook.summary}`;
+      `${outlook.entries.map((entry) => entry.srText).join("、")}。${wrapper.title}`;
 
     const list = document.createElement("ul");
     list.className = "store-chips";
@@ -1338,7 +1434,13 @@
       chip.className = `store-chip is-${entry.state}`;
       chip.dataset.store = entry.store.id;
       const size = storeSizeNote(insights, shift, entry.store.id);
-      if (size) {
+      // 僅差で顔ぶれを出せなかった店は、無視したわけではないと分かるようにする。
+      if (nearMiss.has(entry.store.id)) {
+        chip.classList.add("is-near-miss");
+        chip.title = [size, "僅差で選ばれなかった店です。顔ぶれは片方にしか出せません"]
+          .filter(Boolean)
+          .join("。");
+      } else if (size) {
         chip.title = size;
       }
 
@@ -1490,11 +1592,11 @@
     }
     section.append(title);
 
+    const allEntries = data.schedule[key]?.[shift] ?? [];
     if (outlook) {
-      section.append(createStoreOutlook(outlook, shift));
+      section.append(createStoreOutlook(outlook, shift, allEntries.map((entry) => entry.name)));
     }
 
-    const allEntries = data.schedule[key]?.[shift] ?? [];
     const visible = filteredEntries(key, shift);
     // 割り振りは絞り込みに影響されないよう、その日そのシフトの全員で計算する。
     const assignment = outlook

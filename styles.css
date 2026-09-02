@@ -596,8 +596,7 @@ input[type="date"] {
   min-width: 0;
   padding: 0 5px;
   border: 1px solid var(--chip-color, var(--cp-border));
-  border-radius: 0.625rem;
-  background: var(--cp-surface);
+  border-radius: 0.625rem;  background: var(--cp-surface);
   color: var(--cp-text);
   font-size: 0.68rem;
   line-height: 1.5;
@@ -667,6 +666,19 @@ input[type="date"] {
 .store-chip.is-closed .store-chip-name {
   font-weight: 400;
   text-decoration: line-through;
+}
+
+/* 僅差で顔ぶれを出せなかった店。無視したのではなく、片方しか出せないだけ。
+   色ではなく破線と記号で示す（色だけで情報を伝えない）。 */
+.store-chip.is-near-miss {
+  border-style: dashed;
+}
+
+.store-chip.is-near-miss .store-chip-rate::after {
+  content: "・僅差";
+  margin-left: 2px;
+  color: var(--cp-text-soft);
+  font-size: 0.62rem;
 }
 
 .maid-group-label {
