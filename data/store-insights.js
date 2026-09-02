@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-02 10:22",
+  "generatedAt": "2026-09-02 10:35",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-08-30"
