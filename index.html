@@ -42,6 +42,14 @@
   --cp-panel-strong: rgba(255, 255, 255, 0.96);
   --cp-sheen: rgba(255, 255, 255, 0.55);
   --cp-highlight: rgba(177, 31, 75, 0.12);
+  --cp-store-s1: #b11f4b;
+  --cp-store-s2: #7040b8;
+  --cp-store-s3: #17795c;
+  --cp-store-s4: #1f6fa8;
+  --cp-store-s1-soft: rgba(177, 31, 75, 0.1);
+  --cp-store-s2-soft: rgba(112, 64, 184, 0.1);
+  --cp-store-s3-soft: rgba(23, 121, 92, 0.1);
+  --cp-store-s4-soft: rgba(31, 111, 168, 0.1);
 }
 html[data-theme="dark"] {
   color-scheme: dark;
@@ -68,10 +76,19 @@ html[data-theme="dark"] {
   --cp-panel-strong: rgba(41, 41, 41, 0.96);
   --cp-sheen: rgba(255, 255, 255, 0.04);
   --cp-highlight: rgba(253, 142, 161, 0.12);
+  --cp-store-s1: #fd8ea1;
+  --cp-store-s2: #c3a3f2;
+  --cp-store-s3: #6ed3a8;
+  --cp-store-s4: #7cc0f0;
+  --cp-store-s1-soft: rgba(253, 142, 161, 0.16);
+  --cp-store-s2-soft: rgba(195, 163, 242, 0.16);
+  --cp-store-s3-soft: rgba(110, 211, 168, 0.16);
+  --cp-store-s4-soft: rgba(124, 192, 240, 0.16);
 }
     </style>
     <link rel="stylesheet" href="styles.css">
     <script src="data/schedule.js" defer></script>
+    <script src="data/store-insights.js" defer></script>
     <script src="app.js" defer></script>
   </head>
   <body>
@@ -95,6 +112,21 @@ html[data-theme="dark"] {
             リセット
           </button>
         </div>
+
+        <fieldset class="mode-filter">
+          <legend>表示モード</legend>
+          <div class="mode-switch">
+            <label>
+              <input type="radio" name="view-mode" value="forecast" checked>
+              <span>予測</span>
+            </label>
+            <label>
+              <input type="radio" name="view-mode" value="roster">
+              <span>誰いるか</span>
+            </label>
+          </div>
+          <p id="mode-help" class="mode-help"></p>
+        </fieldset>
 
         <fieldset class="date-filters">
           <legend>日付</legend>
@@ -120,6 +152,10 @@ html[data-theme="dark"] {
               <span aria-hidden="true">／</span>
               <button id="clear-all" class="text-button" type="button">すべて解除</button>
             </div>
+            <label class="toggle-label">
+              <input id="hide-kitchen" type="checkbox">
+              <span>キッチンにゃんこを除く</span>
+            </label>
             <div id="maid-checkboxes" class="checkbox-grid"></div>
           </fieldset>
         </details>
@@ -162,6 +198,7 @@ html[data-theme="dark"] {
           <p><span class="featured-key" aria-hidden="true"></span><strong>太字</strong>は記念日・生誕の主役です。</p>
           <p><span class="kitchen-key" aria-hidden="true">🍳</span>付きはキッチンにゃんこ（メイド服ではありません）です。</p>
           <p>空欄の日は「お給仕なし」ではなく、公開された確定情報が未確認であることを示します。</p>
+          <p id="schedule-system-note" class="schedule-system-note" hidden></p>
           <p id="last-updated" class="last-updated"></p>
         </div>
       </section>
