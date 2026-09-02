@@ -654,6 +654,8 @@ assert.ok(
 const stopStates = new Set();
 const planNames = [];
 let agreed = 0;
+let accuracyShown = 0;
+let unmeasuredShown = 0;
 for (const plan of plans) {
   const heading = withClass(plan, "maid-name");
   assert.equal(heading.length, 1, "each plan must name exactly one maid");
@@ -671,6 +673,44 @@ for (const plan of plans) {
   const notes = withClass(plan, "maid-plan-note");
   assert.equal(notes.length, 1, "each plan must carry exactly one caveat");
   assert.match(notes[0].textContent, /\d+件/, "the caveat must count the days it is guessing at");
+
+  // 的中はその人の実測。全体値で代用したり、母数を落としたりしていないこと。
+  const measured = insights.maidTendency?.[name]?.accuracy;
+  const caveat = notes[0].textContent;
+  if (measured && plan !== undefined) {
+    const stopsHere = withClass(plan, "maid-plan-stop");
+    const open = stopsHere.filter((s) => !s.classList.contains("is-open")).length;
+    if (open > 0) {
+      assert.ok(
+        caveat.includes(`${measured.n}件を試して`),
+        `${name}: the caveat must say how many tries the rate is based on`
+      );
+      assert.ok(
+        caveat.includes(`${Math.round(measured.rate * 100)}%`),
+        `${name}: the caveat must quote her own measured rate`
+      );
+      // 主語はこちら側に置く。低い数字が出る方もいるので「当てられ」と書く。
+      assert.ok(
+        caveat.includes("当てられて"),
+        `${name}: the sentence must put the guessing on us, not on her`
+      );
+      if (schedule.kitchenStaff.includes(name)) {
+        assert.ok(caveat.includes("キッチン"), `${name}: a kitchen maid must get the reason too`);
+      }
+      accuracyShown += 1;
+    }
+  } else if (!measured) {
+    assert.ok(
+      caveat.includes("測れていません"),
+      `${name}: without a measured rate the caveat must say so, not borrow one`
+    );
+    assert.doesNotMatch(
+      caveat,
+      /\d+%当てられ/,
+      `${name}: an unmeasured maid must not be handed someone else's figure`
+    );
+    unmeasuredShown += 1;
+  }
 
   const counted = withClass(plan, "maid-plan-count");
   assert.equal(counted.length, 1, "each plan must show its own shift count");
@@ -753,6 +793,10 @@ for (const plan of plans) {
   }
 }
 assert.ok(agreed > 0, "the two views must overlap enough to be compared at all");
+assert.ok(
+  accuracyShown > 0,
+  "no plan quoted a measured accuracy, so that wording is untested"
+);
 assert.ok(
   stopStates.size >= 2,
   `every stop looks equally certain (${[...stopStates].join(",")}), so the reader cannot tell them apart`
