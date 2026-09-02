@@ -1127,6 +1127,47 @@ for (const cell of withClass(calendar, "calendar-day")) {
 assert.ok(guessedShifts > 0, "some forecast shift must have been checked for trainees");
 assert.ok(guessedTotal > 0, "the forecast window must guess at least one trainee, or this is untested");
 
+// --- 表の上限に当たったら、そう断る -------------------------------------
+// 上限は insights.openCountByHeadcount の要素数+1。3店と出したのは
+// 「3店がいちばんありそう」だからではなく、4店を数える材料が無いから。
+let cappedShifts = 0;
+for (const cell of withClass(calendar, "calendar-day")) {
+  const [, year, month, day] = /(\d+)年(\d+)月(\d+)日/.exec(cell.getAttribute("aria-label"));
+  const cellKey = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  withClass(cell, "shift-section").forEach((section, shiftIndex) => {
+    const shift = insights.shifts[shiftIndex];
+    const shops = new Set(withClass(section, "maid-group-label").map((l) => l.dataset.store));
+    if (shops.size === 0) {
+      return;
+    }
+    const ceiling = insights.openCountByHeadcount[shift].length + 1;
+    const capped = withClass(section, "store-outlook-capped");
+    const recorded = Boolean(insights.actualRoster?.[cellKey]?.[shift]);
+    // 記録の日は数え直す必要がない。実際に何店開いたか分かっている。
+    const expected = !recorded && shops.size === ceiling && ceiling < insights.stores.length;
+    assert.equal(
+      capped.length,
+      expected ? 1 : 0,
+      `${cellKey} ${shift}: ${shops.size} shop(s) against a ceiling of ${ceiling}`
+    );
+    if (expected) {
+      cappedShifts += 1;
+      assert.ok(capped[0].textContent.includes(`${ceiling}店`), "the note must say where the ceiling is");
+      assert.equal(
+        capped[0].getAttribute("aria-hidden"),
+        "true",
+        "the visible note is a summary; the spoken text carries the reason"
+      );
+      const spoken = withClass(section, "visually-hidden")[0]?.textContent ?? "";
+      assert.ok(
+        spoken.includes("いちばんありそう、という意味ではなく"),
+        "screen readers must get the reason, not just the count"
+      );
+    }
+  });
+}
+assert.ok(cappedShifts > 0, "some shift must hit the ceiling, or this is untested");
+
 // 判定していない日には印を付けない。「全員が昇格済み」ではなく「分からない」ため。
 const unjudgedDay = Object.keys(insights.actualRoster ?? {}).find((key) =>
   insights.shifts.some((s) => insights.actualRoster[key][s] && !insights.actualRoster[key][s].trainees)

@@ -112,6 +112,26 @@ def read_debuts():
     return out
 
 
+def read_posted_shifts():
+    """予定表に載っている「誰が何回」（data/schedule.js の schedule）。
+
+    お給仕予定は本人が提出するもので、月の途中では未提出の人がいる。
+    出していない人は予定表に一度も出てこないので、在籍しているのに0回、という形で
+    見分けられる。人数を推定で補うのではなく、揃っていないことを画面で言うために使う。
+    """
+    path = os.path.join(ROOT, 'data', 'schedule.js')
+    if not os.path.exists(path):
+        return {}
+    src = open(path, encoding='utf-8').read()
+    m = re.search(r'\n  schedule: \{(.*?)\n  \}', src, re.S)
+    if not m:
+        return {}
+    out = collections.Counter()
+    for name in re.findall(r'name:\s*"([^"]+)"', m.group(1)):
+        out[shown(name)] += 1
+    return out
+
+
 def read_openings():
     """「開いた店は分かるが、誰が出たかは分からない」日を読む。
 
@@ -1147,6 +1167,31 @@ def build():
             actual.setdefault(d, {})[sh] = ids
             openings_used.setdefault(d, {})[sh] = ids
 
+    # 予定表がまだ揃っていないぶん。お給仕予定は本人が提出するもので、
+    # 月の途中には未提出の人がいる。人数で店舗数を決めている以上、揃っていない
+    # 予定表をそのまま読むと店を少なく見積もる。
+    #
+    # 推定で埋めない。誰が出していないかは分かるが、その人が何日出るかは分からず、
+    # 提出が進むぶんだけ補正を減らす仕組みも要る。揃っていないと画面で言うほうが、
+    # 提出が済めば黙る点でも正しい。
+    posted = read_posted_shifts()
+    pending = []
+    for name in (shown(n) for n in roster):
+        if posted.get(name):
+            continue
+        recent = sum(1 for d in dates[-90:] for sh in SHIFTS
+                     for maids in cell.get((d, sh), {}).values()
+                     if name in {shown(m) for m in maids})
+        pending.append({'name': name, 'recentShifts': recent})
+    pending.sort(key=lambda x: -x['recentShifts'])
+    schedule_pending = {
+        'rostered': len(roster),
+        'pending': [p['name'] for p in pending],
+        # 直近90日で何回お給仕に出ていた人か。0回なら、そもそも今月は出ない人かもしれない。
+        'recentShifts': {p['name']: p['recentShifts'] for p in pending},
+        'postedShifts': sum(posted.values()),
+    }
+
     return {
         'generatedAt': datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),
         'historyRange': {'from': all_dates[0], 'to': last},
@@ -1205,6 +1250,8 @@ def build():
         'actualRoster': actual_roster,
         # 見込みのシフトに置く、名前の分からない見習いにゃんこの人数（1店あたり）。
         'traineeOutlook': trainee_outlook,
+        # 予定表をまだ出していない在籍者。揃うまでは顔ぶれが実際より薄い。
+        'schedulePending': schedule_pending,
         # 上のうち、メイド単位の記録が無く「開いた店」だけ分かっている日。
         # 統計には入っていないので、UI が出典を書き分けたいときに使える。
         'actualWithoutRoster': openings_used,
