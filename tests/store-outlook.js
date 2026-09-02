@@ -299,16 +299,18 @@ assert.equal(
 // --- メイドさんの店舗 ---------------------------------------------------
 // ふだんの傾向だけで1人ずつ決めると、ほぼ毎日開いている1号店に全員が寄ってしまう。
 // 割り振りはそれを避けるためのものなので、まず「寄ってしまう」ことを確認しておく。
-const shareWinners = new Set(
-  schedule.roster.map((name) => {
-    const share = insights.maidTendency[name].share;
-    return ["s1", "s2", "s3", "s4"].reduce((top, id) => (share[id] > share[top] ? id : top), "s1");
-  })
-);
-assert.deepEqual(
-  [...shareWinners],
-  ["s1"],
-  "share alone points every maid at the same store, which is why the assignment exists"
+// 「全員が1号店」と書くと、僅差の1人が入れ替わっただけで落ちる。実際に
+// 2026-09-02 の実績を足した時点で、ねむりさんが s4 35.5% / s1 34.5% と逆転した。
+// 見たいのは「傾向だけだと1つの店に潰れる」ことなので、割合で言う。
+const shareWinners = schedule.roster.map((name) => {
+  const share = insights.maidTendency[name].share;
+  return ["s1", "s2", "s3", "s4"].reduce((top, id) => (share[id] > share[top] ? id : top), "s1");
+});
+const towardS1 = shareWinners.filter((id) => id === "s1").length;
+assert.ok(
+  towardS1 >= shareWinners.length * 0.9,
+  "share alone points almost every maid at one store, which is why the assignment exists; " +
+    `got ${towardS1}/${shareWinners.length} at s1`
 );
 
 const dayPool = schedule.schedule["2026-09-03"]["昼"].map((entry) => entry.name);
@@ -642,6 +644,11 @@ for (const [date, day] of Object.entries(schedule.schedule)) {
 const eventShiftsPreview = eventShifts;
 assert.ok(eventShifts.length > 0, "the fixture must contain at least one event shift");
 
+// 記念日が過去になった日は確率の検査から外れる。全部が過去になると、この節が
+// 何も見ないまま通ってしまうので、見込みの日が残っていることを最後に確かめる。
+let forecastEventShifts = 0;
+let pastEventShifts = 0;
+
 for (const { date, shift, entries } of eventShifts) {
   // アプリと同じく公式サイトの配属を渡す。推定側の経路は下の単体テストで見る。
   const pins = eventStorePins({ insights, entries, homeStore: schedule.homeStore });
@@ -659,6 +666,14 @@ for (const { date, shift, entries } of eventShifts) {
   }
 
   const base = outlookFor(date, shift);
+  // 記念日が過ぎると、その日は見込みではなく実績になる。実績には確率が無いので
+  // 「確定させる」対象でもない（2026-09-01 のもなかさん周年で実際に起きた）。
+  // 主役の立ち位置はここまでで見ているので、確率の話だけを飛ばす。
+  if (base.basis === "actual") {
+    pastEventShifts += 1;
+    continue;
+  }
+  forecastEventShifts += 1;
   const withEvent = applyEventCertainty(insights, base, pins);
   const pinnedStores = new Set([...pins.values()].map((pin) => pin.storeId));
 
@@ -721,6 +736,12 @@ for (const { date, shift, entries } of eventShifts) {
     "pinning the host must not drop anyone else from the assignment"
   );
 }
+
+assert.ok(
+  forecastEventShifts > 0,
+  `at least one event shift must still be a forecast, or this section checks nothing ` +
+    `(${pastEventShifts} of ${eventShifts.length} have already happened)`
+);
 
 // 実績のある日は記録が最優先で、イベントで上書きしない。
 const recordedShift = outlookFor(lastActual, "昼");
@@ -862,7 +883,10 @@ assert.equal(
   }
 
   // イベント開催店は人数に関係なく必ず候補に残る。
-  const eventShift = eventShiftsPreview[0];
+  // 過ぎた記念日は実績になり applyEventCertainty が素通しするので、見込みの日を選ぶ。
+  const eventShift = eventShiftsPreview.find(
+    (candidate) => outlookFor(candidate.date, candidate.shift).basis !== "actual"
+  );
   if (eventShift) {
     const pinned = applyEventCertainty(
       insights,
@@ -1351,12 +1375,33 @@ assert.equal(
 }
 
 // 店舗だけ分かっていて顔ぶれの記録が無い日は、実績として扱いつつ、その旨を断る。
+// 顔ぶれの記録が届くと、その日は openings.csv から shifts.csv に移り、ここの検体は
+// 消える（2026-09-02 が実際にそうなった）。検体の有無で検査が消えないよう、
+// 合成した1日で仕組みを固定し、実データがあるときは追加で確かめる。
 {
-  const storesOnly = insights.actualWithoutRoster ?? {};
-  const dates = Object.keys(storesOnly);
-  assert.ok(dates.length > 0, "the fixture must contain a stores-only record to exercise this");
+  const probeDate = "2026-08-31";
+  const probe = JSON.parse(JSON.stringify(insights));
+  probe.actual[probeDate] = { 昼: ["s1"] };
+  probe.actualWithoutRoster = { [probeDate]: { 昼: ["s1"] } };
+  const probed = getStoreOutlook({
+    insights: probe,
+    dateKey: probeDate,
+    shift: "昼",
+    lastActualDate: lastActualDateOf(probe)
+  });
+  assert.equal(probed.basis, "actual", "a stores-only day is recorded, even without a line-up");
+  assert.deepEqual(
+    [...probed.openStores].sort(),
+    ["s1"],
+    "a stores-only day must report exactly the stores we were told about"
+  );
+  assert.ok(
+    probed.summary.includes("誰がいたかの記録はありません"),
+    "a stores-only day must admit the line-up is unknown"
+  );
 
-  for (const date of dates) {
+  const storesOnly = insights.actualWithoutRoster ?? {};
+  for (const date of Object.keys(storesOnly)) {
     for (const [shift, stores] of Object.entries(storesOnly[date])) {
       // 顔ぶれが無いだけで営業したことは確かなので、見込みには落とさない。
       const outlook = outlookFor(date, shift);

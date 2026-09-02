@@ -1010,12 +1010,25 @@ def build():
 
     hist_from = (last_d - datetime.timedelta(days=HISTORY_DAYS)).isoformat()
     actual = {}
+    actual_roster = {}
     for d in all_dates:
         if d < hist_from:
             continue
         entry = {sh: sorted(open_at(d, sh)) for sh in SHIFTS if (d, sh) in cell}
         if entry:
             actual[d] = entry
+        # 誰がどこにいたかまで、記録があるぶんはそのまま渡す。カレンダーが
+        # 「実績」と書く日に予定表からの割り振りを出すと、名前だけが推測のまま残る。
+        names = {}
+        for sh in SHIFTS:
+            if (d, sh) not in cell:
+                continue
+            per_store = {sid: sorted(cell[(d, sh)][sid])
+                         for sid in IDS if cell[(d, sh)].get(sid)}
+            if per_store:
+                names[sh] = per_store
+        if names:
+            actual_roster[d] = names
 
     # 誰が出たかは分からないが開いた店は分かる日を足す。shifts.csv に記録がある
     # シフトは上書きしない（メイド単位の記録のほうが確かなので）。
@@ -1080,6 +1093,9 @@ def build():
                 cell, last_d, {ALIAS.get(n, n) for n in roster}, posted_by_key),
         },
         'actual': actual,
+        # 記録のある日の「誰がどこにいたか」。カレンダーが実績と書く日は、
+        # 予定表からの割り振りではなくこちらを出す。
+        'actualRoster': actual_roster,
         # 上のうち、メイド単位の記録が無く「開いた店」だけ分かっている日。
         # 統計には入っていないので、UI が出典を書き分けたいときに使える。
         'actualWithoutRoster': openings_used,
