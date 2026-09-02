@@ -597,6 +597,22 @@ py tools/build-insights.py
 
 HTML、CSS、JavaScript、予定データはリポジトリのプロジェクトパスで動作する相対パスを使用しています。
 
+### 更新がブラウザーに届くまで
+
+`index.html` は読み込むファイルに中身のハッシュを付けています（`app.js?v=6c9e3ac864`）。`tools/build-insights.py` が書き込み、`tests/validate-schedule.js` が照合します。手で `app.js` や `styles.css` を直したあと再生成を忘れると、そこで落ちます。
+
+これは**新しい `index.html` が古い `app.js` と組になる**のを防ぐためのものです。付ける前は、データを更新しても画面に予測が出たままになりました。
+
+**`index.html` 自体には付けられません。** GitHub Pages は `Cache-Control: max-age=600` を返すので、**デプロイ後10分は、一度開いたブラウザーに古い `index.html` が出ます**。古い `index.html` は古いハッシュを配るので、資産も古いままです。10分で自然に解消します。
+
+**デプロイ直後に本番を確かめるときは、`index.html` にキャッシュ避けを付けてください。**
+
+```
+https://agurakakenai.github.io/akibazettai-schedule-calendar/?fresh=1
+```
+
+これを付けずに「反映されていない」と判断した例が、開発中に2回あります（1回は本当にキャッシュ、1回は正しい実装をバグと誤認しかけた）。
+
 ### 非公開に戻す場合
 
 1. リポジトリを private にすると、GitHub Pages は自動的に停止します（サイトは 404 になります）。
