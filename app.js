@@ -1,4 +1,4 @@
-﻿(() => {
+(() => {
   "use strict";
 
   function getTokyoDateDefaults(now = new Date()) {
