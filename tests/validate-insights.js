@@ -847,6 +847,15 @@ assert.equal(
   assert.ok(roster.size > 0, "there must be recorded days with a line-up");
 
   const rosterNames = new Set(Object.keys(insights.maidTendency ?? {}));
+  // build-insights.py の ALIAS。記録側の表記をキーに、名簿の表記を値に持つ。
+  const aliasSources = new Map([["まこと", "まこっちゃん"]]);
+  for (const [recorded, listed] of aliasSources) {
+    assert.ok(
+      schedule.roster.includes(listed),
+      `the roster must still call her ${listed}; if that changed, ` +
+        `the mapping from ${recorded} needs changing with it`
+    );
+  }
   let traineeTotal = 0;
   let judgedShifts = 0;
   let unjudgedShifts = 0;
@@ -866,6 +875,17 @@ assert.equal(
       // 同じシフトで2店に名前が出ることは実際にある（応援に入った日など）ので、
       // 重複そのものは咎めない。見習いの印がその日の顔ぶれから外れていないかだけ見る。
       const everyone = new Set(Object.values(value.stores).flat());
+      // 記録は公式Xの投稿から起こしているので、表記が名簿と違うことがある
+      // （まこっちゃんさんは記録では「まこと」）。ここで名簿の表記に直しておかないと、
+      // 画面が照合できず、在籍しているのに一覧に無い人として描かれる。この取り違えは
+      // 画面からは「見習いでもない知らない人」に見えるだけで、原因が分からない。
+      for (const name of everyone) {
+        assert.ok(
+          !aliasSources.has(name),
+          `${date} ${shift}: ${name} is the record's spelling; ` +
+            `the roster calls her ${aliasSources.get(name)}, so the calendar cannot match her`
+        );
+      }
       if (!value.trainees) {
         // 見習いの判定は直近の窓の中だけ。窓の外は「分からない」であって
         // 「全員ノーマル」ではないので、キーごと落ちているのが正しい。

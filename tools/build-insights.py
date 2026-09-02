@@ -34,6 +34,15 @@ SHIFTS = ['昼', '夜']
 
 # サイトの roster 表記 -> X 投稿での表記
 ALIAS = {'まこっちゃん': 'まこと'}
+# その逆。画面に出す名前は roster 表記に揃える必要がある。roster・homeStore・
+# maidTendency・accounts はすべてサイトの表記で並んでいるので、記録の表記のまま
+# 出すと画面が照合できず、在籍しているのに「一覧に無い人」として描かれる。
+DISPLAY = {v: k for k, v in ALIAS.items()}
+
+
+def shown(name):
+    """記録の表記を、画面と名簿が使っている表記に直す。"""
+    return DISPLAY.get(name, name)
 
 WINDOW_DAYS = 365      # 店舗の営業率・規模・ローテーション・精度を測る期間
 # 店舗側の性質は「誰が在籍しているか」と無関係なので、長いほうが安定する。
@@ -96,7 +105,7 @@ def read_debuts():
     """
     out = {}
     for row in load_csv('debuts.csv', optional=True):
-        name = ALIAS.get(row.get('name'), row.get('name'))
+        name = shown(row.get('name'))
         date = row.get('date')
         if name and date and (name not in out or date < out[name]):
             out[name] = date
@@ -1047,6 +1056,7 @@ def build():
     for (d0, _sh0), stores0 in cell.items():
         for maids0 in stores0.values():
             for m0 in maids0:
+                m0 = shown(m0)
                 if m0 not in first_shift or d0 < first_shift[m0]:
                     first_shift[m0] = d0
 
@@ -1081,7 +1091,7 @@ def build():
         for sh in SHIFTS:
             if (d, sh) not in cell:
                 continue
-            per_store = {sid: sorted(cell[(d, sh)][sid])
+            per_store = {sid: sorted({shown(m) for m in cell[(d, sh)][sid]})
                          for sid in IDS if cell[(d, sh)].get(sid)}
             if not per_store:
                 continue
