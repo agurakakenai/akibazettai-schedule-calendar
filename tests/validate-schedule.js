@@ -235,7 +235,13 @@ assert.deepEqual(
     assert.ok(fs.existsSync(onDisk), `index.html loads ${file}, which is not in the repository`);
     // 手元は CRLF、CI と GitHub Pages は LF。生のバイトで取ると同じ内容でも
     // 値が変わり、Windows で通したものが CI で落ちる。改行を揃えてから計算する。
-    const normalised = fs.readFileSync(onDisk).toString("binary").replace(/\r\n/g, "\n");
+    // generatedAt は回すたびに動くので数えない（刻印は中身が変わったときだけ
+    // 変わってほしい。数えると、変わっていないファイルまで取り直しになる）。
+    const normalised = fs
+      .readFileSync(onDisk)
+      .toString("binary")
+      .replace(/\r\n/g, "\n")
+      .replace(/^\s*"generatedAt":.*$/gm, "");
     const digest = crypto.createHash("sha256").update(Buffer.from(normalised, "binary")).digest("hex");
     assert.equal(
       stamp,

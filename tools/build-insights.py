@@ -1236,7 +1236,12 @@ def stamp_assets():
             raw = f.read()
         # 手元は CRLF、CI と GitHub Pages は LF なので、生のバイトで取ると
         # 同じ内容でも値が変わる（実際にデプロイが落ちた）。改行を揃えてから計算する。
-        return hashlib.sha256(raw.replace(b'\r\n', b'\n')).hexdigest()[:10]
+        raw = raw.replace(b'\r\n', b'\n')
+        # generatedAt は回すたびに動くので、これを含めると中身が同じでも刻印が
+        # 変わり、変わっていないファイルまで取り直しになる。刻印の目的は
+        # 「中身が変わったら取り直す」なので、時刻の行は数えない。
+        raw = re.sub(rb'^\s*"generatedAt":.*$', b'', raw, flags=re.M)
+        return hashlib.sha256(raw).hexdigest()[:10]
 
     def replace(match):
         attr, rel, tail = match.group(1), match.group(2), match.group(3)
