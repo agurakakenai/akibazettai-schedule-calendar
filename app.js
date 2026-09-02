@@ -500,25 +500,41 @@
     };
   }
 
+  // 所属店の出どころ。公式サイトに載っている人はサイトの配属、まだ載っていない人
+  // （unpostedMaids）はお店からの案内による。どちらも `homeStore` に入っているので、
+  // ここで分けないとツールチップが「公式サイトの配属です」と嘘をつく。
+  function homeStoreSourceOf(homeStore, unpostedMaids, name) {
+    if (!homeStore?.[name]) {
+      return null;
+    }
+    const unposted = unpostedMaids instanceof Set ? unpostedMaids : new Set(unpostedMaids ?? []);
+    return unposted.has(name) ? "shop" : "site";
+  }
+
+  const HOME_STORE_SOURCE_LABEL = {
+    site: "公式サイトの配属",
+    shop: "お店の案内による所属"
+  };
+
   // 生誕祭・周年・卒業の主役は、その日かならず自分の所属店に立つ。
-  // 所属店は公式サイトの配属（homeStore）を優先し、載っていない人だけ
+  // 所属店は homeStore を優先し、載っていない人だけ
   // 「その店が開いている日にいちばん入っている店」からの推定で補う。
-  function eventStorePins({ insights, entries, homeStore }) {
+  function eventStorePins({ insights, entries, homeStore, unpostedMaids }) {
     const pins = new Map();
     for (const entry of entries ?? []) {
       if (!entry?.featured) {
         continue;
       }
       const tendency = insights?.maidTendency?.[entry.name];
-      const official = homeStore?.[entry.name];
-      const home = official ?? tendency?.home;
+      const declared = homeStore?.[entry.name];
+      const home = declared ?? tendency?.home;
       if (!home) {
         continue;
       }
       pins.set(entry.name, {
         storeId: home,
         label: entry.eventLabel ?? "記念日",
-        official: Boolean(official),
+        source: homeStoreSourceOf(homeStore, unpostedMaids, entry.name) ?? "record",
         pickRate: tendency?.pickRate?.[home] ?? null
       });
     }
@@ -834,7 +850,7 @@
   }
 
   // 候補店の中で pickRate を合計1に正規化する。「この人はこの店」と断定せず、
-  // どの店にもいる可能性があることを示す。実測で35名全員が4店舗すべてに入っている。
+  // どの店にもいる可能性があることを示す。実測で roster 全員が4店舗すべてに入っている。
   function storeProbabilities(insights, name, shift, storeIds) {
     if (!Array.isArray(storeIds) || storeIds.length === 0) {
       return {};
@@ -894,7 +910,7 @@
       : `ただしこのくらい低い数字は控えめすぎて、${band}と出した店にも実際は${toPercent(bucket.actual)}の割合で入っています（${measured}）`;
   }
 
-  function getMaidStoreOutlook({ insights, name, shift, outlook, assignment }) {
+  function getMaidStoreOutlook({ insights, name, shift, outlook, assignment, unpostedMaids }) {
     const tendency = insights?.maidTendency?.[name];
     if (!tendency || !assignment) {
       return null;
@@ -914,9 +930,11 @@
       const strength = typeof placed.pin.pickRate === "number"
         ? `${store.short}が開いた${shift}の${toPercent(placed.pin.pickRate)}をこの店で過ごしています`
         : null;
-      const source = placed.pin.official
-        ? `所属店は公式サイトの配属です${strength ? `（${strength}）` : ""}`
-        : `所属店は公式の配属が分からないため、出勤実績から推定したものです${strength ? `（${strength}）` : ""}`;
+      const detail = strength ? `（${strength}）` : "";
+      const declared = HOME_STORE_SOURCE_LABEL[placed.pin.source];
+      const source = declared
+        ? `所属店は${declared}です${detail}`
+        : `所属店は公式の配属が分からないため、出勤実績から推定したものです${detail}`;
       return {
         basis: "event",
         storeId: store.id,
@@ -954,16 +972,22 @@
       .sort((a, b) => probabilities[b] - probabilities[a])
       .map((id) => `${shortOf(id)} ${toPercent(probabilities[id])}`)
       .join(" / ");
-    // 公式サイトの配属。確率は実績が主で配属は弱い事前分布なので、
-    // 実績の多い人ほど配属から離れる。そのずれを読み手が確かめられるように出す。
-    const postedNote = tendency?.posted
-      ? `公式サイトの配属は${shortOf(tendency.posted)}`
+    // 所属店。確率は実績が主で配属は弱い事前分布なので、実績の多い人ほど配属から
+    // 離れる。そのずれを読み手が確かめられるように出す。出どころは2種類あり、
+    // 公式サイトに載っていない人はお店からの案内によるので、そう書き分ける。
+    const postedSource = tendency?.posted
+      ? (new Set(unpostedMaids ?? []).has(name) ? "shop" : "site")
+      : null;
+    const postedNote = postedSource
+      ? `${HOME_STORE_SOURCE_LABEL[postedSource]}は${shortOf(tendency.posted)}`
       : null;
     // 候補が1つなら、正規化の結果この店が100%になる。それはこの人の話ではなく
     // 「開く店が1つと見込んだ」という話なので、不確かさの在り処を書いておく。
     const soleStoreNote = assignment.storeIds.length === 1
       ? `この${shift}は${top.short}だけが開く見込みなので、その見込みが当たればこの店です`
       : null;
+    // 在籍者数は roster が増減するので数えて出す。文言に焼き込むと黙って古くなる。
+    const rosterSize = Object.keys(insights.maidTendency ?? {}).length;
 
     return {
       basis: "probability",
@@ -979,7 +1003,7 @@
         postedNote,
         soleStoreNote,
         calibrationNote(insights, probabilities[top.id], assignment.storeIds.length),
-        "どの店にも入る可能性があります。実際、在籍35名は全員が4店舗すべてに入った実績があります",
+        `どの店にも入る可能性があります。実際、在籍${rosterSize}名は全員が4店舗すべてに入った実績があります`,
         "いちばん高い店だけを見ると、たまに入る店を取りこぼします"
       ]
         .filter(Boolean)
@@ -1026,6 +1050,8 @@
   const data = window.SCHEDULE_DATA;
   const shifts = ["昼", "夜"];
   const kitchenStaff = new Set(data.kitchenStaff ?? []);
+  // 公式サイト未掲載の人。所属は分かるが出どころがサイトではないので書き分ける。
+  const unpostedMaids = new Set(data.unpostedMaids ?? []);
   const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
   const shiftDetails = {
     "昼": { icon: "☀", className: "shift-day" },
@@ -1039,7 +1065,12 @@
 
   function getShiftOutlook(key, shift) {
     const entries = data.schedule[key]?.[shift] ?? [];
-    const pins = eventStorePins({ insights, entries, homeStore: data.homeStore });
+    const pins = eventStorePins({
+      insights,
+      entries,
+      homeStore: data.homeStore,
+      unpostedMaids
+    });
     const outlook = getStoreOutlook({
       insights,
       dateKey: key,
@@ -1262,7 +1293,8 @@
         name: entry.name,
         shift,
         outlook,
-        assignment
+        assignment,
+        unpostedMaids
       });
       const titles = [];
       const descriptions = [];

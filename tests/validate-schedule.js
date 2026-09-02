@@ -40,22 +40,18 @@ assert.deepEqual(
   "kitchenStaff does not match the maids without a maid uniform on the official site"
 );
 
-// 公式サイトの配属。roster と過不足なく揃っていないと、記念日の主役を置く店が
-// 静かに推定へ落ちるので、そこを見張る。公式サイトにまだ載っていない人だけは
-// 配属が分からないので、`unpostedMaids` に名前を書いて明示的に外す。
+// 所属店舗。roster と過不足なく揃っていないと、記念日の主役を置く店が
+// 静かに推定へ落ちるので、そこを見張る。公式サイトにまだ載っていない人も、
+// お店からの案内で配属は分かるため、ここには全員そろっていなければならない。
 const homeStore = data.homeStore ?? {};
 const unposted = data.unpostedMaids ?? [];
 for (const name of unposted) {
   assert.ok(roster.has(name), `unpostedMaids has "${name}", who is not on the roster`);
-  assert.ok(
-    !(name in homeStore),
-    `${name} is listed as not yet posted, so homeStore must not claim a shop for her`
-  );
 }
 assert.deepEqual(
   Object.keys(homeStore),
-  [...data.roster].filter((name) => !unposted.includes(name)),
-  "homeStore must list every rostered maid the site posts, in the same order as the roster"
+  [...data.roster],
+  "homeStore must list every rostered maid, in the same order as the roster"
 );
 
 // 昇格日。見習いだったころの出勤を「事前に分かっていた人数」に数えると、

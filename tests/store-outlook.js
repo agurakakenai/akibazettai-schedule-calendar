@@ -429,6 +429,12 @@ assert.ok(
   chip.title.includes("4店舗すべて"),
   "the chip must say every maid has worked every shop"
 );
+// 在籍者数は roster が増えれば変わる。文言に焼き込むと黙って古くなるので、
+// 表示が実際の人数と一致していることを見る。
+assert.ok(
+  chip.title.includes(`在籍${schedule.roster.length}名`),
+  `the chip must quote the roster it actually has (${schedule.roster.length})`
+);
 assert.ok(chip.alternative, "the chip must offer a runner-up, which covers 97% together");
 assert.ok(
   chip.title.includes(`直近${insights.tendencyWindow.days}日`),
@@ -742,11 +748,11 @@ assert.equal(
 
   const pinned = eventStorePins({ insights, entries: host, homeStore: schedule.homeStore }).get("える");
   assert.equal(pinned.storeId, official, "the site's posting wins over our guess");
-  assert.equal(pinned.official, true, "a pin from the site must say so");
+  assert.equal(pinned.source, "site", "a pin from the site must say so");
 
   const fallback = eventStorePins({ insights, entries: host }).get("える");
   assert.equal(fallback.storeId, guessed, "without a posting we fall back on the tendency");
-  assert.equal(fallback.official, false, "a guessed pin must not claim to be official");
+  assert.equal(fallback.source, "record", "a guessed pin must not claim to be a posting");
 
   // 予定表に配属が無い人でも落ちない。
   const partial = eventStorePins({ insights, entries: host, homeStore: {} }).get("える");
@@ -767,16 +773,37 @@ assert.equal(
   assert.ok(chipFor(pinned).title.includes("公式サイトの配属"), "an official pin must credit the site");
   assert.ok(chipFor(fallback).title.includes("推定"), "a guessed pin must still admit it is a guess");
 
-  // 公式の配属は全員ぶんあるので、記念日の主役はすべて公式で置ける。
+  // 所属はすべて宣言されているので、記念日の主役は推定に落ちない。
+  // ただし出どころは2種類ある。公式サイトに載っていない人はお店の案内による。
+  const unposted = new Set(schedule.unpostedMaids ?? []);
   for (const [date, day] of Object.entries(schedule.schedule)) {
     for (const [shift, members] of Object.entries(day)) {
-      const pins = eventStorePins({ insights, entries: members, homeStore: schedule.homeStore });
+      const pins = eventStorePins({
+        insights,
+        entries: members,
+        homeStore: schedule.homeStore,
+        unpostedMaids: unposted
+      });
       for (const [name, pin] of pins) {
-        assert.equal(pin.official, true, `${date} ${shift}: ${name} must be pinned from the site`);
+        assert.equal(
+          pin.source,
+          unposted.has(name) ? "shop" : "site",
+          `${date} ${shift}: ${name}'s posting must name where it came from`
+        );
         assert.equal(pin.storeId, schedule.homeStore[name], `${name} must stand at her own shop`);
       }
     }
   }
+
+  // 公式サイトに載っていない人には「公式サイトの配属」と書かない。
+  assert.ok(unposted.size > 0, "the fixture must contain a maid the site has not listed yet");
+  const shopSourced = eventStorePins({
+    insights,
+    entries: [{ name: [...unposted][0], featured: true, eventLabel: "生誕" }],
+    homeStore: schedule.homeStore,
+    unpostedMaids: unposted
+  }).get([...unposted][0]);
+  assert.equal(shopSourced.source, "shop", "a maid the site has not listed is posted by the shop");
 }
 
 // 開店店舗数は人数から決まる。最頻値で固定すると3店舗の日も1店舗の日も出せない。
