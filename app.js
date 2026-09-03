@@ -1650,11 +1650,12 @@
   // 同じ人の予測を縦に並べると、その外れが一覧で見える。店ごとの画面では
   // 1行ずつ独立に見えて気づかなかったものが表に出るので、件数を数えて
   // 「全部当たることはまずない」と先に言う。
-  function maidItinerary({ schedule, name, dates, shifts, resolve }) {
+  function maidItinerary({ schedule, name, dates, shifts, resolve, kitchenStaff }) {
+    const cooks = kitchenStaff instanceof Set ? kitchenStaff : new Set(kitchenStaff ?? []);
     const stops = [];
     for (const key of dates ?? []) {
       for (const shift of shifts ?? []) {
-        const { outlook, assignment, members } = resolve(key, shift) ?? {};
+        const { outlook, assignment } = resolve(key, shift) ?? {};
         // 記録のある日は、その日の顔ぶれを記録が決める。予定表を見ると、
         // お休みだった方に行を作り、記録にしかいない方を落とすことになる。
         const roll = assignment?.recorded
@@ -1664,7 +1665,11 @@
           continue;
         }
         const placed = assignment?.byMaid?.get(name) ?? null;
-        const storeId = placed?.storeId ?? null;
+        // キッチンにゃんこの行き先は、見込みの日には店ごとの画面でも名乗らない。
+        // ここで名乗ると、同じ人・同じ日で2つの画面が違うことを言う。
+        const loose =
+          placed && !assignment.recorded && !placed.pin && cooks.has(name);
+        const storeId = loose ? null : placed?.storeId ?? null;
         const row = storeId
           ? outlook?.entries?.find((candidate) => candidate.store.id === storeId) ?? null
           : null;
@@ -1672,6 +1677,7 @@
           dateKey: key,
           shift,
           storeId,
+          kitchen: Boolean(loose),
           // 店ごとの画面と同じ三段階を使う。open は実績か記念日で確定、
           // likely は5割以上、unlikely はそれ未満。別の線を引くと画面が食い違う。
           state: row?.state ?? null,
@@ -2099,9 +2105,26 @@
         })
         : null);
     // 記録の並びは掲載順で確定しているので、割り振り順に組み直すのは見込みの日だけ。
-    const entries = assignment && !assignment.recorded
+    const ordered = assignment && !assignment.recorded
       ? sortByAssignedStore({ insights, entries: visible, assignment })
       : visible;
+    // キッチンにゃんこは、見込みの日には店の下に置かない。
+    //
+    // どの店にいるかを当てられない（実測でフロア65.4%に対し58.7%）うえに、
+    // 当てる必要もない。開いた店の枠にキッチンが載っているのは90%で、
+    // 1店なら1人・2店なら2人と各店に1人ずついるので、「どの店にいるか」は
+    // 「どの店が開くか」とほとんど同じことしか言っていない。
+    //
+    // 見習いと違って、誰が出るかは予定表に載っているので名前は出せる。
+    //
+    // ただし記念日の主役は所属店に確定する。そこは分かっているので外さない。
+    const guessingStores = Boolean(assignment) && !assignment.recorded;
+    const looseCook = (entry) =>
+      guessingStores &&
+      kitchenStaff.has(entry.name) &&
+      !assignment.byMaid.get(entry.name)?.pin;
+    const entries = ordered.filter((entry) => !looseCook(entry));
+    const cooks = ordered.filter(looseCook);
     // 予定表に出ない見習いにゃんこ。誰なのかも、どの店かも分からないので、
     // 店ごとのグループには入れず、シフトの末尾にまとめて置く。
     const guessedTrainees = isVisibleMaid(TRAINEE_PLACEHOLDER)
@@ -2113,7 +2136,7 @@
       )
       : 0;
 
-    function createMaidEntry(entry, groupStoreId) {
+    function createMaidEntry(entry, groupStoreId, hideStore = false) {
       const item = document.createElement("li");
       item.className = "maid-entry";
       const account = insights?.maidTendency?.[entry.name]?.x;
@@ -2178,7 +2201,7 @@
         }
       }
 
-      if (chipData) {
+      if (chipData && !hideStore) {
         // 見出しがその店を名乗っているなら、チップは割合だけになる。割合は表に
         // 出さない方針なので、そこでは何も足さない。数字はこの行の title に残る。
         const showStore = groupStoreId !== chipData.storeId;
@@ -2196,7 +2219,41 @@
       return item;
     }
 
-    if (entries.length > 0) {
+    function appendKitchen(target, members, storeCount) {
+      if (members.length === 0) {
+        return;
+      }
+      // 誰が出るかは分かっている。分からないのは、どの店にいるか。
+      const note =
+        `キッチンにゃんこです。${storeCount > 1 ? `開く${storeCount}店に1人ずつ入るのがふだんの形で、` : ""}` +
+        "どの店かは配属とも関係なく決まるため、店ごとの一覧には入れていません";
+      const heading = document.createElement("p");
+      // .maid-group-label は「かならず店を名乗る」約束なので、そこには入れない。
+      heading.className = "maid-kitchen-label";
+      const label = document.createElement("span");
+      label.textContent = "キッチン";
+      const count = document.createElement("span");
+      count.className = "maid-group-count";
+      count.textContent = `${members.length}人`;
+      heading.append(label, count);
+      heading.title = note;
+      const list = document.createElement("ul");
+      // 店ごとの一覧（.maid-list）は「見出しと1対1」で店を名乗る約束なので混ぜない。
+      list.className = "maid-kitchen-list";
+      members.forEach((entry) => {
+        // 店を名乗らないと決めた以上、チップで店を出しては辻褄が合わない。
+        const item = createMaidEntry(entry, null, true);
+        item.setAttribute(
+          "aria-label",
+          `${entry.name}（${note}）`
+        );
+        item.title = `${entry.name}：${note}`;
+        list.append(item);
+      });
+      target.append(heading, list);
+    }
+
+    if (entries.length > 0 || cooks.length > 0) {
       const groups = groupByAssignedStore({ insights, entries, assignment });
 
       groups.forEach(({ storeId, entries: members }) => {
@@ -2222,6 +2279,7 @@
       });
 
       appendTraineeGuesses(section, shift, guessedTrainees, assignment?.storeIds?.length ?? 0);
+      appendKitchen(section, cooks, assignment?.storeIds?.length ?? 0);
       return section;
     }
 
@@ -2250,6 +2308,8 @@
 
   // 予定表に出ない見習いにゃんこ。店ごとのグループには入れない。
   // どの店にいるか読めないのに見出しの下に置くと、その店にいると読まれる。
+  // 順番は、店ごとの一覧 → 見習い → キッチン。上ほど確かなことを言っている。
+  // 見習いは「誰か分からないが、いる」、キッチンは「誰か分かるが、どこか分からない」。
   function appendTraineeGuesses(section, shift, count, storeCount) {
     if (!(count > 0)) {
       return;
@@ -2449,7 +2509,14 @@
     let stopCount = 0;
 
     shown.forEach((name) => {
-      const plan = maidItinerary({ schedule: data.schedule, name, dates, shifts, resolve });
+      const plan = maidItinerary({
+        schedule: data.schedule,
+        name,
+        dates,
+        shifts,
+        resolve,
+        kitchenStaff
+      });
       if (plan.stops.length === 0) {
         return;
       }
@@ -2599,7 +2666,9 @@
   function stopExplanation(stop) {
     const trainee = stop.trainee === true ? "見習いにゃんことして" : "";
     if (!stop.storeId) {
-      return "どこへ立つかは、まだ何も言えません。";
+      return stop.kitchen
+        ? "キッチンにゃんこは開く店に1人ずつ入りますが、どの店かは配属とも関係なく決まるので、ここでは言えません。"
+        : "どこへ立つかは、まだ何も言えません。";
     }
     const where = storeShort(insights, stop.storeId);
     if (stop.settled) {
