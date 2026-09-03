@@ -2429,8 +2429,11 @@
   // 言う形も較正が壊れていて、65%と言った組が実際は0%だった。だから割合は出さない。
   // 「1号 60%・3号 40%」と書けば、測っていない自信を測ったふりで配ることになる。
   //
-  // 出せるのは、測った結果そのもの。開く店を全部並べて、**どれも同じくらいだ**と
-  // 言う。位置だけが答えになる状態は、これで消える。
+  // 出せるのは、測った結果そのもの。ただし**こちら側の話として書く**。
+  // 「どれも同じくらい」は店についての主張で、それは嘘になる（byStore は昼で
+  // 0.243〜0.503 と倍以上ひらいている）。当てられないのは私たちのほうで、
+  // 店が横並びだからではない。同じ理由で、人の的中率も「その人が読めない」では
+  // なく「私たちが当てられない」と書いている。
   function candidateStoresLabel(insights, storeIds) {
     const stores = storesOf(insights).filter((store) => storeIds.includes(store.id));
     if (stores.length === 0) {
@@ -2440,7 +2443,7 @@
     if (names.length === 1) {
       return names[0];
     }
-    return `${names.join("・")} どれも同じくらい`;
+    return `${names.join("・")} ${names.length === 2 ? "どちらか" : "どれか"}当てられません`;
   }
 
   function appendTraineeGuesses(section, shift, count, storeIds) {
