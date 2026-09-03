@@ -2353,6 +2353,82 @@ assert.equal(
     null,
     "without a measured rate for her, say nothing rather than borrow one"
   );
+
+  // 記念日は主役の所属店を「営業」で確定させる。そのとき、同じ店に割り振られた
+  // 他の人まで確定に見えてはいけない。実際に未来の日付で「◯号店にいた記録が
+  // あります」と出ていた。店が開くことと、その人がそこにいることは別の話。
+  const eventDay = eventShifts.find(({ date }) => date > lastActual);
+  assert.ok(eventDay, "no anniversary falls after the last record, so this is untested");
+  const withEvents = (key, s) => {
+    const entries = schedule.schedule[key]?.[s] ?? [];
+    const members = entries.map((entry) => entry.name);
+    const pins = eventStorePins({
+      insights,
+      entries,
+      homeStore: schedule.homeStore,
+      unpostedMaids: new Set(schedule.unpostedMaids ?? [])
+    });
+    // DOM 層と同じ順番で組む。applyEventCertainty を抜かすとバグが再現しない。
+    const outlook = applyEventCertainty(insights, outlookFor(key, s), pins);
+    return {
+      outlook,
+      assignment: getShiftAssignment({
+        insights,
+        members,
+        shift: s,
+        outlook,
+        pins,
+        kitchenStaff: new Set(schedule.kitchenStaff)
+      })
+    };
+  };
+  const hosts = new Set(eventDay.entries.filter((entry) => entry.featured).map((e) => e.name));
+  assert.ok(hosts.size > 0, "the event shift must have a host");
+  const pinnedStore = new Set(
+    [...hosts].map((name) => schedule.homeStore[name] ?? insights.maidTendency[name]?.home)
+  );
+  const { assignment: eventAssignment } = withEvents(eventDay.date, eventDay.shift);
+  const alongside = [...eventAssignment.byMaid]
+    .filter(([name, placed]) => !hosts.has(name) && pinnedStore.has(placed.storeId))
+    .map(([name]) => name);
+  assert.ok(
+    alongside.length > 0,
+    "nobody else was placed at the host's shop, so the confusion cannot be reproduced"
+  );
+  for (const name of [...hosts, ...alongside]) {
+    const stop = maidItinerary({
+      schedule: schedule.schedule,
+      name,
+      dates: [eventDay.date],
+      shifts: [eventDay.shift],
+      resolve: withEvents,
+      kitchenStaff: new Set(schedule.kitchenStaff)
+    }).stops[0];
+    assert.ok(stop, `${name} must appear on ${eventDay.date} ${eventDay.shift}`);
+    assert.equal(
+      stop.recorded,
+      false,
+      `${eventDay.date} is after the last record, so ${name} cannot have one`
+    );
+    if (hosts.has(name)) {
+      assert.equal(stop.host, true, `${name} hosts the event, so her shop is fixed`);
+      assert.equal(stop.state, "open", "the host's own shop is certain");
+    } else {
+      assert.equal(stop.host, false, `${name} is not the host, so her shop is still a guess`);
+      assert.notEqual(stop.state, "open", `${name}'s shop must not read as settled`);
+    }
+  }
+
+  // 記録のある日には、これまでどおり「記録があります」と言う。
+  const recordedStop = maidItinerary({
+    schedule: schedule.schedule,
+    name,
+    dates: [day],
+    shifts: [shift],
+    resolve: withEvents,
+    kitchenStaff: new Set(schedule.kitchenStaff)
+  }).stops[0];
+  assert.equal(recordedStop.recorded, true, "a day with a record must still say so");
 }
 
 // --- 記録のある日の顔ぶれ ---------------------------------------------
