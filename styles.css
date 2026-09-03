@@ -805,7 +805,8 @@ input[type="date"] {
 .maid-kitchen-label {
   display: flex;
   align-items: baseline;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: 0 4px;
   margin: 6px 0 3px;
   padding: 0 0 2px;
   border-bottom: 2px solid var(--cp-border);
@@ -822,7 +823,8 @@ input[type="date"] {
 .maid-trainee-label {
   display: flex;
   align-items: baseline;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: 0 4px;
   margin: 6px 0 3px;
   padding: 0 0 2px;
   border-bottom: 2px dotted var(--cp-border);
@@ -830,6 +832,16 @@ input[type="date"] {
   font-size: 0.68rem;
   font-weight: 700;
   white-space: nowrap;
+}
+
+/* 開く店の名前。見出しがいちばん下にあるせいで「最後の店にいる」と読まれるので、
+   どの店もありうることを文字で言う。位置を答えにしない。折り返してよい。 */
+.maid-group-where {
+  flex-basis: 100%;
+  color: var(--cp-text-soft);
+  font-size: 0.62rem;
+  font-weight: 400;
+  white-space: normal;
 }
 
 .maid-trainee-list {

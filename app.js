@@ -1874,23 +1874,22 @@
   const TRAINEE_PLACEHOLDER = "見習い";
 
   // 見習いの人数は入店で動くので、データ側は半減期30日で見ている（人数の180日
-  // とは別）。落ち着いた量ではなく来月には変わるので、画面に割合そのものを
-  // 書かない。「いそう」までにして、根拠は開く店の数で言う。
+  // とは別）。落ち着いた量ではなく来月には変わるので、割合そのものは書かない。
   //
-  // 店を選ばない理由も添える。店ごとの実測（byStore）はどの店も1人に届かないので、
-  // いちばん多い店を選んでも「たぶんいない」ほうが確からしい。店名も割合も出さない。
-  // 店名を出せば、この一覧を「店を名乗らない」と決めた意味が消える。割合は半減期
-  // 30日で動くので、書けば来月には違う数字になる。表から読める言い切りだけを出す。
+  // どの店にいそうかは、測ったうえで言えない。`byStore` の1位を選んで 50.3%、
+  // でたらめに選んで 55.1% で、順位に意味がない。確率で言う形も較正が壊れる
+  // （65%と言った組が実際は0%）。だから「当てられなかった」を言う。店ごとの
+  // 濃さを黙って出すと、測っていない自信を測ったふりで配ることになる。
   function traineeGuessNote(insights, shift, storeCount) {
     const where = storeCount > 1
       ? `${storeCount}店開けば、そのどこかに`
       : "この店に";
-    const byStore = insights?.traineeOutlook?.[shift]?.byStore;
-    const values = byStore ? Object.values(byStore) : [];
-    // どこか1店でも1人を超えたら、この言い切りは成り立たなくなる。黙る。
-    const scarce = values.length > 0 && values.every((value) => value < 1);
-    const why = scarce ? "。どの店も1シフトに1人はいないので、店は選べません" : "";
-    return `予定表に出ない見習いにゃんこです。${where}いそうですが、どなたかは分かりません（${shift}の実績から）${why}`;
+    const lead = `予定表に出ない見習いにゃんこです。${where}いそうですが、どなたかは分かりません（${shift}の実績から）`;
+    if (storeCount < 2) {
+      return lead;
+    }
+    return `${lead}。どの店にいるかは、店ごとの実績で選んでも当てずっぽうに勝てませんでした。` +
+      "人数だけ見込んでいて、店は決めていません";
   }
   const kitchenStaff = new Set(data.kitchenStaff ?? []);
   const rosterNames = new Set(data.roster ?? []);
@@ -2318,10 +2317,11 @@
       return item;
     }
 
-    function appendKitchen(target, members, storeCount) {
+    function appendKitchen(target, members, storeIds) {
       if (members.length === 0) {
         return;
       }
+      const storeCount = storeIds.length;
       // 誰が出るかは分かっている。分からないのは、どの店にいるか。
       const note =
         `キッチンにゃんこです。${storeCount > 1 ? `開く${storeCount}店に1人ずつ入るのがふだんの形で、` : ""}` +
@@ -2335,6 +2335,14 @@
       count.className = "maid-group-count";
       count.textContent = `${members.length}人`;
       heading.append(label, count);
+      // 見習いと同じ理由で、開く店を並べる。位置を答えにしない。
+      const where = candidateStoresLabel(insights, storeIds);
+      if (where) {
+        const span = document.createElement("span");
+        span.className = "maid-group-where";
+        span.textContent = where;
+        heading.append(span);
+      }
       heading.title = note;
       const list = document.createElement("ul");
       // 店ごとの一覧（.maid-list）は「見出しと1対1」で店を名乗る約束なので混ぜない。
@@ -2377,13 +2385,13 @@
         section.append(list);
       });
 
-      appendTraineeGuesses(section, shift, guessedTrainees, assignment?.storeIds?.length ?? 0);
-      appendKitchen(section, cooks, assignment?.storeIds?.length ?? 0);
+      appendTraineeGuesses(section, shift, guessedTrainees, assignment?.storeIds ?? []);
+      appendKitchen(section, cooks, assignment?.storeIds ?? []);
       return section;
     }
 
     if (guessedTrainees > 0) {
-      appendTraineeGuesses(section, shift, guessedTrainees, assignment?.storeIds?.length ?? 0);
+      appendTraineeGuesses(section, shift, guessedTrainees, assignment?.storeIds ?? []);
       return section;
     }
 
@@ -2414,11 +2422,32 @@
   // <ul> にそのまま続いて見え、店は s1→s4 の順に並ぶので、いつも番号のいちばん
   // 大きい店にぶら下がって読める。「どの店か分からない」と言うつもりが「4号店に
   // いる」と読める形になっていた。
-  function appendTraineeGuesses(section, shift, count, storeCount) {
+  // 「どこかにいる」は当たり前で、知りたいのは「どこにいそうか」。
+  //
+  // 測ってある。**当てられない。**`byStore` の1位を選ぶと 50.3% で、でたらめに
+  // 選ぶ 55.1% より悪い（README「見習いをどの店に置くかは決めません」）。確率で
+  // 言う形も較正が壊れていて、65%と言った組が実際は0%だった。だから割合は出さない。
+  // 「1号 60%・3号 40%」と書けば、測っていない自信を測ったふりで配ることになる。
+  //
+  // 出せるのは、測った結果そのもの。開く店を全部並べて、**どれも同じくらいだ**と
+  // 言う。位置だけが答えになる状態は、これで消える。
+  function candidateStoresLabel(insights, storeIds) {
+    const stores = storesOf(insights).filter((store) => storeIds.includes(store.id));
+    if (stores.length === 0) {
+      return null;
+    }
+    const names = stores.map(compactStoreLabel);
+    if (names.length === 1) {
+      return names[0];
+    }
+    return `${names.join("・")} どれも同じくらい`;
+  }
+
+  function appendTraineeGuesses(section, shift, count, storeIds) {
     if (!(count > 0)) {
       return;
     }
-    const note = traineeGuessNote(insights, shift, storeCount);
+    const note = traineeGuessNote(insights, shift, storeIds.length);
     const heading = document.createElement("p");
     // .maid-group-label は「かならず店を名乗る」約束なので、そこには入れない。
     heading.className = "maid-trainee-label";
@@ -2429,6 +2458,13 @@
     // 予定表から数えた人数ではなく、実績から見込んだ数。「ほど」で言い分ける。
     tally.textContent = `${count}人ほど`;
     heading.append(label, tally);
+    const where = candidateStoresLabel(insights, storeIds);
+    if (where) {
+      const span = document.createElement("span");
+      span.className = "maid-group-where";
+      span.textContent = where;
+      heading.append(span);
+    }
     heading.title = note;
     const list = document.createElement("ul");
     // 店ごとの一覧（.maid-list）とは別のクラスにする。あちらは「見出しと1対1」を

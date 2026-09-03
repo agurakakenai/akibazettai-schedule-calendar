@@ -250,6 +250,10 @@ function hostingStores(dateKey, shift) {
   );
 }
 
+// 記念日の主役の扱いは、記録の前と後で違う。両方を通ったことを確かめる。
+let hostsAhead = 0;
+let hostsOnRecord = 0;
+
 for (const cell of dayCells) {
   const label = cell.getAttribute("aria-label");
   const [, year, month, day] = /(\d+)年(\d+)月(\d+)日/.exec(label);
@@ -349,6 +353,11 @@ for (const cell of dayCells) {
     }
 
     // 主役は自分の所属店に割り振られ、確率ではなく確定として出る。
+    //
+    // ただし記録のある日は別。実際にどこにいたか分かっているので、所属店とは
+    // 限らないし、推測でもない。以前はここを分けておらず、記念日の日に記録が
+    // 届いた瞬間に落ちた。「記念日だから所属店」は見込みのときの話。
+    const settledByRecord = Boolean(insights.actual[cellKey]?.[shift]);
     for (const entry of schedule.schedule[cellKey]?.[shift] ?? []) {
       if (!entry.featured) {
         continue;
@@ -356,6 +365,18 @@ for (const cell of dayCells) {
       const row = withClass(section, "maid-entry").find(
         (item) => withClass(item, "maid-name")[0].textContent === entry.name
       );
+      if (settledByRecord) {
+        // 記録の日に主役が出ないことはある（予定表に載っていても休むなど）。
+        if (row) {
+          assert.match(
+            row.title,
+            /記録があります|にいた記録/,
+            `${entry.name} on ${cellKey} ${shift}: this day is on the record, so say so`
+          );
+          hostsOnRecord += 1;
+        }
+        continue;
+      }
       assert.ok(row, `${entry.name} must be rendered on ${cellKey} ${shift}`);
       // 店は見出しが名乗る。見出しと同じ店ならチップは出さない（繰り返しになる）。
       const lists = withClass(section, "maid-list");
@@ -375,9 +396,11 @@ for (const cell of dayCells) {
         row.title.includes("確定") || row.title.includes("所属店"),
         "the tooltip must say the event is what makes it certain"
       );
+      hostsAhead += 1;
     }
   });
 }
+assert.ok(hostsAhead > 0, "no anniversary falls before a record, so that wording is untested");
 
 // --- メイドさんの行 -----------------------------------------------------
 const roster = new Set(schedule.roster);
@@ -632,7 +655,11 @@ for (const cell of withClass(calendar, "calendar-day")) {
         current = node.dataset.store || null;
       } else if (
         node.classList.contains("maid-kitchen-list") ||
-        node.classList.contains("maid-trainee-list")
+        node.classList.contains("maid-trainee-list") ||
+        // 見出し自体でも手放す。開く店の名前を持つようになったので、拾わない
+        // ことに頼らず、そこから先は店を名乗っていない領域だと決めておく。
+        node.classList.contains("maid-kitchen-label") ||
+        node.classList.contains("maid-trainee-label")
       ) {
         current = null;
       } else if (node.classList.contains("maid-name") && current) {
@@ -1266,6 +1293,40 @@ for (const cell of withClass(calendar, "calendar-day")) {
         withClass(section, "maid-list").length,
         "the trainee heading must not be counted as a shop group"
       );
+      // 見えている文字が「どこにいそうか」に答えること。
+      //
+      // 見出しを足しても「絶対に1号店には来ない見た目」と言われ、開く店を
+      // 並べたら「どこかにいるのは当たり前で、知りたいのはどこにいそうか」と
+      // 言われた。この一覧はかならず店の一覧の後ろに来るので、文字が店について
+      // 何も言わないかぎり、位置だけが答えになる。
+      //
+      // ただし濃さは書けない。店ごとの実績で選んでも当てずっぽうに勝てず
+      // （50.3% 対 55.1%）、確率で言う形も較正が壊れる（65%と言った組が実際0%）。
+      // **測って言えなかったことを、言えたふりで書かない。**
+      const where = withClass(before, "maid-group-where");
+      assert.equal(
+        where.length,
+        1,
+        `${cellKey} ${shift}: the heading must answer where they are likely to be`
+      );
+      for (const id of shops) {
+        const short = insights.stores.find((s) => s.id === id).short.replace(/号店$/, "号");
+        assert.ok(
+          where[0].textContent.includes(short),
+          `${cellKey} ${shift}: ${short} is open, so it must be named (got "${where[0].textContent}")`
+        );
+      }
+      assert.doesNotMatch(
+        where[0].textContent,
+        /\d+%|0\.\d+/,
+        `${cellKey} ${shift}: ranking the shops does not beat guessing, so quote no odds`
+      );
+      // 並べるだけでは「どこかにいる」しか言っていない。測った結果まで言う。
+      assert.ok(
+        shops.size === 1 || where[0].textContent.includes("同じくらい"),
+        `${cellKey} ${shift}: with ${shops.size} shops open, say they are equally likely ` +
+          `(got "${where[0].textContent}")`
+      );
       headedTrainees += 1;
     }
   });
@@ -1277,7 +1338,13 @@ assert.ok(headedTrainees > 0, "no trainee list was checked for its heading");
 // --- 表の上限に当たったら、そう断る -------------------------------------
 // 上限は insights.openCountByHeadcount の要素数+1。3店と出したのは
 // 「3店がいちばんありそう」だからではなく、4店を数える材料が無いから。
+//
+// 上限に当たるシフトが予定表に無い日もある。以前は「1件も無ければ落ちる」に
+// していて、記録が伸びて見込みの期間が動いた日に、実装が正しいまま落ちた。
+// **出るはずの件数をデータから数えて、それと一致することを見る。**0件なら
+// 0件で正しい。文言そのものは store-outlook.js が直接呼んで確かめている。
 let cappedShifts = 0;
+let cappedExpected = 0;
 for (const cell of withClass(calendar, "calendar-day")) {
   const [, year, month, day] = /(\d+)年(\d+)月(\d+)日/.exec(cell.getAttribute("aria-label"));
   const cellKey = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
@@ -1292,13 +1359,18 @@ for (const cell of withClass(calendar, "calendar-day")) {
     const recorded = Boolean(insights.actualRoster?.[cellKey]?.[shift]);
     // 記録の日は数え直す必要がない。実際に何店開いたか分かっている。
     const expected = !recorded && shops.size === ceiling && ceiling < insights.stores.length;
+    if (expected) {
+      cappedExpected += 1;
+    }
+    if (capped.length > 0) {
+      cappedShifts += 1;
+    }
     assert.equal(
       capped.length,
       expected ? 1 : 0,
       `${cellKey} ${shift}: ${shops.size} shop(s) against a ceiling of ${ceiling}`
     );
     if (expected) {
-      cappedShifts += 1;
       assert.ok(capped[0].textContent.includes(`${ceiling}店`), "the note must say where the ceiling is");
       assert.equal(
         capped[0].getAttribute("aria-hidden"),
@@ -1313,7 +1385,13 @@ for (const cell of withClass(calendar, "calendar-day")) {
     }
   });
 }
-assert.ok(cappedShifts > 0, "some shift must hit the ceiling, or this is untested");
+// 「上限に当たった数」と「当たったと言った数」が一致すること。0件なら0件でよい。
+// 見込みが上限まで届かない期間はふつうにある（いまは2店止まりの日が続く）。
+assert.equal(
+  cappedShifts,
+  cappedExpected,
+  "every shift that hits the ceiling must say so, and no others"
+);
 
 // --- キッチンにゃんこは、見込みの日には店を名乗らない ---------------------
 // 開いた店の枠に90%載っていて各店1人ずつなので、「どの店にいるか」は

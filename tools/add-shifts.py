@@ -166,6 +166,53 @@ def parse(text, created_at):
     return jst.strftime('%Y-%m-%d'), store, shift, names
 
 
+def load_known():
+    """記録にある名前と、その回数。新しい名前を見分けるのに使う。"""
+    counts = {}
+    try:
+        with open(SHIFTS, encoding='utf-8-sig', newline='') as fh:
+            for row in csv.DictReader(fh):
+                name = row.get('maid')
+                if name:
+                    counts[name] = counts.get(name, 0) + 1
+    except OSError:
+        pass
+    debuts = set()
+    try:
+        with open(os.path.join(HERE, 'data', 'debuts.csv'),
+                  encoding='utf-8-sig', newline='') as fh:
+            for row in csv.DictReader(fh):
+                name = (row.get('name') or row.get('maid') or '').strip()
+                if name:
+                    debuts.add(name)
+    except OSError:
+        pass
+    return counts, debuts
+
+
+def resembles(name, counts, floor=5):
+    """定着した名前のうち、1文字違いか頭が一致するもの。
+
+    お店の投稿には打ち間違いがあります。実際に `もな`（もなか）、`みずれ`（みぞれ）、
+    `みひん`（みりん）、`ましろ`（まひろ）などが記録に入っていました。1回きり
+    しか出てこない名前は、たいてい打ち間違いです。
+
+    ただし**直せません**。見習いにゃんこは名簿に載らない新しい名前で来るので、
+    打ち間違いと見分けが付かないためです。`あるか` さんは初日の見習いでしたが、
+    `るるか` と1文字違いなのでこの検査に引っかかります。**言うだけにします。**
+    """
+    out = []
+    for other, n in counts.items():
+        if other == name or n < floor:
+            continue
+        if other.startswith(name) or name.startswith(other):
+            out.append((other, n))
+        elif len(other) == len(name) and sum(
+                a != b for a, b in zip(name, other)) == 1:
+            out.append((other, n))
+    return sorted(out, key=lambda x: -x[1])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('urls', nargs='+', help='お給仕投稿の URL か tweet ID')
@@ -177,8 +224,9 @@ def main():
     fields = list(rows[0].keys()) if rows else ['date', 'store', 'shift',
                                                 'maid', 'tweet_id']
     have = {r['tweet_id'] for r in rows if r.get('tweet_id')}
+    counts, debuts = load_known()
 
-    added, skipped = [], []
+    added, skipped, fresh = [], [], []
     for arg in args.urls:
         tid = tweet_id(arg)
         if not tid:
@@ -207,8 +255,22 @@ def main():
         for name in names:
             added.append({'date': date, 'store': store, 'shift': shift,
                           'maid': name, 'tweet_id': tid})
+            if name not in counts:
+                fresh.append((name, date, resembles(name, counts),
+                              name in debuts))
 
     print()
+    for name, date, like, has_debut in fresh:
+        if like:
+            print('  ★ %s (%s) は記録に無い名前です。%s に似ています（%s）'
+                  % (name, date,
+                     ' / '.join('%s %d回' % (n, c) for n, c in like[:3]),
+                     '新人告知あり' if has_debut else '新人告知なし'))
+            print('     打ち間違いなら直してください。'
+                  '見習いにゃんこなら debuts.csv に初日を足してください。')
+        else:
+            print('  ・ %s (%s) は記録に無い名前です。似た名前はありません。'
+                  % (name, date))
     for tid, why in skipped:
         print('  飛ばした %s: %s' % (tid, why))
     if not added:
