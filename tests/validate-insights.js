@@ -1109,6 +1109,29 @@ assert.equal(
   console.log(`  same-day moves: ${perMaid.length} maids with their own table`);
 }
 
+// 2つ前の同じシフトからの移り方。直前より効く（71勝39敗、p=0.0029）。
+// 直前は必ずもう片方のシフトになるので、昼と夜の役割の違いが混ざる。
+{
+  const two = insights.rotation?.twoBack;
+  assert.ok(two, "the rotation must carry the two-shifts-back table");
+  const states = Object.keys(two);
+  assert.ok(states.length >= 3, `only ${states.length} states in the two-back table`);
+  for (const [from, to] of Object.entries(two)) {
+    const total = Object.values(to).reduce((a, b) => a + b, 0);
+    assert.ok(
+      Math.abs(total - 1) < 0.02,
+      `the moves out of ${from} sum to ${total.toFixed(3)}, which is not a distribution`
+    );
+  }
+  // 直前の表と同じ状態を扱っていること。片方だけ状態が増えたら、どちらかが壊れている。
+  const sameDayStates = Object.keys(insights.rotation.sameDay ?? {}).sort();
+  assert.deepEqual(
+    states.slice().sort(),
+    sameDayStates,
+    "the two-back table must describe the same states as the same-day one"
+  );
+}
+
 console.log(
   `Store insights valid: ${insights.stores.length} stores, ` +
     `${actualEntries.length} recorded dates through ${Object.keys(insights.actual).sort().at(-1)}, ` +

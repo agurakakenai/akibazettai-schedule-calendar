@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-03 21:08",
+  "generatedAt": "2026-09-03 21:11",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-09-02"
@@ -657,6 +657,32 @@ window.STORE_INSIGHTS = {
       "open": {
         "closed": 0.72,
         "open": 0.28
+      }
+    },
+    "twoBack": {
+      "s3": {
+        "none": 0.429,
+        "s3": 0.099,
+        "s2": 0.462,
+        "both": 0.011
+      },
+      "none": {
+        "none": 0.486,
+        "s3": 0.251,
+        "s2": 0.251,
+        "both": 0.012
+      },
+      "s2": {
+        "none": 0.471,
+        "s3": 0.417,
+        "s2": 0.107,
+        "both": 0.005
+      },
+      "both": {
+        "none": 0.5,
+        "s3": 0.25,
+        "both": 0.125,
+        "s2": 0.125
       }
     }
   },

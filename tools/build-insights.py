@@ -756,6 +756,22 @@ def build():
         same_day[group23(h)][group23(y)] += 1
         same_day_s4['open' if 's4' in h else 'closed']['open' if 's4' in y else 'closed'] += 1
 
+    # 2つ前のシフト -> このシフト。
+    #
+    # 直前のシフトより効く。昼と夜は同じ日の中で役割が違い（夜は1号店に寄る）、
+    # 直前を見ると必ずもう片方のシフトを見ることになる。2つ前なら同じシフトどうしで、
+    # 「昨日の昼はこうだった、今日の昼は」という比べ方になる。
+    #
+    # 実測で、店舗の組み合わせを丸ごと当てる的中が 4通りの分割すべてで上がり
+    # （+1.3〜+4.5pt）、まとめた対比較で 71勝39敗（p=0.0029）。
+    two_back = collections.defaultdict(collections.Counter)
+    ordered = [(d, sh) for d in dates for sh in SHIFTS if (d, sh) in cell]
+    for i in range(2, len(ordered)):
+        before = open_at(*ordered[i - 2])
+        now = open_at(*ordered[i])
+        if before and now:
+            two_back[group23(before)][group23(now)] += 1
+
     open_count = {}
     for sh in SHIFTS:
         c = collections.Counter(len(open_at(d, sh)) for d in dates)
@@ -1341,6 +1357,8 @@ def build():
             'nextDayS4': next_day_s4,
             'sameDay': {a: norm_counter(c) for a, c in same_day.items()},
             'sameDayS4': {a: norm_counter(c) for a, c in same_day_s4.items()},
+            # 2つ前の同じシフトから。直前より効く（71勝39敗、p=0.0029）。
+            'twoBack': {a: norm_counter(c) for a, c in two_back.items()},
         },
         'accuracy': {
             'nextDayByShift': acc,
