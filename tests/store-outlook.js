@@ -10,6 +10,7 @@ const {
   applyEventCertainty,
   applyHomeStaff,
   applyPostedTilt,
+  applySameDayEvidence,
   assignShiftStores,
   calibrationNote,
   coOpenRate,
@@ -2099,6 +2100,7 @@ assert.equal(
   });
   assert.equal(alone.sameDayShift, undefined, "without the table there is nothing to fold in");
   const rateOf = (o, id) => o.entries.find((e) => e.store.id === id).rate;
+  const atLunch = new Set(insights.actual[day][lunch]);
   assert.notEqual(
     rateOf(outlook, "s3"),
     rateOf(alone, "s3"),
@@ -2113,7 +2115,6 @@ assert.equal(
     );
   }
   // 昼に2号店なら、夜の3号店はほぼ無い。表の鋭さが結果に出ていること。
-  const atLunch = new Set(insights.actual[day][lunch]);
   if (atLunch.has("s2")) {
     assert.ok(
       rateOf(outlook, "s3") < rateOf(alone, "s3"),
@@ -2122,17 +2123,47 @@ assert.equal(
   }
 
   // 向きを守る。昼を組むときには使わない（表はその向きに作られていない）。
-  const lunchOutlook = getStoreOutlook({
-    insights: pending,
-    dateKey: addDays(day, 1),
-    shift: lunch,
-    lastActualDate: day
-  });
+  // 直接呼んで確かめる。日付をずらして確かめると、その日の記録が無いだけで
+  // 素通りしてしまい、向きを見ているのかどうかが分からない。
   assert.equal(
-    lunchOutlook.sameDayShift,
-    undefined,
+    applySameDayEvidence(pending, alone, day, lunch),
+    alone,
     "the same-day table only runs from the earlier shift to the later one"
   );
+  // 記録のある日（basis が forecast でない）にも足さない。
+  assert.equal(
+    applySameDayEvidence(pending, { ...alone, basis: "tendency" }, day, night).sameDayShift,
+    undefined,
+    "there is nothing to fold into a weekday tendency"
+  );
+
+  // 掛け合わせであること。上書きでも平均でもない。
+  // 上書きは47.6%、平均は51.2%、掛け合わせは52.4%で、どれも素の40.6%を上回る。
+  // 「素より良い」だけを見ていると、上書きに差し替えられても気づけない。
+  const logit = (p) => {
+    const clamped = Math.min(Math.max(p, 0.005), 0.995);
+    return Math.log(clamped / (1 - clamped));
+  };
+  const transitions = insights.rotation.sameDay[
+    ["s2", "s3"].filter((id) => atLunch.has(id)).join("+") || "none"
+  ];
+  assert.ok(transitions, "the lunch state must exist in the same-day table");
+  for (const id of ["s2", "s3"]) {
+    const evidence = (transitions[id] ?? 0) + (transitions.both ?? 0);
+    const base = insights.baseOpenRate[night][id];
+    const expected =
+      1 / (1 + Math.exp(-(logit(rateOf(alone, id)) + logit(evidence) - logit(base))));
+    assert.ok(
+      Math.abs(rateOf(outlook, id) - expected) < 1e-9,
+      `${id} must be the product of the two cues, not one of them: ` +
+        `got ${rateOf(outlook, id)}, expected ${expected}`
+    );
+    // 上書きなら evidence そのものになる。そうなっていないこと。
+    assert.ok(
+      Math.abs(rateOf(outlook, id) - evidence) > 1e-9 || Math.abs(evidence - expected) < 1e-9,
+      `${id} looks like the lunch cue alone, so the forecast was overwritten`
+    );
+  }
 
   // 実際に当たるようになっていること。手がかりを増やして落ちるなら足す意味がない。
   const roster = new Set(schedule.roster);

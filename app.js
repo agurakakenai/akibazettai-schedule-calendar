@@ -1799,6 +1799,7 @@
       applyEventCertainty,
       applyHomeStaff,
       applyPostedTilt,
+      applySameDayEvidence,
       assignShiftStores,
       calibrationNote,
       coOpenRate,
