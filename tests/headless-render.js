@@ -662,6 +662,10 @@ const planNames = [];
 let agreed = 0;
 let accuracyShown = 0;
 let unmeasuredShown = 0;
+// 記録のある日と、これからの日。既定期間は丸ごと未来なので、ここで通るのは
+// 未来の側だけ。記録の側は下の「過ぎた日とこれからの日を混ぜない」で見る。
+const lastRecorded = Object.keys(insights.actual).sort().at(-1);
+let guessedAhead = 0;
 for (const plan of plans) {
   const heading = withClass(plan, "maid-name");
   assert.equal(heading.length, 1, "each plan must name exactly one maid");
@@ -764,6 +768,21 @@ for (const plan of plans) {
     assert.ok(state, `a stop carries no state class: ${stop.classList.value}`);
     stopStates.add(state);
     assert.ok(stop.title, "a stop must explain itself in a tooltip");
+    // 過ぎた日とこれからの日を混ぜない。記念日は主役の所属店を「営業」で確定
+    // させるので、店の状態だけを見ていると、同じ店に置かれた他の人まで確定に
+    // 見える。実際に未来の日付で「◯号店にいた記録があります」と出ていた。
+    if (stop.dataset.date > lastRecorded) {
+      assert.doesNotMatch(
+        stop.title,
+        /記録が/,
+        `${name} ${when}: this day has not happened yet, so there is no record of it`
+      );
+      assert.ok(
+        !stop.classList.contains("is-open") || stop.title.includes("主役"),
+        `${name} ${when}: only the host of an anniversary may read as settled before the day`
+      );
+      guessedAhead += 1;
+    }
     // 置いた理由には予定表の顔ぶれも入っている。営業率だけを表に出すと
     // 「15%の店になぜ置いたのか」と読まれるので、本文では数字を名乗らない。
     assert.doesNotMatch(
@@ -799,6 +818,10 @@ for (const plan of plans) {
   }
 }
 assert.ok(agreed > 0, "the two views must overlap enough to be compared at all");
+assert.ok(
+  guessedAhead > 0,
+  "no stop falls after the last record, so the wording for days ahead is untested"
+);
 assert.ok(
   accuracyShown > 0,
   "no plan quoted a measured accuracy, so that wording is untested"
@@ -1001,7 +1024,42 @@ if (partialDate) {
   );
 }
 
-// --- 記録のある日は、記録の顔ぶれを出す ---------------------------------
+// --- 人ごとの画面で、過ぎた日とこれからの日を混ぜない -------------------
+// 上の既定期間は丸ごと未来なので、「記録があります」の側が一度も通らない。
+// いまの期間は記録の最終日をまたいでいるので、両側を同じ画面から読める。
+selectViewMode("maid");
+let citedRecord = 0;
+let guessedHere = 0;
+for (const plan of withClass(calendar, "maid-plan")) {
+  const who = withClass(plan, "maid-name")[0].textContent;
+  for (const stop of withClass(plan, "maid-plan-stop")) {
+    const on = stop.dataset.date;
+    if (on > lastActual) {
+      // 記念日は主役の所属店を「営業」で確定させる。店の状態だけを見ていると、
+      // 同じ店に置かれた他の人まで確定に見え、未来の日付に「◯号店にいた記録が
+      // あります」と出る。店が開くことと、その人がそこにいることは別の話。
+      assert.doesNotMatch(
+        stop.title,
+        /記録が/,
+        `${who} ${on}: this day has not happened yet, so there is no record of it`
+      );
+      guessedHere += 1;
+    } else if (insights.actual[on]) {
+      assert.match(
+        stop.title,
+        /記録が|主役/,
+        `${who} ${on}: this day is on the record, so do not call it a guess`
+      );
+      if (stop.title.includes("記録が")) {
+        citedRecord += 1;
+      }
+    }
+  }
+}
+assert.ok(citedRecord > 0, "no stop cites a record, so the wording for days gone by is untested");
+assert.ok(guessedHere > 0, "no stop falls after the last record, so the other wording is untested");
+
+
 // 予測モードに戻して、その日そのシフトに誰が出ていたかを画面から読む。
 selectViewMode("forecast");
 const recordedCells = withClass(calendar, "calendar-day").filter((cell) =>

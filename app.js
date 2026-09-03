@@ -1738,16 +1738,30 @@
         const row = storeId
           ? outlook?.entries?.find((candidate) => candidate.store.id === storeId) ?? null
           : null;
+        // 決まっているのは、記録のある日と、記念日の主役だけ。
+        //
+        // 店の state だけを見てはいけない。記念日は主役の所属店を「営業」で確定
+        // させるので、その店に割り振られた他の人まで確定に見えてしまう。実際に
+        // 未来の日付で「3号店にいた記録があります」と出ていた。店が開くことと、
+        // その人がそこにいることは別の話。
+        //
+        // 記録かどうかは outlook の basis からも見る。割り振りの作り方に関係なく、
+        // 「そのシフトに記録があるか」はこちらが直接答えている。
+        const recorded = outlook?.basis === "actual" || Boolean(assignment?.recorded);
+        const host = Boolean(placed?.pin);
+        const settled = recorded || host;
         stops.push({
           dateKey: key,
           shift,
           storeId,
           kitchen: Boolean(loose),
-          // 店ごとの画面と同じ三段階を使う。open は実績か記念日で確定、
-          // likely は5割以上、unlikely はそれ未満。別の線を引くと画面が食い違う。
-          state: row?.state ?? null,
+          // 店ごとの画面と同じ三段階を使う。別の線を引くと画面が食い違う。
+          // 確定でないなら、店が100%でも「見込み」として出す。
+          state: settled ? "open" : row ? stateForRate(row.rate ?? 0) : null,
           openRate: row?.rate ?? null,
-          settled: row?.state === "open",
+          recorded,
+          host,
+          settled,
           trainee: placed?.trainee ?? null,
           eventLabel: roll.eventLabel ?? null
         });
@@ -2737,10 +2751,12 @@
         : "どこへ立つかは、まだ何も言えません。";
     }
     const where = storeShort(insights, stop.storeId);
-    if (stop.settled) {
-      return stop.eventLabel
-        ? `${stop.eventLabel}の主役なので、所属店の${where}にいます。`
-        : `${trainee}${where}にいた記録があります。`;
+    // 過ぎた日と、これからの日を混ぜない。記録があるのは過ぎた日だけ。
+    if (stop.recorded) {
+      return `${trainee}${where}にいた記録があります。`;
+    }
+    if (stop.host) {
+      return `${stop.eventLabel}の主役なので、所属店の${where}にいます。`;
     }
     const strength =
       stop.state === "unlikely"
