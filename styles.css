@@ -815,11 +815,28 @@ input[type="date"] {
   white-space: nowrap;
 }
 
-/* 誰なのかも、どの店かも分からない見込み。実在の記録より弱く見せる。 */
-.maid-trainee-list {  display: flex;
+/* 誰なのかも、どの店かも分からない見込み。実在の記録より弱く見せる。
+   見出しが無いと直前の店の一覧に続いて見え、いちばん番号の大きい店にぶら下がって
+   読める。キッチンと同じ形の見出しで切る。ただし店ではないので枠線は点線にして、
+   店の見出しと見分けがつくようにする。 */
+.maid-trainee-label {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin: 6px 0 3px;
+  padding: 0 0 2px;
+  border-bottom: 2px dotted var(--cp-border);
+  color: var(--cp-text-soft);
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.maid-trainee-list {
+  display: flex;
   flex-wrap: wrap;
   gap: 3px 4px;
-  margin: 5px 0 0;
+  margin: 0;
   padding: 0;
   list-style: none;
 }

@@ -1263,6 +1263,29 @@ def build():
     trainee_outlook = {}
     for sh in SHIFTS:
         num = den = 0.0
+        # 店ごとにも同じ重みで数える。以前のコメントは「店ごとに差が無い」と
+        # していたが、いまは差がある。
+        #
+        # ここで数えるのは entry['trainees']、つまり上の is_trainee（初日が分かり、
+        # アカウントをまだ持たず、初日から90日以内）の人。画面の 🔰 と同じ定義。
+        #
+        #     窓          s1     s2     s3     s4
+        #     90日      0.44   0.34   0.26   0.22
+        #     全期間     0.53   0.52   0.46   0.28
+        #     半減期30日  0.50   0.44   0.36   0.30
+        #
+        # 9通りの窓で 1号店が8回1位、4号店が9回とも最下位。直近90日の
+        # 1号店と4号店の差は、店の札を混ぜた並べ替えで0.9%（186/20000回）。
+        #
+        # **画面は 🔰 を4号店の直後に置き、1号店には一度も出していない。**
+        # いちばん少ない店に置き、いちばん多い店に置いていない。
+        #
+        # なお「名簿に載っていない人」で数えると順位が変わる（s2 > s3 > s1 > s4、
+        # 9通りすべて）。あちらには卒業表記のないまま長く出ている方が入り、
+        # 2・3号店に寄っている。画面が 🔰 と呼ぶのは見習いのほうなので、
+        # ここでは見習いで数える。最下位が4号店なのは、どちらの数え方でも同じ。
+        per_store_num = collections.Counter()
+        per_store_den = collections.Counter()
         for d, per_shift in actual_roster.items():
             entry = per_shift.get(sh)
             if not entry or 'trainees' not in entry:
@@ -1271,11 +1294,22 @@ def build():
             weight = 0.5 ** (age / TRAINEE_HALF_LIFE)
             num += weight * len(entry['trainees'])
             den += weight * len(entry['stores'])
+            # trainees は「誰がいたか」の一覧。店ごとの数は stores から数え直す。
+            trainees = set(entry['trainees'])
+            for sid, names in entry['stores'].items():
+                per_store_den[sid] += weight
+                per_store_num[sid] += weight * sum(
+                    1 for n in names if n in trainees)
         if den:
-            trainee_outlook[sh] = {
+            outlook = {
                 'perStore': round(num / den, 3),
                 'halfLifeDays': TRAINEE_HALF_LIFE,
             }
+            by_store = {sid: round(per_store_num[sid] / per_store_den[sid], 3)
+                        for sid in IDS if per_store_den[sid]}
+            if by_store:
+                outlook['byStore'] = by_store
+            trainee_outlook[sh] = outlook
 
     # 誰が出たかは分からないが開いた店は分かる日を足す。shifts.csv に記録がある
     # シフトは上書きしない（メイド単位の記録のほうが確かなので）。
