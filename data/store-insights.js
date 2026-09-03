@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-03 21:22",
+  "generatedAt": "2026-09-03 21:33",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-09-02"
@@ -374,25 +374,25 @@ window.STORE_INSIGHTS = {
   "rosterHeadcountByOpenCount": {
     "昼": {
       "1": {
-        "mean": 3.95,
+        "mean": 3.97,
         "n": 65
       },
       "2": {
-        "mean": 8.45,
+        "mean": 8.53,
         "n": 265
       },
       "3": {
-        "mean": 12.75,
+        "mean": 12.79,
         "n": 28
       }
     },
     "夜": {
       "1": {
-        "mean": 3.94,
+        "mean": 4.0,
         "n": 97
       },
       "2": {
-        "mean": 7.95,
+        "mean": 8.09,
         "n": 247
       },
       "3": {
@@ -413,16 +413,16 @@ window.STORE_INSIGHTS = {
   },
   "homeStaffShare": {
     "昼": {
-      "s1": 0.2998,
-      "s2": 0.1589,
-      "s3": 0.3334,
-      "s4": 0.2079
+      "s1": 0.2975,
+      "s2": 0.1665,
+      "s3": 0.3304,
+      "s4": 0.2056
     },
     "夜": {
-      "s1": 0.3273,
-      "s2": 0.1888,
-      "s3": 0.2921,
-      "s4": 0.1918
+      "s1": 0.3225,
+      "s2": 0.2019,
+      "s3": 0.2872,
+      "s4": 0.1884
     }
   },
   "spreadBands": {
@@ -432,20 +432,20 @@ window.STORE_INSIGHTS = {
   "secondStoreByHome": {
     "s2": {
       "0": {
-        "rate": 0.235,
-        "n": 183
+        "rate": 0.241,
+        "n": 162
       },
       "1": {
-        "rate": 0.314,
-        "n": 188
+        "rate": 0.278,
+        "n": 180
       },
       "2": {
-        "rate": 0.446,
-        "n": 92
+        "rate": 0.427,
+        "n": 110
       },
       "3": {
-        "rate": 0.529,
-        "n": 34
+        "rate": 0.548,
+        "n": 42
       }
     },
     "s3": {
@@ -712,8 +712,8 @@ window.STORE_INSIGHTS = {
       "from": "2025-11-23",
       "to": "2026-09-02",
       "scope": "twoOrMoreOpen",
-      "brier": 0.2205,
-      "n": 9023,
+      "brier": 0.2202,
+      "n": 9120,
       "buckets": [
         {
           "from": 0.0,
@@ -725,58 +725,58 @@ window.STORE_INSIGHTS = {
         {
           "from": 0.1,
           "to": 0.2,
-          "n": 619,
-          "said": 0.154,
+          "n": 620,
+          "said": 0.155,
           "actual": 0.21
         },
         {
           "from": 0.2,
           "to": 0.3,
-          "n": 1012,
+          "n": 1021,
           "said": 0.254,
-          "actual": 0.254
+          "actual": 0.255
         },
         {
           "from": 0.3,
           "to": 0.4,
-          "n": 1426,
+          "n": 1450,
           "said": 0.352,
-          "actual": 0.319
+          "actual": 0.317
         },
         {
           "from": 0.4,
           "to": 0.5,
-          "n": 1688,
+          "n": 1704,
           "said": 0.45,
-          "actual": 0.449
+          "actual": 0.448
         },
         {
           "from": 0.5,
           "to": 0.6,
-          "n": 1597,
+          "n": 1612,
           "said": 0.549,
-          "actual": 0.572
+          "actual": 0.573
         },
         {
           "from": 0.6,
           "to": 0.7,
-          "n": 1152,
-          "said": 0.646,
-          "actual": 0.675
+          "n": 1176,
+          "said": 0.647,
+          "actual": 0.679
         },
         {
           "from": 0.7,
           "to": 0.8,
-          "n": 694,
+          "n": 701,
           "said": 0.745,
           "actual": 0.713
         },
         {
           "from": 0.8,
           "to": 0.9,
-          "n": 399,
+          "n": 400,
           "said": 0.845,
-          "actual": 0.732
+          "actual": 0.733
         },
         {
           "from": 0.9,
@@ -10036,7 +10036,7 @@ window.STORE_INSIGHTS = {
     }
   },
   "schedulePending": {
-    "rostered": 39,
+    "rostered": 40,
     "pending": [
       "みりん",
       "うる",
@@ -10044,7 +10044,8 @@ window.STORE_INSIGHTS = {
       "いと",
       "ゆめ",
       "のの",
-      "もち"
+      "もち",
+      "まひろ"
     ],
     "recentShifts": {
       "みりん": 94,
@@ -10053,7 +10054,8 @@ window.STORE_INSIGHTS = {
       "いと": 29,
       "ゆめ": 29,
       "のの": 27,
-      "もち": 22
+      "もち": 22,
+      "まひろ": 16
     },
     "postedShifts": 250,
     "windowDays": 90,
@@ -11788,6 +11790,78 @@ window.STORE_INSIGHTS = {
       ],
       "x": "kanata2_zettai"
     },
+    "まひろ": {
+      "alias": null,
+      "accuracy": {
+        "rate": 0.786,
+        "n": 28
+      },
+      "sameDayMove": null,
+      "workShifts": 18,
+      "nightShare": 0.556,
+      "pickRate": {
+        "s1": 0.315,
+        "s2": 0.927,
+        "s3": 0.55,
+        "s4": 0.06
+      },
+      "pickRateByShift": {
+        "昼": {
+          "s1": 0.275,
+          "s2": 0.964,
+          "s3": 0.536,
+          "s4": 0.05
+        },
+        "夜": {
+          "s1": 0.372,
+          "s2": 0.959,
+          "s3": 0.679,
+          "s4": 0.043
+        }
+      },
+      "sampleByShift": {
+        "昼": {
+          "s1": 8,
+          "s2": 5,
+          "s3": 2,
+          "s4": 1
+        },
+        "夜": {
+          "s1": 10,
+          "s2": 4,
+          "s3": 2,
+          "s4": 2
+        }
+      },
+      "share": {
+        "s1": 0.421,
+        "s2": 0.351,
+        "s3": 0.202,
+        "s4": 0.025
+      },
+      "spread": 0.298,
+      "shareByShift": {
+        "昼": {
+          "s1": 0.364,
+          "s2": 0.398,
+          "s3": 0.219,
+          "s4": 0.02
+        },
+        "夜": {
+          "s1": 0.47,
+          "s2": 0.307,
+          "s3": 0.205,
+          "s4": 0.017
+        }
+      },
+      "posted": "s2",
+      "home": "s2",
+      "likely": [
+        "s1",
+        "s2"
+      ],
+      "x": "mahiro1_zettai"
+    },
     "るるか": {
       "alias": null,
       "accuracy": {
@@ -13489,43 +13563,6 @@ window.STORE_INSIGHTS = {
       "promoted": false,
       "likelyNew": false
     },
-    "まひろ": {
-      "recentShifts": 16,
-      "workShifts": 18,
-      "firstSeen": "2025-08-03",
-      "lastSeen": "2026-08-30",
-      "pickRate": {
-        "s1": 0.333,
-        "s2": 1.0,
-        "s3": 0.75,
-        "s4": 0.0
-      },
-      "share": {
-        "s1": 0.405,
-        "s2": 0.345,
-        "s3": 0.25,
-        "s4": 0.0
-      },
-      "home": "s2",
-      "likely": [
-        "s1",
-        "s2"
-      ],
-      "x": "mahiro1_zettai",
-      "xStatus": "公式サイト",
-      "xCreated": 2025,
-      "xNote": null,
-      "xTweets": 414,
-      "recentShifts31": 5,
-      "streakStart": "2025-08-03",
-      "daysSinceLast": 3,
-      "graduatedAt": null,
-      "hasPublicAccount": false,
-      "otherAccounts": [],
-      "status": "active",
-      "promoted": false,
-      "likelyNew": false
-    },
     "のあ": {
       "recentShifts": 14,
       "workShifts": 13,
@@ -13828,42 +13865,42 @@ window.STORE_INSIGHTS = {
     "to": "2026-09-02",
     "shiftCells": 341,
     "totalMaids": 1915,
-    "rostered": 1623,
-    "unlisted": 292,
-    "unlistedShare": 0.152,
-    "unlistedPerShift": 0.86,
-    "shiftsWithUnlisted": 0.704,
+    "rostered": 1639,
+    "unlisted": 276,
+    "unlistedShare": 0.144,
+    "unlistedPerShift": 0.81,
+    "shiftsWithUnlisted": 0.686,
     "distribution": {
-      "0": 101,
-      "1": 196,
-      "2": 37,
-      "3": 6,
+      "0": 107,
+      "1": 198,
+      "2": 31,
+      "3": 4,
       "4": 1
     },
     "byStore": {
       "s1": {
         "shifts": 170,
-        "rostered": 873,
-        "unlisted": 137,
-        "unlistedShare": 0.136,
-        "unlistedPerShift": 0.81,
-        "shiftsWithoutUnlisted": 0.324
+        "rostered": 877,
+        "unlisted": 133,
+        "unlistedShare": 0.132,
+        "unlistedPerShift": 0.78,
+        "shiftsWithoutUnlisted": 0.335
       },
       "s2": {
         "shifts": 58,
-        "rostered": 285,
-        "unlisted": 71,
-        "unlistedShare": 0.199,
-        "unlistedPerShift": 1.22,
-        "shiftsWithoutUnlisted": 0.138
+        "rostered": 294,
+        "unlisted": 62,
+        "unlistedShare": 0.174,
+        "unlistedPerShift": 1.07,
+        "shiftsWithoutUnlisted": 0.19
       },
       "s3": {
         "shifts": 53,
-        "rostered": 257,
-        "unlisted": 49,
-        "unlistedShare": 0.16,
-        "unlistedPerShift": 0.92,
-        "shiftsWithoutUnlisted": 0.226
+        "rostered": 260,
+        "unlisted": 46,
+        "unlistedShare": 0.15,
+        "unlistedPerShift": 0.87,
+        "shiftsWithoutUnlisted": 0.245
       },
       "s4": {
         "shifts": 60,
