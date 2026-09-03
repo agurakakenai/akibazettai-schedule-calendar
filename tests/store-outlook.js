@@ -2065,6 +2065,119 @@ assert.equal(
   assert.equal(sameDayDecisionNote(insights, null), null, "no outlook, no note");
 }
 
+// 前日の同じシフト（2つ前）に、同じ日のもう片方（直前）を掛け合わせる。
+{
+  const [lunch, night] = insights.shifts;
+  const recorded = Object.keys(insights.actual).sort();
+  // 「昼の投稿は出たが、夜はまだ」の状態。実際に毎日この形になる。
+  const day = recorded.findLast(
+    (key) => insights.actual[key][lunch] && insights.actual[key][night] &&
+      insights.actual[addDays(key, -1)]?.[night]
+  );
+  assert.ok(day, "no day carries a lunch record, a night record and yesterday's night");
+  const pending = JSON.parse(JSON.stringify(insights));
+  delete pending.actual[day][night];
+  const outlook = getStoreOutlook({
+    insights: pending,
+    dateKey: day,
+    shift: night,
+    lastActualDate: day
+  });
+  assert.equal(outlook.basis, "forecast", "yesterday's night must still be the basis");
+  assert.equal(outlook.sameDayShift, lunch, "the lunch record must have been folded in");
+  assert.ok(
+    outlook.summary.includes(`この日の${lunch}の実績`),
+    "the summary must say the lunch record was used as well"
+  );
+
+  // 掛け合わせずに出したものと比べる。動かないなら足していない。
+  const alone = getStoreOutlook({
+    insights: { ...pending, rotation: { ...pending.rotation, sameDay: null } },
+    dateKey: day,
+    shift: night,
+    lastActualDate: day
+  });
+  assert.equal(alone.sameDayShift, undefined, "without the table there is nothing to fold in");
+  const rateOf = (o, id) => o.entries.find((e) => e.store.id === id).rate;
+  assert.notEqual(
+    rateOf(outlook, "s3"),
+    rateOf(alone, "s3"),
+    "folding the lunch record in must actually move the odds"
+  );
+  // 1号店と4号店は同日ルールの対象外。ここが動いたら適用範囲が広がっている。
+  for (const id of ["s1", "s4"]) {
+    assert.equal(
+      rateOf(outlook, id),
+      rateOf(alone, id),
+      `${id} is outside the same-day rule, so it must not move`
+    );
+  }
+  // 昼に2号店なら、夜の3号店はほぼ無い。表の鋭さが結果に出ていること。
+  const atLunch = new Set(insights.actual[day][lunch]);
+  if (atLunch.has("s2")) {
+    assert.ok(
+      rateOf(outlook, "s3") < rateOf(alone, "s3"),
+      "with the second shop open at lunch, the third must fall for the evening"
+    );
+  }
+
+  // 向きを守る。昼を組むときには使わない（表はその向きに作られていない）。
+  const lunchOutlook = getStoreOutlook({
+    insights: pending,
+    dateKey: addDays(day, 1),
+    shift: lunch,
+    lastActualDate: day
+  });
+  assert.equal(
+    lunchOutlook.sameDayShift,
+    undefined,
+    "the same-day table only runs from the earlier shift to the later one"
+  );
+
+  // 実際に当たるようになっていること。手がかりを増やして落ちるなら足す意味がない。
+  const roster = new Set(schedule.roster);
+  let n = 0;
+  let hit = 0;
+  let plain = 0;
+  for (const key of recorded) {
+    const truth = insights.actual[key]?.[night];
+    if (!truth || !insights.actual[key]?.[lunch] || !insights.actual[addDays(key, -1)]?.[night]) {
+      continue;
+    }
+    const line = insights.actualRoster[key]?.[night];
+    const pool = line
+      ? Object.values(line.stores).flat().filter((name) => roster.has(name)).length
+      : 0;
+    if (!pool) {
+      continue;
+    }
+    const hidden = JSON.parse(JSON.stringify(insights));
+    delete hidden.actual[key][night];
+    const args = { dateKey: key, shift: night, lastActualDate: addDays(key, -1) };
+    const both = getStoreOutlook({ insights: hidden, ...args });
+    const only = getStoreOutlook({
+      insights: { ...hidden, rotation: { ...hidden.rotation, sameDay: null } },
+      ...args
+    });
+    if (both?.basis !== "forecast") {
+      continue;
+    }
+    n += 1;
+    const want = [...truth].sort().join(",");
+    if (expectedOpenStores(insights, night, both, pool).sort().join(",") === want) {
+      hit += 1;
+    }
+    if (expectedOpenStores(insights, night, only, pool).sort().join(",") === want) {
+      plain += 1;
+    }
+  }
+  assert.ok(n > 50, `too few nights to compare on: ${n}`);
+  assert.ok(
+    hit > plain,
+    `folding the lunch record in must beat leaving it out: ${hit} vs ${plain} of ${n}`
+  );
+}
+
 // --- 人ごとの一覧 -------------------------------------------------------
 {
   // 的中は代理（spread）ではなく実測（accuracy）で言う。
@@ -2489,6 +2602,6 @@ console.log(
   "Store outlook valid: records, next-day forecast, weekday tendency, " +
     `${partialDates.length} single-shift days, Sunday-based weekday index, sparse-rotation fallbacks, ` +
     `headcount-driven shop counts (1/2/3), capacity-based assignment, store-by-store grouping, ` +
-    `per-maid itineraries banded by spread, ` +
+    `per-maid itineraries with measured accuracy, lunch folded into the evening, ` +
     `and ${eventShifts.length} event shifts pinned to the host's own store.`
 );

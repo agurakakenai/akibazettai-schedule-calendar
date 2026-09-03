@@ -744,6 +744,71 @@
   }
 
   // 実績 → 翌日見込み → 同日の実績 → 曜日傾向 の順に、確かなものから採用する。
+  // 前日の同じシフト（2つ前）と、同じ日のもう片方（直前）は別のことを言う。
+  //
+  // 2つ前は同じシフトどうしの比較で、日をまたぐ入れ替わりを見ている。直前は
+  // 同じ日の中の結びつきで、昼に2号店なら夜に3号店へ移ることはほぼ無い
+  // （rotation.sameDay.s2.s3 は 0 件）という鋭い規則を持っている。
+  //
+  // これまでは前者が取れた時点で後者を捨てていた。記録のある夜170件のうち、
+  // 両方が取れるのが170件すべてで、そこで毎回、直前を捨てていたことになる。
+  // 掛け合わせると本番と同じ選び方で 40.6% -> 52.4%（37勝17敗、p=0.009）。
+  //
+  // 掛けるのは対数オッズ。素の営業率で割って「その手がかりがどれだけ動かしたか」
+  // だけを取り出す。足し算や上書きも測ったが、上書きは47.6%、平均は51.2%で、
+  // 掛け合わせがいちばん良い。
+  function applySameDayEvidence(insights, outlook, key, shift) {
+    if (outlook?.basis !== "forecast") {
+      return outlook;
+    }
+    const [fromShift, toShift] = insights?.shifts ?? [];
+    if (shift !== toShift) {
+      return outlook;
+    }
+    const known = openStoresOn(insights, key, fromShift);
+    const base = insights?.baseOpenRate?.[shift];
+    if (!known || !base) {
+      return outlook;
+    }
+    const transitions = insights.rotation?.sameDay?.[groupStateOf(known)];
+    if (!transitions) {
+      return outlook;
+    }
+    const sameDay = {
+      s2: (transitions.s2 ?? 0) + (transitions.both ?? 0),
+      s3: (transitions.s3 ?? 0) + (transitions.both ?? 0)
+    };
+    const odds = (value) => {
+      const p = Math.min(Math.max(value, 0.005), 0.995);
+      return Math.log(p / (1 - p));
+    };
+    const entries = outlook.entries.map((entry) => {
+      const evidence = SAME_DAY_STORES.includes(entry.store.id) ? sameDay[entry.store.id] : null;
+      if (evidence == null || typeof entry.rate !== "number" || !(base[entry.store.id] > 0)) {
+        return entry;
+      }
+      const shifted = odds(entry.rate) + odds(evidence) - odds(base[entry.store.id]);
+      const rate = 1 / (1 + Math.exp(-shifted));
+      return {
+        ...entry,
+        state: stateForRate(rate),
+        rate,
+        text: toPercent(rate),
+        srText: (entry.srText ?? "").includes(entry.text)
+          ? entry.srText.replace(entry.text, toPercent(rate))
+          : `${entry.store.short}が営業する見込みは${toPercent(rate)}`
+      };
+    });
+    return {
+      ...outlook,
+      entries,
+      sameDayShift: fromShift,
+      summary:
+        `${outlook.summary}この日の${fromShift}の実績（${joinStoreNames(insights, known) || "2・3号店とも休み"}）も` +
+        `踏まえています。同じ日のうちに2号店と3号店が入れ替わることはほぼありません。`
+    };
+  }
+
   function getStoreOutlook({ insights, dateKey: key, shift, lastActualDate }) {
     if (!insights || storesOf(insights).length === 0) {
       return null;
@@ -751,7 +816,7 @@
     const last = lastActualDate === undefined ? lastActualDateOf(insights) : lastActualDate;
     return (
       actualOutlook(insights, key, shift) ??
-      forecastOutlook(insights, key, shift, last) ??
+      applySameDayEvidence(insights, forecastOutlook(insights, key, shift, last), key, shift) ??
       sameDayOutlook(insights, key, shift, last) ??
       tendencyOutlook(insights, key, shift, last)
     );
