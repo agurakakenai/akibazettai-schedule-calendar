@@ -1367,10 +1367,19 @@ for (const cell of withClass(calendar, "calendar-day")) {
         `${cellKey} ${shift}: ranking the shops does not beat guessing, so quote no odds`
       );
       // 並べるだけでは「どこかにいる」しか言っていない。測った結果まで言う。
+      //
+      // ただし「どれも同じくらい」とは書かない。それは店についての主張で、表が
+      // 否定する（byStore は昼で 0.243〜0.503）。当てられないのはこちらのほうで、
+      // 店が横並びだからではない。**「当てられない」と「同じくらい」は別のこと。**
       assert.ok(
-        shops.size === 1 || where[0].textContent.includes("同じくらい"),
-        `${cellKey} ${shift}: with ${shops.size} shops open, say they are equally likely ` +
+        shops.size === 1 || where[0].textContent.includes("当てられません"),
+        `${cellKey} ${shift}: with ${shops.size} shops open, say we cannot tell which ` +
           `(got "${where[0].textContent}")`
+      );
+      assert.doesNotMatch(
+        where[0].textContent,
+        /同じくらい|横並び|変わりません/,
+        `${cellKey} ${shift}: the shops are not level in the table, so do not say they are`
       );
       headedTrainees += 1;
     }
