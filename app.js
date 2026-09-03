@@ -217,9 +217,18 @@
   // 予定表に出ない見習いにゃんこ。名前は分からないので人数だけ出す。
   //
   // データ側は「1店あたり何人」で持っている。開く店が増えるほど見習いも増える
-  // ためで、店舗数が決まってから掛ける。店ごとに配らないのは、どの店にいるかが
-  // 読めないから。実測でも1号店0.35 / 2号店0.35 / 3号店0.32と横並びで、
-  // どこかを選ぶ根拠がない。だから店の見出しの下ではなく、シフトの末尾に置く。
+  // ためで、店舗数が決まってから掛ける。
+  //
+  // 店ごとの内訳（`traineeOutlook[shift].byStore`）も持っているが、店ごとには
+  // 配らない。**どの店も1シフト1人に届かない**ので、いちばん多い店を選んでも
+  // 「たぶんいない」ほうが確からしい。差が本物であることと、どの店か言えることは
+  // 別の話で、置いた時点で読み手はそこにいると読む。だから店の見出しの下ではなく、
+  // 見習いの見出しの下に置く。数字は `traineeGuessNote` が「店を選べない理由」
+  // として使うだけで、店名は出さない。
+  //
+  // 以前ここに「1号店0.35 / 2号店0.35 / 3号店0.32と横並びなので選ぶ根拠がない」と
+  // 書いていたが、測り直すと横並びではなかった（1号店がいちばん多く、4号店がいちばん
+  // 少ない）。理由が違っていただけで、配らない結論は変わらない。
   //
   // 記録のある日には出さない。誰がいたか分かっているところに推測を混ぜない。
   function expectedTrainees(insights, shift, storeCount, recorded) {
@@ -1867,11 +1876,21 @@
   // 見習いの人数は入店で動くので、データ側は半減期30日で見ている（人数の180日
   // とは別）。落ち着いた量ではなく来月には変わるので、画面に割合そのものを
   // 書かない。「いそう」までにして、根拠は開く店の数で言う。
-  function traineeGuessNote(shift, storeCount) {
+  //
+  // 店を選ばない理由も添える。店ごとの実測（byStore）はどの店も1人に届かないので、
+  // いちばん多い店を選んでも「たぶんいない」ほうが確からしい。店名も割合も出さない。
+  // 店名を出せば、この一覧を「店を名乗らない」と決めた意味が消える。割合は半減期
+  // 30日で動くので、書けば来月には違う数字になる。表から読める言い切りだけを出す。
+  function traineeGuessNote(insights, shift, storeCount) {
     const where = storeCount > 1
       ? `${storeCount}店開けば、そのどこかに`
       : "この店に";
-    return `予定表に出ない見習いにゃんこです。${where}いそうですが、どなたかは分かりません（${shift}の実績から）`;
+    const byStore = insights?.traineeOutlook?.[shift]?.byStore;
+    const values = byStore ? Object.values(byStore) : [];
+    // どこか1店でも1人を超えたら、この言い切りは成り立たなくなる。黙る。
+    const scarce = values.length > 0 && values.every((value) => value < 1);
+    const why = scarce ? "。どの店も1シフトに1人はいないので、店は選べません" : "";
+    return `予定表に出ない見習いにゃんこです。${where}いそうですが、どなたかは分かりません（${shift}の実績から）${why}`;
   }
   const kitchenStaff = new Set(data.kitchenStaff ?? []);
   const rosterNames = new Set(data.roster ?? []);
@@ -2390,11 +2409,27 @@
   // どの店にいるか読めないのに見出しの下に置くと、その店にいると読まれる。
   // 順番は、店ごとの一覧 → 見習い → キッチン。上ほど確かなことを言っている。
   // 見習いは「誰か分からないが、いる」、キッチンは「誰か分かるが、どこか分からない」。
+  //
+  // 見出しを必ず付ける。クラスを分けるだけでは足りない。見出しが無いと、直前の店の
+  // <ul> にそのまま続いて見え、店は s1→s4 の順に並ぶので、いつも番号のいちばん
+  // 大きい店にぶら下がって読める。「どの店か分からない」と言うつもりが「4号店に
+  // いる」と読める形になっていた。
   function appendTraineeGuesses(section, shift, count, storeCount) {
     if (!(count > 0)) {
       return;
     }
-    const note = traineeGuessNote(shift, storeCount);
+    const note = traineeGuessNote(insights, shift, storeCount);
+    const heading = document.createElement("p");
+    // .maid-group-label は「かならず店を名乗る」約束なので、そこには入れない。
+    heading.className = "maid-trainee-label";
+    const label = document.createElement("span");
+    label.textContent = "見習い";
+    const tally = document.createElement("span");
+    tally.className = "maid-group-count";
+    // 予定表から数えた人数ではなく、実績から見込んだ数。「ほど」で言い分ける。
+    tally.textContent = `${count}人ほど`;
+    heading.append(label, tally);
+    heading.title = note;
     const list = document.createElement("ul");
     // 店ごとの一覧（.maid-list）とは別のクラスにする。あちらは「見出しと1対1」を
     // 保つ約束があり、店を名乗らないこの一覧を混ぜるとその約束が崩れる。
@@ -2414,7 +2449,7 @@
       item.setAttribute("aria-label", note);
       list.append(item);
     }
-    section.append(list);
+    section.append(heading, list);
   }
 
   function createDayCell(date, isFirstRenderedDate) {

@@ -1169,6 +1169,7 @@ assert.ok(traineesShown > 0, "the recorded window must include a trainee, or the
 // 動くので、期待値は表から引き直す（数字を書くと集計のたびに落ちる）。
 let guessedShifts = 0;
 let guessedTotal = 0;
+let headedTrainees = 0;
 for (const cell of withClass(calendar, "calendar-day")) {
   const [, year, month, day] = /(\d+)年(\d+)月(\d+)日/.exec(cell.getAttribute("aria-label"));
   const cellKey = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
@@ -1230,10 +1231,48 @@ for (const cell of withClass(calendar, "calendar-day")) {
         `${cellKey} ${shift}: a guessed trainee must not sit under a shop heading`
       );
     }
+    // クラスを分けるだけでは足りない。見出しが無いと直前の店の <ul> にそのまま
+    // 続いて見え、店は s1→s4 の順に並ぶので、いつも番号のいちばん大きい店に
+    // ぶら下がって読める。実測では見習いがいちばん少ないのがその4号店なので、
+    // 黙っていると実測と正反対のことを言うことになる。
+    if (guesses.length > 0) {
+      const lists = withClass(section, "maid-trainee-list");
+      assert.equal(lists.length, 1, `${cellKey} ${shift}: the trainees must form one list`);
+      const nodes = section.children;
+      const before = nodes[nodes.indexOf(lists[0]) - 1];
+      assert.ok(
+        before && before.classList?.contains("maid-trainee-label"),
+        `${cellKey} ${shift}: the trainee list must be introduced by its own heading, ` +
+          `otherwise it reads as part of the shop above it (got "${before?.classList?.value}")`
+      );
+      // 見出しは店を名乗らない。名乗ったら、この一覧を分けた意味が消える。
+      assert.ok(!before.dataset.store, "the trainee heading must not claim a shop");
+      assert.ok(
+        before.textContent.includes(`${guesses.length}人`),
+        `${cellKey} ${shift}: the trainee heading must count them`
+      );
+      // 予定表から数えた人数ではないので、キッチンと同じ書き方にはしない。
+      assert.ok(
+        before.textContent.includes("ほど"),
+        "the trainee count is an estimate, so it must not read like a headcount"
+      );
+      assert.ok(
+        (before.title ?? "").includes("分かりません"),
+        "the trainee heading must say the maid cannot be named"
+      );
+      // 店ごとの見出しの「かならず店を名乗る」約束を壊していないこと。
+      assert.equal(
+        withClass(section, "maid-group-label").length,
+        withClass(section, "maid-list").length,
+        "the trainee heading must not be counted as a shop group"
+      );
+      headedTrainees += 1;
+    }
   });
 }
 assert.ok(guessedShifts > 0, "some forecast shift must have been checked for trainees");
 assert.ok(guessedTotal > 0, "the forecast window must guess at least one trainee, or this is untested");
+assert.ok(headedTrainees > 0, "no trainee list was checked for its heading");
 
 // --- 表の上限に当たったら、そう断る -------------------------------------
 // 上限は insights.openCountByHeadcount の要素数+1。3店と出したのは
