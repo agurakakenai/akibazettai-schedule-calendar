@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-03 22:02",
+  "generatedAt": "2026-09-03 23:26",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-09-02"
@@ -86,12 +86,12 @@ window.STORE_INSIGHTS = {
         "shifts": 353,
         "distribution": {
           "3": 3,
-          "4": 25,
-          "5": 101,
+          "4": 26,
+          "5": 100,
           "6": 127,
           "7": 57,
-          "8": 26,
-          "9": 2,
+          "8": 27,
+          "9": 1,
           "10": 1,
           "11": 4,
           "12": 3,
@@ -113,8 +113,8 @@ window.STORE_INSIGHTS = {
           "4": 2,
           "5": 37,
           "6": 33,
-          "7": 27,
-          "8": 10
+          "7": 28,
+          "8": 9
         }
       },
       "s3": {
@@ -141,16 +141,16 @@ window.STORE_INSIGHTS = {
         "mean": 4.1,
         "median": 4,
         "mode": 4,
-        "modeShare": 0.579,
+        "modeShare": 0.589,
         "min": 3,
         "max": 6,
         "p25": 4,
-        "p75": 5,
+        "p75": 4,
         "shifts": 107,
         "distribution": {
           "3": 18,
-          "4": 62,
-          "5": 26,
+          "4": 63,
+          "5": 25,
           "6": 1
         }
       }
@@ -160,7 +160,7 @@ window.STORE_INSIGHTS = {
         "mean": 5.8,
         "median": 6,
         "mode": 6,
-        "modeShare": 0.437,
+        "modeShare": 0.44,
         "min": 3,
         "max": 13,
         "p25": 5,
@@ -170,10 +170,10 @@ window.STORE_INSIGHTS = {
           "3": 5,
           "4": 26,
           "5": 90,
-          "6": 148,
-          "7": 52,
-          "8": 15,
-          "9": 2,
+          "6": 149,
+          "7": 51,
+          "8": 16,
+          "9": 1,
           "13": 1
         }
       },
@@ -192,8 +192,7 @@ window.STORE_INSIGHTS = {
           "5": 17,
           "6": 38,
           "7": 21,
-          "8": 7,
-          "9": 1,
+          "8": 8,
           "12": 1
         }
       },
@@ -201,7 +200,7 @@ window.STORE_INSIGHTS = {
         "mean": 6.2,
         "median": 6,
         "mode": 6,
-        "modeShare": 0.519,
+        "modeShare": 0.531,
         "min": 5,
         "max": 9,
         "p25": 6,
@@ -209,8 +208,8 @@ window.STORE_INSIGHTS = {
         "shifts": 81,
         "distribution": {
           "5": 15,
-          "6": 42,
-          "7": 18,
+          "6": 43,
+          "7": 17,
           "8": 5,
           "9": 1
         }
@@ -9985,20 +9984,20 @@ window.STORE_INSIGHTS = {
   },
   "sameDayMaidMove": {
     "s1": {
-      "n": 615,
+      "n": 614,
       "to": {
-        "s1": 0.4,
-        "s2": 0.185,
-        "s3": 0.18,
-        "s4": 0.234
+        "s1": 0.401,
+        "s2": 0.186,
+        "s3": 0.179,
+        "s4": 0.235
       }
     },
     "s2": {
-      "n": 196,
+      "n": 195,
       "to": {
-        "s1": 0.658,
-        "s2": 0.235,
-        "s3": 0.02,
+        "s1": 0.662,
+        "s2": 0.231,
+        "s3": 0.021,
         "s4": 0.087
       }
     },
@@ -10012,10 +10011,10 @@ window.STORE_INSIGHTS = {
       }
     },
     "s4": {
-      "n": 130,
+      "n": 129,
       "to": {
-        "s1": 0.838,
-        "s2": 0.108,
+        "s1": 0.837,
+        "s2": 0.109,
         "s3": 0.031,
         "s4": 0.023
       }
@@ -13850,16 +13849,16 @@ window.STORE_INSIGHTS = {
     "from": "2026-06-04",
     "to": "2026-09-02",
     "shiftCells": 341,
-    "totalMaids": 1915,
+    "totalMaids": 1913,
     "rostered": 1639,
-    "unlisted": 276,
-    "unlistedShare": 0.144,
-    "unlistedPerShift": 0.81,
-    "shiftsWithUnlisted": 0.686,
+    "unlisted": 274,
+    "unlistedShare": 0.143,
+    "unlistedPerShift": 0.8,
+    "shiftsWithUnlisted": 0.683,
     "distribution": {
-      "0": 107,
+      "0": 108,
       "1": 198,
-      "2": 31,
+      "2": 30,
       "3": 4,
       "4": 1
     },
@@ -13875,10 +13874,10 @@ window.STORE_INSIGHTS = {
       "s2": {
         "shifts": 58,
         "rostered": 294,
-        "unlisted": 62,
-        "unlistedShare": 0.174,
-        "unlistedPerShift": 1.07,
-        "shiftsWithoutUnlisted": 0.19
+        "unlisted": 60,
+        "unlistedShare": 0.169,
+        "unlistedPerShift": 1.03,
+        "shiftsWithoutUnlisted": 0.207
       },
       "s3": {
         "shifts": 53,
