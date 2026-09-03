@@ -889,6 +889,51 @@ assert.equal(
 
 // --- キッチンにゃんこを隠す ---------------------------------------------
 const kitchenNames = new Set(schedule.kitchenStaff);
+
+// 絞り込みの一覧でも、キッチンにゃんこはキッチンだと分かること。
+// `roster` にはフロアもキッチンも一緒に入っている（公式サイトがどちらも
+// 「メイドさん紹介」に載せていて、キッチンの方も予定表に出るため）。分ける
+// のは `kitchenStaff` の役目で、一覧では 🍳 とクラスで見分けられる状態を保つ。
+// 実際に「キッチンに追記しただけで、キャストの側から消えていない」と読まれた。
+{
+  const rows = walk(elementById("maid-checkboxes")).filter(
+    (node) => node.classList?.contains("checkbox-label")
+  );
+  assert.equal(rows.length, schedule.roster.length, "the filter must list the whole roster");
+  let marked = 0;
+  for (const row of rows) {
+    const name = (row.textContent ?? "").replace("🍳", "");
+    const isCook = kitchenNames.has(name);
+    assert.ok(schedule.roster.includes(name), `the filter listed an unknown name "${name}"`);
+    assert.equal(
+      Boolean(row.classList?.contains("is-kitchen")),
+      isCook,
+      `${name}: the filter row must say whether she is kitchen staff`
+    );
+    // 色やクラスだけで伝えない。読み上げにも文字を残す。
+    const badge = withClass(row, "kitchen-badge");
+    assert.equal(badge.length, isCook ? 1 : 0, `${name}: the mark must match her role`);
+    if (isCook) {
+      assert.equal(
+        badge[0].getAttribute("aria-label"),
+        "キッチンにゃんこ",
+        `${name}: the mark must be readable, not just an emoji`
+      );
+      // 読み上げだけでは目で見て分からない。見えている印も要る。
+      assert.ok(
+        badge[0].textContent.length > 0,
+        `${name}: the mark must be visible as well as spoken`
+      );
+      assert.ok(
+        (row.textContent ?? "").startsWith(name),
+        `${name}: the mark goes after the name, not inside it`
+      );
+      marked += 1;
+    }
+  }
+  assert.equal(marked, kitchenNames.size, "every kitchen maid must be marked in the filter");
+}
+
 const kitchenBefore = withClass(calendar, "maid-entry").filter((entry) =>
   kitchenNames.has(withClass(entry, "maid-name")[0].textContent)
 ).length;
