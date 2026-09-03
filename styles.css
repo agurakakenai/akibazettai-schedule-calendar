@@ -792,6 +792,29 @@ input[type="date"] {
   line-height: 1.4;
 }
 
+/* キッチンにゃんこは、見込みの日には店を名乗らない。店ごとの一覧とは別に置く。 */
+.maid-kitchen-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.maid-kitchen-label {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin: 6px 0 3px;
+  padding: 0 0 2px;
+  border-bottom: 2px solid var(--cp-border);
+  color: var(--cp-text-soft);
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 /* 誰なのかも、どの店かも分からない見込み。実在の記録より弱く見せる。 */
 .maid-trainee-list {  display: flex;
   flex-wrap: wrap;

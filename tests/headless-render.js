@@ -622,6 +622,7 @@ for (const cell of withClass(calendar, "calendar-day")) {
   withClass(cell, "shift-section").forEach((section, shiftIndex) => {
     const shift = insights.shifts[shiftIndex];
     // 割り振り先は見出しが名乗る。チップは見出しと違う店のときしか出ない。
+    // キッチンの一覧は店を名乗らないので、そこに入った時点で見出しを手放す。
     let current = null;
     for (const node of walk(section)) {
       if (!node.classList) {
@@ -629,6 +630,11 @@ for (const cell of withClass(calendar, "calendar-day")) {
       }
       if (node.classList.contains("maid-group-label")) {
         current = node.dataset.store || null;
+      } else if (
+        node.classList.contains("maid-kitchen-list") ||
+        node.classList.contains("maid-trainee-list")
+      ) {
+        current = null;
       } else if (node.classList.contains("maid-name") && current) {
         placementsByView.set(`${node.textContent}|${stopKey} ${shift}`, current);
       }
@@ -654,6 +660,8 @@ assert.ok(
 const stopStates = new Set();
 const planNames = [];
 let agreed = 0;
+let accuracyShown = 0;
+let unmeasuredShown = 0;
 for (const plan of plans) {
   const heading = withClass(plan, "maid-name");
   assert.equal(heading.length, 1, "each plan must name exactly one maid");
@@ -671,6 +679,44 @@ for (const plan of plans) {
   const notes = withClass(plan, "maid-plan-note");
   assert.equal(notes.length, 1, "each plan must carry exactly one caveat");
   assert.match(notes[0].textContent, /\d+件/, "the caveat must count the days it is guessing at");
+
+  // 的中はその人の実測。全体値で代用したり、母数を落としたりしていないこと。
+  const measured = insights.maidTendency?.[name]?.accuracy;
+  const caveat = notes[0].textContent;
+  if (measured && plan !== undefined) {
+    const stopsHere = withClass(plan, "maid-plan-stop");
+    const open = stopsHere.filter((s) => !s.classList.contains("is-open")).length;
+    if (open > 0) {
+      assert.ok(
+        caveat.includes(`${measured.n}件を試して`),
+        `${name}: the caveat must say how many tries the rate is based on`
+      );
+      assert.ok(
+        caveat.includes(`${Math.round(measured.rate * 100)}%`),
+        `${name}: the caveat must quote her own measured rate`
+      );
+      // 主語はこちら側に置く。低い数字が出る方もいるので「当てられ」と書く。
+      assert.ok(
+        caveat.includes("当てられて"),
+        `${name}: the sentence must put the guessing on us, not on her`
+      );
+      if (schedule.kitchenStaff.includes(name)) {
+        assert.ok(caveat.includes("キッチン"), `${name}: a kitchen maid must get the reason too`);
+      }
+      accuracyShown += 1;
+    }
+  } else if (!measured) {
+    assert.ok(
+      caveat.includes("測れていません"),
+      `${name}: without a measured rate the caveat must say so, not borrow one`
+    );
+    assert.doesNotMatch(
+      caveat,
+      /\d+%当てられ/,
+      `${name}: an unmeasured maid must not be handed someone else's figure`
+    );
+    unmeasuredShown += 1;
+  }
 
   const counted = withClass(plan, "maid-plan-count");
   assert.equal(counted.length, 1, "each plan must show its own shift count");
@@ -753,6 +799,10 @@ for (const plan of plans) {
   }
 }
 assert.ok(agreed > 0, "the two views must overlap enough to be compared at all");
+assert.ok(
+  accuracyShown > 0,
+  "no plan quoted a measured accuracy, so that wording is untested"
+);
 assert.ok(
   stopStates.size >= 2,
   `every stop looks equally certain (${[...stopStates].join(",")}), so the reader cannot tell them apart`
@@ -1167,6 +1217,93 @@ for (const cell of withClass(calendar, "calendar-day")) {
   });
 }
 assert.ok(cappedShifts > 0, "some shift must hit the ceiling, or this is untested");
+
+// --- キッチンにゃんこは、見込みの日には店を名乗らない ---------------------
+// 開いた店の枠に90%載っていて各店1人ずつなので、「どの店にいるか」は
+// 「どの店が開くか」とほとんど同じことしか言わない。当てられもしない。
+{
+  const cooks = new Set(schedule.kitchenStaff);
+  let looseCooks = 0;
+  let recordedCooks = 0;
+  let ordersChecked = 0;
+  for (const cell of withClass(calendar, "calendar-day")) {
+    const [, year, month, day] = /(\d+)年(\d+)月(\d+)日/.exec(cell.getAttribute("aria-label"));
+    const key = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    withClass(cell, "shift-section").forEach((section, shiftIndex) => {
+      const shift = insights.shifts[shiftIndex];
+      const recorded = Boolean(insights.actualRoster?.[key]?.[shift]);
+      const inShops = new Set(
+        withClass(section, "maid-list").flatMap((list) =>
+          withClass(list, "maid-entry").map((e) => withClass(e, "maid-name")[0].textContent)
+        )
+      );
+      const inKitchen = withClass(section, "maid-kitchen-list").flatMap((list) =>
+        withClass(list, "maid-entry").map((e) => withClass(e, "maid-name")[0].textContent)
+      );
+      for (const name of inKitchen) {
+        assert.ok(cooks.has(name), `${name} is not kitchen staff but sits in the kitchen list`);
+        assert.ok(!recorded, `${key} ${shift} is recorded, so ${name}'s shop is known`);
+        looseCooks += 1;
+      }
+      // 店を名乗らないと決めた以上、チップで店を出しては辻褄が合わない。
+      for (const list of withClass(section, "maid-kitchen-list")) {
+        assert.equal(
+          withClass(list, "maid-store-chip").length,
+          0,
+          `${key} ${shift}: the kitchen list must not name a shop on a chip either`
+        );
+      }
+      for (const name of inShops) {
+        if (!cooks.has(name)) {
+          continue;
+        }
+        // 記録の日と、記念日の主役だけは店の下に出てよい。どちらも分かっている。
+        const row = withClass(section, "maid-entry").find(
+          (e) => withClass(e, "maid-name")[0].textContent === name
+        );
+        const featured = row.classList.contains("is-featured");
+        assert.ok(
+          recorded || featured,
+          `${key} ${shift}: ${name} is kitchen staff on a guessed shift, so no shop should be claimed`
+        );
+        if (recorded) {
+          recordedCooks += 1;
+        }
+      }
+      if (inKitchen.length > 0) {
+        const heading = withClass(section, "maid-kitchen-label");
+        assert.equal(heading.length, 1, "the kitchen list must carry one heading");
+        assert.ok(heading[0].textContent.includes(`${inKitchen.length}人`), "the heading must count them");
+        assert.ok(heading[0].title.includes("配属とも関係なく"), "the heading must say why no shop is named");
+        // 見出しが店を名乗らないことが、店ごとの見出しの約束を壊していないこと。
+        assert.equal(
+          withClass(section, "maid-group-label").length,
+          withClass(section, "maid-list").length,
+          "the kitchen heading must not be counted as a shop group"
+        );
+        // 並びは 店ごと → 見習い → キッチン。
+        const order = section.children.map((node) => node.classList?.value ?? "");
+        const kitchenAt = order.findIndex((c) => c.includes("maid-kitchen-list"));
+        const traineeAt = order.findIndex((c) => c.includes("maid-trainee-list"));
+        const lastShopAt = order.map((c, i) => (c.includes("maid-list") ? i : -1)).pop();
+        assert.ok(kitchenAt > lastShopAt, "the kitchen list must come after the shop groups");
+        if (traineeAt >= 0) {
+          assert.ok(traineeAt < kitchenAt, "trainees must be listed above the kitchen staff");
+          ordersChecked += 1;
+        }
+      }
+    });
+  }
+  assert.ok(looseCooks > 0, "no kitchen maid was pulled out of the shops, so this is untested");
+  assert.ok(recordedCooks > 0, "a recorded shift must still place its kitchen staff");
+  assert.ok(
+    ordersChecked > 0,
+    "no shift carried both a trainee and a kitchen list, so their order is untested"
+  );
+  // 記念日の主役が所属店に残ることは、既定の期間を見ている上のブロックが確かめている
+  // （あらたさんがキッチンかつ主役で、店ごとの見出しの下にいることを要求している）。
+  // この期間には主役のキッチンにゃんこがいないので、ここでは件数を求めない。
+}
 
 // 未提出の注意書きは、カレンダーの下に1行だけ出す。シフトごとに繰り返さない。
 {

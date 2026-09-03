@@ -875,17 +875,55 @@
     return Object.fromEntries(storeIds.map((id, index) => [id, capacity[index]]));
   }
 
-  function affinityFor(insights, name, shift, storeIds) {
+  // 同じ日の早いシフトの記録から、遅いシフトの行き先を読み直す。
+  //
+  // 通しで働いた1238人のうち68.7%が昼と別の店にいる。昼の店が夜も開いていても
+  // 56.4%が移るので、「開いているから残る」ではない。移り先には向きがあり、
+  // 夜はどの店からも1号店に吸われる（昼s4→夜s1 が84%）。
+  //
+  // 人ごとの表があればそれを使う。無ければ全体の表。人ごとは n が小さい組み
+  // 合わせがあるので（あむさんの昼s4は6回）、n も返して読み手側で判断できる形。
+  function sameDayMoveOdds(insights, name, fromStoreId) {
+    const perMaid = insights?.maidTendency?.[name]?.sameDayMove?.[fromStoreId];
+    if (perMaid?.to && perMaid.n > 0) {
+      return { to: perMaid.to, n: perMaid.n, source: "maid" };
+    }
+    const overall = insights?.sameDayMaidMove?.[fromStoreId];
+    if (overall?.to && overall.n > 0) {
+      return { to: overall.to, n: overall.n, source: "all" };
+    }
+    return null;
+  }
+
+  // この移り先の表は「早いシフト → 遅いシフト」の向きに作ってある。
+  // 逆に当てると別の分布になるので、遅いシフトを組むときにしか使わない。
+  function isLaterShift(insights, shift) {
+    const shifts = insights?.shifts;
+    return Array.isArray(shifts) && shifts.indexOf(shift) === shifts.length - 1;
+  }
+
+  function affinityFor(insights, name, shift, storeIds, movedFrom) {
     const tendency = insights.maidTendency?.[name];
     const uniform = 1 / storeIds.length;
     if (!tendency) {
       return { scores: Object.fromEntries(storeIds.map((id) => [id, uniform])), known: false };
     }
     const { pickRate } = tendencyTables(tendency, shift);
-    const raw = storeIds.map((id) => Math.max(pickRate[id] ?? 0, 0));
+    // 昼にどこにいたか分かっているなら、その人の傾向に移り先の確率を掛ける。
+    // 掛けるのは、傾向を捨てずに向きだけ足したいから。置き換えると
+    // 「夜はみんな1号店」になって、その人の癖が消える。
+    const move = movedFrom ? sameDayMoveOdds(insights, name, movedFrom)?.to : null;
+    const raw = storeIds.map((id) => {
+      const base = Math.max(pickRate[id] ?? 0, 0);
+      return move ? base * (move[id] ?? 0) : base;
+    });
     const total = raw.reduce((sum, value) => sum + value, 0);
     if (total <= 0) {
-      return { scores: Object.fromEntries(storeIds.map((id) => [id, uniform])), known: false };
+      // 掛けた結果が全滅することがある（その店に移った記録が1件も無い場合）。
+      // そのときは傾向だけに戻す。移り先が読めないことと、行かないことは違う。
+      return move
+        ? affinityFor(insights, name, shift, storeIds, null)
+        : { scores: Object.fromEntries(storeIds.map((id) => [id, uniform])), known: false };
     }
     return {
       scores: Object.fromEntries(storeIds.map((id, index) => [id, raw[index] / total])),
@@ -898,7 +936,7 @@
   // スコアは候補店で合計1に正規化した値なので、減点もその尺度で置く。
   const KITCHEN_SPREAD_PENALTY = 0.5;
 
-  function assignShiftStores({ insights, members, shift, storeIds, pins, kitchenStaff }) {
+  function assignShiftStores({ insights, members, shift, storeIds, pins, kitchenStaff, movedFrom }) {
     if (!insights || !Array.isArray(members) || members.length === 0 || storeIds.length === 0) {
       return null;
     }
@@ -958,7 +996,8 @@
       .map((name, index) => ({ name, index }))
       .filter(({ name }) => !pinned.has(name))
       .map(({ name, index }) => {
-        const { scores, known } = affinityFor(insights, name, shift, storeIds);
+        const cameFrom = movedFrom?.get?.(name) ?? movedFrom?.[name] ?? null;
+        const { scores, known } = affinityFor(insights, name, shift, storeIds, cameFrom);
         const order = [...storeIds].sort(
           (a, b) => scores[b] - scores[a] || storeIds.indexOf(a) - storeIds.indexOf(b)
         );
@@ -1252,7 +1291,7 @@
     );
   }
 
-  function getShiftAssignment({ insights, members, shift, outlook, pins, kitchenStaff }) {
+  function getShiftAssignment({ insights, members, shift, outlook, pins, kitchenStaff, movedFrom }) {
     const storeIds = expectedOpenStores(insights, shift, outlook, members ?? 0);
     if (storeIds.length === 0) {
       return null;
@@ -1263,9 +1302,24 @@
       shift,
       storeIds,
       pins,
-      kitchenStaff
+      kitchenStaff,
+      movedFrom
     });
     return assignment ? { ...assignment, basis: outlook.basis } : null;
+  }
+
+  // 同じ日の早いシフトの記録から「誰がどこにいたか」を取る。
+  // 記録が無ければ null。推測した昼の店を渡すと、誤差が二重に乗る。
+  function earlierShiftPlaces(insights, dateKey, shift) {
+    if (!isLaterShift(insights, shift)) {
+      return null;
+    }
+    const earlier = insights.shifts[insights.shifts.indexOf(shift) - 1];
+    const record = recordedAssignment(insights, dateKey, earlier);
+    if (!record) {
+      return null;
+    }
+    return new Map([...record.byMaid].map(([name, placed]) => [name, placed.storeId]));
   }
 
   // 候補店の中で pickRate を合計1に正規化する。「この人はこの店」と断定せず、
@@ -1327,6 +1381,31 @@
     return drift < 0
       ? `ただしこのくらい高い数字は自信過剰で、${band}と出したときに実際に当たったのは${toPercent(bucket.actual)}です（${measured}）`
       : `ただしこのくらい低い数字は控えめすぎて、${band}と出した店にも実際は${toPercent(bucket.actual)}の割合で入っています（${measured}）`;
+  }
+
+  // 「昼の店が夜も開いているのに、なぜ別の店にいるのか」への答え。
+  // 通しで働いた方の68.7%が昼と別の店にいて、昼の店が夜も開いていた場合でも
+  // 56.4%が移る。読み手が不思議に思う場所なので、移り先を出したときは理由も書く。
+  function sameDayMoveNote(insights, name, fromStoreId, toStoreId) {
+    const odds = sameDayMoveOdds(insights, name, fromStoreId);
+    const rate = odds?.to?.[toStoreId];
+    if (!odds || typeof rate !== "number") {
+      return null;
+    }
+    const from = storeShort(insights, fromStoreId);
+    const to = storeShort(insights, toStoreId);
+    const who = odds.source === "maid" ? "この方は" : "全体では";
+    const stay = odds.to[fromStoreId] ?? 0;
+    // 同じ店に残るほうが少ないことを併記する。ここを書かないと、
+    // 「開いているのになぜ」が残ったままになる。
+    const staying = fromStoreId === toStoreId
+      ? ""
+      : `${from}に残るのは${toPercent(stay)}です。`;
+    return (
+      `昼は${from}にいた記録があります。${who}昼に${from}だったとき、` +
+      `夜は${to}が${toPercent(rate)}でした（${odds.n}件）。${staying}` +
+      `${from}が夜も開いているかどうかとは別に、移ることのほうが多くなっています`
+    );
   }
 
   // 記録のある日は、予定表からの割り振りではなく実際の顔ぶれを出す。
@@ -1519,18 +1598,64 @@
     };
   }
 
+  // その人の行き先をどれだけ当てられたか。直近180日の各シフトを、その手前
+  // 120日だけを見て答え、実際と突き合わせた実測値（walk-forward）。1店しか
+  // 開かなかったシフトは定義上かならず当たるので除いてある。
+  //
+  // 全体値（accuracy.maidStoreGivenOpen）とは測り方が違うので、混ぜない。
+  // 測れていない人（記録が少ない人）には、全体値で埋めずに測れていないと書く。
+  function maidAccuracy(insights, name) {
+    const measured = insights?.maidTendency?.[name]?.accuracy;
+    if (!measured || typeof measured.rate !== "number" || !(measured.n > 0)) {
+      return null;
+    }
+    return { rate: measured.rate, n: measured.n };
+  }
+
+  // 「n件すべて当たる」確率。並べると外れが見えることを、数で言うために使う。
+  // 実測のある人はその人の値で、無い人は何も言わない。
+  function itineraryConfidence(insights, guesses, name) {
+    const measured = maidAccuracy(insights, name);
+    if (!measured || !(guesses > 0)) {
+      return null;
+    }
+    return {
+      perStop: measured.rate,
+      samples: measured.n,
+      guesses,
+      allRight: Math.pow(measured.rate, guesses)
+    };
+  }
+
+  // 低い数字が出る人もいる。当たらないのはその人のせいではないので、
+  // 主語をこちら側に置く。「この人は読めない」ではなく「私たちが当てられない」。
+  function maidAccuracyNote(insights, name, isKitchen) {
+    const measured = maidAccuracy(insights, name);
+    if (!measured) {
+      return "この方は記録が少なく、行き先をどれだけ当てられるかは測れていません";
+    }
+    const why = isKitchen
+      ? "キッチンにゃんこは配属と関係なく4店を回るので、とくに当てにくくなります。"
+      : "";
+    return (
+      `${why}この方の行き先は、過去${measured.n}件を試して` +
+      `${toPercent(measured.rate)}当てられました`
+    );
+  }
+
   // 人ごとの一覧を組み立てる。店ごとの画面と同じ割り振りを引くので、両者は食い違わない。
   //
-  // この軸には固有の危険がある。1件あたりの的中は、開いている店が分かっている前提で
-  // 66%（accuracy.maidStoreGivenOpen）。店の側も当日決まるので、実際にその人がその店に
-  // いる確率はもっと低い。同じ人の予測を縦に並べると、その外れが一覧で見える。
-  // 店ごとの画面では1行ずつ独立に見えて気づかなかったものが表に出るので、
-  // 件数を数えて「全部当たることはまずない」と先に言う。
-  function maidItinerary({ schedule, name, dates, shifts, resolve }) {
+  // この軸には固有の危険がある。1件あたりの的中はその人ごとに 39〜81% と幅があり、
+  // 店の側も当日決まるので、実際にその人がその店にいる確率はもっと低い。
+  // 同じ人の予測を縦に並べると、その外れが一覧で見える。店ごとの画面では
+  // 1行ずつ独立に見えて気づかなかったものが表に出るので、件数を数えて
+  // 「全部当たることはまずない」と先に言う。
+  function maidItinerary({ schedule, name, dates, shifts, resolve, kitchenStaff }) {
+    const cooks = kitchenStaff instanceof Set ? kitchenStaff : new Set(kitchenStaff ?? []);
     const stops = [];
     for (const key of dates ?? []) {
       for (const shift of shifts ?? []) {
-        const { outlook, assignment, members } = resolve(key, shift) ?? {};
+        const { outlook, assignment } = resolve(key, shift) ?? {};
         // 記録のある日は、その日の顔ぶれを記録が決める。予定表を見ると、
         // お休みだった方に行を作り、記録にしかいない方を落とすことになる。
         const roll = assignment?.recorded
@@ -1540,7 +1665,11 @@
           continue;
         }
         const placed = assignment?.byMaid?.get(name) ?? null;
-        const storeId = placed?.storeId ?? null;
+        // キッチンにゃんこの行き先は、見込みの日には店ごとの画面でも名乗らない。
+        // ここで名乗ると、同じ人・同じ日で2つの画面が違うことを言う。
+        const loose =
+          placed && !assignment.recorded && !placed.pin && cooks.has(name);
+        const storeId = loose ? null : placed?.storeId ?? null;
         const row = storeId
           ? outlook?.entries?.find((candidate) => candidate.store.id === storeId) ?? null
           : null;
@@ -1548,6 +1677,7 @@
           dateKey: key,
           shift,
           storeId,
+          kitchen: Boolean(loose),
           // 店ごとの画面と同じ三段階を使う。open は実績か記念日で確定、
           // likely は5割以上、unlikely はそれ未満。別の線を引くと画面が食い違う。
           state: row?.state ?? null,
@@ -1559,57 +1689,6 @@
       }
     }
     return { name, stops, guesses: stops.filter((stop) => !stop.settled).length };
-  }
-
-  // 「n件すべて当たる」確率。並べると外れが見えることを、数で言うために使う。
-  function itineraryConfidence(insights, guesses) {
-    const perStop = insights?.accuracy?.maidStoreGivenOpen;
-    if (!(perStop > 0) || !(guesses > 0)) {
-      return null;
-    }
-    return { perStop, guesses, allRight: Math.pow(perStop, guesses) };
-  }
-
-  // その人の行き先がどれだけ決まっているか（spread）を帯に落とす。
-  // データ側の実測では spread と的中率が r=+0.79 で対応する。区切りは
-  // insights.spreadBands にある。ここに数字を持つと、集計をやり直した日に
-  // 画面の言い分けだけが古くなるので、閾値は必ずデータから読む。
-  function spreadStanding(insights, name) {
-    const spread = insights?.maidTendency?.[name]?.spread;
-    const bands = insights?.spreadBands;
-    if (typeof spread !== "number" || typeof bands?.settled !== "number" || typeof bands?.mixed !== "number") {
-      return null;
-    }
-    const band = spread >= bands.settled ? "settled" : spread >= bands.mixed ? "mixed" : "roving";
-    const all = Object.values(insights.maidTendency ?? {})
-      .map((tendency) => tendency?.spread)
-      .filter((value) => typeof value === "number");
-    return {
-      spread,
-      band,
-      rank: all.filter((value) => value > spread).length + 1,
-      total: all.length
-    };
-  }
-
-  // 上の帯を文にする。人ごとの的中率は測られていないので、そこは言わない。
-  // 言えるのは「行き先が決まっている側か、散らばる側か」までで、踏み越えない。
-  function spreadNote(insights, name, isKitchen) {
-    const standing = spreadStanding(insights, name);
-    if (!standing) {
-      return null;
-    }
-    const place =
-      standing.total > 1
-        ? `行き先が決まっている順で在籍${standing.total}名中${standing.rank}番目です`
-        : null;
-    const body =
-      standing.band === "settled"
-        ? "入る店がはっきりしているので、この一覧は当たりやすい側です"
-        : standing.band === "mixed"
-          ? "だいたい決まっていますが、外れる日もあります"
-          : `${isKitchen ? "キッチンにゃんこは配属と関係なく4店を回るので、" : ""}日によって行き先が変わります。この一覧はとくに当たりません`;
-    return place ? `${place}。${body}` : body;
   }
 
   // 開く店の数は実測の表（openCountByHeadcount）から決めている。表は
@@ -1659,6 +1738,7 @@
       calibrationNote,
       coOpenRate,
       dateKey,
+      earlierShiftPlaces,
       eventStorePins,
       expectedOpenStores,
       expectedTrainees,
@@ -1672,6 +1752,8 @@
       isDateKeyInRange,
       itineraryConfidence,
       lastActualDateOf,
+      maidAccuracy,
+      maidAccuracyNote,
       maidItinerary,
       nearMissNote,
       nearMissStores,
@@ -1681,11 +1763,11 @@
       recordedAssignment,
       recordedRoster,
       sameDayDecisionNote,
+      sameDayMoveNote,
+      sameDayMoveOdds,
       schedulePendingNote,
       scheduleSystemNote,
       sortByAssignedStore,
-      spreadNote,
-      spreadStanding,
       storeCapacities,
       storeProbabilities,
       storeSizeNote,
@@ -1996,6 +2078,8 @@
     section.append(title);
 
     const roster = shiftRoster(key, shift);
+    // 同じ日の昼に誰がどこにいたか。記録があるときだけ、夜の割り振りに使う。
+    const movedFrom = earlierShiftPlaces(insights, key, shift);
     // 見込みの計算には予定表の顔ぶれを使う。記録のある日は使われないが、
     // 記録の顔ぶれを入れると「答えを見て予測する」ことになる。
     const postedNames = (data.schedule[key]?.[shift] ?? []).map((entry) => entry.name);
@@ -2015,13 +2099,32 @@
           shift,
           outlook,
           pins,
-          kitchenStaff
+          kitchenStaff,
+          // 同じ日の昼に誰がどこにいたか記録があれば、夜の割り振りに使う。
+          movedFrom
         })
         : null);
     // 記録の並びは掲載順で確定しているので、割り振り順に組み直すのは見込みの日だけ。
-    const entries = assignment && !assignment.recorded
+    const ordered = assignment && !assignment.recorded
       ? sortByAssignedStore({ insights, entries: visible, assignment })
       : visible;
+    // キッチンにゃんこは、見込みの日には店の下に置かない。
+    //
+    // どの店にいるかを当てられない（実測でフロア65.4%に対し58.7%）うえに、
+    // 当てる必要もない。開いた店の枠にキッチンが載っているのは90%で、
+    // 1店なら1人・2店なら2人と各店に1人ずついるので、「どの店にいるか」は
+    // 「どの店が開くか」とほとんど同じことしか言っていない。
+    //
+    // 見習いと違って、誰が出るかは予定表に載っているので名前は出せる。
+    //
+    // ただし記念日の主役は所属店に確定する。そこは分かっているので外さない。
+    const guessingStores = Boolean(assignment) && !assignment.recorded;
+    const looseCook = (entry) =>
+      guessingStores &&
+      kitchenStaff.has(entry.name) &&
+      !assignment.byMaid.get(entry.name)?.pin;
+    const entries = ordered.filter((entry) => !looseCook(entry));
+    const cooks = ordered.filter(looseCook);
     // 予定表に出ない見習いにゃんこ。誰なのかも、どの店かも分からないので、
     // 店ごとのグループには入れず、シフトの末尾にまとめて置く。
     const guessedTrainees = isVisibleMaid(TRAINEE_PLACEHOLDER)
@@ -2033,7 +2136,7 @@
       )
       : 0;
 
-    function createMaidEntry(entry, groupStoreId) {
+    function createMaidEntry(entry, groupStoreId, hideStore = false) {
       const item = document.createElement("li");
       item.className = "maid-entry";
       const account = insights?.maidTendency?.[entry.name]?.x;
@@ -2084,7 +2187,21 @@
         descriptions.unshift(`${entry.eventLabel}の主役`);
       }
 
-      if (chipData) {
+      // 昼の記録を使って夜を組んだ人には、そのことと移り先の実績を書く。
+      // 「所属店が開いているのになぜ別の店」は、読み手が実際に持った疑問。
+      // 夜も記録がある日は書かない。どこにいたか分かっているので確率の出番がない。
+      const cameFrom = assignment?.recorded ? null : movedFrom?.get(entry.name);
+      const placedAt = assignment?.byMaid?.get(entry.name)?.storeId;
+      if (cameFrom && placedAt) {
+        const move = sameDayMoveNote(insights, entry.name, cameFrom, placedAt);
+        if (move) {
+          item.classList.add("is-moved");
+          titles.push(move);
+          descriptions.push(move);
+        }
+      }
+
+      if (chipData && !hideStore) {
         // 見出しがその店を名乗っているなら、チップは割合だけになる。割合は表に
         // 出さない方針なので、そこでは何も足さない。数字はこの行の title に残る。
         const showStore = groupStoreId !== chipData.storeId;
@@ -2102,7 +2219,41 @@
       return item;
     }
 
-    if (entries.length > 0) {
+    function appendKitchen(target, members, storeCount) {
+      if (members.length === 0) {
+        return;
+      }
+      // 誰が出るかは分かっている。分からないのは、どの店にいるか。
+      const note =
+        `キッチンにゃんこです。${storeCount > 1 ? `開く${storeCount}店に1人ずつ入るのがふだんの形で、` : ""}` +
+        "どの店かは配属とも関係なく決まるため、店ごとの一覧には入れていません";
+      const heading = document.createElement("p");
+      // .maid-group-label は「かならず店を名乗る」約束なので、そこには入れない。
+      heading.className = "maid-kitchen-label";
+      const label = document.createElement("span");
+      label.textContent = "キッチン";
+      const count = document.createElement("span");
+      count.className = "maid-group-count";
+      count.textContent = `${members.length}人`;
+      heading.append(label, count);
+      heading.title = note;
+      const list = document.createElement("ul");
+      // 店ごとの一覧（.maid-list）は「見出しと1対1」で店を名乗る約束なので混ぜない。
+      list.className = "maid-kitchen-list";
+      members.forEach((entry) => {
+        // 店を名乗らないと決めた以上、チップで店を出しては辻褄が合わない。
+        const item = createMaidEntry(entry, null, true);
+        item.setAttribute(
+          "aria-label",
+          `${entry.name}（${note}）`
+        );
+        item.title = `${entry.name}：${note}`;
+        list.append(item);
+      });
+      target.append(heading, list);
+    }
+
+    if (entries.length > 0 || cooks.length > 0) {
       const groups = groupByAssignedStore({ insights, entries, assignment });
 
       groups.forEach(({ storeId, entries: members }) => {
@@ -2128,6 +2279,7 @@
       });
 
       appendTraineeGuesses(section, shift, guessedTrainees, assignment?.storeIds?.length ?? 0);
+      appendKitchen(section, cooks, assignment?.storeIds?.length ?? 0);
       return section;
     }
 
@@ -2156,6 +2308,8 @@
 
   // 予定表に出ない見習いにゃんこ。店ごとのグループには入れない。
   // どの店にいるか読めないのに見出しの下に置くと、その店にいると読まれる。
+  // 順番は、店ごとの一覧 → 見習い → キッチン。上ほど確かなことを言っている。
+  // 見習いは「誰か分からないが、いる」、キッチンは「誰か分かるが、どこか分からない」。
   function appendTraineeGuesses(section, shift, count, storeCount) {
     if (!(count > 0)) {
       return;
@@ -2322,7 +2476,15 @@
           members: roster.entries.map((entry) => entry.name),
           assignment: roster.assignment
             ?? (outlook
-              ? getShiftAssignment({ insights, members, shift, outlook, pins, kitchenStaff })
+              ? getShiftAssignment({
+                insights,
+                members,
+                shift,
+                outlook,
+                pins,
+                kitchenStaff,
+                movedFrom: earlierShiftPlaces(insights, key, shift)
+              })
               : null)
         });
       }
@@ -2347,7 +2509,14 @@
     let stopCount = 0;
 
     shown.forEach((name) => {
-      const plan = maidItinerary({ schedule: data.schedule, name, dates, shifts, resolve });
+      const plan = maidItinerary({
+        schedule: data.schedule,
+        name,
+        dates,
+        shifts,
+        resolve,
+        kitchenStaff
+      });
       if (plan.stops.length === 0) {
         return;
       }
@@ -2468,19 +2637,25 @@
         `${settled > 0 ? "残り" : ""}${plan.guesses}件はどの店を開けるかが当日決まります`
       );
     }
-    const confidence = itineraryConfidence(insights, plan.guesses);
+    // 的中はその人ごとに実測してある。全体値で代用すると、当たりにくい方を
+    // 実際より当たるように、当たりやすい方を実際より当たらないように書くことになる。
+    const confidence = itineraryConfidence(insights, plan.guesses, plan.name);
+    const cook = kitchenStaff.has(plan.name)
+      ? "キッチンにゃんこは配属と関係なく4店を回るので、とくに当てにくくなります。"
+      : "";
     if (confidence) {
-      // 1件しかないときに「すべて当たるのは」と続けても同じ数字にしかならない。
+      // 同じ割合を「1件あたり」と「実測」で2回書かない。実測のほうに寄せて、
+      // そこから積み上げた結果を続ける。
+      const measured =
+        `${cook}この方の行き先は過去${confidence.samples}件を試して` +
+        `${toPercent(confidence.perStop)}当てられています`;
       parts.push(
         plan.guesses === 1
-          ? `開いた店が分かっていれば${toPercent(confidence.perStop)}ほど当たります`
-          : `開いた店が分かっていれば1件${toPercent(confidence.perStop)}ほど当たりますが、` +
-            `${plan.guesses}件すべて当たるのは${toPercent(confidence.allRight)}です`
+          ? measured
+          : `${measured}が、${plan.guesses}件すべて当たるのは${toPercent(confidence.allRight)}です`
       );
-    }
-    const standing = spreadNote(insights, plan.name, kitchenStaff.has(plan.name));
-    if (standing) {
-      parts.push(standing);
+    } else {
+      parts.push(maidAccuracyNote(insights, plan.name, kitchenStaff.has(plan.name)));
     }
     return parts.length > 0 ? `${parts.join("。")}。` : "この期間のお給仕はすべて確定しています。";
   }
@@ -2491,7 +2666,9 @@
   function stopExplanation(stop) {
     const trainee = stop.trainee === true ? "見習いにゃんことして" : "";
     if (!stop.storeId) {
-      return "どこへ立つかは、まだ何も言えません。";
+      return stop.kitchen
+        ? "キッチンにゃんこは開く店に1人ずつ入りますが、どの店かは配属とも関係なく決まるので、ここでは言えません。"
+        : "どこへ立つかは、まだ何も言えません。";
     }
     const where = storeShort(insights, stop.storeId);
     if (stop.settled) {

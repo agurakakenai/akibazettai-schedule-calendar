@@ -13,6 +13,7 @@ const {
   assignShiftStores,
   calibrationNote,
   coOpenRate,
+  earlierShiftPlaces,
   eventStorePins,  expectedOpenStores,
   expectedTrainees,
   getMaidStoreOutlook,
@@ -21,6 +22,8 @@ const {
   groupByAssignedStore,
   itineraryConfidence,
   lastActualDateOf,
+  maidAccuracy,
+  maidAccuracyNote,
   maidItinerary,
   nearMissNote,
   nearMissStores,
@@ -30,11 +33,11 @@ const {
   recordedAssignment,
   recordedRoster,
   sameDayDecisionNote,
+  sameDayMoveNote,
+  sameDayMoveOdds,
   schedulePendingNote,
   scheduleSystemNote,
   sortByAssignedStore,
-  spreadNote,
-  spreadStanding,
   storeCapacities,
   storeProbabilities,
   storeSizeNote,
@@ -2064,59 +2067,58 @@ assert.equal(
 
 // --- 人ごとの一覧 -------------------------------------------------------
 {
-  // 「うるちゃんは日によって変わります」と言えるかどうかは spread で決まる。
-  // 在籍が実際に3つの帯に割れていないと、その言い分けは飾りになる。
-  const bands = schedule.roster
-    .map((name) => spreadStanding(insights, name))
-    .filter(Boolean);
-  assert.equal(bands.length, schedule.roster.length, "every maid must have a measured spread");
-  assert.deepEqual(
-    [...new Set(bands.map((standing) => standing.band))].sort(),
-    ["mixed", "roving", "settled"],
-    "spread must separate the roster into three bands"
+  // 的中は代理（spread）ではなく実測（accuracy）で言う。
+  // 全員ぶん揃っていないと、測れた人と測れていない人が混ざったまま並ぶ。
+  const measured = schedule.roster
+    .map((name) => ({ name, a: maidAccuracy(insights, name) }))
+    .filter((row) => row.a);
+  assert.ok(
+    measured.length >= schedule.roster.length - 3,
+    `too few maids carry a measured accuracy: ${measured.length}/${schedule.roster.length}`
   );
-  // 区切りはデータ側にある。ここに数字を書くと、集計をやり直した日に画面だけが古くなる。
-  const cuts = insights.spreadBands;
-  assert.ok(cuts.settled > cuts.mixed, "the published bands must be ordered");
-  for (const standing of bands) {
-    const expected =
-      standing.spread >= cuts.settled ? "settled" : standing.spread >= cuts.mixed ? "mixed" : "roving";
+  for (const { name, a } of measured) {
+    assert.ok(a.rate > 0 && a.rate < 1, `${name} の的中が確率になっていない: ${a.rate}`);
+    assert.ok(a.n > 0, `${name} の母数が正でない: ${a.n}`);
     assert.equal(
-      standing.band,
-      expected,
-      `spread ${standing.spread} must follow the published bands, not a threshold typed into app.js`
+      a.rate,
+      insights.maidTendency[name].accuracy.rate,
+      `${name} の的中はデータの値そのままでなければならない`
     );
   }
-  assert.equal(
-    spreadStanding({ maidTendency: { だれか: { spread: 0.5 } } }, "だれか"),
-    null,
-    "without published bands there is nothing to say"
-  );
-  // 順位は散らばりが小さい人ほど後ろ。1番が最も行き先の決まっている人。
-  const ranked = [...bands].sort((a, b) => a.rank - b.rank);
-  assert.deepEqual(
-    ranked.map((standing) => standing.spread),
-    [...ranked.map((standing) => standing.spread)].sort((a, b) => b - a),
-    "rank 1 must be the maid whose destination is most settled"
+  // 人によって幅がある。全員が同じなら、人ごとに出す意味がない。
+  const rates = measured.map((row) => row.a.rate);
+  assert.ok(
+    Math.max(...rates) - Math.min(...rates) > 0.2,
+    "the measured rates must actually differ between maids, or per-maid reporting is decoration"
   );
 
-  // キッチンにゃんこは配属と関係なく4店を回る。この2つの事実が離れたら落とす。
-  const kitchen = schedule.kitchenStaff.map((name) => spreadStanding(insights, name));
-  assert.ok(kitchen.length > 0 && kitchen.every(Boolean), "the kitchen staff must have spreads");
+  // 文は主語をこちら側に置く。低い数字が出る方もいるので「当てられない」と書く。
+  const worst = measured.reduce((low, row) => (row.a.rate < low.a.rate ? row : low));
+  const note = maidAccuracyNote(insights, worst.name, schedule.kitchenStaff.includes(worst.name));
+  assert.ok(note.includes("当てられました"), "the sentence must put the guessing on us, not on her");
+  assert.ok(note.includes(`${worst.a.n}件`), "the sentence must say how many tries it is based on");
+  assert.doesNotMatch(note, /読めません|当たりません$/, "a low rate must not be phrased as her fault");
+
+  // キッチンにゃんこは4店を回るので、理由を添える。
+  const cook = schedule.kitchenStaff.find((name) => maidAccuracy(insights, name));
+  assert.ok(cook, "the kitchen staff must have measured accuracies");
   assert.ok(
-    kitchen.every((standing) => standing.band !== "settled"),
-    "the kitchen staff move between all four shops, so none of them can read as settled"
+    maidAccuracyNote(insights, cook, true).includes("キッチン"),
+    "a kitchen maid must be told apart from a floor maid"
   );
-  const cook = schedule.kitchenStaff.find(
-    (name) => spreadStanding(insights, name).band === "roving"
-  );
-  assert.ok(cook, "at least one kitchen maid must land in the roving band");
-  assert.ok(
-    spreadNote(insights, cook, true).includes("キッチン"),
-    "a roving kitchen maid must be told apart from a roving floor maid"
-  );
-  assert.equal(spreadStanding(insights, "いない人"), null, "an unknown maid has no standing");
-  assert.equal(spreadNote(insights, "いない人", false), null, "an unknown maid gets no sentence");
+
+  // 測れていない人には、全体値で埋めずに測れていないと書く。
+  assert.equal(maidAccuracy(insights, "いない人"), null, "an unmeasured maid has no rate");
+  const unmeasured = maidAccuracyNote(insights, "いない人", false);
+  assert.ok(unmeasured.includes("測れていません"), "say that it was not measured, do not substitute");
+  assert.doesNotMatch(unmeasured, /\d+%/, "an unmeasured maid must not be given a borrowed figure");
+  const missing = schedule.roster.filter((name) => !maidAccuracy(insights, name));
+  for (const name of missing) {
+    assert.ok(
+      maidAccuracyNote(insights, name, false).includes("測れていません"),
+      `${name} has no measured accuracy, so the page must say so rather than fall back`
+    );
+  }
 
   // 一覧は店ごとの画面と同じ割り振りを引く。resolve が返したものをそのまま並べる。
   const day = lastActual;
@@ -2176,17 +2178,37 @@ assert.equal(
   assert.equal(absent.stops.length, 0, "a maid who is not on the rota gets no rows");
 
   // 縦に並べると外れが積み上がる。件数が増えるほど「全部当たる」は下がる。
-  const perStop = insights.accuracy.maidStoreGivenOpen;
-  assert.ok(perStop > 0 && perStop < 1, "the per-stop hit rate must be a real probability");
-  const one = itineraryConfidence(insights, 1);
-  const many = itineraryConfidence(insights, 10);
+  // 使うのはその人の実測値。全体値で代用すると、当たりにくい方を実際より
+  // 当たるように書くことになる。
+  const someone = measured[0].name;
+  const perStop = insights.maidTendency[someone].accuracy.rate;
+  const one = itineraryConfidence(insights, 1, someone);
+  const many = itineraryConfidence(insights, 10, someone);
+  assert.equal(one.perStop, perStop, "the per-stop rate must be this maid's own");
+  assert.equal(one.samples, insights.maidTendency[someone].accuracy.n, "the sample size must ride along");
   assert.equal(one.allRight, perStop, "one open day is just the per-stop rate");
   assert.ok(
     many.allRight < one.allRight / 10,
     "ten open days in a row must read as far less certain than one"
   );
-  assert.equal(itineraryConfidence(insights, 0), null, "a settled month has nothing to warn about");
-  assert.equal(itineraryConfidence({}, 5), null, "without a measured rate, say nothing");
+  // 別々の人には別々の数字が出る。ここが同じなら全体値で埋めている。
+  const low = measured.reduce((worst, row) => (row.a.rate < worst.a.rate ? row : worst));
+  const high = measured.reduce((best, row) => (row.a.rate > best.a.rate ? row : best));
+  assert.notEqual(
+    itineraryConfidence(insights, 5, low.name).allRight,
+    itineraryConfidence(insights, 5, high.name).allRight,
+    "two maids with different measured rates must not read the same"
+  );
+  assert.equal(
+    itineraryConfidence(insights, 0, someone),
+    null,
+    "a settled month has nothing to warn about"
+  );
+  assert.equal(
+    itineraryConfidence(insights, 5, "いない人"),
+    null,
+    "without a measured rate for her, say nothing rather than borrow one"
+  );
 }
 
 // --- 記録のある日の顔ぶれ ---------------------------------------------
@@ -2305,6 +2327,97 @@ assert.equal(
     "a day we have no record for must fall back to the rota"
   );
   assert.equal(recordedAssignment(insights, future, shift), null, "no record, no recorded placement");
+
+  // 同じ日の昼の記録から、夜の行き先を読み直す。
+  {
+    const overall = insights.sameDayMaidMove;
+    assert.ok(overall, "sameDayMaidMove must be published");
+    for (const [from, row] of Object.entries(overall)) {
+      const total = Object.values(row.to).reduce((sum, value) => sum + value, 0);
+      assert.ok(Math.abs(total - 1) < 0.02, `${from} の移り先が確率分布になっていない: ${total}`);
+      assert.ok(row.n > 0, `${from} の母数が正でない`);
+    }
+    // 夜はどの店からも1号店に吸われる。ここが崩れたら表の意味が変わっている。
+    const pulled = Object.entries(overall).filter(([from]) => from !== "s1");
+    assert.ok(pulled.length > 0, "there must be shops other than the first to move away from");
+    for (const [from, row] of pulled) {
+      assert.ok(
+        row.to.s1 > row.to[from],
+        `${from} からは、残るより1号店へ移るほうが多いはず（残る ${row.to[from]} / 移る ${row.to.s1}）`
+      );
+    }
+
+    // 人ごとの表があればそれを、無ければ全体の表を使う。
+    const withOwn = schedule.roster.find((name) => insights.maidTendency[name]?.sameDayMove?.s3);
+    assert.ok(withOwn, "someone must carry their own move table, or the branch is untested");
+    const own = sameDayMoveOdds(insights, withOwn, "s3");
+    assert.equal(own.source, "maid", "her own table must win over the overall one");
+    assert.equal(own.n, insights.maidTendency[withOwn].sameDayMove.s3.n, "the sample size must be hers");
+    const borrowed = sameDayMoveOdds(insights, "いない人", "s3");
+    assert.equal(borrowed.source, "all", "without her own table, fall back to the overall one");
+    assert.equal(borrowed.n, overall.s3.n, "the borrowed sample size must be the overall one");
+    assert.equal(sameDayMoveOdds({}, "だれか", "s3"), null, "with no table at all, say nothing");
+
+    // 表は「早いシフト → 遅いシフト」の向きに作ってある。昼を組むときには使わない。
+    assert.equal(
+      earlierShiftPlaces(insights, lastActual, insights.shifts[0]),
+      null,
+      "the earliest shift has nothing before it to read"
+    );
+    const places = earlierShiftPlaces(insights, lastActual, insights.shifts.at(-1));
+    assert.ok(places && places.size > 0, "the last recorded day must expose its earlier shift");
+    const lunch = insights.actualRoster[lastActual][insights.shifts[0]];
+    for (const [id, names] of Object.entries(lunch.stores)) {
+      for (const name of names) {
+        assert.equal(places.get(name), id, `${name} は昼に ${id} にいた`);
+      }
+    }
+
+    // 渡すと割り振りが変わること。変わらないなら繋がっていない。
+    // 定員の都合で吸収される日もあるので、候補日を全部見て1件でも動けばよい。
+    const night = insights.shifts.at(-1);
+    const candidates = Object.keys(schedule.schedule).sort().filter((key) =>
+      (schedule.schedule[key]?.[night] ?? []).some((entry) => places.has(entry.name))
+    );
+    assert.ok(candidates.length > 0, "no rota night overlaps the recorded lunch, so the wiring is untested");
+    const moved = candidates.filter((key) => {
+      const members = schedule.schedule[key][night].map((entry) => entry.name);
+      const common = {
+        insights,
+        members,
+        shift: night,
+        outlook: outlookFor(key, night),
+        pins: new Map(),
+        kitchenStaff: new Set(schedule.kitchenStaff)
+      };
+      const before = getShiftAssignment(common);
+      const after = getShiftAssignment({ ...common, movedFrom: places });
+      if (!before || !after) {
+        return false;
+      }
+      return members.some(
+        (name) => before.byMaid.get(name)?.storeId !== after.byMaid.get(name)?.storeId
+      );
+    });
+    assert.ok(
+      moved.length > 0,
+      `supplying the lunch record changed nothing on any of ${candidates.length} nights, so it is not being read`
+    );
+
+    // 説明文。移り先だけ出して「なぜ移るのか」を書かないと、疑問が残る。
+    const note = sameDayMoveNote(insights, withOwn, "s3", "s1");
+    assert.ok(note.includes("昼は"), "the note must say where she was at lunch");
+    assert.ok(note.includes("残るのは"), "the note must say how often she stays put");
+    assert.ok(
+      note.includes("開いているかどうかとは別に"),
+      "the note must answer why she moves even when her own shop opens"
+    );
+    assert.equal(
+      sameDayMoveNote(insights, withOwn, "s3", "いない店"),
+      null,
+      "a shop she never moved to has no figure to quote"
+    );
+  }
 
   // 予定表に出ない見習いにゃんこ。1店あたりの人数に、開く店の数を掛けて丸める。
   for (const s of insights.shifts) {
