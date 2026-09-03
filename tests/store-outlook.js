@@ -322,10 +322,25 @@ assert.ok(
     `got ${towardS1}/${shareWinners.length} at s1`
 );
 
-const dayPool = schedule.schedule["2026-09-03"]["昼"].map((entry) => entry.name);
+// 見本の日は日付で決め打ちしない。実測が届くたび、その日は未来ではなくなる。
+// 実際に 2026-09-03 を「未来の日」として固定していて、その日の記録が入った
+// 瞬間に落ちた。記録の最終日より後から、割り振りが起きるだけの人数がいる日を選ぶ。
+const futureKey = Object.keys(schedule.schedule)
+  .filter((key) => key > lastActual && (schedule.schedule[key]["昼"]?.length ?? 0) >= 8)
+  .sort()[0];
+assert.ok(
+  futureKey,
+  `no day after ${lastActual} has a big enough 昼 line-up to test the assignment with`
+);
+const dayPool = schedule.schedule[futureKey]["昼"].map((entry) => entry.name);
 assert.ok(dayPool.length >= 8, "this fixture day should be busy enough to split across stores");
 
-const futureOutlook = outlookFor("2026-09-03", "昼");
+const futureOutlook = outlookFor(futureKey, "昼");
+assert.notEqual(
+  futureOutlook.basis,
+  "actual",
+  `${futureKey} must still be a guess, or it cannot stand in for a future day`
+);
 const assignment = getShiftAssignment({
   insights,
   members: dayPool,
@@ -376,7 +391,10 @@ for (const name of dayPool) {
 }
 
 // 実績のある日は、実際に開いていた店にだけ割り振る。
-const recordedPool = schedule.schedule["2026-09-03"]["昼"].map((entry) => entry.name);
+// 顔ぶれも outlook も同じ日から取る。以前は人だけ 2026-09-03 から取っていて、
+// その日が記録の最終日と別になった時点で、別の日の顔ぶれを別の日の店に割り振っていた。
+const recordedPool = (schedule.schedule[lastActual]["昼"] ?? []).map((entry) => entry.name);
+assert.ok(recordedPool.length > 0, `${lastActual} 昼 must have a line-up to place`);
 const recordedOutlook = outlookFor(lastActual, "昼");
 const recordedPlacement = getShiftAssignment({
   insights,
@@ -2114,13 +2132,37 @@ assert.equal(
       `${id} is outside the same-day rule, so it must not move`
     );
   }
-  // 昼に2号店なら、夜の3号店はほぼ無い。表の鋭さが結果に出ていること。
-  if (atLunch.has("s2")) {
+  // 掛け合わせの向きは、表から読む。「昼に2号店なら夜の3号店は落ちる」と
+  // 決め打ちしていたが、それは状態が s2 のときの話で、2号店と3号店が両方
+  // 開いた日（状態 both）には成り立たない。実際、記録上はじめて4店が同じ
+  // シフトで開いた日が入った瞬間に落ちた。表がその店を基準より下に置いて
+  // いるなら下がり、上に置いているなら上がる、という形で確かめる。
+  const known = new Set(insights.actual[day][lunch]);
+  const state = known.has("s2") && known.has("s3")
+    ? "both"
+    : known.has("s2") ? "s2" : known.has("s3") ? "s3" : "none";
+  const table = insights.rotation.sameDay[state];
+  assert.ok(table, `the same-day table must cover the state "${state}"`);
+  let directionsChecked = 0;
+  for (const id of ["s2", "s3"]) {
+    const evidence = (table[id] ?? 0) + (table.both ?? 0);
+    const base = insights.baseOpenRate[night][id];
+    // 表と基準がほぼ同じなら動く先が決まらない。そこは向きを問わない。
+    if (Math.abs(evidence - base) < 0.02) {
+      continue;
+    }
+    const moved = rateOf(outlook, id) - rateOf(alone, id);
     assert.ok(
-      rateOf(outlook, "s3") < rateOf(alone, "s3"),
-      "with the second shop open at lunch, the third must fall for the evening"
+      evidence > base ? moved > 0 : moved < 0,
+      `${id}: the table puts it ${evidence > base ? "above" : "below"} its base rate for ` +
+        `state "${state}", so folding the ${lunch} record in must move it that way (moved ${moved})`
     );
+    directionsChecked += 1;
   }
+  assert.ok(
+    directionsChecked > 0,
+    `state "${state}" moves neither shop away from its base rate, so no direction was checked`
+  );
 
   // 向きを守る。昼を組むときには使わない（表はその向きに作られていない）。
   // 直接呼んで確かめる。日付をずらして確かめると、その日の記録が無いだけで
@@ -2144,10 +2186,10 @@ assert.equal(
     const clamped = Math.min(Math.max(p, 0.005), 0.995);
     return Math.log(clamped / (1 - clamped));
   };
-  const transitions = insights.rotation.sameDay[
-    ["s2", "s3"].filter((id) => atLunch.has(id)).join("+") || "none"
-  ];
-  assert.ok(transitions, "the lunch state must exist in the same-day table");
+  // 状態は上で決めたものを使う。ここで組み直すと、名前の付け方が本番とずれる。
+  // 実際に `["s2","s3"].filter(...).join("+")` で "s2+s3" を作っていて、
+  // 表のキーは "both" だった。両方開く日が一度も無かったので通っていただけ。
+  const transitions = table;
   for (const id of ["s2", "s3"]) {
     const evidence = (transitions[id] ?? 0) + (transitions.both ?? 0);
     const base = insights.baseOpenRate[night][id];
