@@ -641,6 +641,15 @@ python tools/load-archive.py --merge shifts-full.csv
 
 **この記録はもう取り直せません。** X のタイムラインは新人告知100件の固定セットしか返さず、お給仕投稿を含みません。Wayback Machine にも日々の投稿は残りません。`cdn.syndication.twimg.com/tweet-result` は ID が分かれば1件ずつ読めますが、その ID の一覧を作る手段がありません。**消さないでください。**
 
+**投稿の本文は入れていません。** お店の書いたものなので、複製せずに参照できるようにしています。`tweet_id` 列に 6,982件すべての ID が残っているので、本文が要るときはそこから取ってください。
+
+```powershell
+$id = "2095446387983008110"
+Invoke-WebRequest "https://cdn.syndication.twimg.com/tweet-result?id=$id&lang=ja&token=a" -UseBasicParsing
+```
+
+ログインは要りません。[`tools/add-shifts.py`](tools/add-shifts.py) が使っているのと同じ経路です。
+
 取り込むときに、本文から名前として拾われていたものを外しています（`あとから` / `巫女コスデー` / `でした` / `新人にゃんこ` / `りかにゃん`、計25行）。`あずにゃん` は残しました。原文が読点区切りの一覧で、そこに名前として並んでいるためです。
 
 ```
