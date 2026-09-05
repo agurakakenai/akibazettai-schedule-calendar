@@ -1,178 +1,165 @@
-"""README に書いた数字が、いま出荷している値と合っているかを見ます。
+"""Compare scoped README claims with shipped data; this is not a factual audit.
 
-    python tools/check-readme.py
-
-**今日、書いてある数字と実際が食い違うのを5回見つけました。** 原因はどれも同じで、
-書いた時点では正しく、その後データが増えたのに文章を読み直さなかったことです。
-
-    「集計期間に1件もお給仕記録が無い」   まひろさんは87件あった
-    「食い違うのは4名」                実際は5名
-    「roster 39名のうち7名」           40名のうち8名
-    「3店より多いシフトは0件」           2026-09-03 に1件できた
-    「1シフトあたり0.87人」             いまは0.79人
-
-**検算するときも間違えました。** 全787シフトで数えて「昼360件は古い」と読みかけ
-ましたが、360件は365日窓の値で正しいものでした。**その数字がどの窓で作られたかを
-先に確かめないと、検算のほうが嘘をつきます。**
-
-だからこの道具は、自分で数え直しません。**`data/store-insights.js` に出荷されて
-いる値だけ**を読み、README の対応する数字と比べます。生成側と読み手側が同じ値を
-見ていることを確かめる、それだけです。
-
-数字が動いたら落ちるので、**README を直すか、ここの期待値を直すか**を選ぶことに
-なります。どちらにしても、一度は目を通すことになります。
+py -B -X utf8 tools\\check-readme.py
+Historical sections are excluded explicitly. Missing, duplicate or malformed target
+sections fail closed; a correct number in an unrelated section cannot rescue a claim.
 """
+from decimal import Decimal
 import json
-import os
+from pathlib import Path
 import re
 import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_insights():
-    raw = open(os.path.join(ROOT, 'data', 'store-insights.js'),
-               encoding='utf-8').read()
-    return json.loads(raw[raw.index('{'):raw.rindex('}') + 1])
+    raw = (ROOT / "data" / "store-insights.js").read_text(encoding="utf-8")
+    return json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
 
 
 def load_readme():
-    """README を読む。ただし、この道具自身の説明にある古い数字は数えない。
-
-    `check-readme.py` の使い方を README に書いたら、その説明に例として並べた
-    古い数字（「roster は39名」「0.87人」）を、この道具が拾って落ちた。
-    **道具が、自分の説明文を読んで落ちた。**
-
-    「昔はこう書いてあった」を残せなくなると、なぜ直したのかが分からなくなる。
-    そこで、その表だけを外す。コードブロックや `引用` を丸ごと外す形も試したが、
-    **本文で使っている数字まで消える**ので、範囲を絞るほうが正しかった。
-    """
-    text = open(os.path.join(ROOT, 'README.md'), encoding='utf-8').read()
-    return re.sub(r'\| 書いてあったこと \| 実際 \|.*?(?=\n\n)', '', text,
-                  flags=re.S)
+    return (ROOT / "README.md").read_text(encoding="utf-8")
 
 
-def pct(value):
-    """0.675 -> '67.5' と '68'。README は両方の書き方をする。"""
-    return ['%g' % round(value * 100, 1), '%d' % round(value * 100)]
+def without_fences(text):
+    lines, fence = [], None
+    for line in text.splitlines(keepends=True):
+        match = re.match(r"[ \t]*(`{3,}|~{3,})", line)
+        masked = fence is not None or match is not None
+        if match:
+            marker = match[1]
+            if fence is None:
+                fence = marker
+            elif marker[0] == fence[0] and len(marker) >= len(fence):
+                fence = None
+        lines.append(re.sub(r"[^\r\n]", " ", line) if masked else line)
+    return "".join(lines)
 
 
-def build_claims(d):
-    """(見出し, README に出ているはずの文字列, どこから来た値か) の一覧。"""
-    out = []
+def headings(text):
+    return list(re.finditer(r"^(#{1,6})[ \t]+(.+?)[ \t\r]*$", without_fences(text), re.M))
 
-    def add(label, needles, source):
-        if isinstance(needles, str):
-            needles = [needles]
-        out.append((label, [n for n in needles if n], source, False))
 
-    counts = d.get('openCountPerShift') or {}
-    for shift, table in counts.items():
-        total = sum(table.values())
-        above = sum(v for k, v in table.items() if int(k) > 3)
-        # README が例に出しているのは昼だけ。夜の件数は本文に書いていない。
-        if shift != '昼':
+def section_end(matches, index, text):
+    level = len(matches[index][1])
+    return next((m.start() for m in matches[index + 1:] if len(m[1]) <= level), len(text))
+
+
+def section(text, title):
+    matches = headings(text)
+    indexes = [i for i, m in enumerate(matches) if m[2] == title]
+    if len(indexes) != 1:
+        raise ValueError(f"見出し「{title}」は1つ必要です（{len(indexes)}件）")
+    index = indexes[0]
+    return text[matches[index].end():section_end(matches, index, text)]
+
+
+def current_prose(text):
+    matches = headings(text)
+    spans = []
+    for index, match in enumerate(matches):
+        if match[2].startswith("過去測定") or match[2] in (
+                "README の数字が、出荷している値と合っているか",
+                "この節を書き換えたときのこと"):
+            spans.append((match.start(), section_end(matches, index, text)))
+    merged = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    for start, end in reversed(merged):
+        text = text[:start] + text[end:]
+    return without_fences(text)
+
+
+def build_claims(data):
+    """One claim extracts all matching semantic occurrences in its own section."""
+    claims = []
+
+    def add(title, label, pattern, expected):
+        claims.append((title, label, pattern, tuple(expected)))
+
+    counts = data["openCountPerShift"]["昼"]
+    add("開く店の数が表の上限に当たったら、そう断ります", "昼の件数と3店超",
+        r"昼(\d+)件の記録に(\d+)件",
+        (sum(counts.values()), sum(n for k, n in counts.items() if int(k) > 3)))
+    move = data["sameDayMaidMoveSummary"]
+    move_percent = round(100 * move["movedPersonPairs"] / move["personPairs"], 1) if move["personPairs"] else 0
+    add("昼の記録から、夜の行き先を読み直します", "通し勤務の人回・移動人回・移動率",
+        r"昼夜とも出た(\d+)人回のうち(\d+)人回（(\d+(?:\.\d+)?)%）が別の店",
+        (move["personPairs"], move["movedPersonPairs"], move_percent))
+    cov = data["rosterCoverage"]
+    add("未掲載者の集計単位", "未掲載の期間",
+        r"直近90日（(\d{4}-\d{2}-\d{2})〜(\d{4}-\d{2}-\d{2})）",
+        (cov["from"], cov["to"]))
+    number = r"(\d+(?:\.\d+)?)"
+    for name, key, unit in (("全店ユニーク", "overall", "date-shift"),
+                            ("店舗延べ", "storeSlots", "date-shift-store")):
+        row = cov[key]
+        pattern = r"\|\s*" + name + r"\s*\|\s*" + unit + r"\s*\|\s*"
+        pattern += r"\s*\|\s*".join([number] * 5) + r"%\s*\|"
+        add("未掲載者の集計単位", name, pattern, (
+            row["cells"], row["unlistedPersonAppearances"], row["unlistedPerCell"],
+            row["cellsWithUnlisted"], round(row["cellsWithUnlistedRate"] * 100, 1)))
+    for sid in ("s1", "s2", "s3", "s4"):
+        row = cov["byStore"][sid]
+        pattern = r"\|\s*" + sid[1:] + r"号店\s*\|\s*"
+        pattern += r"\s*\|\s*".join([number] * 5) + r"%\s*\|"
+        add("店舗ごとの未掲載率", sid + "未掲載", pattern, (
+            row["cells"], row["unlistedPersonAppearances"], row["unlistedPerCell"],
+            row["cellsWithUnlisted"], round(row["cellsWithUnlistedRate"] * 100, 1)))
+        row = data["traineeCoverage"]["byStore"][sid]
+        pattern = r"\|\s*" + sid[1:] + r"号店\s*\|\s*"
+        pattern += r"\s*\|\s*".join([number] * 5) + r"%\s*\|"
+        add("店舗枠の見習い率", sid + "見習い", pattern, (
+            row["cells"], row["traineePersonAppearances"], row["traineesPerCell"],
+            row["cellsWithTrainees"], round(row["cellsWithTraineesRate"] * 100, 1)))
+    add(None, "現在の在籍人数",
+        r"(?:在籍|roster\s*(?:は)?)\s*(\d+)\s*名", (data["schedulePending"]["rostered"],))
+    return claims
+
+
+def equal_value(actual, expected):
+    if isinstance(expected, str):
+        return actual == expected
+    return Decimal(actual) == Decimal(str(expected))
+
+
+def check(text, data):
+    errors = []
+    # Remove historical subtrees before resolving current section headings.
+    # Otherwise a historical heading can shadow or supply a current claim.
+    current = current_prose(text)
+    for title, label, pattern, expected in build_claims(data):
+        try:
+            scope = section(current, title) if title else current
+        except ValueError as exc:
+            errors.append(str(exc))
             continue
-        add('%sのシフト数' % shift, '%s%d件' % (shift, total),
-            'openCountPerShift')
-        add('3店より多い%sの件数' % shift, '記録に%d件' % above,
-            'openCountPerShift')
-
-    move = d.get('sameDayMaidMove') or {}
-    if move:
-        total = sum(v['n'] for v in move.values())
-        stayed = sum(v['n'] * v['to'].get(sid, 0) for sid, v in move.items())
-        add('昼夜とも出た人数', '%d人' % total, 'sameDayMaidMove')
-        add('昼と別の店にいた割合',
-            ['%s%%' % s for s in pct(1 - stayed / total)],
-            'sameDayMaidMove')
-
-    cov = d.get('rosterCoverage') or {}
-    if cov:
-        add('見習いの集計期間', '%s〜%s' % (cov['from'], cov['to']),
-            'rosterCoverage')
-        add('見習いの集計シフト数', '%dシフト' % cov['shiftCells'],
-            'rosterCoverage')
-        # 数字だけを探すと、店ごとの正しい値（0.78 / 0.85）まで「古い」と
-        # 誤検出する。**近所の数字を禁じる形は一度作って取り下げた。**
-        # 前後の言葉ごと照合すれば、同じ 0.79 でも役割が区別できる。
-        per = cov['unlistedPerShift']
-        # 同じ値が2か所に出るので、それぞれ別に要求する。片方だけ直しても
-        # もう片方で通ってしまう形を、実際に一度作った。
-        add('1シフトあたりの見習い', '1シフトあたり平均%g人' % per,
-            'rosterCoverage')
-        add('見習いぶんの断り', '見習いぶん%g人' % per, 'rosterCoverage')
-        for sid, label in (('s1', '1号店'), ('s2', '2号店'),
-                           ('s3', '3号店'), ('s4', '4号店')):
-            store = (cov.get('byStore') or {}).get(sid)
-            if store:
-                # README は 1.00 を「1.00人」とも「1人」とも書く。両方を許す。
-                value = store['unlistedPerShift']
-                add('%sの見習い' % label,
-                    ['%s%.2f人' % (label, value), '%s%g人' % (label, value)],
-                    'rosterCoverage.byStore')
-
-    roster = d.get('schedulePending') or {}
-    if roster.get('rostered'):
-        n = roster['rostered']
-        # 書き方が何通りかあるので、どれか1つでも出ていればよい。
-        # ただし**古い人数がどこかに残っていたら落とす**。候補を並べるだけだと、
-        # 「在籍40名」を「在籍39名」に書き換えても `roster 40名` のほうで
-        # 通ってしまった。実際にそれで一度すり抜けた。
-        add('在籍人数', ['在籍%d名' % n, 'roster %d名' % n, '%d名で' % n],
-            'schedulePending')
-        for wrong in (n - 1, n + 1):
-            out.append(('在籍人数（%d名は古い）' % wrong,
-                        ['在籍%d名' % wrong, 'roster %d名' % wrong],
-                        'schedulePending', True))
-
-    return out
+        scope = scope.replace("`", "").replace("**", "")
+        matches = list(re.finditer(pattern, scope))
+        if not matches:
+            errors.append(f"{label}: 対象の主張が見つかりません")
+        for match in matches:
+            if len(match.groups()) != len(expected) or not all(
+                    equal_value(a, e) for a, e in zip(match.groups(), expected)):
+                errors.append(f"{label}: {match.groups()} != {expected}")
+    return errors
 
 
 def main():
-    d = load_insights()
-    text = load_readme()
-    # 空白と全角のゆれを潰してから探す。README は「1号店 0.78人」と書くことがある。
-    flat = re.sub(r'[\s　]', '', text)
-
-    bad = []
-    print('出荷している値と README を突き合わせます')
-    print()
-    for label, needles, source, forbidden in build_claims(d):
-        if not needles:
-            continue
-        found = [n for n in needles if re.sub(r'[\s　]', '', n) in flat]
-        if forbidden:
-            # 出てはいけないもの（古い数字）。
-            if found:
-                bad.append((label, found, source))
-                print('  %-26s %-22s ★ 古い数字が残っています'
-                      % (label, found[0]))
-            continue
-        if found:
-            print('  %-26s %-22s 見つかりました' % (label, found[0]))
-        else:
-            bad.append((label, needles, source))
-            print('  %-26s %-22s ★ README に見当たりません'
-                  % (label, ' / '.join(needles)))
-
-    print()
-    if not bad:
-        print('すべて README に出ています。')
-        return 0
-
-    print('%d 件が見つかりませんでした。' % len(bad))
-    print()
-    print('どちらかです。')
-    print('  1. データが動いたのに README を直していない -> README を直す')
-    print('  2. その数字を README に書かなくなった       -> ここの一覧から外す')
-    print()
-    print('**数え直して確かめようとしないでください。** その数字がどの窓で')
-    print('作られたかを取り違えると、検算のほうが嘘をつきます。')
-    print('出典は %s です。' % ' / '.join(sorted({b[2] for b in bad})))
-    return 1
+    data = load_insights()
+    errors = check(load_readme(), data)
+    for error in errors:
+        print("不一致: " + error)
+    if errors:
+        print(f"{len(errors)}件の不一致。出荷値・対象節・集計単位を確認してください。")
+        return 1
+    print(f"対象{len(build_claims(data))}主張群は出荷値と一致しました（全文の事実検証ではありません）。")
+    return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

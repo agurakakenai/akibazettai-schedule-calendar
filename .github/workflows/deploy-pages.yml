@@ -4,7 +4,16 @@ on:
   push:
     branches:
       - main
+  pull_request:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Build/deploy, or verify anonymous collection from this runner
+        type: choice
+        options:
+          - deploy
+          - probe
+        default: deploy
 
 permissions:
   contents: read
@@ -16,10 +25,13 @@ concurrency:
 jobs:
   validate:
     name: Validate schedule data
+    if: inputs.mode != 'probe'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Validate schedule data
         run: |
@@ -27,13 +39,41 @@ jobs:
           node tests/validate-schedule.js
           node tests/date-defaults.js
           node tests/range-rendering.js
+          node tests/month-calendar.js
+          node tests/observed-shifts.js
           node tests/validate-insights.js
           node tests/store-outlook.js
           node tests/headless-render.js
+          python -m unittest discover -s tools/tests -p "test_*.py"
+          python tests/test-insights-tools.py
+          python tools/check-readme.py
+
+      - name: Stage only public frontend assets
+        run: python tools/pages.py stage --output _site --revision "$(git rev-parse HEAD)"
+
+      - name: Upload GitHub Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  probe:
+    name: Verify public HTTP collection
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'probe'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out probe code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify search and individual post metadata without saved observations
+        run: python tools/pages.py probe --report _probe-report.json
 
   deploy:
     name: Deploy static site
     needs: validate
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && inputs.mode != 'probe'
     permissions:
       contents: read
       pages: write
@@ -43,16 +83,8 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
-
-      - name: Upload GitHub Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: "."
 
       - name: Deploy GitHub Pages
         id: deployment

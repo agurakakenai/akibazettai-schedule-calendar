@@ -1,6 +1,6 @@
 /* 自動生成ファイルです。tools/build-insights.py で再生成してください。 */
 window.STORE_INSIGHTS = {
-  "generatedAt": "2026-09-04 00:15",
+  "generatedAt": "2026-09-06 04:37",
   "historyRange": {
     "from": "2025-07-26",
     "to": "2026-09-03"
@@ -10045,6 +10045,13 @@ window.STORE_INSIGHTS = {
       }
     }
   },
+  "sameDayMaidMoveSummary": {
+    "from": "2025-09-03",
+    "to": "2026-09-03",
+    "unit": "date-person",
+    "personPairs": 1129,
+    "movedPersonPairs": 793
+  },
   "schedulePending": {
     "rostered": 40,
     "pending": [
@@ -13875,52 +13882,263 @@ window.STORE_INSIGHTS = {
   "rosterCoverage": {
     "from": "2026-06-05",
     "to": "2026-09-03",
-    "shiftCells": 345,
-    "totalMaids": 1927,
-    "rostered": 1654,
-    "unlisted": 273,
-    "unlistedShare": 0.142,
-    "unlistedPerShift": 0.79,
-    "shiftsWithUnlisted": 0.675,
-    "distribution": {
-      "0": 112,
-      "1": 199,
-      "2": 29,
-      "3": 4,
-      "4": 1
+    "definition": "listed_on_proxy",
+    "overall": {
+      "unit": "date-shift",
+      "cells": 173,
+      "personAppearances": 1913,
+      "listedPersonAppearances": 1641,
+      "unlistedPersonAppearances": 272,
+      "unlistedShare": 0.142,
+      "unlistedPerCell": 1.572,
+      "cellsWithUnlisted": 150,
+      "cellsWithUnlistedRate": 0.867,
+      "distribution": {
+        "0": 23,
+        "1": 61,
+        "2": 63,
+        "3": 20,
+        "4": 5,
+        "5": 1
+      }
+    },
+    "storeSlots": {
+      "unit": "date-shift-store",
+      "cells": 345,
+      "personAppearances": 1927,
+      "listedPersonAppearances": 1654,
+      "unlistedPersonAppearances": 273,
+      "unlistedShare": 0.142,
+      "unlistedPerCell": 0.791,
+      "cellsWithUnlisted": 233,
+      "cellsWithUnlistedRate": 0.675,
+      "distribution": {
+        "0": 112,
+        "1": 199,
+        "2": 29,
+        "3": 4,
+        "4": 1
+      }
     },
     "byStore": {
       "s1": {
-        "shifts": 170,
-        "rostered": 877,
-        "unlisted": 132,
+        "unit": "date-shift-store",
+        "cells": 170,
+        "personAppearances": 1009,
+        "listedPersonAppearances": 877,
+        "unlistedPersonAppearances": 132,
         "unlistedShare": 0.131,
-        "unlistedPerShift": 0.78,
-        "shiftsWithoutUnlisted": 0.341
+        "unlistedPerCell": 0.776,
+        "cellsWithUnlisted": 112,
+        "cellsWithUnlistedRate": 0.659,
+        "distribution": {
+          "0": 58,
+          "1": 93,
+          "2": 18,
+          "3": 1
+        }
       },
       "s2": {
-        "shifts": 59,
-        "rostered": 299,
-        "unlisted": 59,
+        "unit": "date-shift-store",
+        "cells": 59,
+        "personAppearances": 358,
+        "listedPersonAppearances": 299,
+        "unlistedPersonAppearances": 59,
         "unlistedShare": 0.165,
-        "unlistedPerShift": 1.0,
-        "shiftsWithoutUnlisted": 0.22
+        "unlistedPerCell": 1.0,
+        "cellsWithUnlisted": 46,
+        "cellsWithUnlistedRate": 0.78,
+        "distribution": {
+          "0": 13,
+          "1": 37,
+          "2": 6,
+          "3": 2,
+          "4": 1
+        }
       },
       "s3": {
-        "shifts": 54,
-        "rostered": 265,
-        "unlisted": 46,
+        "unit": "date-shift-store",
+        "cells": 54,
+        "personAppearances": 311,
+        "listedPersonAppearances": 265,
+        "unlistedPersonAppearances": 46,
         "unlistedShare": 0.148,
-        "unlistedPerShift": 0.85,
-        "shiftsWithoutUnlisted": 0.259
+        "unlistedPerCell": 0.852,
+        "cellsWithUnlisted": 40,
+        "cellsWithUnlistedRate": 0.741,
+        "distribution": {
+          "0": 14,
+          "1": 35,
+          "2": 4,
+          "3": 1
+        }
       },
       "s4": {
-        "shifts": 62,
-        "rostered": 213,
-        "unlisted": 36,
+        "unit": "date-shift-store",
+        "cells": 62,
+        "personAppearances": 249,
+        "listedPersonAppearances": 213,
+        "unlistedPersonAppearances": 36,
         "unlistedShare": 0.145,
-        "unlistedPerShift": 0.58,
-        "shiftsWithoutUnlisted": 0.435
+        "unlistedPerCell": 0.581,
+        "cellsWithUnlisted": 35,
+        "cellsWithUnlistedRate": 0.565,
+        "distribution": {
+          "0": 27,
+          "1": 34,
+          "2": 1
+        }
+      }
+    }
+  },
+  "traineeCoverage": {
+    "from": "2026-06-05",
+    "to": "2026-09-03",
+    "definition": "is_trainee",
+    "unit": "date-shift-store",
+    "byStore": {
+      "s1": {
+        "cells": 170,
+        "traineePersonAppearances": 75,
+        "cellsWithTrainees": 68,
+        "cellsWithTraineesRate": 0.4,
+        "traineesPerCell": 0.441
+      },
+      "s2": {
+        "cells": 59,
+        "traineePersonAppearances": 21,
+        "cellsWithTrainees": 20,
+        "cellsWithTraineesRate": 0.339,
+        "traineesPerCell": 0.356
+      },
+      "s3": {
+        "cells": 54,
+        "traineePersonAppearances": 14,
+        "cellsWithTrainees": 14,
+        "cellsWithTraineesRate": 0.259,
+        "traineesPerCell": 0.259
+      },
+      "s4": {
+        "cells": 62,
+        "traineePersonAppearances": 14,
+        "cellsWithTrainees": 14,
+        "cellsWithTraineesRate": 0.226,
+        "traineesPerCell": 0.226
+      }
+    }
+  },
+  "traineePeriods": {
+    "definition": "is_trainee",
+    "asOf": "2026-09-03",
+    "from": "2026-05-06",
+    "byName": {
+      "あずち": {
+        "from": "2026-08-24",
+        "to": "2026-11-21"
+      },
+      "あむら": {
+        "from": "2026-05-06",
+        "to": "2026-08-02"
+      },
+      "あや": {
+        "from": "2026-05-07",
+        "to": "2026-08-04"
+      },
+      "あるか": {
+        "from": "2026-09-03",
+        "to": "2026-12-01"
+      },
+      "きなこ": {
+        "from": "2026-05-06",
+        "to": "2026-07-29"
+      },
+      "せつな": {
+        "from": "2026-05-06",
+        "to": "2026-06-13"
+      },
+      "たふゆ": {
+        "from": "2026-05-06",
+        "to": "2026-06-06"
+      },
+      "ちもしー": {
+        "from": "2026-08-05",
+        "to": "2026-11-02"
+      },
+      "ときり": {
+        "from": "2026-05-18",
+        "to": "2026-08-15"
+      },
+      "にっか": {
+        "from": "2026-05-06",
+        "to": "2026-06-29"
+      },
+      "ねるる": {
+        "from": "2026-08-04",
+        "to": "2026-11-01"
+      },
+      "のあ": {
+        "from": "2026-07-09",
+        "to": "2026-10-06"
+      },
+      "ひじり": {
+        "from": "2026-08-03",
+        "to": "2026-10-31"
+      },
+      "ひなた": {
+        "from": "2026-05-06",
+        "to": "2026-06-15"
+      },
+      "ぺろ": {
+        "from": "2026-05-06",
+        "to": "2026-05-06"
+      },
+      "みおり": {
+        "from": "2026-08-24",
+        "to": "2026-11-21"
+      },
+      "みずれ": {
+        "from": "2026-05-27",
+        "to": "2026-08-24"
+      },
+      "みと": {
+        "from": "2026-05-08",
+        "to": "2026-08-05"
+      },
+      "みひん": {
+        "from": "2026-06-22",
+        "to": "2026-09-19"
+      },
+      "みらい": {
+        "from": "2026-07-08",
+        "to": "2026-10-05"
+      },
+      "みりた": {
+        "from": "2026-05-06",
+        "to": "2026-06-16"
+      },
+      "ゆむね": {
+        "from": "2026-06-03",
+        "to": "2026-08-31"
+      },
+      "らて": {
+        "from": "2026-05-06",
+        "to": "2026-05-27"
+      },
+      "らん": {
+        "from": "2026-08-20",
+        "to": "2026-11-17"
+      },
+      "れもな": {
+        "from": "2026-05-26",
+        "to": "2026-08-23"
+      },
+      "ろぜった": {
+        "from": "2026-07-16",
+        "to": "2026-10-13"
+      },
+      "わたげ": {
+        "from": "2026-06-24",
+        "to": "2026-09-21"
       }
     }
   }

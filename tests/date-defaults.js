@@ -11,36 +11,36 @@ const cases = [
       year: 2026,
       month: 9,
       dateFrom: "2026-09-01",
-      dateTo: "2026-09-15"
-    }
-  },
-  {
-    name: "15th ends on the 15th",
-    now: "2026-09-15T14:59:59.999Z",
-    expected: {
-      year: 2026,
-      month: 9,
-      dateFrom: "2026-09-15",
-      dateTo: "2026-09-15"
-    }
-  },
-  {
-    name: "16th ends on the last day",
-    now: "2026-09-15T15:00:00.000Z",
-    expected: {
-      year: 2026,
-      month: 9,
-      dateFrom: "2026-09-16",
       dateTo: "2026-09-30"
     }
   },
   {
-    name: "month end remains a one-day range",
+    name: "15th still shows the entire month",
+    now: "2026-09-15T14:59:59.999Z",
+    expected: {
+      year: 2026,
+      month: 9,
+      dateFrom: "2026-09-01",
+      dateTo: "2026-09-30"
+    }
+  },
+  {
+    name: "16th still starts on the 1st",
+    now: "2026-09-15T15:00:00.000Z",
+    expected: {
+      year: 2026,
+      month: 9,
+      dateFrom: "2026-09-01",
+      dateTo: "2026-09-30"
+    }
+  },
+  {
+    name: "month end remains a full-month range",
     now: "2026-09-30T14:59:59.999Z",
     expected: {
       year: 2026,
       month: 9,
-      dateFrom: "2026-09-30",
+      dateFrom: "2026-09-01",
       dateTo: "2026-09-30"
     }
   },
@@ -50,7 +50,7 @@ const cases = [
     expected: {
       year: 2026,
       month: 1,
-      dateFrom: "2026-01-20",
+      dateFrom: "2026-01-01",
       dateTo: "2026-01-31"
     }
   },
@@ -60,7 +60,7 @@ const cases = [
     expected: {
       year: 2027,
       month: 2,
-      dateFrom: "2027-02-20",
+      dateFrom: "2027-02-01",
       dateTo: "2027-02-28"
     }
   },
@@ -70,7 +70,7 @@ const cases = [
     expected: {
       year: 2028,
       month: 2,
-      dateFrom: "2028-02-20",
+      dateFrom: "2028-02-01",
       dateTo: "2028-02-29"
     }
   }

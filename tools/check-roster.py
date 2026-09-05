@@ -13,8 +13,9 @@ README には「集計期間に記録が無いので追加できない」と書�
 **覚えておく形にすると、事実が動いたときに嘘になります。**
 確かめる形にすれば、走らせるたびに今の答えが出ます。
 
-テストには入れていません。外に取りにいくものは、向こうが落ちているときに
-こちらが落ちるべきではないためです。名簿をいじるときと、時々流してください。
+ネットワーク取得はテストには入れていません。向こうが落ちているときに
+こちらが落ちるべきではないためです。解析は保存した入力で検査します。
+名簿をいじるときと、時々流してください。
 
 公式サイトの作り:
 
@@ -30,6 +31,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from html.parser import HTMLParser
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -45,19 +47,50 @@ def fetch(url=URL):
         return r.read().decode('utf-8', 'replace')
 
 
+class RosterParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out = []
+        self.seen = set()
+        self.items = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'li':
+            classes = (dict(attrs).get('class') or '').split()
+            store = next((m.group(1) for value in classes
+                          if (m := re.fullmatch(r'shopNum(\d+)', value))), None)
+            self.items.append({'store': 's%d' % int(store) if store else None,
+                               'text': None, 'name': None})
+        elif tag == 'p' and self.items:
+            item = self.items[-1]
+            if item['name'] is None:
+                item['text'] = []
+
+    def handle_data(self, data):
+        if self.items and self.items[-1]['text'] is not None:
+            self.items[-1]['text'].append(data)
+
+    def handle_endtag(self, tag):
+        if not self.items:
+            return
+        item = self.items[-1]
+        if tag == 'p' and item['text'] is not None:
+            item['name'] = ''.join(item['text']).strip() or None
+            item['text'] = None
+        elif tag == 'li':
+            self.items.pop()
+            name, store = item['name'], item['store']
+            if name and store and name not in self.seen:
+                self.seen.add(name)
+                self.out.append((name, store))
+
+
 def parse_site(html):
     """掲載順のまま [(名前, 店), ...] を返す。同じ人が複数タブに出ても最初だけ。"""
-    out, seen = [], set()
-    for m in re.finditer(r'<li class="shopNum(\d+)">(.*?)</li>', html, re.S):
-        sid = 's%d' % int(m.group(1))
-        nm = re.search(r'<p>\s*([^<>\n]+?)\s*</p>', m.group(2))
-        if not nm:
-            continue
-        name = nm.group(1).strip()
-        if name and name not in seen:
-            seen.add(name)
-            out.append((name, sid))
-    return out
+    parser = RosterParser()
+    parser.feed(html)
+    parser.close()
+    return parser.out
 
 
 def read_schedule():

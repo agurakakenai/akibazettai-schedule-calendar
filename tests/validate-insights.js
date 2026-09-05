@@ -584,89 +584,72 @@ const linkableCount = Object.values(unlisted).filter(
   (info) => info.status === "active" && info.hasPublicAccount && info.x
 ).length;
 
-// --- カレンダーに出ない人がどれだけいるか -------------------------------
+// --- Explicit populations and counting units --------------------------
 const coverage = insights.rosterCoverage;
-assert.ok(
-  coverage && typeof coverage === "object",
-  "rosterCoverage is required so the UI can warn that trainees are invisible in advance"
-);
-for (const key of ["unlistedShare", "shiftsWithUnlisted"]) {
-  assertRate(coverage[key], `rosterCoverage.${key}`);
+assert.equal(coverage?.definition, "listed_on_proxy");
+for (const key of ["shiftCells", "unlistedPerShift", "totalMaids", "shiftsWithUnlisted"]) {
+  assert.equal(Object.hasOwn(coverage, key), false, `ambiguous key ${key} must not return`);
 }
-assert.ok(
-  typeof coverage.unlistedPerShift === "number" && coverage.unlistedPerShift >= 0,
-  "rosterCoverage.unlistedPerShift must be a non-negative number"
-);
-for (const key of ["shiftCells", "totalMaids", "rostered", "unlisted"]) {
-  assert.ok(
-    Number.isInteger(coverage[key]) && coverage[key] >= 0,
-    `rosterCoverage.${key} must be a non-negative integer`
-  );
-}
-assert.equal(
-  coverage.rostered + coverage.unlisted,
-  coverage.totalMaids,
-  "rosterCoverage.rostered + unlisted must account for every maid seen"
-);
-const distributionTotal = Object.entries(coverage.distribution).reduce(
-  (sum, [count, cells]) => {
-    assert.match(count, /^\d+$/, `rosterCoverage.distribution has a non-numeric key "${count}"`);
-    assert.ok(
-      Number.isInteger(cells) && cells >= 0,
-      `rosterCoverage.distribution.${count} must be a non-negative integer`
-    );
-    return sum + cells;
-  },
-  0
-);
-assert.equal(
-  distributionTotal,
-  coverage.shiftCells,
-  "rosterCoverage.distribution must cover exactly shiftCells shifts"
-);
-const shiftsWithout = coverage.distribution["0"] ?? 0;
-assert.ok(
-  Math.abs((1 - shiftsWithout / coverage.shiftCells) - coverage.shiftsWithUnlisted) <= 0.01,
-  "rosterCoverage.shiftsWithUnlisted must agree with the distribution"
-);
 for (const key of ["from", "to"]) {
   assert.match(coverage[key], /^\d{4}-\d{2}-\d{2}$/, `rosterCoverage.${key} must be a date`);
 }
-
-// 「カレンダーの顔ぶれ＋何人か」を店ごとに言うための実測。
-assert.ok(coverage.byStore, "rosterCoverage.byStore is required");
-for (const id of storeIdList) {
-  const store = coverage.byStore[id];
-  assert.ok(store, `rosterCoverage.byStore.${id} is required`);
-  for (const key of ["shifts", "rostered", "unlisted"]) {
-    assert.ok(
-      Number.isInteger(store[key]) && store[key] >= 0,
-      `rosterCoverage.byStore.${id}.${key} must be a non-negative integer`
-    );
+function assertCoverage(group, unit, label) {
+  assert.equal(group.unit, unit, label);
+  for (const key of ["cells", "personAppearances", "listedPersonAppearances",
+    "unlistedPersonAppearances", "cellsWithUnlisted"]) {
+    assert.ok(Number.isInteger(group[key]) && group[key] >= 0, `${label}.${key}`);
   }
-  assertRate(store.unlistedShare, `rosterCoverage.byStore.${id}.unlistedShare`);
-  assertRate(store.shiftsWithoutUnlisted, `rosterCoverage.byStore.${id}.shiftsWithoutUnlisted`);
-  assert.ok(
-    typeof store.unlistedPerShift === "number" && store.unlistedPerShift >= 0,
-    `rosterCoverage.byStore.${id}.unlistedPerShift must be a non-negative number`
-  );
-  if (store.shifts > 0) {
-    assert.ok(
-      Math.abs(store.unlisted / store.shifts - store.unlistedPerShift) <= 0.01,
-      `rosterCoverage.byStore.${id}.unlistedPerShift must match unlisted / shifts`
-    );
+  assert.equal(group.personAppearances, group.listedPersonAppearances + group.unlistedPersonAppearances);
+  assertRate(group.unlistedShare, `${label}.unlistedShare`);
+  assertRate(group.cellsWithUnlistedRate, `${label}.cellsWithUnlistedRate`);
+  let cells = 0, people = 0;
+  for (const [count, n] of Object.entries(group.distribution)) {
+    assert.match(count, /^\d+$/);
+    assert.ok(Number.isInteger(n) && n >= 0);
+    cells += n;
+    people += Number(count) * n;
   }
+  assert.equal(cells, group.cells, label);
+  assert.equal(people, group.unlistedPersonAppearances, label);
+  assert.equal(group.cellsWithUnlisted, cells - (group.distribution["0"] ?? 0));
+  const ratio = (n, d) => d ? n / d : 0;
+  assert.ok(Math.abs(group.unlistedPerCell - ratio(people, cells)) <= 0.00051, label);
+  assert.ok(Math.abs(group.unlistedShare - ratio(people, group.personAppearances)) <= 0.00051, label);
+  assert.ok(Math.abs(group.cellsWithUnlistedRate - ratio(group.cellsWithUnlisted, cells)) <= 0.00051, label);
 }
-assert.equal(
-  storeIdList.reduce((sum, id) => sum + coverage.byStore[id].shifts, 0),
-  coverage.shiftCells,
-  "the per-store shift counts must add up to shiftCells"
-);
-assert.equal(
-  storeIdList.reduce((sum, id) => sum + coverage.byStore[id].unlisted, 0),
-  coverage.unlisted,
-  "the per-store unlisted counts must add up to the total"
-);
+assertCoverage(coverage.overall, "date-shift", "rosterCoverage.overall");
+assertCoverage(coverage.storeSlots, "date-shift-store", "rosterCoverage.storeSlots");
+for (const id of storeIdList) assertCoverage(coverage.byStore[id], "date-shift-store", id);
+for (const key of ["cells", "personAppearances", "listedPersonAppearances",
+  "unlistedPersonAppearances", "cellsWithUnlisted"]) {
+  assert.equal(storeIdList.reduce((sum, id) => sum + coverage.byStore[id][key], 0),
+    coverage.storeSlots[key], `store-slot totals: ${key}`);
+  assert.ok(coverage.overall[key] <= coverage.storeSlots[key], `unique count: ${key}`);
+}
+const traineeCoverage = insights.traineeCoverage;
+assert.equal(traineeCoverage?.definition, "is_trainee");
+assert.equal(traineeCoverage.unit, "date-shift-store");
+assert.equal(traineeCoverage.from, coverage.from);
+assert.equal(traineeCoverage.to, coverage.to);
+for (const id of storeIdList) {
+  const group = traineeCoverage.byStore[id];
+  const counts = Object.entries(insights.actualRoster)
+    .filter(([date]) => date >= traineeCoverage.from && date <= traineeCoverage.to)
+    .flatMap(([, day]) => Object.values(day))
+    .filter(entry => entry.stores[id])
+    .map(entry => {
+      assert.ok(Array.isArray(entry.trainees), "coverage dates must have trainee judgments");
+      return entry.stores[id].filter(name => entry.trainees.includes(name)).length;
+    });
+  assert.equal(group.cells, counts.length);
+  assert.equal(group.cells, coverage.byStore[id].cells);
+  assert.equal(group.traineePersonAppearances, counts.reduce((a, b) => a + b, 0));
+  assert.equal(group.cellsWithTrainees, counts.filter(n => n > 0).length);
+  assertRate(group.cellsWithTraineesRate, `${id}.cellsWithTraineesRate`);
+  const ratio = n => counts.length ? n / counts.length : 0;
+  assert.ok(Math.abs(group.cellsWithTraineesRate - ratio(group.cellsWithTrainees)) <= 0.00051);
+  assert.ok(Math.abs(group.traineesPerCell - ratio(group.traineePersonAppearances)) <= 0.00051);
+}
 
 // 確率チップの較正。端は当てにならないので、UI が「この帯は過剰」と断れるようにする。
 {
@@ -1078,6 +1061,18 @@ assert.equal(
 {
   const all = insights.sameDayMaidMove ?? {};
   assert.ok(Object.keys(all).length >= 3, "the same-day move table must cover the shops");
+  const summary = insights.sameDayMaidMoveSummary;
+  assert.equal(summary?.unit, "date-person");
+  assert.equal(summary.from, insights.sampleWindow.from);
+  assert.equal(summary.to, insights.sampleWindow.to);
+  assert.ok(Number.isInteger(summary.personPairs) && summary.personPairs >= 0);
+  assert.ok(Number.isInteger(summary.movedPersonPairs) && summary.movedPersonPairs >= 0);
+  assert.ok(summary.movedPersonPairs <= summary.personPairs);
+  assert.equal(summary.personPairs, Object.values(all).reduce((n, row) => n + row.n, 0));
+  const approximateStayed = Object.entries(all)
+    .reduce((n, [from, row]) => n + row.n * (row.to[from] ?? 0), 0);
+  assert.ok(Math.abs(summary.personPairs - summary.movedPersonPairs - approximateStayed)
+    <= summary.personPairs * 0.0005 + 1e-9, "exact counts must agree within transition rounding error");
   for (const [from, table] of Object.entries(all)) {
     assert.ok(table.n > 0, `${from} has no measurements behind it`);
     const total = Object.values(table.to).reduce((a, b) => a + b, 0);
@@ -1114,7 +1109,7 @@ console.log(
     `${actualEntries.length} recorded dates through ${Object.keys(insights.actual).sort().at(-1)}, ` +
     `${withTendency}/${tendencyNames.length} rostered maids with a store tendency, ` +
     `${activeCount}/${Object.keys(unlisted).length} unlisted members still active (${linkableCount} linkable), ` +
-    `${toPercent(coverage.unlistedShare)} of shift slots invisible in advance.`
+    `${toPercent(coverage.overall.unlistedShare)} unlisted person-shifts in the historical proxy.`
 );
 
 function toPercent(rate) {

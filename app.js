@@ -22,8 +22,8 @@
     return {
       year,
       month,
-      dateFrom: `${datePrefix}-${pad(day)}`,
-      dateTo: `${datePrefix}-${pad(day <= 15 ? 15 : daysInMonth[month - 1])}`
+      dateFrom: `${datePrefix}-01`,
+      dateTo: `${datePrefix}-${pad(daysInMonth[month - 1])}`
     };
   }
 
@@ -48,6 +48,135 @@
 
   function getDateGridColumn(date) {
     return date.getDay() + 1;
+  }
+
+  function tokyoToday(now = new Date()) {
+    return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo" }).format(now);
+  }
+
+  function monthCells(year, monthIndex) {
+    const first = new Date(year, monthIndex, 1);
+    const count = new Date(year, monthIndex + 1, 0).getDate();
+    const length = Math.ceil((first.getDay() + count) / 7) * 7;
+    return Array.from({ length }, (_, index) => {
+      const day = index - first.getDay() + 1;
+      return day >= 1 && day <= count ? new Date(year, monthIndex, day) : null;
+    });
+  }
+
+  function displayAliases(insights) {
+    return new Map(
+      Object.entries(insights?.maidTendency ?? {})
+        .filter(([, entry]) => entry?.alias)
+        .map(([name, entry]) => [entry.alias, name])
+    );
+  }
+
+  function dayEvents(data, insights, key) {
+    const aliases = displayAliases(insights);
+    const events = new Map();
+    for (const shift of SHIFT_NAMES) {
+      for (const entry of data.schedule?.[key]?.[shift] ?? []) {
+        if (!entry.featured) continue;
+        const name = aliases.get(entry.name) ?? entry.name;
+        if (!events.has(name)) events.set(name, { name, labels: [], shifts: [] });
+        const event = events.get(name);
+        if (entry.eventLabel && !event.labels.includes(entry.eventLabel)) {
+          event.labels.push(entry.eventLabel);
+        }
+        if (!event.shifts.includes(shift)) event.shifts.push(shift);
+      }
+    }
+    return [...events.values()];
+  }
+
+  const DEFAULT_EVENT_IMAGE = {
+    src: "assets/events/flower.svg",
+    alt: "イベントを飾るオリジナルの花の仮イラスト"
+  };
+
+  function eventImageFor(data, key, name) {
+    return data.eventImages?.events?.[key]?.[name]
+      ?? data.eventImages?.maids?.[name]
+      ?? data.eventImages?.fallback
+      ?? DEFAULT_EVENT_IMAGE;
+  }
+
+  const EMPTY_OBSERVATIONS = {
+    schemaVersion: 1, complete: false, checkedAt: null, lastSuccessAt: null,
+    posts: [], pending: [], lastRun: { status: "never" }
+  };
+
+  function validateObservations(value) {
+    if (!value || value.schemaVersion !== 1 || value.complete !== false ||
+        !Array.isArray(value.posts) || !Array.isArray(value.pending) ||
+        !["never", "ok", "partial", "unavailable", "no-new", "no-results"].includes(value.lastRun?.status)) {
+      throw new Error("自動収集データの形式が対応していません");
+    }
+    const ids = new Set();
+    const isoTime = (time) => typeof time === "string" &&
+      /(?:Z|[+-]\d{2}:\d{2})$/.test(time) && Number.isFinite(Date.parse(time));
+    for (const time of [value.checkedAt, value.lastSuccessAt]) {
+      if (time !== null && !isoTime(time)) throw new Error("自動収集時刻が不正です");
+    }
+    for (const post of value.posts) {
+      if (!post || typeof post.id !== "string" || !/^\d{10,25}$/.test(post.id) ||
+          ids.has(post.id) || post.url !== `https://x.com/akibazettai/status/${post.id}` ||
+          post.authorId !== "822429861218131969" || post.authorScreenName !== "akibazettai" ||
+          !isoTime(post.createdAt) || !isoTime(post.observedAt) ||
+          !/^\d{4}-\d{2}-\d{2}$/.test(post.date) ||
+          !Number.isFinite(Date.parse(`${post.date}T00:00:00Z`)) ||
+          new Date(`${post.date}T00:00:00Z`).toISOString().slice(0, 10) !== post.date ||
+          !["昼", "夜"].includes(post.shift) || !["s1", "s2", "s3", "s4"].includes(post.storeId) ||
+          !Array.isArray(post.names) || post.names.length === 0 ||
+          post.names.some((name) => typeof name !== "string" || !name.trim())) {
+        throw new Error("自動収集した投稿の検証情報が不正です");
+      }
+      ids.add(post.id);
+    }
+    return value;
+  }
+
+  function observedShift(observations, insights, key, shift) {
+    const result = { posts: [], byStore: new Map(), byMaid: new Map() };
+    // A curated person roster takes precedence; observations are not a second
+    // training source and never mutate actual/actualRoster/rotation.
+    if (insights?.actualRoster?.[key]?.[shift]) return result;
+    const aliases = displayAliases(insights);
+    for (const post of observations?.posts ?? []) {
+      if (post.date !== key || post.shift !== shift) continue;
+      result.posts.push(post);
+      if (!result.byStore.has(post.storeId)) result.byStore.set(post.storeId, new Map());
+      const store = result.byStore.get(post.storeId);
+      for (const rawName of post.names) {
+        const name = aliases.get(rawName) ?? rawName;
+        if (!store.has(name)) store.set(name, []);
+        if (!store.get(name).some((source) => source.id === post.id)) store.get(name).push(post);
+        if (!result.byMaid.has(name)) result.byMaid.set(name, {
+          storeIds: [], sources: [], trainee: observedTrainee(insights, name, key)
+        });
+        const person = result.byMaid.get(name);
+        if (!person.storeIds.includes(post.storeId)) person.storeIds.push(post.storeId);
+        if (!person.sources.some((source) => source.id === post.id)) person.sources.push(post);
+      }
+    }
+    return result;
+  }
+
+  function observedTrainee(insights, name, key) {
+    const period = insights?.traineePeriods?.byName?.[name];
+    if (!period) return null;
+    return key >= period.from && key <= period.to;
+  }
+
+  function observationEntries(planned, observed, roster) {
+    const entries = new Map(planned.map((entry) => [entry.name, { ...entry }]));
+    for (const name of observed.byMaid.keys()) {
+      entries.set(name, { ...(entries.get(name) ?? {}), name, observed: true });
+    }
+    const rank = new Map(roster.map((name, index) => [name, index]));
+    return [...entries.values()].sort((a, b) =>
+      (rank.get(a.name) ?? Infinity) - (rank.get(b.name) ?? Infinity));
   }
 
   const SHIFT_NAMES = ["昼", "夜"];
@@ -220,11 +349,8 @@
   // ためで、店舗数が決まってから掛ける。
   //
   // 店ごとの内訳（`traineeOutlook[shift].byStore`）も持っているが、店ごとには
-  // 配らない。**どの店も1シフト1人に届かない**ので、いちばん多い店を選んでも
-  // 「たぶんいない」ほうが確からしい。差が本物であることと、どの店か言えることは
-  // 別の話で、置いた時点で読み手はそこにいると読む。だから店の見出しの下ではなく、
-  // 見習いの見出しの下に置く。数字は `traineeGuessNote` が「店を選べない理由」
-  // として使うだけで、店名は出さない。
+  // 配らない。平均人数は存在確率ではなく、店を断定する根拠にはならない。
+  // 歴史的な比較は将来の事前予定表での評価ではないため、独立した見出しに置く。
   //
   // 以前ここに「1号店0.35 / 2号店0.35 / 3号店0.32と横並びなので選ぶ根拠がない」と
   // 書いていたが、測り直すと横並びではなかった（1号店がいちばん多く、4号店がいちばん
@@ -267,30 +393,28 @@
       `${storeShort(insights, storeId)}の${shift}はふだん${profile.mode}人態勢` +
         `（${spread}が中心、${toPercent(profile.modeShare ?? 0)}が${profile.mode}人。` +
         `実績${profile.shifts}シフト）`,
-      traineeNote(insights, storeId)
+      unlistedNote(insights, storeId)
     ]
       .filter(Boolean)
       .join("。");
   }
 
-  // 見習いにゃんこは予定表に出ないので、カレンダーの人数より実際は多い。
-  // 平均を小数で見せても伝わらないので、「何割の枠にいたか」で言う。
-  // 実測の分布は 0人29% / 1人58% / 2人11% で、ほぼ0か1。
-  function traineeNote(insights, storeId) {
+  // Coverage measures unlisted members, not the separate trainee classification.
+  function unlistedNote(insights, storeId) {
     const coverage = insights?.rosterCoverage;
     const store = coverage?.byStore?.[storeId];
-    if (!store || typeof store.shiftsWithoutUnlisted !== "number") {
+    if (!store || typeof store.cellsWithUnlistedRate !== "number") {
       return null;
     }
-    const withAny = 1 - store.shiftsWithoutUnlisted;
+    const withAny = store.cellsWithUnlistedRate;
     if (withAny <= 0) {
       return null;
     }
     const months = monthsBetween(coverage.from, coverage.to);
     const period = months ? `直近${months}か月` : "この集計期間";
     return (
-      `予定表に出ない見習いにゃんこがいます。${period}では、この店の` +
-      `${toPercent(withAny)}の枠に1人以上いました（多くはちょうど1人）`
+      `予定表の掲載対象外の方（見習いとは限りません）の集計です。${period}では、この店の` +
+      `${toPercent(withAny)}の店舗枠に1人以上いました。未提出の人数とは別です`
     );
   }
 
@@ -759,13 +883,9 @@
   // 同じ日の中の結びつきで、昼に2号店なら夜に3号店へ移ることはほぼ無い
   // （rotation.sameDay.s2.s3 は 0 件）という鋭い規則を持っている。
   //
-  // これまでは前者が取れた時点で後者を捨てていた。記録のある夜170件のうち、
-  // 両方が取れるのが170件すべてで、そこで毎回、直前を捨てていたことになる。
-  // 掛け合わせると本番と同じ選び方で 40.6% -> 52.4%（37勝17敗、p=0.009）。
-  //
-  // 掛けるのは対数オッズ。素の営業率で割って「その手がかりがどれだけ動かしたか」
-  // だけを取り出す。足し算や上書きも測ったが、上書きは47.6%、平均は51.2%で、
-  // 掛け合わせがいちばん良い。
+  // Combine log odds relative to the base rate. Historical comparisons and their
+  // time-separated counterparts are documented in README; fixed shipped tables
+  // must not be scored as if they were trained before each evaluation date.
   function applySameDayEvidence(insights, outlook, key, shift) {
     if (outlook?.basis !== "forecast") {
       return outlook;
@@ -951,9 +1071,8 @@
 
   // 同じ日の早いシフトの記録から、遅いシフトの行き先を読み直す。
   //
-  // 通しで働いた1238人のうち68.7%が昼と別の店にいる。昼の店が夜も開いていても
-  // 56.4%が移るので、「開いているから残る」ではない。移り先には向きがあり、
-  // 夜はどの店からも1号店に吸われる（昼s4→夜s1 が84%）。
+  // The shipped move table uses a 365-day window. It is multiplied without
+  // smoothing, with a tendency fallback when all products are zero.
   //
   // 人ごとの表があればそれを使う。無ければ全体の表。人ごとは n が小さい組み
   // 合わせがあるので（あむさんの昼s4は6回）、n も返して読み手側で判断できる形。
@@ -1348,20 +1467,14 @@
     return parts.join("。") + "。";
   }
 
-  // どの店を開けるかは当日決まる。1号店は93%が通しで日単位に動くが、2〜4号店は
-  // 片シフトだけの営業が主で、同じ日でも昼と夜で別の店を開けている（通しで出た人の
-  // 68.6%が昼夜で別の店）。だから「予測を外した」のではなく「まだ決まっていない」。
-  //
-  // 一方、何店開くかはお店が事前に人を組んでいるぶん読める（人数から87.5%）。
-  // 断定してよいのは店の数で、どの店かではない。
+  // Observed rotations do not establish when the shop makes its decisions.
   function sameDayDecisionNote(insights, outlook) {
     if (!outlook || outlook.basis === "actual") {
       return null;
     }
     return (
-      "何店開くかは、その日に出る人数から読めます（お店が先に人を組むため）。" +
-      "ただし、どの店を開けるかは当日決まります。ここから先は過去の並びから見た可能性で、" +
-      "まだ誰も知りません。"
+      "何店開くかも、どの店が開くかも、公開予定と過去の記録からの推測です。" +
+      "お店の決定時刻や未公開の予定は分かりません。公式発表をご確認ください。"
     );
   }
 
@@ -1458,8 +1571,7 @@
   }
 
   // 「昼の店が夜も開いているのに、なぜ別の店にいるのか」への答え。
-  // 通しで働いた方の68.7%が昼と別の店にいて、昼の店が夜も開いていた場合でも
-  // 56.4%が移る。読み手が不思議に思う場所なので、移り先を出したときは理由も書く。
+  // Explain the historical move table without claiming this evening is settled.
   function sameDayMoveNote(insights, name, fromStoreId, toStoreId) {
     const odds = sameDayMoveOdds(insights, name, fromStoreId);
     const rate = odds?.to?.[toStoreId];
@@ -1478,7 +1590,7 @@
     return (
       `昼は${from}にいた記録があります。${who}昼に${from}だったとき、` +
       `夜は${to}が${toPercent(rate)}でした（${odds.n}件）。${staying}` +
-      `${from}が夜も開いているかどうかとは別に、移ることのほうが多くなっています`
+      "移動表の過去実績であり、この夜の確定情報ではありません"
     );
   }
 
@@ -1673,8 +1785,8 @@
   }
 
   // その人の行き先をどれだけ当てられたか。直近180日の各シフトを、その手前
-  // 120日だけを見て答え、実際と突き合わせた実測値（walk-forward）。1店しか
-  // 開かなかったシフトは定義上かならず当たるので除いてある。
+  // 120日だけを見た条件付きの実測値。実際の開店集合を知る個人独立argmaxで、
+  // 本番の店舗予測・整数定員・移動補正を含む精度ではない。
   //
   // 全体値（accuracy.maidStoreGivenOpen）とは測り方が違うので、混ぜない。
   // 測れていない人（記録が少ない人）には、全体値で埋めずに測れていないと書く。
@@ -1686,8 +1798,8 @@
     return { rate: measured.rate, n: measured.n };
   }
 
-  // 「n件すべて当たる」確率。並べると外れが見えることを、数で言うために使う。
-  // 実測のある人はその人の値で、無い人は何も言わない。
+  // p^n is an illustration assuming independent trials with the same p,
+  // not an observed accuracy for the displayed itinerary.
   function itineraryConfidence(insights, guesses, name) {
     const measured = maidAccuracy(insights, name);
     if (!measured || !(guesses > 0)) {
@@ -1713,14 +1825,15 @@
       : "";
     return (
       `${why}この方の行き先は、過去${measured.n}件を試して` +
-      `${toPercent(measured.rate)}当てられました`
+      `${toPercent(measured.rate)}当てられました（実際の開店集合を知る条件付き・個人別の評価）。` +
+      "この画面の店舗予測や定員調整を含む精度ではありません"
     );
   }
 
   // 人ごとの一覧を組み立てる。店ごとの画面と同じ割り振りを引くので、両者は食い違わない。
   //
   // この軸には固有の危険がある。1件あたりの的中はその人ごとに 39〜81% と幅があり、
-  // 店の側も当日決まるので、実際にその人がその店にいる確率はもっと低い。
+  // 実際の開店集合を知る条件付きの精度を、そのまま本番精度とは呼べない。
   // 同じ人の予測を縦に並べると、その外れが一覧で見える。店ごとの画面では
   // 1行ずつ独立に見えて気づかなかったものが表に出るので、件数を数えて
   // 「全部当たることはまずない」と先に言う。
@@ -1729,12 +1842,14 @@
     const stops = [];
     for (const key of dates ?? []) {
       for (const shift of shifts ?? []) {
-        const { outlook, assignment } = resolve(key, shift) ?? {};
+        const { outlook, assignment, observed } = resolve(key, shift) ?? {};
+        const observation = assignment?.recorded ? null : observed?.byMaid.get(name);
         // 記録のある日は、その日の顔ぶれを記録が決める。予定表を見ると、
         // お休みだった方に行を作り、記録にしかいない方を落とすことになる。
         const roll = assignment?.recorded
           ? (assignment.byMaid.has(name) ? { name } : null)
-          : (schedule?.[key]?.[shift] ?? []).find((member) => member.name === name);
+          : (schedule?.[key]?.[shift] ?? []).find((member) => member.name === name)
+            ?? (observation ? { name } : null);
         if (!roll) {
           continue;
         }
@@ -1742,8 +1857,8 @@
         // キッチンにゃんこの行き先は、見込みの日には店ごとの画面でも名乗らない。
         // ここで名乗ると、同じ人・同じ日で2つの画面が違うことを言う。
         const loose =
-          placed && !assignment.recorded && !placed.pin && cooks.has(name);
-        const storeId = loose ? null : placed?.storeId ?? null;
+          placed && !assignment.recorded && !observation && !placed.pin && cooks.has(name);
+        const storeId = observation?.storeIds[0] ?? (loose ? null : placed?.storeId ?? null);
         const row = storeId
           ? outlook?.entries?.find((candidate) => candidate.store.id === storeId) ?? null
           : null;
@@ -1754,10 +1869,9 @@
         // 未来の日付で「3号店にいた記録があります」と出ていた。店が開くことと、
         // その人がそこにいることは別の話。
         //
-        // 記録かどうかは outlook の basis からも見る。割り振りの作り方に関係なく、
-        // 「そのシフトに記録があるか」はこちらが直接答えている。
-        const recorded = outlook?.basis === "actual" || Boolean(assignment?.recorded);
-        const host = Boolean(placed?.pin);
+        // Store-only records do not establish a person's placement.
+        const recorded = Boolean((assignment?.recorded && placed) || observation);
+        const host = !observation && Boolean(placed?.pin);
         const settled = recorded || host;
         stops.push({
           dateKey: key,
@@ -1767,12 +1881,17 @@
           // 店ごとの画面と同じ三段階を使う。別の線を引くと画面が食い違う。
           // 確定でないなら、店が100%でも「見込み」として出す。
           state: settled ? "open" : row ? stateForRate(row.rate ?? 0) : null,
-          openRate: row?.rate ?? null,
+          openRate: recorded ? null : row?.rate ?? null,
           recorded,
+          observed: Boolean(observation),
+          storeIds: observation?.storeIds ?? [],
+          sourcePosts: observation?.sources ?? [],
           host,
           settled,
-          trainee: placed?.trainee ?? null,
-          eventLabel: roll.eventLabel ?? null
+          trainee: observation ? observation.trainee : placed?.trainee ?? null,
+          eventLabel: roll.eventLabel
+            ?? schedule?.[key]?.[shift]?.find((entry) => entry.name === name)?.eventLabel
+            ?? null
         });
       }
     }
@@ -1827,8 +1946,10 @@
       calibrationNote,
       coOpenRate,
       dateKey,
+      dayEvents,
       earlierShiftPlaces,
       eventStorePins,
+      eventImageFor,
       expectedOpenStores,
       expectedTrainees,
       getDateGridColumn,
@@ -1844,6 +1965,10 @@
       maidAccuracy,
       maidAccuracyNote,
       maidItinerary,
+      monthCells,
+      observedShift,
+      observedTrainee,
+      observationEntries,
       nearMissNote,
       nearMissStores,
       openCountCeilingNote,
@@ -1860,6 +1985,8 @@
       storeCapacities,
       storeProbabilities,
       storeSizeNote,
+      tokyoToday,
+      validateObservations,
       weekdayBucket,
       weekdayIndex
     };
@@ -1876,10 +2003,7 @@
   // 見習いの人数は入店で動くので、データ側は半減期30日で見ている（人数の180日
   // とは別）。落ち着いた量ではなく来月には変わるので、割合そのものは書かない。
   //
-  // どの店にいそうかは、測ったうえで言えない。`byStore` の1位を選んで 50.3%、
-  // でたらめに選んで 55.1% で、順位に意味がない。確率で言う形も較正が壊れる
-  // （65%と言った組が実際は0%）。だから「当てられなかった」を言う。店ごとの
-  // 濃さを黙って出すと、測っていない自信を測ったふりで配ることになる。
+  // Historical comparisons do not establish impossibility or future accuracy.
   function traineeGuessNote(insights, shift, storeCount) {
     const where = storeCount > 1
       ? `${storeCount}店開けば、そのどこかに`
@@ -1888,8 +2012,8 @@
     if (storeCount < 2) {
       return lead;
     }
-    return `${lead}。どの店にいるかは、店ごとの実績で選んでも当てずっぽうに勝てませんでした。` +
-      "人数だけ見込んでいて、店は決めていません";
+    return `${lead}。人数だけ見込んでいて、店は決めていません。` +
+      "表示した店自体も予測なので、別の店や見習いがいない場合もあります";
   }
   const kitchenStaff = new Set(data.kitchenStaff ?? []);
   const rosterNames = new Set(data.roster ?? []);
@@ -1902,6 +2026,9 @@
   };
 
   const insights = window.STORE_INSIGHTS ?? null;
+  let observations = validateObservations(window.OBSERVED_SHIFTS ?? EMPTY_OBSERVATIONS);
+  let observationLoadError = null;
+  let observationLoading = false;
   const storeList = storesOf(insights);
   const lastActualKey = lastActualDateOf(insights);
   const hasInsights = Boolean(insights) && storeList.length > 0;
@@ -2055,6 +2182,10 @@
   }
 
   const VIEW_MODES = {
+    calendar: {
+      label: "月間カレンダー",
+      help: "イベント画像は日付単位。日付をタップすると、昼・夜のお給仕詳細が開きます。"
+    },
     forecast: {
       label: "予測",
       help: "開いていそうな店舗と、その日出るメンバーの割り振りを出します。"
@@ -2065,10 +2196,10 @@
     },
     maid: {
       label: "この人はどこ",
-      help: "メイドさんごとに、その月どこに立ちそうかを並べます。1件ずつは3回に1回ほどしか当たりません。"
+      help: "メイドさんごとのお給仕一覧です。記録・イベントの主役・店舗の推測を区別します。"
     }
   };
-  const VIEW_MODE_KEY = "akibazettai:view-mode";
+  const VIEW_MODE_KEY = "akibazettai:view-mode:v2";
 
   function readStoredMode() {
     try {
@@ -2093,13 +2224,17 @@
     selectedMaids: new Set(data.roster),
     dateFrom: defaults.dateFrom,
     dateTo: defaults.dateTo,
+    customRange: false,
+    selectedDate: null,
     hideKitchen: false,
-    viewMode: hasInsights ? readStoredMode() ?? "forecast" : "roster"
+    viewMode: readStoredMode() ?? "calendar"
   };
 
   const elements = {
     calendar: document.querySelector("#calendar"),
     monthTitle: document.querySelector("#month-title"),
+    monthNumber: document.querySelector("#month-number"),
+    monthYear: document.querySelector("#month-year"),
     resultSummary: document.querySelector("#result-summary"),
     lastUpdated: document.querySelector("#last-updated"),
     scheduleSystemNote: document.querySelector("#schedule-system-note"),
@@ -2113,6 +2248,16 @@
     dateTo: document.querySelector("#date-to"),
     previousMonth: document.querySelector("#previous-month"),
     nextMonth: document.querySelector("#next-month"),
+    currentMonth: document.querySelector("#current-month"),
+    dayDialog: document.querySelector("#day-dialog"),
+    dialogTitle: document.querySelector("#day-dialog-title"),
+    dialogEvents: document.querySelector("#day-dialog-events"),
+    dialogContent: document.querySelector("#day-dialog-content"),
+    closeDialog: document.querySelector("#close-day-dialog"),
+    observationStatus: document.querySelector("#observation-status"),
+    refreshObservations: document.querySelector("#refresh-observations"),
+    jumpDay: document.querySelector("#jump-day"),
+    jumpNight: document.querySelector("#jump-night"),
     selectAll: document.querySelector("#select-all"),
     clearAll: document.querySelector("#clear-all"),
     hideKitchen: document.querySelector("#hide-kitchen"),
@@ -2145,20 +2290,223 @@
       schedule: data.schedule,
       roster: data.roster
     });
-    return recorded ?? { assignment: null, entries: data.schedule[key]?.[shift] ?? [] };
+    if (recorded) return { ...recorded, observed: observedShift(null, insights, key, shift) };
+    const observed = observedShift(observations, insights, key, shift);
+    return {
+      assignment: null,
+      observed,
+      entries: observationEntries(data.schedule[key]?.[shift] ?? [], observed, data.roster)
+    };
   }
 
   function filteredEntries(key, shift) {
     return shiftRoster(key, shift).entries.filter((entry) => isVisibleMaid(entry.name));
   }
 
-  function createShiftSection(key, date, shift) {
+  function observationTime(value) {
+    return new Intl.DateTimeFormat("ja-JP", {
+      timeZone: "Asia/Tokyo", month: "numeric", day: "numeric",
+      hour: "2-digit", minute: "2-digit", hour12: false
+    }).format(new Date(value));
+  }
+
+  function createObservationLink(post, label) {
+    const link = document.createElement("a");
+    link.href = post.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.className = "observation-source";
+    link.textContent = label ?? `公式投稿 ${observationTime(post.createdAt)} JST`;
+    link.title = `@${post.authorScreenName} / ${post.id} / 取得 ${observationTime(post.observedAt)} JST`;
+    return link;
+  }
+
+  function createRosterEntry(entry, key, shift, {
+    evidence, storeId, note = "", profileLink = true
+  } = {}) {
+    const item = document.createElement("li");
+    item.className = "maid-entry";
+    item.dataset.evidence = evidence;
+    if (storeId) item.dataset.store = storeId;
+    const account = profileLink && insights?.maidTendency?.[entry.name]?.x;
+    const name = document.createElement(account ? "a" : "span");
+    name.className = "maid-name";
+    name.textContent = entry.name;
+    name.dataset.focusKey = `${key}|${shift}|${entry.name}`;
+    if (account) {
+      name.href = `https://x.com/${account}`;
+      name.target = "_blank";
+      name.rel = "noopener noreferrer";
+      name.title = `${entry.name}のXを開く`;
+    } else {
+      name.tabIndex = -1;
+    }
+    item.append(name);
+    const descriptions = note ? [note] : [];
+    if (kitchenStaff.has(entry.name)) {
+      item.classList.add("is-kitchen");
+      descriptions.push("キッチンにゃんこ");
+    }
+    if (entry.trainee === true) {
+      item.classList.add("is-trainee");
+      const mark = document.createElement("span");
+      mark.className = "maid-trainee";
+      mark.textContent = "🔰";
+      mark.setAttribute("aria-hidden", "true");
+      item.append(mark);
+      descriptions.push("見習いにゃんこ");
+    }
+    if (entry.featured) {
+      item.classList.add("is-featured");
+      descriptions.push(`${entry.eventLabel}の主役（公開予定）`);
+    }
+    if (descriptions.length) {
+      item.title = `${entry.name}：${descriptions.join(" / ")}`;
+      item.setAttribute("aria-label", `${entry.name}（${descriptions.join("・")}）`);
+    }
+    return item;
+  }
+
+  function appendRosterGroup(target, store, members, renderEntry) {
+    if (!members.length) return;
+    if (store) {
+      const heading = document.createElement("p");
+      heading.className = "maid-group-label";
+      heading.dataset.store = store.id;
+      heading.textContent = store.short;
+      target.append(heading);
+    }
+    const list = document.createElement("ul");
+    list.className = "maid-list";
+    members.forEach((entry) => list.append(renderEntry(entry)));
+    target.append(list);
+  }
+
+  function createRecordedRoster({ type, groups, posts = [] }, key, shift) {
+    const block = document.createElement("section");
+    block.className = "recorded-roster";
+    block.dataset.recordType = type;
+    block.setAttribute("aria-label", `${key} ${shift}の${type === "observed" ? "自動観測" : "収録記録"}`);
+    const details = document.createElement("details");
+    details.className = "observation-details";
+    details.dataset.stateKey = `${key}|${shift}|observation-details`;
+    const summary = document.createElement("summary");
+    summary.textContent = "更新情報";
+    summary.dataset.focusKey = `${key}|${shift}|observation-summary`;
+    details.append(summary);
+    for (const { store, entries } of groups) {
+      const shown = entries.filter((entry) => isVisibleMaid(entry.name));
+      if (!shown.length) continue;
+      appendRosterGroup(block, store, shown, (entry) => createRosterEntry(entry, key, shift, {
+        evidence: type, storeId: store.id, profileLink: type !== "observed",
+        note: type === "observed"
+          ? `${store.short}のお給仕投稿で確認`
+          : `${shift}は${store.short}にいた記録があります`
+      }));
+      const sources = posts.filter((post) => post.storeId === store.id);
+      if (!sources.length) continue;
+      const sourceList = document.createElement("p");
+      sourceList.className = "observation-sources";
+      for (const source of sources) {
+        const link = createObservationLink(source, `${store.short} ${observationTime(source.createdAt)} JST`);
+        link.dataset.focusKey = `${key}|${shift}|${store.id}|${source.id}`;
+        sourceList.append(link);
+      }
+      details.append(sourceList);
+    }
+    if (type === "recorded") {
+      const source = document.createElement("p");
+      source.className = "roster-source";
+      source.textContent = `収録記録：${key} ${shift}（data/store-insights.js・actualRoster）`;
+      details.append(source);
+      if (insights?.generatedAt) {
+        const generated = document.createElement("p");
+        generated.textContent = `データ生成：${insights.generatedAt}。個別の投稿URLは収録されていません。`;
+        details.append(generated);
+      }
+    }
+    block.append(details);
+    return block;
+  }
+
+  function createUnmatchedNames(entries, key, shift) {
+    const block = document.createElement("section");
+    block.className = "unmatched-roster";
+    const heading = document.createElement("h5");
+    heading.className = "unmatched-heading";
+    heading.textContent = "予定（未確認）";
+    block.append(heading);
+    appendRosterGroup(block, null, entries, (entry) => createRosterEntry({
+      ...entry, trainee: observedTrainee(insights, entry.name, key)
+    }, key, shift, {
+      evidence: "scheduled", note: "公開予定。お給仕投稿とは未照合です。"
+    }));
+    return block;
+  }
+
+  function renderObservationStatus() {
+    const status = elements.observationStatus;
+    status.dataset.loaded = observationLoading ? "false" : "true";
+    if (observationLoadError) {
+      status.textContent = `自動収集結果の読込に失敗しました：${observationLoadError}。保存済みの表示は維持します。`;
+      return;
+    }
+    if (!observations.checkedAt) {
+      status.textContent = observationLoading ? "自動収集結果を読み込み中…" : "自動収集は未実行です。未確認は投稿なしを意味しません。";
+      return;
+    }
+    const labels = {
+      ok: "更新", partial: "一部失敗あり", unavailable: "取得不能",
+      "no-new": "新規追加なし", "no-results": "検索候補なし", never: "未実行"
+    };
+    const old = Date.now() - Date.parse(observations.checkedAt) > 2 * 3600000;
+    const range = observations.lastRun.dateFrom && observations.lastRun.dateTo
+      ? `・対象 ${observations.lastRun.dateFrom}〜${observations.lastRun.dateTo}` : "";
+    status.textContent = `自動収集：${labels[observations.lastRun.status]}・試行 ${observationTime(observations.checkedAt)} JST${range}` +
+      `${old ? "（結果が古い可能性があります）" : ""}。検索は全投稿を保証しません。0件でも休業・投稿なしとは断定しません。`;
+  }
+
+  async function refreshObservedData() {
+    if (observationLoading) return;
+    observationLoading = true;
+    elements.refreshObservations.disabled = true;
+    renderObservationStatus();
+    try {
+      const response = await window.fetch("data/observed-shifts.json", { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const next = validateObservations(await response.json());
+      const changed = JSON.stringify(next) !== JSON.stringify(observations);
+      observations = next;
+      observationLoadError = null;
+      if (changed) {
+        if (elements.dayDialog.open) {
+          observationsChangedInDialog = true;
+          openDayDialog(state.selectedDate, dialogOrigin, true);
+        } else {
+          const focusedDate = document.activeElement?.dataset?.date;
+          renderCalendar();
+          if (focusedDate) dayButtons.get(focusedDate)?.focus({ preventScroll: true });
+        }
+      }
+    } catch (error) {
+      observationLoadError = error instanceof Error ? error.message : "読込エラー";
+      console.error("Observation snapshot load failed", error);
+    } finally {
+      observationLoading = false;
+      elements.refreshObservations.disabled = false;
+      renderObservationStatus();
+    }
+  }
+
+  function createShiftSection(key, date, shift, showForecast = state.viewMode === "forecast") {
     const section = document.createElement("section");
     section.className = `shift-section ${shiftDetails[shift].className}`;
     section.setAttribute("aria-label", `${shift}のお給仕`);
 
-    const forecasting = state.viewMode === "forecast";
-    const { outlook, pins } = forecasting
+    const roster = shiftRoster(key, shift);
+    const partial = roster.observed.posts.length > 0;
+    const forecasting = showForecast;
+    const { outlook, pins } = forecasting && !partial && !roster.assignment?.recorded
       ? getShiftOutlook(key, shift)
       : { outlook: null, pins: new Map() };
     const title = document.createElement("h4");
@@ -2170,12 +2518,27 @@
     const label = document.createElement("span");
     label.textContent = shift;
     title.append(icon, label);
-    if (outlook) {
+    if (outlook && !partial) {
       title.append(createStatusBadge(outlook));
     }
     section.append(title);
 
-    const roster = shiftRoster(key, shift);
+    if (partial || roster.assignment?.recorded) {
+      const type = partial ? "observed" : "recorded";
+      const groups = storeList.map((store) => ({
+        store,
+        entries: partial
+          ? [...(roster.observed.byStore.get(store.id)?.keys() ?? [])].map((name) => ({
+            ...roster.entries.find((entry) => entry.name === name),
+            name, trainee: roster.observed.byMaid.get(name)?.trainee
+          }))
+          : roster.entries.filter((entry) => insights.actualRoster[key][shift].stores[store.id]?.includes(entry.name))
+      }));
+      section.append(createRecordedRoster({ type, groups, posts: roster.observed.posts }, key, shift));
+      const unmatched = roster.entries.filter((entry) => !entry.observed && isVisibleMaid(entry.name));
+      if (partial && unmatched.length) section.append(createUnmatchedNames(unmatched, key, shift));
+      return section;
+    }
     // 同じ日の昼に誰がどこにいたか。記録があるときだけ、夜の割り振りに使う。
     const movedFrom = earlierShiftPlaces(insights, key, shift);
     // 見込みの計算には予定表の顔ぶれを使う。記録のある日は使われないが、
@@ -2186,7 +2549,7 @@
     }
 
     const allEntries = roster.entries;
-    const visible = allEntries.filter((entry) => isVisibleMaid(entry.name));
+    const visible = allEntries.filter((entry) => !entry.observed && isVisibleMaid(entry.name));
     // 割り振りは絞り込みに影響されないよう、その日そのシフトの全員で計算する。
     // 記録のある日は割り振らない。誰がどこにいたかは分かっている。
     const assignment = roster.assignment
@@ -2202,6 +2565,19 @@
           movedFrom
         })
         : null);
+    const evidence = document.createElement("p");
+    evidence.className = "shift-evidence";
+    evidence.textContent = roster.assignment?.recorded
+      ? "人物・店舗とも投稿の記録。掲載のない方の不在を確定するものではありません。"
+      : partial
+        ? "以下は投稿と未照合の予定です。店舗は推測で、不在・出勤確認ではありません。"
+      : outlook?.basis === "actual"
+        ? "店舗のみ実績 ／ 人物は公開予定・行き先は推測です。"
+        : !(data.schedule[key]?.[shift]?.length > 0)
+          ? "お給仕の公開予定・人物の記録は未確認です。休業や不在の確定ではありません。"
+        : "公開予定 ／ 店舗の割り振りは推測です。イベント主役は別表示。";
+    evidence.classList.add("visually-hidden");
+    section.append(evidence);
     // 記録の並びは掲載順で確定しているので、割り振り順に組み直すのは見込みの日だけ。
     const ordered = assignment && !assignment.recorded
       ? sortByAssignedStore({ insights, entries: visible, assignment })
@@ -2225,7 +2601,7 @@
     const cooks = ordered.filter(looseCook);
     // 予定表に出ない見習いにゃんこ。誰なのかも、どの店かも分からないので、
     // 店ごとのグループには入れず、シフトの末尾にまとめて置く。
-    const guessedTrainees = isVisibleMaid(TRAINEE_PLACEHOLDER)
+    const guessedTrainees = !partial && isVisibleMaid(TRAINEE_PLACEHOLDER)
       ? expectedTrainees(
         insights,
         shift,
@@ -2235,19 +2611,9 @@
       : 0;
 
     function createMaidEntry(entry, groupStoreId, hideStore = false) {
-      const item = document.createElement("li");
-      item.className = "maid-entry";
-      const account = insights?.maidTendency?.[entry.name]?.x;
-      const nameLabel = document.createElement(account ? "a" : "span");
-      nameLabel.className = "maid-name";
-      nameLabel.textContent = entry.name;
-      if (account) {
-        nameLabel.href = `https://x.com/${account}`;
-        nameLabel.target = "_blank";
-        nameLabel.rel = "noopener noreferrer";
-        nameLabel.title = `${entry.name}のXを開く`;
-      }
-      item.append(nameLabel);
+      const item = createRosterEntry(entry, key, shift, {
+        evidence: "scheduled", storeId: groupStoreId
+      });
       const isKitchen = kitchenStaff.has(entry.name);
       const chipData = getMaidStoreOutlook({
         insights,
@@ -2261,7 +2627,6 @@
       const descriptions = [];
 
       if (isKitchen) {
-        item.classList.add("is-kitchen");
         titles.push("キッチンにゃんこ");
         descriptions.push("キッチンにゃんこ");
       }
@@ -2269,21 +2634,17 @@
       // 見習いにゃんこ。判定できた日だけ印を付ける。trainee が null の日は
       // 「まだ判定していない」で、「昇格済み」ではない。そこを混ぜない。
       if (entry.trainee === true) {
-        item.classList.add("is-trainee");
-        const mark = document.createElement("span");
-        mark.className = "maid-trainee";
-        mark.textContent = "🔰";
-        mark.setAttribute("aria-hidden", "true");
-        item.append(mark);
         titles.push("見習いにゃんこ");
         descriptions.push("見習いにゃんこ");
       }
 
       if (entry.featured) {
-        item.classList.add("is-featured");
         titles.unshift(entry.eventLabel);
         descriptions.unshift(`${entry.eventLabel}の主役`);
       }
+
+      item.dataset.evidence = assignment?.recorded ? "recorded"
+        : chipData?.basis === "event" ? "event" : "scheduled";
 
       // 昼の記録を使って夜を組んだ人には、そのことと移り先の実績を書く。
       // 「所属店が開いているのになぜ別の店」は、読み手が実際に持った疑問。
@@ -2365,24 +2726,7 @@
 
       groups.forEach(({ storeId, entries: members }) => {
         const store = storeId ? storeList.find((candidate) => candidate.id === storeId) : null;
-        if (store) {
-          const heading = document.createElement("p");
-          heading.className = "maid-group-label";
-          heading.dataset.store = store.id;
-          const name = document.createElement("span");
-          name.textContent = store.short;
-          const count = document.createElement("span");
-          count.className = "maid-group-count";
-          count.textContent = `${members.length}人`;
-          heading.append(name, count);
-          heading.title = storeSizeNote(insights, shift, store.id) ?? "";
-          section.append(heading);
-        }
-
-        const list = document.createElement("ul");
-        list.className = "maid-list";
-        members.forEach((entry) => list.append(createMaidEntry(entry, storeId)));
-        section.append(list);
+        appendRosterGroup(section, store, members, (entry) => createMaidEntry(entry, storeId));
       });
 
       appendTraineeGuesses(section, shift, guessedTrainees, assignment?.storeIds ?? []);
@@ -2415,8 +2759,7 @@
 
   // 予定表に出ない見習いにゃんこ。店ごとのグループには入れない。
   // どの店にいるか読めないのに見出しの下に置くと、その店にいると読まれる。
-  // 順番は、店ごとの一覧 → 見習い → キッチン。上ほど確かなことを言っている。
-  // 見習いは「誰か分からないが、いる」、キッチンは「誰か分かるが、どこか分からない」。
+  // The groups express different uncertainty, not a ranking of confidence.
   //
   // 見出しを必ず付ける。クラスを分けるだけでは足りない。見出しが無いと、直前の店の
   // <ul> にそのまま続いて見え、店は s1→s4 の順に並ぶので、いつも番号のいちばん
@@ -2424,10 +2767,7 @@
   // いる」と読める形になっていた。
   // 「どこかにいる」は当たり前で、知りたいのは「どこにいそうか」。
   //
-  // 測ってある。**当てられない。**`byStore` の1位を選ぶと 50.3% で、でたらめに
-  // 選ぶ 55.1% より悪い（README「見習いをどの店に置くかは決めません」）。確率で
-  // 言う形も較正が壊れていて、65%と言った組が実際は0%だった。だから割合は出さない。
-  // 「1号 60%・3号 40%」と書けば、測っていない自信を測ったふりで配ることになる。
+  // Store averages are not calibrated probabilities of this shift's placement.
   //
   // 出せるのは、測った結果そのもの。ただし**こちら側の話として書く**。
   // 「どれも同じくらい」は店についての主張で、それは嘘になる（byStore は昼で
@@ -2441,9 +2781,9 @@
     }
     const names = stores.map(compactStoreLabel);
     if (names.length === 1) {
-      return names[0];
+      return `${names[0]}が営業する予測の場合・店舗未定`;
     }
-    return `${names.join("・")} ${names.length === 2 ? "どちらか" : "どれか"}当てられません`;
+    return `${names.join("・")}が営業する予測の場合・店舗は特定できません`;
   }
 
   function appendTraineeGuesses(section, shift, count, storeIds) {
@@ -2494,7 +2834,7 @@
   function createDayCell(date, isFirstRenderedDate) {
     const key = dateKey(date);
     const day = document.createElement("article");
-    day.className = "calendar-day";
+    day.className = "calendar-day is-detail-day";
     day.setAttribute("role", "gridcell");
     day.setAttribute(
       "aria-label",
@@ -2527,13 +2867,238 @@
     return day;
   }
 
+  const dayButtons = new Map();
+  let dialogOrigin = null;
+  let previousOverflow = "";
+  let observationsChangedInDialog = false;
+
+  function createEventArt(event, key) {
+    const figure = document.createElement("span");
+    figure.className = "event-art";
+    figure.dataset.maid = event.name;
+    const image = document.createElement("img");
+    const configured = eventImageFor(data, key, event.name);
+    image.className = "event-image";
+    image.alt = configured.alt;
+    image.width = 160;
+    image.height = 160;
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
+    let fallback = false;
+    image.addEventListener("error", () => {
+      console.warn(`Event image unavailable: ${event.name} (${key})`);
+      if (!fallback && configured.src !== DEFAULT_EVENT_IMAGE.src) {
+        fallback = true;
+        image.src = DEFAULT_EVENT_IMAGE.src;
+        image.alt = DEFAULT_EVENT_IMAGE.alt;
+      } else {
+        image.hidden = true;
+        figure.classList.add("image-unavailable");
+      }
+    });
+    image.src = configured.src;
+    const name = document.createElement("span");
+    name.className = "event-art-name";
+    name.textContent = event.name;
+    const label = document.createElement("span");
+    label.className = "event-art-label";
+    label.textContent = event.labels.join("・");
+    figure.append(image, name, label);
+    return figure;
+  }
+
+  function closeDayDialog() {
+    if (elements.dayDialog.open) {
+      elements.dayDialog.close();
+      finishDayDialog();
+    }
+  }
+
+  function finishDayDialog() {
+    if (!dialogOrigin || elements.dayDialog.open) return;
+    document.body.style.overflow = previousOverflow;
+    elements.dialogContent.replaceChildren();
+    elements.dialogEvents.textContent = "";
+    const origin = dialogOrigin;
+    dialogOrigin = null;
+    if (observationsChangedInDialog) {
+      observationsChangedInDialog = false;
+      renderCalendar();
+      dayButtons.get(origin.dataset.date)?.focus({ preventScroll: true });
+    } else if (origin.isConnected) {
+      origin.focus({ preventScroll: true });
+    }
+  }
+
+  function openDayDialog(key, origin, preserveInteraction = false) {
+    if (!isInDateRange(key)) {
+      elements.resultSummary.textContent = "選択した期間の外です。表示条件で期間を変更してください。";
+      return;
+    }
+    const focused = preserveInteraction ? document.activeElement : null;
+    const focusedId = focused?.id;
+    const focusedKey = focused?.dataset?.focusKey;
+    const scroll = elements.dialogContent.scrollTop;
+    const expanded = preserveInteraction
+      ? new Set([...elements.dialogContent.querySelectorAll("details[data-state-key]")]
+        .filter((details) => details.open).map((details) => details.dataset.stateKey))
+      : new Set();
+    const date = new Date(`${key}T00:00:00`);
+    state.selectedDate = key;
+    for (const [dayKey, button] of dayButtons) {
+      button.classList.remove("is-selected");
+      if (dayKey === key) button.classList.add("is-selected");
+    }
+    elements.dialogTitle.textContent =
+      `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日（${weekdays[date.getDay()]}）`;
+    const events = dayEvents(data, insights, key).filter((event) => isVisibleMaid(event.name));
+    elements.dialogEvents.textContent = events.length > 0
+      ? events.map((event) => `${event.name} ${event.labels.join("・")}`).join(" ／ ")
+      : "";
+    elements.dialogContent.replaceChildren(...shifts.map((shift, index) => {
+      const section = createShiftSection(key, date, shift, true);
+      section.id = index === 0 ? "dialog-day" : "dialog-night";
+      section.tabIndex = -1;
+      return section;
+    }));
+    elements.dialogContent.scrollTop = 0;
+    if (!elements.dayDialog.open) {
+      dialogOrigin = origin;
+      previousOverflow = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      elements.dayDialog.showModal();
+    }
+    if (preserveInteraction) {
+      for (const details of elements.dialogContent.querySelectorAll("details[data-state-key]")) {
+        details.open = expanded.has(details.dataset.stateKey);
+      }
+      const target = focused?.isConnected ? focused
+        : focusedId ? document.getElementById(focusedId)
+        : focusedKey ? [...elements.dialogContent.querySelectorAll("[data-focus-key]")]
+          .find((element) => element.dataset.focusKey === focusedKey) : null;
+      (target && elements.dayDialog.contains(target) ? target : elements.dialogContent)
+        .focus({ preventScroll: true });
+      elements.dialogContent.scrollTop = scroll;
+    } else {
+      elements.closeDialog.focus({ preventScroll: true });
+    }
+  }
+
+  function jumpToDialogShift(id) {
+    const section = document.getElementById(id);
+    const content = elements.dialogContent;
+    content.scrollTop += section.getBoundingClientRect().top - content.getBoundingClientRect().top;
+    section.focus({ preventScroll: true });
+  }
+
+  function renderMonthGrid(year, monthIndex) {
+    const grid = document.createElement("div");
+    grid.className = "calendar-grid";
+    grid.setAttribute("role", "table");
+    grid.setAttribute("aria-labelledby", "month-title");
+    const header = document.createElement("div");
+    header.className = "calendar-row";
+    header.setAttribute("role", "row");
+    const english = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    weekdays.forEach((label, index) => {
+      const cell = document.createElement("div");
+      cell.className = "weekday";
+      cell.setAttribute("role", "columnheader");
+      cell.setAttribute("aria-label", `${label}曜日`);
+      cell.textContent = english[index];
+      header.append(cell);
+    });
+    grid.append(header);
+    dayButtons.clear();
+    let row;
+    let eventCount = 0;
+    let visibleCount = 0;
+    monthCells(year, monthIndex).forEach((date, index) => {
+      if (index % 7 === 0) {
+        row = document.createElement("div");
+        row.className = "calendar-row";
+        row.setAttribute("role", "row");
+        grid.append(row);
+      }
+      const cell = document.createElement("div");
+      cell.className = "month-cell";
+      cell.setAttribute("role", "cell");
+      if (!date) {
+        cell.classList.add("is-blank");
+        row.append(cell);
+        return;
+      }
+      const key = dateKey(date);
+      const inRange = isInDateRange(key);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "day-button";
+      button.dataset.date = key;
+      button.disabled = !inRange;
+      button.setAttribute("aria-haspopup", "dialog");
+      const number = document.createElement("span");
+      number.className = "day-number";
+      number.textContent = String(date.getDate());
+      button.append(number);
+      if (date.getDay() === 0) cell.classList.add("is-sunday");
+      if (date.getDay() === 6) cell.classList.add("is-saturday");
+      if (key === tokyoToday()) {
+        button.classList.add("is-today");
+        button.setAttribute("aria-current", "date");
+      }
+      if (key === state.selectedDate) button.classList.add("is-selected");
+      const events = inRange
+        ? dayEvents(data, insights, key).filter((event) => isVisibleMaid(event.name))
+        : [];
+      if (inRange) visibleCount += 1;
+      if (events.length > 0) {
+        eventCount += 1;
+        const art = document.createElement("span");
+        art.className = "day-events";
+        if (events.length > 1) art.classList.add("has-multiple");
+        events.forEach((event) => art.append(createEventArt(event, key)));
+        button.append(art);
+      } else if (inRange) {
+        const hasMembers = shifts.some((shift) => filteredEntries(key, shift).length > 0);
+        const hint = document.createElement("span");
+        hint.className = hasMembers ? "day-hint has-schedule" : "day-hint";
+        const hasInformation = shifts.some((shift) => shiftRoster(key, shift).entries.length > 0);
+        const hasObserved = shifts.some((shift) => observedShift(observations, insights, key, shift).posts.length > 0);
+        hint.textContent = hasMembers ? "お給仕" : hasInformation ? "該当なし" : "未確認";
+        if (hasObserved) hint.classList.add("is-observed");
+        button.append(hint);
+      }
+      const eventLabel = events.map((event) => `${event.name} ${event.labels.join("・")}`).join("、");
+      button.setAttribute("aria-label",
+        `${year}年${monthIndex + 1}月${date.getDate()}日（${weekdays[date.getDay()]}）` +
+        (inRange ? ` ${eventLabel} 昼と夜のお給仕詳細を開く` : " 表示期間外"));
+      button.addEventListener("click", () => openDayDialog(key, button));
+      dayButtons.set(key, button);
+      cell.append(button);
+      row.append(cell);
+    });
+    elements.resultSummary.textContent =
+      `${visibleCount}日を表示・イベント ${eventCount}日` +
+      (visibleMaidCount() !== data.roster.length ? `・${visibleMaidCount()}名で絞り込み中` : "") +
+      (state.customRange ? "（指定期間のみ開けます）" : "");
+    elements.calendar.replaceChildren(grid);
+  }
+
   function renderCalendar() {
+    closeDayDialog();
+    const year = state.visibleMonth.getFullYear();
+    const monthIndex = state.visibleMonth.getMonth();
+    elements.monthTitle.textContent = `${year}年${monthIndex + 1}月`;
+    elements.monthYear.textContent = String(year);
+    elements.monthNumber.textContent = String(monthIndex + 1);
+    if (state.viewMode === "calendar") {
+      renderMonthGrid(year, monthIndex);
+      return;
+    }
     if (state.viewMode === "maid") {
       renderMaidView();
       return;
     }
-    const year = state.visibleMonth.getFullYear();
-    const monthIndex = state.visibleMonth.getMonth();
     const firstDay = new Date(year, monthIndex, 1);
     const visibleDates = getVisibleMonthDates(
       year,
@@ -2542,7 +3107,7 @@
       state.dateTo
     );
     const grid = document.createElement("div");
-    grid.className = "calendar-grid";
+    grid.className = "detail-grid";
     grid.setAttribute("role", "grid");
     grid.setAttribute("aria-labelledby", "month-title");
 
@@ -2586,13 +3151,8 @@
       });
     }
 
-    const displayedCount = Object.entries(data.schedule).reduce((total, [key, day]) => {
-      if (!key.startsWith(`${year}-${String(monthIndex + 1).padStart(2, "0")}`)) {
-        return total;
-      }
-      if (!isInDateRange(key)) {
-        return total;
-      }
+    const displayedCount = visibleDates.reduce((total, date) => {
+      const key = dateKey(date);
       // 記録のある日は記録の顔ぶれを数える。予定表を数えると、画面に出ている
       // 見習いにゃんこが抜け、お休みだった方が入って、表示と合わなくなる。
       return total + shifts.reduce(
@@ -2627,6 +3187,7 @@
         const members = (data.schedule[key]?.[shift] ?? []).map((entry) => entry.name);
         shiftCache.set(id, {
           outlook,
+          observed: roster.observed,
           members: roster.entries.map((entry) => entry.name),
           assignment: roster.assignment
             ?? (outlook
@@ -2747,8 +3308,17 @@
     const where = document.createElement("span");
     where.className = "maid-plan-where";
     where.dataset.store = stop.storeId ?? "";
-    where.textContent = stop.storeId ? storeShort(insights, stop.storeId) : "未定";
+    where.textContent = stop.observed
+      ? stop.storeIds.map((id) => storeShort(insights, id)).join("・")
+      : stop.storeId ? storeShort(insights, stop.storeId) : "未定";
     item.append(when, where);
+    const evidence = document.createElement("span");
+    evidence.className = "maid-plan-evidence";
+    evidence.textContent = stop.observed ? "記録" : stop.recorded ? "実績"
+      : stop.host ? "イベント主役の予定" : "未照合の予定・店舗推測";
+    item.dataset.evidence = stop.observed ? "observed" : stop.recorded ? "recorded" : stop.host ? "event" : "scheduled";
+    item.append(evidence);
+    for (const post of stop.sourcePosts) item.append(createObservationLink(post));
     // 見習いにゃんこ。判定できた日だけ印を付ける。null は「まだ判定していない」。
     if (stop.trainee === true) {
       const mark = document.createElement("span");
@@ -2781,14 +3351,16 @@
 
   // 縦に並べると外れが見える軸なので、先に「全部は当たりません」と言っておく。
   function maidPlanCaveat(plan) {
-    const settled = plan.stops.length - plan.guesses;
+    const recorded = plan.stops.filter((stop) => stop.recorded).length;
+    const hosts = plan.stops.filter((stop) => !stop.recorded && stop.host).length;
+    const observed = plan.stops.filter((stop) => stop.observed).length;
     const parts = [];
-    if (settled > 0) {
-      parts.push(`${settled}件は記録か記念日で確定`);
-    }
+    if (recorded > 0) parts.push(`${recorded}件は人物の実績`);
+    if (hosts > 0) parts.push(`${hosts}件はイベント主役の予定`);
+    if (observed > 0) parts.push(`実績のうち${observed}件は自動収集した投稿による記録です。未照合の予定は不在の証拠ではありません`);
     if (plan.guesses > 0) {
       parts.push(
-        `${settled > 0 ? "残り" : ""}${plan.guesses}件はどの店を開けるかが当日決まります`
+        `${recorded + hosts > 0 ? "残り" : ""}${plan.guesses}件の行き先は推測です`
       );
     }
     // 的中はその人ごとに実測してある。全体値で代用すると、当たりにくい方を
@@ -2802,16 +3374,18 @@
       // そこから積み上げた結果を続ける。
       const measured =
         `${cook}この方の行き先は過去${confidence.samples}件を試して` +
-        `${toPercent(confidence.perStop)}当てられています`;
+        `${toPercent(confidence.perStop)}当てられています（実際の開店集合を知る条件付き・個人別の評価）`;
       parts.push(
         plan.guesses === 1
           ? measured
-          : `${measured}が、${plan.guesses}件すべて当たるのは${toPercent(confidence.allRight)}です`
+          : `${measured}。各回が独立で同じ確率と仮定した計算例では、` +
+            `${plan.guesses}件すべて当たるのは${toPercent(confidence.allRight)}です`
       );
+      parts.push("この一覧全体や、店舗予測・定員調整を含む本番の精度ではありません");
     } else {
       parts.push(maidAccuracyNote(insights, plan.name, kitchenStaff.has(plan.name)));
     }
-    return parts.length > 0 ? `${parts.join("。")}。` : "この期間のお給仕はすべて確定しています。";
+    return `${parts.join("。")}。`;
   }
 
   // 見込みの日に、その店の営業率だけを数字で出さない。順位付けには予定表の顔ぶれも
@@ -2825,6 +3399,10 @@
         : "どこへ立つかは、まだ何も言えません。";
     }
     const where = storeShort(insights, stop.storeId);
+    if (stop.observed) {
+      return `${stop.storeIds.map((id) => storeShort(insights, id)).join("・")}の公式のお給仕投稿で確認しています。` +
+        "確認できた投稿の範囲の情報で、この時間帯の全員・全店舗を網羅するものではありません。";
+    }
     // 過ぎた日と、これからの日を混ぜない。記録があるのは過ぎた日だけ。
     if (stop.recorded) {
       return `${trainee}${where}にいた記録があります。`;
@@ -2836,7 +3414,7 @@
       stop.state === "unlikely"
         ? `${where}は開くと見た店のひとつですが、確からしさは低めです`
         : `${where}は開くと見た店です`;
-    return `${strength}。どの店を開けるかは当日決まるので、変わることがあります。`;
+    return `${strength}。公開予定からの割り振りで、この方がいた記録ではありません。変わることがあります。`;
   }
 
   function setViewMode(mode) {
@@ -2926,10 +3504,21 @@
       state.visibleMonth.getMonth() + offset,
       1
     );
+    if (!state.customRange) syncMonthRange();
     renderCalendar();
   }
 
+  function syncMonthRange() {
+    const year = state.visibleMonth.getFullYear();
+    const month = state.visibleMonth.getMonth();
+    state.dateFrom = dateKey(new Date(year, month, 1));
+    state.dateTo = dateKey(new Date(year, month + 1, 0));
+    elements.dateFrom.value = state.dateFrom;
+    elements.dateTo.value = state.dateTo;
+  }
+
   function syncDateRange(changedField) {
+    state.customRange = true;
     state.dateFrom = elements.dateFrom.value;
     state.dateTo = elements.dateTo.value;
 
@@ -2952,9 +3541,11 @@
     state.selectedMaids = new Set(data.roster);
     state.dateFrom = resetDefaults.dateFrom;
     state.dateTo = resetDefaults.dateTo;
+    state.customRange = false;
+    state.selectedDate = null;
     state.hideKitchen = false;
     elements.hideKitchen.checked = false;
-    state.viewMode = hasInsights ? "forecast" : "roster";
+    state.viewMode = "calendar";
     storeMode(state.viewMode);
     elements.dateFrom.value = state.dateFrom;
     elements.dateTo.value = state.dateTo;
@@ -2973,6 +3564,24 @@
 
   elements.previousMonth.addEventListener("click", () => setVisibleMonth(-1));
   elements.nextMonth.addEventListener("click", () => setVisibleMonth(1));
+  elements.currentMonth.addEventListener("click", () => {
+    const today = getTokyoDateDefaults();
+    state.visibleMonth = new Date(today.year, today.month - 1, 1);
+    if (!state.customRange) syncMonthRange();
+    renderCalendar();
+  });
+  elements.closeDialog.addEventListener("click", closeDayDialog);
+  elements.refreshObservations.addEventListener("click", refreshObservedData);
+  elements.jumpDay.addEventListener("click", () => jumpToDialogShift("dialog-day"));
+  elements.jumpNight.addEventListener("click", () => jumpToDialogShift("dialog-night"));
+  elements.dayDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeDayDialog();
+  });
+  elements.dayDialog.addEventListener("click", (event) => {
+    if (event.target === elements.dayDialog) closeDayDialog();
+  });
+  elements.dayDialog.addEventListener("close", finishDayDialog);
   elements.selectAll.addEventListener("click", () => setAllMaids(true));
   elements.clearAll.addEventListener("click", () => setAllMaids(false));
   elements.hideKitchen.addEventListener("change", () => {
@@ -2987,7 +3596,7 @@
   elements.dateFrom.value = state.dateFrom;
   elements.dateTo.value = state.dateTo;
   elements.lastUpdated.textContent = `最終更新：${data.lastUpdated}`;
-  const systemNote = scheduleSystemNote(insights, defaults.dateFrom);
+  const systemNote = scheduleSystemNote(insights, tokyoToday());
   if (systemNote && elements.scheduleSystemNote) {
     elements.scheduleSystemNote.textContent = systemNote;
     elements.scheduleSystemNote.hidden = false;
@@ -3007,4 +3616,11 @@
   syncViewMode();
   renderMaidFilters();
   renderCalendar();
+  renderObservationStatus();
+  if (!window.OBSERVED_SHIFTS) {
+    refreshObservedData();
+    window.setInterval(() => {
+      if (!document.hidden && !elements.dayDialog.open) refreshObservedData();
+    }, 60000);
+  }
 })();

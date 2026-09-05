@@ -1672,15 +1672,17 @@ assert.equal(
   for (const store of insights.stores) {
     const note = storeSizeNote(insights, "昼", store.id);
     const measured = coverage.byStore[store.id];
-    assert.ok(note.includes("見習いにゃんこ"), `${store.id}: the note must mention trainees`);
+    assert.ok(note.includes("掲載対象外"), `${store.id}: coverage measures unlisted members`);
+    assert.ok(note.includes("見習いとは限りません"), "unlisted members must not be called trainees");
+    assert.ok(note.includes("未提出の人数とは別"), "pending submissions are another population");
     assert.ok(
-      note.includes(`${Math.round((1 - measured.shiftsWithoutUnlisted) * 100)}%の枠`),
+      note.includes(`${Math.round(measured.cellsWithUnlistedRate * 100)}%の店舗枠`),
       `${store.id}: the share must come from rosterCoverage, not from prose`
     );
   }
 
   // 4号店だけ見習いが少ない。そこが埋もれていないこと。
-  const withAny = (id) => 1 - coverage.byStore[id].shiftsWithoutUnlisted;
+  const withAny = (id) => coverage.byStore[id].cellsWithUnlistedRate;
   assert.ok(
     withAny("s4") < Math.min(withAny("s1"), withAny("s2"), withAny("s3")),
     "4号店 must read as the shop that most often has no trainee"
@@ -2063,12 +2065,13 @@ assert.equal(
   assert.equal(coOpenRate({}, "s2", "s3"), null, "no records, no rate");
 }
 
-// どの店を開けるかは当日決まる。何店開くかは事前に読める。この2つを混ぜない。
+// Rotation data does not establish when the shop makes its decisions.
 {
   const guess = outlookFor(farFuture, "昼");
   const note = sameDayDecisionNote(insights, guess);
   assert.ok(note, "a guess must say the shop has not been chosen yet");
-  assert.ok(note.includes("当日決まります"), "the note must say when the shop is decided");
+  assert.ok(note.includes("推測"), "store counts and identities are estimates");
+  assert.doesNotMatch(note, /当日決まります|まだ誰も知りません/, "do not infer decision timing from rotations");
   assert.ok(
     note.includes("何店開くか"),
     "the note must separate the count, which is knowable, from the shops, which are not"
@@ -2316,7 +2319,7 @@ assert.equal(
     const members = (schedule.schedule[key]?.[s] ?? []).map((entry) => entry.name);
     return {
       outlook,
-      assignment: getShiftAssignment({
+      assignment: recordedAssignment(insights, key, s) ?? getShiftAssignment({
         insights,
         members,
         shift: s,
@@ -2414,7 +2417,7 @@ assert.equal(
     const outlook = applyEventCertainty(insights, outlookFor(key, s), pins);
     return {
       outlook,
-      assignment: getShiftAssignment({
+      assignment: recordedAssignment(insights, key, s) ?? getShiftAssignment({
         insights,
         members,
         shift: s,
@@ -2671,8 +2674,8 @@ assert.equal(
     assert.ok(note.includes("昼は"), "the note must say where she was at lunch");
     assert.ok(note.includes("残るのは"), "the note must say how often she stays put");
     assert.ok(
-      note.includes("開いているかどうかとは別に"),
-      "the note must answer why she moves even when her own shop opens"
+      note.includes("過去実績") && note.includes("確定情報ではありません"),
+      "a historical move rate must not be presented as a confirmed evening placement"
     );
     assert.equal(
       sameDayMoveNote(insights, withOwn, "s3", "いない店"),
