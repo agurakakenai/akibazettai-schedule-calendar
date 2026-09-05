@@ -5,6 +5,8 @@ on:
     branches:
       - main
   pull_request:
+  schedule:
+    - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -78,7 +80,7 @@ jobs:
     name: Validate and stage current production site
     needs: collect
     if: >-
-      always() && github.ref == 'refs/heads/main' &&
+      always() && !cancelled() && github.ref == 'refs/heads/main' &&
       github.event_name != 'pull_request' && inputs.mode != 'probe' &&
       (needs.collect.result == 'success' || needs.collect.result == 'skipped')
     runs-on: ubuntu-latest
@@ -105,6 +107,10 @@ jobs:
   deploy:
     name: Deploy static site
     needs: build
+    if: >-
+      always() && !cancelled() && needs.build.result == 'success' &&
+      github.ref == 'refs/heads/main' && github.event_name != 'pull_request' &&
+      inputs.mode != 'probe'
     runs-on: ubuntu-latest
     permissions:
       contents: read
