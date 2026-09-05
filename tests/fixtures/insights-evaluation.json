@@ -1,0 +1,276 @@
+{
+  "inputSha256": {
+    "data/schedule.js": "99e292be752c598018a40f8d01c1142e9baab58590b6e3163492f1a65f525762",
+    "data/store-insights.js": "09f8ea44360f8df0acc15e8a090ea24ca6131dfc12cad709e77f44430966f354",
+    "tools/build-insights.py": "764c3626ff19bb71e0f069f227c6dcd20b534ec18f53a6dd3b176623ebbf0208",
+    "app.js": "5acc194fe9e0fff252187de087ea6b29ba1819f6824b0acc817c9172155ba87c",
+    "tools/evaluate-insights.py": "a9f8e1ecf86b4bfc2606c6d8981ae8f2477dfdd0ae713878ab05dcb07f3177fb",
+    "tools/evaluate-insights-runtime.js": "5c9a1240917b7133e1b26dc7a3904560454829df0be3fdf38f212f6b8a1d4b09",
+    "tools/data/accounts.csv": "c0ecc1751dc49b99cca4648ee8fe67f0a29916af233ad68cf3a66dac570529bc",
+    "tools/data/debuts.csv": "acff4fcdfcd7a323a84b0ca5d0da03747c60676e07a3e1024fc7da8e1eec2429",
+    "tools/data/events.csv": "ee628ff30ea2405e2ed48a9c724c6c432e40d8d15558b28fdb19504a89c74477",
+    "tools/data/forecast-log.csv": "56f3df92e39f15d345a55aaa9b3e01e6801874fba32cb56264bbe7fbe16482ba",
+    "tools/data/milestones.csv": "d4a6ac8b69201786ebdfc63ce8b28f7eb8f9cf1ff212fee77c528713ef396f4f",
+    "tools/data/openings.csv": "94bb5573fc8b8c3094e29b0ca7fabe85ae56ccfc67cf4ba8ab4eb294687e0e8c",
+    "tools/data/shifts.csv": "a4697f0a434825dfdc79e7fdff37de1fa4dca047b02921b81ff5877d07bb82da"
+  },
+  "hashNormalization": "CRLF to LF; generatedAt line excluded from shipped insights",
+  "conditions": {
+    "asOf": "2026-09-03",
+    "pool": "unique listed_on/promotion_dates, including kitchen",
+    "metadata": "current roster/home/accounts held fixed",
+    "input": "historical attendance proxy, not actual advance schedules",
+    "holdout": "previously explored data; no independent future holdout",
+    "snapshot": "shifts AND openings before target; lunch included for night only"
+  },
+  "thresholds": {
+    "[5, 12]": {
+      "n": 787,
+      "hits": 701,
+      "predictedFour": 0,
+      "correctFour": 0,
+      "falseFour": 0,
+      "wins": 0,
+      "losses": 0
+    },
+    "[5, 12, 15]": {
+      "n": 787,
+      "hits": 697,
+      "predictedFour": 7,
+      "correctFour": 1,
+      "falseFour": 6,
+      "wins": 1,
+      "losses": 5
+    }
+  },
+  "rosterCoverage": {
+    "from": "2026-06-05",
+    "to": "2026-09-03",
+    "definition": "listed_on_proxy",
+    "overall": {
+      "unit": "date-shift",
+      "cells": 173,
+      "personAppearances": 1913,
+      "listedPersonAppearances": 1641,
+      "unlistedPersonAppearances": 272,
+      "unlistedShare": 0.142,
+      "unlistedPerCell": 1.572,
+      "cellsWithUnlisted": 150,
+      "cellsWithUnlistedRate": 0.867,
+      "distribution": {
+        "0": 23,
+        "1": 61,
+        "2": 63,
+        "3": 20,
+        "4": 5,
+        "5": 1
+      }
+    },
+    "storeSlots": {
+      "unit": "date-shift-store",
+      "cells": 345,
+      "personAppearances": 1927,
+      "listedPersonAppearances": 1654,
+      "unlistedPersonAppearances": 273,
+      "unlistedShare": 0.142,
+      "unlistedPerCell": 0.791,
+      "cellsWithUnlisted": 233,
+      "cellsWithUnlistedRate": 0.675,
+      "distribution": {
+        "0": 112,
+        "1": 199,
+        "2": 29,
+        "3": 4,
+        "4": 1
+      }
+    },
+    "byStore": {
+      "s1": {
+        "unit": "date-shift-store",
+        "cells": 170,
+        "personAppearances": 1009,
+        "listedPersonAppearances": 877,
+        "unlistedPersonAppearances": 132,
+        "unlistedShare": 0.131,
+        "unlistedPerCell": 0.776,
+        "cellsWithUnlisted": 112,
+        "cellsWithUnlistedRate": 0.659,
+        "distribution": {
+          "0": 58,
+          "1": 93,
+          "2": 18,
+          "3": 1
+        }
+      },
+      "s2": {
+        "unit": "date-shift-store",
+        "cells": 59,
+        "personAppearances": 358,
+        "listedPersonAppearances": 299,
+        "unlistedPersonAppearances": 59,
+        "unlistedShare": 0.165,
+        "unlistedPerCell": 1.0,
+        "cellsWithUnlisted": 46,
+        "cellsWithUnlistedRate": 0.78,
+        "distribution": {
+          "0": 13,
+          "1": 37,
+          "2": 6,
+          "3": 2,
+          "4": 1
+        }
+      },
+      "s3": {
+        "unit": "date-shift-store",
+        "cells": 54,
+        "personAppearances": 311,
+        "listedPersonAppearances": 265,
+        "unlistedPersonAppearances": 46,
+        "unlistedShare": 0.148,
+        "unlistedPerCell": 0.852,
+        "cellsWithUnlisted": 40,
+        "cellsWithUnlistedRate": 0.741,
+        "distribution": {
+          "0": 14,
+          "1": 35,
+          "2": 4,
+          "3": 1
+        }
+      },
+      "s4": {
+        "unit": "date-shift-store",
+        "cells": 62,
+        "personAppearances": 249,
+        "listedPersonAppearances": 213,
+        "unlistedPersonAppearances": 36,
+        "unlistedShare": 0.145,
+        "unlistedPerCell": 0.581,
+        "cellsWithUnlisted": 35,
+        "cellsWithUnlistedRate": 0.565,
+        "distribution": {
+          "0": 27,
+          "1": 34,
+          "2": 1
+        }
+      }
+    }
+  },
+  "traineeCoverage": {
+    "from": "2026-06-05",
+    "to": "2026-09-03",
+    "definition": "is_trainee",
+    "unit": "date-shift-store",
+    "byStore": {
+      "s1": {
+        "cells": 170,
+        "traineePersonAppearances": 75,
+        "cellsWithTrainees": 68,
+        "cellsWithTraineesRate": 0.4,
+        "traineesPerCell": 0.441
+      },
+      "s2": {
+        "cells": 59,
+        "traineePersonAppearances": 21,
+        "cellsWithTrainees": 20,
+        "cellsWithTraineesRate": 0.339,
+        "traineesPerCell": 0.356
+      },
+      "s3": {
+        "cells": 54,
+        "traineePersonAppearances": 14,
+        "cellsWithTrainees": 14,
+        "cellsWithTraineesRate": 0.259,
+        "traineesPerCell": 0.259
+      },
+      "s4": {
+        "cells": 62,
+        "traineePersonAppearances": 14,
+        "cellsWithTrainees": 14,
+        "cellsWithTraineesRate": 0.226,
+        "traineesPerCell": 0.226
+      }
+    }
+  },
+  "sameDayMaidMoveSummary": {
+    "from": "2025-09-03",
+    "to": "2026-09-03",
+    "unit": "date-person",
+    "personPairs": 1129,
+    "movedPersonPairs": 793
+  },
+  "legacyMove": {
+    "from": "2026-02-16",
+    "trainingDays": 120,
+    "oracleOpenStores": true,
+    "assignment": "independent_argmax",
+    "twoOrMore": {
+      "n": 580,
+      "tendency": 361,
+      "smoothed": 400,
+      "zeroFallback": 397
+    },
+    "allNights": {
+      "n": 661,
+      "tendency": 442,
+      "smoothed": 481,
+      "zeroFallback": 478
+    }
+  },
+  "runtime": {
+    "frozenShippedLegacy": {
+      "n": 170,
+      "before": 66,
+      "after": 85,
+      "wins": 36,
+      "losses": 17,
+      "exactPairedP": 0.012660335802414213
+    },
+    "causalMovingFloor": {
+      "n": 352,
+      "before": 186,
+      "after": 190,
+      "wins": 34,
+      "losses": 30,
+      "exactPairedP": 0.707980754134764
+    },
+    "causalProductionPoolAndCorrections": {
+      "n": 171,
+      "before": 80,
+      "after": 95,
+      "wins": 22,
+      "losses": 7,
+      "exactPairedP": 0.008130058646202087
+    },
+    "causalSameLegacyPool": {
+      "n": 170,
+      "before": 61,
+      "after": 78,
+      "wins": 29,
+      "losses": 12,
+      "exactPairedP": 0.011507789735333063
+    },
+    "snapshots": 395,
+    "traineeOracleFiltered": {
+      "n": 157,
+      "noTrainees": 0,
+      "methods": {
+        "random": 68.33333333333334,
+        "fixed": 96,
+        "integerCapacity": 58,
+        "probabilityGap": 51,
+        "byStore": 79
+      }
+    },
+    "traineeProductionDisplay": {
+      "n": 186,
+      "noTrainees": 91,
+      "methods": {
+        "random": 42,
+        "fixed": 59,
+        "integerCapacity": 39,
+        "probabilityGap": 31,
+        "byStore": 49
+      }
+    }
+  }
+}

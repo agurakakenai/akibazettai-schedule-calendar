@@ -26,6 +26,22 @@ window.SCHEDULE_DATA = {
   defaultDateTo: "2026-09-30",
   lastUpdated: "2026年9月2日 1:18 JST時点",
 
+  // Original placeholder artwork, not portraits or confirmed personal preferences.
+  // A date-specific entry in events overrides maids; neither creates a shift.
+  eventImages: {
+    fallback: {
+      src: "assets/events/flower.svg",
+      alt: "イベントを飾るオリジナルの花の仮イラスト"
+    },
+    maids: {
+      "もなか": { src: "assets/events/monaka.svg", alt: "もなかのイベント用・猫と花の仮イラスト" },
+      "ちま": { src: "assets/events/chima.svg", alt: "ちまのイベント用・花束とリボンの仮イラスト" },
+      "あらた": { src: "assets/events/arata.svg", alt: "あらたのイベント用・ティーカップの仮イラスト" },
+      "あくび": { src: "assets/events/akubi.svg", alt: "あくびのイベント用・月と猫の仮イラスト" }
+    },
+    events: {}
+  },
+
   roster: [
     "ひかり",
     "あむ",

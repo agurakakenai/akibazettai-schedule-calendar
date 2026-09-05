@@ -2,6 +2,7 @@
 
     python tools/add-shifts.py https://x.com/akibazettai/status/2095077027061899578 ...
     python tools/add-shifts.py --dry-run <URL> ...     # 書かずに見るだけ
+    python tools/add-shifts.py --confirm-name NAME --dry-run <URL>
 
 X のタイムラインは取得できません。`syndication.twitter.com` の
 timeline-profile は「新人にゃんこ」「お知らせ」だけを100件返す固定の抜粋で、
@@ -25,6 +26,9 @@ timeline-profile は「新人にゃんこ」「お知らせ」だけを100件返
 
 名前は本文の行から取ります。名簿に無い名前もそのまま入れます。
 見習いにゃんこは名簿に載らないので、弾くとその人が消えます。
+本文と見分けにくい語尾の実名は、原文を確認して --confirm-name で指定できます。
+語尾の除外だけを緩める指定で、本文からの名前の追加や表記の補正はしません。
+原典確認済みの「あずにゃん」は指定なしで受け入れます。
 """
 import argparse
 import csv
@@ -54,6 +58,8 @@ STORES = [
 ]
 SHIFT_WORDS = [('ひる', 'ひる'), ('昼', 'ひる'), ('ヒル', 'ひる'),
                ('よる', 'よる'), ('夜', 'よる'), ('ヨル', 'よる')]
+# 原名の確認（別名への補正ではない）: https://x.com/akibazettai/status/1187933451850174465
+CONFIRMED_NAMES = frozenset({'あずにゃん'})
 
 
 def norm(s):
@@ -75,8 +81,12 @@ def fetch(tid):
         return json.loads(r.read().decode('utf-8', 'replace'))
 
 
-def parse(text, created_at):
-    """投稿本文から (日付, 店, シフト, [名前]) を取り出す。読めなければ None。"""
+def parse(text, created_at, confirmed_names=()):
+    """投稿本文から (日付, 店, シフト, [名前])。読めなければ None。
+
+    confirmed_names は確認済み集合に追加する実名で、語尾除外だけを免除する。
+    """
+    confirmed_names = CONFIRMED_NAMES.union(confirmed_names)
     head = text[:120]
     n = norm(head)
     if 'にゃんこ' not in n:
@@ -96,7 +106,7 @@ def parse(text, created_at):
             store = full
             break
 
-    # 名前は見出しの下の空行から始まり、次の空行までひと固まりで並ぶ。
+    # 名前は見出しの下の空行から始まり、次の空行か単独の顔文字まで並ぶ。
     #
     #     【アキバ絶対領域】
     #     よるにゃんこ🐈🍓
@@ -108,9 +118,21 @@ def parse(text, created_at):
     #
     # 行ごとの見た目だけで拾うと、この本文まで名前になる。実際に
     # 「えいちゃん卒業にゃん」が名前として入った。固まりで取れば起きない。
+    def excluded_block(block):
+        return any(b.startswith(('#', 'http', '【', '※', '⊂')) or 'にゃんこ' in b
+                   for b in block)
+
     lines = [ln.strip() for ln in text.split('\n')]
     blocks, current = [], []
     for line in lines:
+        if line == '⊂(´ω´⊂)))':
+            # Repair a missing blank only in the initial roster candidate.
+            # A later face-bearing block stays a footer, even when the earlier
+            # roster could not be parsed; stripping its marker would turn prose
+            # into names and conceal the need for manual confirmation.
+            if any(not excluded_block(block) for block in blocks):
+                current.append(line)
+            break
         if line:
             current.append(line)
         elif current:
@@ -130,14 +152,14 @@ def parse(text, created_at):
             return None
         # お店の言い回しで終わる行は本文。「浴衣コスデーにゃんね」「待ってるにゃんね」
         # のように、名前と同じ見た目で1行に収まるものがある。
-        if re.search(r'(にゃん(ね|こ)?|です|ます|だよ|でした)$', name):
+        if (name not in confirmed_names
+                and re.search(r'(にゃん(ね|こ)?|です|ます|だよ|でした)$', name)):
             return None
         return name
 
     names = []
     for block in blocks:
-        if any(b.startswith(('#', 'http', '【', '※', '⊂')) or 'にゃんこ' in b
-               for b in block):
+        if excluded_block(block):
             continue
         got = [looks_like_name(b) for b in block]
         # ひとつでも名前でない行が混ざる固まりは、名前の固まりではない。
@@ -217,6 +239,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('urls', nargs='+', help='お給仕投稿の URL か tweet ID')
     ap.add_argument('--dry-run', action='store_true', help='書かずに見るだけ')
+    ap.add_argument('--confirm-name', action='append', default=[], metavar='NAME',
+                    help='原文で実名と確認した名前の語尾除外を許可（繰り返し可）')
     args = ap.parse_args()
 
     with open(SHIFTS, encoding='utf-8-sig', newline='') as fh:
@@ -244,9 +268,10 @@ def main():
             skipped.append((tid, str(exc)[:60]))
             continue
         text = data.get('text') or ''
-        got = parse(text, data.get('created_at'))
+        got = parse(text, data.get('created_at'), confirmed_names=args.confirm_name)
         if not got:
             skipped.append((tid, 'お給仕投稿として読めません: %s'
+                            '（実名の語尾が原因なら原文確認後 --confirm-name NAME）'
                             % text[:40].replace('\n', ' ')))
             continue
         date, store, shift, names = got
@@ -258,6 +283,7 @@ def main():
             if name not in counts:
                 fresh.append((name, date, resembles(name, counts),
                               name in debuts))
+        have.add(tid)
 
     print()
     for name, date, like, has_debut in fresh:

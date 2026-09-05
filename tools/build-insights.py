@@ -6,13 +6,13 @@
 入力:
     tools/data/shifts.csv  … 公式Xの「ひる/よるにゃんこ」投稿から復元した店舗別の出勤実績
     tools/data/events.csv  … 生誕祭・周年・卒業イベント（顔ぶれが変わるため傾向計算から除外）
-    data/schedule.js       … roster（在籍メイド一覧）の読み取りにのみ使用
+    data/schedule.js       … 在籍・配属・昇格日・キッチン・公開予定
 
 出力:
     data/store-insights.js
 
-集計はすべて「日」ではなく「シフト（昼/夜）」単位です。2〜4号店は片シフトのみの営業が
-7〜8割を占めるため、日単位でまとめると実態とずれます。
+集計単位は用途別です。rosterCoverage は date-shift のユニーク人数と
+date-shift-store の延べ人数を分離し、traineeCoverage は店舗枠で数えます。
 """
 import csv, os, json, collections, datetime, hashlib, re
 
@@ -99,14 +99,10 @@ def load_csv(name, optional=False):
 def same_day_moves(cell, ids, cut, min_pair=3):
     """昼にいた店から、夜にいる店へ。人ごとと、全体の両方。
 
-    通しで働いた1238人のうち68.7%が昼と別の店にいる。昼の店が夜も開いていた889人
-    でも56.4%が移るので、「開いているから残る」ではない。移り先には向きがある。
-
-        昼3号 -> 夜1号 51% / 夜3号 48%
-        昼4号 -> 夜1号 86% / 夜4号 11%
-
-    昼の記録が届いた時点で夜の見込みに使える。実測で、夜の行き先の的中が
-    62.2% -> 69.0%（574件、92勝53敗、p=0.0015）。
+    本番は cut（365日窓）以降の遷移頻度を出し、未観測先を0とする。
+    62.2% -> 69.0% は別の120日平滑化・実開店集合を既知とする個人argmax実験。
+    本番の整数定員・店舗予測を含む精度ではない。評価条件と時間分離した
+    本番対照は tools/evaluate-insights.py と README に残す。
     """
     per_maid = collections.defaultdict(collections.Counter)
     overall = collections.defaultdict(collections.Counter)
@@ -132,7 +128,10 @@ def same_day_moves(cell, ids, cut, min_pair=3):
         if sum(counter.values()) < min_pair:
             continue
         by_maid.setdefault(name, {})[from_sid] = table(counter)
-    return {sid: table(overall[sid]) for sid in ids if overall[sid]}, by_maid
+    person_pairs = sum(sum(counter.values()) for counter in overall.values())
+    moved = person_pairs - sum(counter[sid] for sid, counter in overall.items())
+    return ({sid: table(overall[sid]) for sid in ids if overall[sid]}, by_maid,
+            {'personPairs': person_pairs, 'movedPersonPairs': moved})
 
 
 def maid_accuracy(cell, ids, last_d, eval_days=180, tendency_days=120, min_n=20):
@@ -143,6 +142,8 @@ def maid_accuracy(cell, ids, last_d, eval_days=180, tendency_days=120, min_n=20)
     tendency_days だけから傾向を作り、開いている店のうちいちばん行きそうな店を答えて、
     実際と比べる。評価するシフトの記録は使わない。
 
+    実際の開店集合を既知とする条件付き個人argmaxで、本番の店舗予測・整数定員・
+    同日移動・priorを含む精度ではない。p^n には別途、独立同分布の仮定が必要。
     1店しか開いていないシフトは、定義上必ず当たるので数えない。
     """
     eval_from = (last_d - datetime.timedelta(days=eval_days)).isoformat()
@@ -302,7 +303,7 @@ SECOND_STORE_MIN_SAMPLE = 20
 
 # 見習いにゃんこの見分け方。お店のやり方に合わせている。
 # 見習いのうちは X のアカウントを持たず、できたら昇格。初日から
-# TRAINEE_MAX_DAYS 経ってもアカウントが無い人は、昇格せずにいなくなったと見る。
+# TRAINEE_MAX_DAYS 以降はこの判定の対象外。離職そのものを証明するものではない。
 TRAINEE_MAX_DAYS = 90
 # 判定するのは直近このぶんだけ。これより前まで遡ると、卒業したメイドさんが
 # 「アカウントが無い（消えた）人」として、いつまでも見習いに数えられてしまう。
@@ -617,6 +618,69 @@ def promotion_dates(cell, roster, known):
     out.update(known)
     return out
 
+def roster_coverage(cell, listed_on, last_d):
+    """Unlisted proxy counts; a person is unique within each declared cell."""
+    cut = (last_d - datetime.timedelta(days=COVERAGE_DAYS)).isoformat()
+    overall, slots = [], []
+    by_store = {sid: [] for sid in IDS}
+    for (date, _shift), stores in cell.items():
+        if date < cut:
+            continue
+        listed = listed_on(date, stores)
+        everyone = set().union(*stores.values())
+        overall.append((len(everyone), len(everyone - listed)))
+        for sid, names in stores.items():
+            counts = (len(names), len(names - listed))
+            slots.append(counts)
+            by_store[sid].append(counts)
+
+    def summarize(rows, unit):
+        cells = len(rows)
+        total = sum(n for n, _ in rows)
+        unlisted = sum(n for _, n in rows)
+        distribution = collections.Counter(n for _, n in rows)
+        present = sum(n > 0 for _, n in rows)
+        return {
+            'unit': unit, 'cells': cells,
+            'personAppearances': total,
+            'listedPersonAppearances': total - unlisted,
+            'unlistedPersonAppearances': unlisted,
+            'unlistedShare': rate(unlisted, total),
+            'unlistedPerCell': round(unlisted / cells, 3) if cells else 0,
+            'cellsWithUnlisted': present,
+            'cellsWithUnlistedRate': rate(present, cells),
+            'distribution': {str(k): distribution[k] for k in sorted(distribution)},
+        }
+
+    return {
+        'from': cut, 'to': last_d.isoformat(), 'definition': 'listed_on_proxy',
+        'overall': summarize(overall, 'date-shift'),
+        'storeSlots': summarize(slots, 'date-shift-store'),
+        'byStore': {sid: summarize(rows, 'date-shift-store')
+                    for sid, rows in by_store.items()},
+    }
+
+
+def trainee_coverage(cell, is_trainee, last_d):
+    """The same is_trainee predicate as the badge, in unweighted 90-day store slots."""
+    cut = (last_d - datetime.timedelta(days=COVERAGE_DAYS)).isoformat()
+    by_store = {}
+    for sid in IDS:
+        counts = [sum(is_trainee(shown(name), date) for name in stores[sid])
+                  for (date, _shift), stores in cell.items()
+                  if date >= cut and sid in stores]
+        cells = len(counts)
+        present = sum(n > 0 for n in counts)
+        by_store[sid] = {
+            'cells': cells, 'traineePersonAppearances': sum(counts),
+            'cellsWithTrainees': present,
+            'cellsWithTraineesRate': rate(present, cells),
+            'traineesPerCell': round(sum(counts) / cells, 3) if cells else 0,
+        }
+    return {'from': cut, 'to': last_d.isoformat(), 'definition': 'is_trainee',
+            'unit': 'date-shift-store', 'byStore': by_store}
+
+
 def build():
     rows = load_csv('shifts.csv')
     events = {e['date'] for e in load_csv('events.csv')}
@@ -782,7 +846,7 @@ def build():
         c = collections.Counter(len(open_at(d, sh)) for d in dates)
         open_count[sh] = {str(k): c[k] for k in sorted(c)}
 
-    # 開いた店舗数ごとの「カレンダーに出る人数」（roster のみ、見習いを除く）。
+    # Historical listed_on proxy, including kitchen; not an observed advance schedule.
     # 前日からのローテーションでは3店舗の日を当てられないので、UI はこの人数で店舗数を決める。
     # 2026-09-01 から、お給仕予定は上旬・下旬をまとめて事前公開する方式になった
     # （それ以前は当日発表）。ノーマル以上は全員が提出するので、揃えば roster 全員が
@@ -792,7 +856,7 @@ def build():
     promoted_at = promotion_dates(cell, roster, read_promoted_at())
 
     def listed_on(d, stores):
-        """その日の予定表に載っていたはずの人。昇格前の見習いは載らない。"""
+        """Current-roster proxy after known/inferred promotion, unique across stores."""
         return {m for maids in stores.values() for m in maids
                 if m in roster_names and d >= promoted_at.get(m, '')}
 
@@ -906,7 +970,7 @@ def build():
 
     tendency = {}
     measured_accuracy = maid_accuracy(cell, IDS, last_d, tendency_days=TENDENCY_DAYS)
-    same_day_all, same_day_by_maid = same_day_moves(cell, IDS, cut)
+    same_day_all, same_day_by_maid, same_day_summary = same_day_moves(cell, IDS, cut)
     home_store = read_home_store()
     for name in roster:
         key = ALIAS.get(name, name)
@@ -1067,55 +1131,8 @@ def build():
         if t is not None:
             t['x'] = accounts.get(nm) or accounts.get(t['alias'] or nm)
 
-    # 公開スケジュール（roster）に載る人数と、実際の顔ぶれの差。
-    # 見習いにゃんこは月間スケジュールに載らず、当日のお給仕投稿で初めて分かる。
-    cov_cut = (last_d - datetime.timedelta(days=COVERAGE_DAYS)).isoformat()
-    cov_cells, cov_total, cov_on = 0, 0, 0
-    cov_dist = collections.Counter()
-    for (d, sh), stores in cell.items():
-        if d < cov_cut:
-            continue
-        for sid, maids in stores.items():
-            cov_cells += 1
-            cov_total += len(maids)
-            on = sum(1 for mm in maids if mm in roster_keys and d >= promoted_at.get(mm, ''))
-            cov_on += on
-            cov_dist[len(maids) - on] += 1
-    cov_off = cov_total - cov_on
-    # 店舗ごとの見習い人数。全体平均（unlistedPerShift）はシフト単位なので、
-    # 店舗ごとの人数とは意味が違う（実測で店あたり 0.7〜1.6 人）。
-    per_store = {}
-    for sid in IDS:
-        cells = rostered_here = unlisted_here = 0
-        zero = 0
-        for (d, sh), stores in cell.items():
-            if d < cov_cut or sid not in stores:
-                continue
-            maids = stores[sid]
-            on = sum(1 for mm in maids if mm in roster_keys and d >= promoted_at.get(mm, ''))
-            cells += 1
-            rostered_here += on
-            unlisted_here += len(maids) - on
-            if len(maids) == on:
-                zero += 1
-        per_store[sid] = {
-            'shifts': cells,
-            'rostered': rostered_here,
-            'unlisted': unlisted_here,
-            'unlistedShare': rate(unlisted_here, rostered_here + unlisted_here),
-            'unlistedPerShift': round(unlisted_here / cells, 2) if cells else 0,
-            'shiftsWithoutUnlisted': rate(zero, cells),
-        }
-
-    roster_coverage = {
-        'from': cov_cut, 'to': last, 'shiftCells': cov_cells, 'totalMaids': cov_total,
-        'rostered': cov_on, 'unlisted': cov_off,
-        'unlistedShare': rate(cov_off, cov_total),
-        'unlistedPerShift': round(cov_off / cov_cells, 2) if cov_cells else 0,
-        'shiftsWithUnlisted': rate(sum(v for k, v in cov_dist.items() if k > 0), cov_cells),
-        'distribution': {str(k): cov_dist[k] for k in sorted(cov_dist)},
-        'byStore': per_store,
-    }
+    # This historical proxy does not measure actual schedule non-submission or trainee status.
+    coverage = roster_coverage(cell, listed_on, last_d)
 
     # 配属先の人が「その顔ぶれの何割を占めるか」の平年値。
     # その日の顔ぶれに2号店配属の人が多ければ、2号店が開く見込みが上がる、という
@@ -1189,8 +1206,8 @@ def build():
     # 見習いにゃんこの見分け方は、お店のやり方に合わせる。
     #
     #   - 見習いのうちは X のアカウントを持たない。アカウントができたら昇格。
-    #   - 見つけた初日から TRAINEE_MAX_DAYS 経ってもアカウントが無い人は、
-    #     昇格せずにいなくなったと見る（ずっと見習いのままにはしない）。
+    #   - 初日から TRAINEE_MAX_DAYS 以降はこの判定の対象外。
+    #     離職が確定したとは言わない。
     #   - 判定するのは直近 TRAINEE_WINDOW_DAYS だけ。それより前まで遡ると、
     #     もう卒業したメイドさんを見習いとして数え続けることになる。
     #
@@ -1221,6 +1238,16 @@ def build():
         age = (datetime.date.fromisoformat(on_date)
                - datetime.date.fromisoformat(started)).days
         return 0 <= age < TRAINEE_MAX_DAYS
+
+    trainee_periods = {}
+    for name in sorted(set(debuts) | set(first_shift)):
+        started = debuts.get(name) or first_shift.get(name)
+        if not is_trainee(name, started):
+            continue
+        until = (datetime.date.fromisoformat(started)
+                 + datetime.timedelta(days=TRAINEE_MAX_DAYS - 1)).isoformat()
+        if until >= trainee_from:
+            trainee_periods[name] = {'from': max(started, trainee_from), 'to': until}
 
     actual = {}
     actual_roster = {}
@@ -1263,63 +1290,12 @@ def build():
     trainee_outlook = {}
     for sh in SHIFTS:
         num = den = 0.0
-        # 店ごとにも同じ重みで数える。以前のコメントは「店ごとに差が無い」と
-        # していたが、いまは差がある。
-        #
-        # ここで数えるのは entry['trainees']、つまり上の is_trainee（初日が分かり、
-        # アカウントをまだ持たず、初日から90日以内）の人。画面の 🔰 と同じ定義。
-        #
-        #     窓          s1     s2     s3     s4
-        #     90日      0.44   0.34   0.26   0.22
-        #     全期間     0.53   0.52   0.46   0.28
-        #     半減期30日  0.50   0.44   0.36   0.30
-        #
-        # 9通りの窓で 1号店が8回1位、4号店が9回とも最下位。直近90日の
-        # 1号店と4号店の差は、店の札を混ぜた並べ替えで0.9%（186/20000回）。
-        #
-        # **画面は 🔰 を4号店の直後に置き、1号店には一度も出していない。**
-        # いちばん少ない店に置き、いちばん多い店に置いていない。
-        #
-        # なお「名簿に載っていない人」で数えると順位が変わる（s2 > s3 > s1 > s4、
-        # 9通りすべて）。あちらには卒業表記のないまま長く出ている方が入り、
-        # 2・3号店に寄っている。画面が 🔰 と呼ぶのは見習いのほうなので、
-        # ここでは見習いで数える。最下位が4号店なのは、どちらの数え方でも同じ。
-        #
-        # ---------------------------------------------------------------
-        # この表で「どの店に見習いがいるか」を当てにいかないこと。
-        #
-        # 7通り試して、本番で使える手はどれもでたらめ（開いている店から等確率）
-        # を超えなかった。155シフトで評価している。
-        #
-        #     でたらめ                55.1%
-        #     いつも1号店              61.3%   p=0.054
-        #     app と同じ定員で配る        58.7%
-        #     開いてる店の組み合わせごと     58.1%
-        #     昼の実績を夜へ投げる         58.4%
-        #     一人ひとりの確率を足す        52.9%   でたらめより悪い
-        #     この表で選ぶ（120日窓）      50.3%   いちばん悪い
-        #
-        # 確率で言う形も較正が壊れる。窓で作った確率は、自信のあるときほど外れる。
-        #
-        #     言った 50% -> 実際 16%
-        #     言った 65% -> 実際  0%
-        #     Brier 0.213（全部「26%」と言い続ける 0.194 より悪い）
-        #
-        # 当てられる手はある。**見習い以外がどの店にいるかを知っていれば 79.4%**。
-        # 見習いは「ふだんより人数が足りない店」を埋めているので、そこを見れば
-        # ほぼ分かる。ところがそれは、画面がいま推測している当のものでもある。
-        # しかも app.js の storeCapacities はふだんの人数に比例して配るので、
-        # 足りない店が構造上できない。
-        #
-        # **答えは分かっているのに、使うには先に別の答えが要る。**
-        #
-        # 人ごとの偏りも見た。見習い1人ずつの行き先には本物の偏りがある
-        # （いちばん多い店に61%、無作為に置き直して0.011）。ただし
-        # **全員が1号店寄り**なので、どのシフトでも同じ店を指す。区別に使えない。
-        #
-        # byStore はいま「どの店も1シフトに1人はいないので、店は選べません」と
-        # 言うために使っている。その用途なら、値が動いても文言は嘘にならない。
-        # ---------------------------------------------------------------
+        # Counts use is_trainee, shift-specific 120-day data and a 30-day half-life.
+        # byStore is a mean headcount, not a presence probability or a proof that
+        # predicting locations is impossible. Keep trainees separate in the UI.
+        # The production-display proxy (186 cases, including 91 with no trainee)
+        # scored fixed-s1 59/186 versus random 42/186, but has no independent future
+        # holdout and keeps current metadata fixed. It does not justify deploying s1.
         per_store_num = collections.Counter()
         per_store_den = collections.Counter()
         for d, per_shift in actual_roster.items():
@@ -1442,14 +1418,17 @@ def build():
                 cell, last_d, {ALIAS.get(n, n) for n in roster}, posted_by_key),
         },
         'actual': actual,
-        # 記録のある日の「誰がどこにいたか」。カレンダーが実績と書く日は、
-        # 予定表からの割り振りではなくこちらを出す。trainees は、その日は
-        # 見習いにゃんこだった人（公式サイトの在籍一覧に載らない人）。
+        # Person-level records are distinct from store-only actual records.
+        # trainees uses is_trainee, not roster membership.
         'actualRoster': actual_roster,
         # 見込みのシフトに置く、名前の分からない見習いにゃんこの人数（1店あたり）。
         'traineeOutlook': trainee_outlook,
         # 昼にいた店から夜にいる店への移り方（全体）。人ごとの表が薄いときの受け皿。
         'sameDayMaidMove': same_day_all,
+        # Exact counts cannot in general be recovered from rounded transition rates.
+        'sameDayMaidMoveSummary': {
+            'from': cut, 'to': last, 'unit': 'date-person', **same_day_summary,
+        },
         # 予定表をまだ出していない在籍者。揃うまでは顔ぶれが実際より薄い。
         'schedulePending': schedule_pending,
         # 上のうち、メイド単位の記録が無く「開いた店」だけ分かっている日。
@@ -1457,7 +1436,13 @@ def build():
         'actualWithoutRoster': openings_used,
         'maidTendency': tendency,
         'unlistedMaids': unlisted,
-        'rosterCoverage': roster_coverage,
+        'rosterCoverage': coverage,
+        'traineeCoverage': trainee_coverage(cell, is_trainee, last_d),
+        # Badge eligibility only. Automatically observed shifts are not inputs.
+        'traineePeriods': {
+            'definition': 'is_trainee', 'asOf': last,
+            'from': trainee_from, 'byName': trainee_periods,
+        },
     }
 
 

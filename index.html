@@ -1,15 +1,9 @@
 <!doctype html>
-<html lang="ja">
+<html lang="ja" data-theme="light">
   <head>
     <meta charset="utf-8">
-    <script>
-      (() => {
-        const param = new URLSearchParams(window.location.search).get("scoutTheme");
-        const theme =
-          param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-        document.documentElement.setAttribute("data-theme", theme);
-      })();
-    </script>
+    <meta name="color-scheme" content="only light">
+    <meta name="theme-color" content="#fffbeb">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta
       name="description"
@@ -18,7 +12,7 @@
     <title>お給仕カレンダー | アキバ絶対領域</title>
     <style>
 :root {
-  color-scheme: light;
+  color-scheme: only light;
   --cp-bg: #f7f4ef;
   --cp-bg-elevated: #fcfbf8;
   --cp-surface: #ffffff;
@@ -51,45 +45,11 @@
   --cp-store-s3-soft: rgba(23, 121, 92, 0.1);
   --cp-store-s4-soft: rgba(31, 111, 168, 0.1);
 }
-html[data-theme="dark"] {
-  color-scheme: dark;
-  --cp-bg: #3d3b3a;
-  --cp-bg-elevated: #343231;
-  --cp-surface: #292929;
-  --cp-surface-soft: #2e2e2e;
-  --cp-border: #474747;
-  --cp-border-strong: #5f5f5f;
-  --cp-text: #dedede;
-  --cp-text-muted: #919191;
-  --cp-text-soft: #b0b0b0;
-  --cp-accent: #fd8ea1;
-  --cp-accent-hover: #fb7b91;
-  --cp-accent-soft: rgba(253, 142, 161, 0.14);
-  --cp-accent-fg: #1a1a1a;
-  --cp-success: #4ade80;
-  --cp-danger: #f87171;
-  --cp-warning: #fbbf24;
-  --cp-link: #4da6ff;
-  --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
-  --cp-overlay: rgba(41, 41, 41, 0.88);
-  --cp-panel: rgba(41, 41, 41, 0.72);
-  --cp-panel-strong: rgba(41, 41, 41, 0.96);
-  --cp-sheen: rgba(255, 255, 255, 0.04);
-  --cp-highlight: rgba(253, 142, 161, 0.12);
-  --cp-store-s1: #fd8ea1;
-  --cp-store-s2: #c3a3f2;
-  --cp-store-s3: #6ed3a8;
-  --cp-store-s4: #7cc0f0;
-  --cp-store-s1-soft: rgba(253, 142, 161, 0.16);
-  --cp-store-s2-soft: rgba(195, 163, 242, 0.16);
-  --cp-store-s3-soft: rgba(110, 211, 168, 0.16);
-  --cp-store-s4-soft: rgba(124, 192, 240, 0.16);
-}
     </style>
-    <link rel="stylesheet" href="styles.css?v=da93a11331">
-    <script src="data/schedule.js?v=2f12115af8" defer></script>
-    <script src="data/store-insights.js?v=a18dfe31b2" defer></script>
-    <script src="app.js?v=cee0e744b0" defer></script>
+    <link rel="stylesheet" href="styles.css?v=42e8ff7b15">
+    <script src="data/schedule.js?v=99e292be75" defer></script>
+    <script src="data/store-insights.js?v=09f8ea4436" defer></script>
+    <script src="app.js?v=5acc194fe9" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#calendar">カレンダーへ移動</a>
@@ -97,12 +57,15 @@ html[data-theme="dark"] {
       <div>
         <p class="eyebrow">AKIBA ZETTAI RYOIKI</p>
         <h1>お給仕カレンダー</h1>
-        <p class="header-copy">公開情報を、昼・夜ごとに見やすくまとめています。</p>
+        <p class="header-copy">会いに行く日を、カレンダーから。</p>
       </div>
+      <p class="unofficial-label">非公式・公開情報まとめ</p>
     </header>
 
     <main class="page-shell">
-      <aside class="filters-card" aria-labelledby="filters-title">
+      <details class="filters-card">
+        <summary class="filters-toggle">表示条件・メイドで絞り込み <span>期間 ／ 店舗別 ／ 人物別</span></summary>
+        <div class="filters-content">
         <div class="filters-heading">
           <div>
             <p class="section-kicker">絞り込み</p>
@@ -117,16 +80,20 @@ html[data-theme="dark"] {
           <legend>表示モード</legend>
           <div class="mode-switch">
             <label>
-              <input type="radio" name="view-mode" value="forecast" checked>
-              <span>予測</span>
+              <input type="radio" name="view-mode" value="forecast">
+              <span>店舗別一覧</span>
             </label>
             <label>
               <input type="radio" name="view-mode" value="roster">
-              <span>誰いるか</span>
+              <span>お給仕一覧</span>
             </label>
             <label>
               <input type="radio" name="view-mode" value="maid">
               <span>この人はどこ</span>
+            </label>
+            <label>
+              <input type="radio" name="view-mode" value="calendar" checked>
+              <span>月間カレンダー</span>
             </label>
           </div>
           <p id="mode-help" class="mode-help"></p>
@@ -144,7 +111,7 @@ html[data-theme="dark"] {
           </label>
         </fieldset>
 
-        <details id="maid-filter-details" class="maid-filter-details" open>
+        <details id="maid-filter-details" class="maid-filter-details">
           <summary>
             <span>メイド</span>
             <span id="maid-filter-summary" class="maid-filter-summary"></span>
@@ -163,7 +130,8 @@ html[data-theme="dark"] {
             <div id="maid-checkboxes" class="checkbox-grid"></div>
           </fieldset>
         </details>
-      </aside>
+        </div>
+      </details>
 
       <section class="calendar-card" aria-labelledby="month-title">
         <div class="calendar-toolbar">
@@ -176,8 +144,10 @@ html[data-theme="dark"] {
             <span aria-hidden="true">‹</span>
           </button>
           <div class="month-heading">
-            <p class="section-kicker">月間表示</p>
-            <h2 id="month-title"></h2>
+            <span id="month-year" class="month-year"></span>
+            <h2 id="month-title" class="visually-hidden"></h2>
+            <div class="month-display" aria-hidden="true"><span id="month-number"></span><span class="month-unit">月</span></div>
+            <p class="month-caption">お給仕と、特別な日。</p>
           </div>
           <button
             id="next-month"
@@ -189,6 +159,10 @@ html[data-theme="dark"] {
           </button>
         </div>
 
+        <div class="calendar-guide">
+          <p>日付をタップして、昼・夜の詳細へ</p>
+          <button id="current-month" type="button" class="button button-secondary">今月</button>
+        </div>
         <p id="result-summary" class="result-summary" aria-live="polite"></p>
         <div
           id="calendar"
@@ -199,15 +173,35 @@ html[data-theme="dark"] {
         ></div>
 
         <div class="calendar-notes">
-          <p><span class="featured-key" aria-hidden="true"></span><strong>太字</strong>は記念日・生誕の主役です。</p>
+          <p><span class="featured-key" aria-hidden="true"></span>画像のある日は記念日・生誕。画像は主役ごとの仮イラストで、ご本人の写真や好みを示すものではありません。</p>
           <p><span class="kitchen-key" aria-hidden="true">🍳</span>付きはキッチンにゃんこ（メイド服ではありません）です。</p>
-          <p>空欄の日は「お給仕なし」ではなく、公開された確定情報が未確認であることを示します。</p>
+          <p>「未確認」はお休みではありません。画像があっても昼夜両方のお給仕を意味しません。詳細の「実績」「予定」「推測」をご確認ください。</p>
+          <p>このサイトは非公式です。最新情報はお店・メイドさんの公式発表をご確認ください。</p>
           <p id="schedule-system-note" class="schedule-system-note" hidden></p>
           <p id="schedule-pending-note" class="schedule-system-note" hidden></p>
           <p id="last-updated" class="last-updated"></p>
+          <div class="observation-status">
+            <p id="observation-status" aria-live="polite">自動収集結果を読み込み中…</p>
+            <button id="refresh-observations" class="button button-secondary" type="button">取得結果を再読込</button>
+          </div>
         </div>
       </section>
     </main>
+
+    <dialog id="day-dialog" class="day-dialog" aria-labelledby="day-dialog-title" aria-describedby="day-dialog-events">
+      <div class="dialog-panel">
+        <header class="dialog-header">
+          <div><p class="section-kicker">お給仕の詳細</p><h2 id="day-dialog-title"></h2></div>
+          <button id="close-day-dialog" class="dialog-close" type="button" autofocus aria-label="詳細を閉じる">閉じる <span aria-hidden="true">×</span></button>
+        </header>
+        <p id="day-dialog-events" class="dialog-events"></p>
+        <nav class="dialog-shift-nav" aria-label="お給仕の時間帯へ移動">
+          <button id="jump-day" type="button">☀ 昼へ</button>
+          <button id="jump-night" type="button">☾ 夜へ</button>
+        </nav>
+        <div id="day-dialog-content" class="dialog-content" tabindex="-1" aria-label="昼夜のお給仕"></div>
+      </div>
+    </dialog>
 
     <noscript>
       <p class="noscript-message">カレンダーの表示にはJavaScriptを有効にしてください。</p>

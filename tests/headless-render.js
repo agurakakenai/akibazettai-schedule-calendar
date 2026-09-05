@@ -139,6 +139,11 @@ const documentShim = {
 };
 
 const windowShim = {
+  // Curated-data baseline; observation integration has its own offline cases.
+  OBSERVED_SHIFTS: {
+    schemaVersion: 1, complete: false, checkedAt: null, lastSuccessAt: null,
+    posts: [], pending: [], lastRun: { status: "never" }
+  },
   addEventListener: (type, fn) => listeners.push({ element: "window", type, fn }),
   matchMedia: () => ({ matches: false, addEventListener() {}, addListener() {} }),
   localStorage: {
@@ -161,7 +166,11 @@ const sandbox = {
   document: documentShim,
   console,
   Intl,
-  Date,
+  Date: class extends Date {
+    constructor(...args) {
+      super(...(args.length ? args : ["2026-09-06T03:00:00Z"]));
+    }
+  },
   Math,
   JSON,
   Set,
@@ -219,6 +228,19 @@ const withClass = (root, name) =>
   walk(root).filter((node) => node.classList && node.classList.contains(name));
 
 const calendar = elementById("calendar");
+
+assert.equal(withClass(calendar, "day-button").length, 30, "the default September view is a full month");
+assert.equal(withClass(calendar, "shift-section").length, 0, "shift rosters belong in details, not date cells");
+assert.equal(withClass(calendar, "day-events").length, 4, "confirmed events decorate four dates");
+assert.equal(withClass(calendar, "weekday").length, 7, "the month is Sunday-first and seven columns");
+// Keep the existing forecast-specific assertions on unrecorded dates.
+// Recorded rosters are exercised independently below.
+const afterRecord = new Date(`${Object.keys(insights.actual).sort().at(-1)}T00:00:00Z`);
+afterRecord.setUTCDate(afterRecord.getUTCDate() + 1);
+elementById("date-from").value = afterRecord.toISOString().slice(0, 10);
+elementById("date-to").value = Object.keys(schedule.schedule).sort().at(-1);
+dispatch("date-from", "change");
+selectViewMode("forecast");
 
 // --- カレンダー本体 -----------------------------------------------------
 const dayCells = withClass(calendar, "calendar-day");
@@ -552,9 +574,10 @@ for (const section of shiftSections) {
 
     const members = withClass(lists[index], "maid-entry");
     assert.ok(members.length > 0, "a shop heading must have maids under it");
-    assert.ok(
-      label.textContent.includes(`${members.length}人`),
-      "the heading must count the maids under it"
+    assert.equal(
+      label.textContent,
+      insights.stores.find((store) => store.id === storeId).short,
+      "the common heading names the store without repeating a tally"
     );
 
     let previousRoster = -1;
@@ -731,6 +754,9 @@ for (const plan of plans) {
         caveat.includes("当てられて"),
         `${name}: the sentence must put the guessing on us, not on her`
       );
+      assert.ok(caveat.includes("条件付き"), "the measured rate assumes the true opening set");
+      assert.ok(caveat.includes("本番の精度ではありません"), "conditional scores are not shipped itinerary accuracy");
+      if (open > 1) assert.ok(caveat.includes("独立"), "p^n requires an explicit independence assumption");
       if (schedule.kitchenStaff.includes(name)) {
         assert.ok(caveat.includes("キッチン"), `${name}: a kitchen maid must get the reason too`);
       }
@@ -1036,12 +1062,14 @@ while (steps > 0) {
   steps -= 1;
 }
 
+const shiftBasis = (section) => withClass(section, "recorded-roster")[0]?.dataset.recordType
+  ?? withClass(section, "store-status-badge")[0]?.textContent;
 const recordMonthBadges = withClass(calendar, "calendar-day").map((cell) => ({
   day: withClass(cell, "day-number")[0].textContent,
-  badges: withClass(cell, "store-status-badge").map((badge) => badge.textContent)
+  badges: withClass(cell, "shift-section").map(shiftBasis)
 }));
 const rendered = new Set(recordMonthBadges.flatMap((cell) => cell.badges));
-assert.ok(rendered.has("実績"), "the recorded window must render 実績 badges");
+assert.ok(rendered.has("recorded"), "the recorded window must render the shared recorded roster");
 
 const dayLabel = (key) => String(Number(key.slice(-2)));
 const lastActualCell = recordMonthBadges.find((cell) => cell.day === dayLabel(lastActual));
@@ -1049,9 +1077,9 @@ assert.ok(lastActualCell, `${lastActual} must be visible in the selected range`)
 // 最新の記録日は片シフトだけのことがある（その日の夜がまだ来ていない等）。
 const recordedShifts = Object.keys(insights.actual[lastActual]).length;
 assert.equal(
-  lastActualCell.badges.filter((badge) => badge === "実績").length,
+  lastActualCell.badges.filter((badge) => badge === "recorded" || badge === "実績").length,
   recordedShifts,
-  `${lastActual} has ${recordedShifts} recorded shift(s), so that many 実績 badges are correct`
+  `${lastActual} must distinguish records from forecasts without a repeated badge`
 );
 
 const forecastKey = shiftDate(lastActual, 1);
@@ -1078,13 +1106,13 @@ if (partialDate) {
   const cell = recordMonthBadges.find((entry) => entry.day === dayLabel(partialDate));
   assert.ok(cell, `${partialDate} must be visible in the selected range`);
   assert.equal(
-    cell.badges.filter((badge) => badge === "実績").length,
+    cell.badges.filter((badge) => badge === "recorded" || badge === "実績").length,
     1,
     `${partialDate} has one recorded shift, so exactly one 実績 badge is correct`
   );
   // 記録の無い側は、同じ日のもう片方の実績から見込むか、曜日傾向に落ちる。
   // どちらでもよいが、「実績」を名乗ってはいけない（＝休みと読まれてはいけない）。
-  const fallback = cell.badges.filter((badge) => badge !== "実績");
+  const fallback = cell.badges.filter((badge) => badge !== "recorded" && badge !== "実績");
   assert.equal(
     fallback.length,
     1,
@@ -1135,7 +1163,7 @@ assert.ok(guessedHere > 0, "no stop falls after the last record, so the other wo
 // 予測モードに戻して、その日そのシフトに誰が出ていたかを画面から読む。
 selectViewMode("forecast");
 const recordedCells = withClass(calendar, "calendar-day").filter((cell) =>
-  withClass(cell, "store-status-badge").some((badge) => badge.textContent === "実績")
+  withClass(cell, "recorded-roster").some((block) => block.dataset.recordType === "recorded")
 );
 assert.ok(recordedCells.length > 0, "the recorded window must render some recorded days");
 
@@ -1151,6 +1179,22 @@ for (const cell of recordedCells) {
       return;
     }
     checkedRecordedShifts += 1;
+    const blocks = withClass(section, "recorded-roster");
+    assert.equal(blocks.length, 1, `${cellKey} ${shift}: use the common record renderer`);
+    assert.equal(blocks[0].dataset.recordType, "recorded");
+    for (const redundant of ["store-status-badge", "store-outlook", "shift-evidence", "entry-evidence", "unmatched-roster"]) {
+      assert.equal(withClass(section, redundant).length, 0, `${cellKey} ${shift}: no ${redundant} repetition`);
+    }
+    const details = withClass(section, "observation-details");
+    assert.equal(details.length, 1);
+    assert.ok(!details[0].open, "record sources must start collapsed");
+    assert.ok(details[0].textContent.includes(`${cellKey} ${shift}`));
+    assert.ok(details[0].textContent.includes("data/store-insights.js・actualRoster"));
+    assert.equal(withClass(details[0], "observation-source").length, 0,
+      "curated records without individual post URLs must not invent source links");
+    assert.equal(withClass(section, "maid-list").length, withClass(section, "maid-group-label").length);
+    assert.ok(withClass(section, "maid-list").every((list) => list.children.length > 0),
+      "recorded store groups must never be empty");
     const shown = withClass(section, "maid-entry").map(
       (entry) => withClass(entry, "maid-name")[0].textContent
     );
@@ -1372,8 +1416,8 @@ for (const cell of withClass(calendar, "calendar-day")) {
       // 否定する（byStore は昼で 0.243〜0.503）。当てられないのはこちらのほうで、
       // 店が横並びだからではない。**「当てられない」と「同じくらい」は別のこと。**
       assert.ok(
-        shops.size === 1 || where[0].textContent.includes("当てられません"),
-        `${cellKey} ${shift}: with ${shops.size} shops open, say we cannot tell which ` +
+        where[0].textContent.includes("店舗は特定できません") && where[0].textContent.includes("予測"),
+        `${cellKey} ${shift}: the candidate set is predicted, not a known set of shops ` +
           `(got "${where[0].textContent}")`
       );
       assert.doesNotMatch(
@@ -1563,6 +1607,46 @@ assert.ok(
   unjudgedDay < Object.keys(insights.actualRoster).sort().at(-1),
   "the unjudged days must be the older ones"
 );
+
+// R2: exercise both legacy surfaces with store evidence but no person roster.
+{
+  const key = lastActual;
+  const shift = "昼";
+  const original = insights.actualRoster[key][shift];
+  const storesOnly = insights.actualWithoutRoster[key];
+  assert.ok(original && schedule.schedule[key][shift].length > 0);
+  try {
+    delete insights.actualRoster[key][shift];
+    insights.actualWithoutRoster[key] = { [shift]: [...insights.actual[key][shift]] };
+    elementById("date-from").value = key;
+    elementById("date-to").value = key;
+    dispatch("date-from", "change");
+    selectViewMode("forecast");
+    const day = withClass(calendar, "shift-day")[0];
+    assert.ok(withClass(day, "shift-evidence")[0].textContent.includes("店舗のみ実績"));
+    const people = withClass(day, "maid-entry").filter((entry) =>
+      !entry.classList.contains("is-trainee-guess"));
+    assert.ok(people.length > 0, "the fixture must contain assigned people");
+    for (const person of people) {
+      assert.notEqual(person.dataset.evidence, "recorded");
+      assert.doesNotMatch(person.title ?? "", /にいた記録/);
+    }
+    selectViewMode("maid");
+    const stops = withClass(calendar, "maid-plan-stop").filter((stop) =>
+      withClass(stop, "maid-plan-when")[0].textContent.endsWith(" 昼"));
+    assert.ok(stops.length > 0);
+    for (const stop of stops) {
+      assert.notEqual(stop.dataset.evidence, "recorded");
+      assert.doesNotMatch(stop.title, /にいた記録/);
+    }
+    assert.ok(withClass(calendar, "maid-plan-stop").some((stop) =>
+      stop.dataset.evidence === "recorded"), "the evening still has valid person records");
+  } finally {
+    insights.actualRoster[key][shift] = original;
+    if (storesOnly) insights.actualWithoutRoster[key] = storesOnly;
+    else delete insights.actualWithoutRoster[key];
+  }
+}
 
 console.log(
   `Headless render valid: ${dayCells.length} day cells, ${shiftSections.length} shift sections, ` +
