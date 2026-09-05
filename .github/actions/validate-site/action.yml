@@ -1,0 +1,12 @@
+name: Validate static calendar
+description: Offline data, rendering and publication checks
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        node --check app.js
+        node --test tests/validate-schedule.js tests/date-defaults.js tests/range-rendering.js tests/month-calendar.js tests/observed-shifts.js tests/validate-insights.js tests/store-outlook.js tests/headless-render.js
+        python -m unittest discover -s tools/tests -p "test_*.py"
+        python tests/test-insights-tools.py
+        python tools/check-readme.py

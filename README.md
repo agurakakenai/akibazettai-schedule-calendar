@@ -1000,7 +1000,7 @@ Node.jsがPATHにない場合は `--node` に実行ファイルを指定でき�
 
 本番 `build()` のうち、予測計算で使わない表示用 `maid_accuracy` / calibration だけsnapshot生成時に省略します。開店・人数・傾向・移動の表はその時点までのデータで毎回再生成し、**openingsも時間filter**します。ただし現在の名簿、配属、アカウント、告知等は固定です。当時の予定提出・欠勤まで復元した完全な事前評価ではありません。報告のp値は単純な対比較で、日間相関や方式選択の影響を除いた将来保証ではありません。
 
-## 公開HTTPからの自動収集（ローカル）
+## 公開HTTPからの自動収集
 
 `tools\collect-shifts.py` は、Yahoo!リアルタイム検索の**「アキバ絶対領域」「ひるにゃんこ」各1ページ**から公式status URLを発見し、既存の公開個別表示エンドポイントで作者ID・screen_name・投稿ID・日時・お給仕の書式を確認します。APIキー、課金、ログインCookie、ブラウザー、追加パッケージは不要です。本文全文は保存せず、出典と抽出した事実だけを残します。
 
@@ -1031,11 +1031,46 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 
 `traineePeriods` は表示用の期間情報で、自動観測を学習した値ではありません。現在の公表アカウント情報を使う既存判定をそのまま使い、過去の完全な昇格履歴を復元するものでもありません。昇格・初日の根拠を更新した場合は、既存の `tools\build-insights.py` で再生成します。期間外・根拠なしの名前には印を付けません。
 
-ブラウザーは `observed-shifts.json` を `cache: "no-store"` で読むだけです。表示中は1分おきに**ローカルJSONだけ**を再読込し、詳細popupを開いている間は自動更新を待ちます。「取得結果を再読込」でも更新できます。既に読込中の応答がpopupへ到着した場合も、選択日・「更新情報」の展開・focus・scrollを保持します。ブラウザーからYahooやXの検索を実行したり、統計を学習したりしません。各JSONはatomicに置換し、JavaScriptとの二重形式保存や収集ごとのindex刻印変更は不要です。アプリ・CSSなどの既存刻印は従来どおり更新します。
+ブラウザーは同じサイトの `observed-shifts.json` を `cache: "no-store"` で読むだけです。表示中は1分おきにこのJSONを再読込し、詳細popupを開いている間は自動更新を待ちます。「取得結果を再読込」でも更新できます。既に読込中の応答がpopupへ到着した場合も、選択日・「更新情報」の展開・focus・scrollを保持します。ブラウザーからYahooやXの検索を実行したり、統計を学習したりしません。アプリ・CSSなどの既存刻印は従来どおり更新します。
 
-### Windowsで毎時00分に自動実行
+### GitHub Actionsから収集・公開する構成
 
-**現在の指定は日本時間の毎時00分**です。13:30/19:30の2回実行や、別の毎時watchは併用しません。非昇格のPowerShellで次を実行します。
+本番の継続更新は、標準のGitHub-hosted runnerで**収集→状態保存→検証→frontend限定staging→同じworkflowでPages公開**する構成です。X用APIキーやCookieは使いません。GitHubへの状態保存には、そのrunの既存`GITHUB_TOKEN`を使います。tokenを公開HTTPへ送ったり、stateやartifactへ保存したりしません。
+
+```powershell
+# 実runnerの公開HTTP経路を空snapshotから1回確認（観測1件以上の個別検証が必須）
+gh workflow run deploy-pages.yml --ref main -f mode=probe
+# 最新の公開コードで収集・保存・検証・公開
+gh workflow run deploy-pages.yml --ref main -f mode=collect
+# 取得はせず、最新の保存済み観測と現在のmainで公開
+gh workflow run deploy-pages.yml --ref main -f mode=deploy
+```
+
+移行時はprobeと手動`collect`の実成功を確認し、ローカル定期taskを無効化してから毎時00分のcronを有効にします。cronはUTCの毎時00分で、日本時間でも分は00分です。GitHub側の混雑などで開始が遅れる場合があり、厳密な時刻の保証はありません。移行後はPCの起動・ログインに依存しません。
+
+コード公開と収集公開は同じPages concurrency groupで直列化します。production runは実行開始時の**最新main**をcheckoutし、コードpush時にもstate branchの最新観測を復元します。古いcollector runが古いUIやmain同梱の古い観測へ巻き戻すことを避けます。`GITHUB_TOKEN`のpushで別workflowが起動することには依存しません。
+
+`collector-state` branchは**data専用**です。観測snapshot、pending、resolved、通信制限sidecar、恒久の`state-owner.json`、収集中の`lease.json`だけを保存し、そのbranchのコードを実行しません。main/default/code branchの誤指定、所有marker欠落、予期しないファイル、non-fast-forwardを拒否します。force pushはしません。
+
+HTTPの前にleaseをremoteへ保存します。収集後、成功・部分失敗・取得不能のどれでも保存できた事実と通信制限を永続化し、同じcommitでleaseを消します。remote保存が失敗した場合はleaseを残し、次runはHTTPを始めず停止します。部分失敗でも有効な保存済み観測を配信できますが、**Pages構築成功と収集完全成功は別**です。`collectionStatus` / `collectionCode`とUIの更新状態で区別します。
+
+#### 保存失敗時の回復
+
+1. `gh workflow disable deploy-pages.yml` で繰り返し起動を止め、失敗runのログと`collector-recovery-<run-id>` artifactを確認します。このrecovery artifactはPagesには入りません。
+2. そのrunのcanonical JSONとHTTP-state JSONを取得し、JSONの形式・作者/日時・pending/resolved・`Retry-After`を確認します。失敗後に別のrunを空stateで始めて制限を無視しないでください。
+3. `collector-state`だけの作業コピーで最新remoteを取得し、`state-owner.json`が同じ管理情報であること、leaseが失敗runのものであることを照合します。data branchのスクリプトは実行しません。
+4. 検査した2つのstate JSONを復元し、所有markerを維持したまま該当leaseだけを削除して、通常のcommit/pushを行います。競合したら取り直して照合し、forceしません。
+5. `gh workflow enable deploy-pages.yml` 後に`mode=collect`で再開します。保存されたcooldownは維持され、期限前はHTTPを保留します。
+
+### Pagesへ載せるファイル
+
+`tools\pages.py stage` は新しい`_site`に、index/app/styles、公開用data、イベントSVGと`version.json`だけを構築します。観測JSONはwhitelist projectionにし、内部pending/resolved/cooldown・ローカルpath・SID・PID・config・log・lock・全文postをfrontendへ持ち込みません。backend、tests、`.git`、README等もPages artifactから除外します。
+
+`version.json`は公開コードのSHA、観測の確認時刻、各公開資産のraw SHA256を持ちます。`index.html`の改行正規化済みcache刻印とは用途が違い、配信物そのものの照合に使います。GitHub Pagesのリポジトリsubpathで動くよう、JSON・画像・scriptは相対参照のままです。
+
+### Windowsのローカル収集（開発・復旧用）
+
+Windows taskは残せますが、本番をActionsへ切り替えた後は無効化し、cloudとの二重定期実行をしません。ローカルだけで使う場合の操作は、非昇格PowerShellから次のとおりです。
 
 ```powershell
 .\tools\setup-collector-schedule.ps1 -Action Plan
@@ -1052,9 +1087,9 @@ Task Schedulerに現在ユーザーの非昇格・パスワード保存なしの
 
 `Status` で正確なtask名・Action・次回実行時刻・最終結果・データとログの場所を確認できます。`Run` は登録した実タスクを1回だけ手動起動し、`Stop` はそのタスクの現在の実行だけを止めます。`Uninstall` は登録を解除し、観測とログは残します。無関係な既存taskや設定は上書きしません。worktreeやスクリプトを移動した場合は、新しいworktreeから `-Action Install -Cadence Hourly -RepoRoot <新しい絶対パス>` で再登録してください。
 
-別途の常駐が必要な開発用には `collect-shifts.py --watch --interval 3600` もありますが、登録タスクとの併用はしません。これは実行完了からの間隔であり、毎時00分への整列ではありません。今回の自動実行にはTask Schedulerだけを使います。
+別途の常駐が必要な開発用には `collect-shifts.py --watch --interval 3600` もありますが、登録タスクやcloud定期実行との併用はしません。これは実行完了からの間隔であり、毎時00分への整列ではありません。
 
-GitHub Actionsのschedule、有料runner、API secret、公開deployは設定しません。HTTP経路や検索側のHTMLが変わった場合は、結果やエラーを確認してから対応します。自動収集によって公開サイトへ変更がpushされることもありません。
+ローカルcollector単体はAppDataとローカルmirrorまでで、GitHubへpushしません。有料runnerや新しいAPI secretは設定しません。HTTP経路や検索側のHTMLが変わった場合は、結果やエラーを確認してから対応します。
 
 回帰は `tools\tests\test_collect_shifts.py`、`tests\observed-shifts.js` と `tests\browser-calendar.js` にあります。ネットワーク部分は最小のoffline fixtureで故障を作り、実ブラウザー側でも部分観測・未照合予定・手動優先・読込失敗時のsnapshot維持を確認します。
 
@@ -1097,7 +1132,7 @@ python tools/add-shifts.py --confirm-name NAME --dry-run <URL> ...
 
 fixtureは**投稿本文の転載ではなく**、投稿ID・日時・店見出し・日付・店・シフト・名前の事実データです。テスト内で名前列と顔文字を組み立てて境界を再現します。原文は投稿IDから参照します。
 
-**URL が要るのは、一覧から辿る経路が無いためです。**
+**この手動取込は、指定した投稿だけをcurated実績へ入れます。**検索からの自動発見は上のcollectorに分離し、網羅性を保証しない観測として扱います。
 
 | 経路 | 使えるか |
 |---|---|

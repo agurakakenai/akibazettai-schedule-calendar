@@ -8,10 +8,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Build/deploy, or verify anonymous collection from this runner
+        description: Deploy current data, collect and deploy, or probe public HTTP
         type: choice
         options:
           - deploy
+          - collect
           - probe
         default: deploy
 
@@ -24,56 +25,87 @@ concurrency:
 
 jobs:
   validate:
-    name: Validate schedule data
-    if: inputs.mode != 'probe'
+    name: Validate pull request
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           persist-credentials: false
-
-      - name: Validate schedule data
-        run: |
-          node --check app.js
-          node tests/validate-schedule.js
-          node tests/date-defaults.js
-          node tests/range-rendering.js
-          node tests/month-calendar.js
-          node tests/observed-shifts.js
-          node tests/validate-insights.js
-          node tests/store-outlook.js
-          node tests/headless-render.js
-          python -m unittest discover -s tools/tests -p "test_*.py"
-          python tests/test-insights-tools.py
-          python tools/check-readme.py
-
-      - name: Stage only public frontend assets
+      - uses: ./.github/actions/validate-site
+      - name: Verify public staging
         run: python tools/pages.py stage --output _site --revision "$(git rev-parse HEAD)"
-
-      - name: Upload GitHub Pages artifact
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
 
   probe:
     name: Verify public HTTP collection
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'probe'
     runs-on: ubuntu-latest
     steps:
-      - name: Check out probe code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           persist-credentials: false
-
-      - name: Verify search and individual post metadata without saved observations
+      - name: Verify unseeded search and individual post metadata
         run: python tools/pages.py probe --report _probe-report.json
+
+  collect:
+    name: Collect with durable state
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.mode == 'collect')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # A queued collector must use current code, not the old triggering commit.
+      - name: Check out current production code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Collect with durable state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_PROMPT_DISABLED: "1"
+          GIT_TERMINAL_PROMPT: "0"
+        run: python tools/cloud-collection.py --mode collect --output data/observed-shifts.json --recovery-dir _recovery-state
+      - name: Preserve data for explicit recovery after a failure
+        if: failure() && hashFiles('_recovery-state/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: collector-recovery-${{ github.run_id }}
+          path: _recovery-state
+          retention-days: 30
+
+  build:
+    name: Validate and stage current production site
+    needs: collect
+    if: >-
+      always() && github.ref == 'refs/heads/main' &&
+      github.event_name != 'pull_request' && inputs.mode != 'probe' &&
+      (needs.collect.result == 'success' || needs.collect.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out current production code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Restore latest observations for every deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_PROMPT_DISABLED: "1"
+          GIT_TERMINAL_PROMPT: "0"
+        run: python tools/cloud-collection.py --mode restore --output data/observed-shifts.json
+      - uses: ./.github/actions/validate-site
+      - name: Stage only public frontend files
+        run: python tools/pages.py stage --output _site --revision "$(git rev-parse HEAD)"
+      - name: Upload public Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
 
   deploy:
     name: Deploy static site
-    needs: validate
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && inputs.mode != 'probe'
+    needs: build
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       pages: write
@@ -81,11 +113,8 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
     steps:
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
-
-      - name: Deploy GitHub Pages
+      - uses: actions/configure-pages@v5
+      - name: Deploy the artifact validated in this run
         id: deployment
         uses: actions/deploy-pages@v4
