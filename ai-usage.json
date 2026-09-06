@@ -1,0 +1,108 @@
+{
+  "imports": {
+    "412595948531dadb648e42e1e323dbbe6935b29a2b3861ed60e5b634f3c062d7": {
+      "counts": {
+        "requests": 1
+      },
+      "date": "2026-09-07",
+      "modelBreakdown": [
+        {
+          "component": "external",
+          "count": 1,
+          "deployment": "gpt-5.6-luna-compare",
+          "kind": "image",
+          "model": "gpt-5.6-luna",
+          "modelVersion": "2026-07-09"
+        }
+      ],
+      "receiptId": "412595948531dadb648e42e1e323dbbe6935b29a2b3861ed60e5b634f3c062d7",
+      "sourceHash": "683841792605cddc6ab288e2bb62d10af03c535482cc47fedbc87a333ee38d42"
+    },
+    "90da3b9c0a830af262e78aa0fd81438c63b72932c44dae901f56d87f2dacfea4": {
+      "counts": {
+        "requests": 3
+      },
+      "date": "2026-09-07",
+      "modelBreakdown": [
+        {
+          "component": "personal",
+          "count": 3,
+          "deployment": "gpt-5.6-luna",
+          "kind": "text",
+          "model": "gpt-5.6-luna",
+          "modelVersion": "2026-07-09"
+        }
+      ],
+      "receiptId": "90da3b9c0a830af262e78aa0fd81438c63b72932c44dae901f56d87f2dacfea4",
+      "sourceHash": "623b3cc1042bca9d8fb82f37c48e2dc9e54507359b51a7e145adacc7d4cded85"
+    },
+    "ae4a2ea18760222733280e25c3388451056a11a675400f2ecbc5561796c46d5e": {
+      "counts": {
+        "requests": 1
+      },
+      "date": "2026-09-07",
+      "modelBreakdown": [
+        {
+          "component": "official",
+          "count": 1,
+          "deployment": "gpt-5.6-luna",
+          "kind": "text",
+          "model": "gpt-5.6-luna",
+          "modelVersion": "2026-07-09"
+        }
+      ],
+      "receiptId": "ae4a2ea18760222733280e25c3388451056a11a675400f2ecbc5561796c46d5e",
+      "sourceHash": "f7f697c1141778d16dfb30b56b373cbc7dda818295113d52ef2b0347d52f45cb"
+    },
+    "f124ea4ab7c816ff399f3d720077b01a101b4b4197a9a1ee67dcc5b8235bdf55": {
+      "counts": {
+        "requests": 24
+      },
+      "date": "2026-09-06",
+      "modelBreakdown": [
+        {
+          "component": "external",
+          "count": 18,
+          "deployment": "gpt-5.4-nano",
+          "kind": "text",
+          "model": "gpt-5.4-nano",
+          "modelVersion": "2026-03-17"
+        },
+        {
+          "component": "external",
+          "count": 6,
+          "deployment": "gpt-5.4-mini-compare",
+          "kind": "text",
+          "model": "gpt-5.4-mini",
+          "modelVersion": "2026-03-17"
+        }
+      ],
+      "receiptId": "f124ea4ab7c816ff399f3d720077b01a101b4b4197a9a1ee67dcc5b8235bdf55",
+      "sourceHash": "28337db8491e4ebe2960f4d34ca10204dd4dc7c064ea71778994c15b2bf4e627"
+    }
+  },
+  "nextRequestAt": null,
+  "paused": null,
+  "receipts": {},
+  "retryAt": null,
+  "schemaVersion": 1,
+  "sourceImports": {
+    "df2293bdd96211985c085d2334d7b97dc4fad5fc30cc1780c6095fbf2e415db8": {
+      "budgetAfter": {
+        "posts": 11,
+        "searches": 18
+      },
+      "budgetBefore": {
+        "posts": 5,
+        "searches": 10
+      },
+      "receipt": {
+        "date": "2026-09-06",
+        "posts": 6,
+        "receiptId": "df2293bdd96211985c085d2334d7b97dc4fad5fc30cc1780c6095fbf2e415db8",
+        "searches": 8,
+        "sourceHash": "7575a156eecef5247b1c62e88f08a9c34cc9247cbf7ef7bb9cb6e45fbf2b15b4"
+      }
+    }
+  }
+}

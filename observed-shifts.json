@@ -138,6 +138,28 @@
     "status": "ok"
   },
   "lastSuccessAt": "2026-09-06T12:12:59Z",
+  "officialAnalysis": {
+    "cache": {},
+    "history": [
+      {
+        "at": "2026-09-06T18:44:04.906356Z",
+        "id": "2096436633973526890",
+        "notices": [],
+        "replacementHash": "3af3a7f09674726012f799af5050a2561318e3db22d41349ac9ffcdf907b2336"
+      }
+    ],
+    "queue": {},
+    "receipts": {
+      "3af3a7f09674726012f799af5050a2561318e3db22d41349ac9ffcdf907b2336": {
+        "analysisReceiptHash": "f7f697c1141778d16dfb30b56b373cbc7dda818295113d52ef2b0347d52f45cb",
+        "analyzedAt": "2026-09-06T18:44:04.906356Z",
+        "at": "2026-09-06T05:54:14.290Z",
+        "bodyHash": "f20afac40b4e7d81b9bcb38078cce39dd1ef4d9a428051eb857a6606ad6e60a0",
+        "id": "2096436633973526890"
+      }
+    },
+    "schemaVersion": 1
+  },
   "pending": [],
   "posts": [
     {
@@ -370,6 +392,14 @@
         "るるか",
         "ちぇる",
         "まこと"
+      ],
+      "notices": [
+        {
+          "excerpt": "みりあ",
+          "kind": "late",
+          "name": "みりあ",
+          "observedAt": "2026-09-06T05:54:14.290Z"
+        }
       ],
       "observedAt": "2026-09-06T04:18:46Z",
       "shift": "昼",
