@@ -2633,7 +2633,8 @@ class PersonalSavedTests(unittest.TestCase):
         self.assertTrue(all('links' not in post for post in self.apply(entries=entries)['posts']))
 
     def test_synthetic_link_contract_attestations_make_no_placement_or_attendance(self):
-        for version in (self.saved.PREVIOUS_LINK_CONTRACT, self.saved.LINK_CONTRACT):
+        for version in (self.saved.PREVIOUS_LINK_CONTRACT, self.saved.NULLABLE_LINK_CONTRACT,
+                        self.saved.LINK_CONTRACT):
             with self.subTest(version=version):
                 entries = copy.deepcopy(self.entries)
                 amendment = entries[0]['amendment']
