@@ -143,6 +143,10 @@ const documentShim = {
 };
 
 const windowShim = {
+  PERSONAL_SHIFTS: {
+    schemaVersion: 1, complete: false, checkedAt: null, lastSuccessAt: null,
+    posts: [], lastRun: { status: "never" }
+  },
   // Curated-data baseline; observation integration has its own offline cases.
   OBSERVED_SHIFTS: {
     schemaVersion: 1, complete: false, checkedAt: null, lastSuccessAt: null,
@@ -1625,7 +1629,9 @@ assert.ok(
     dispatch("date-from", "change");
     selectViewMode("forecast");
     const day = withClass(calendar, "shift-day")[0];
-    assert.ok(withClass(day, "shift-evidence")[0].textContent.includes("店舗のみ実績"));
+    assert.equal(withClass(day, "store-outlook").length, 0,
+      "the evening's person evidence keeps the daytime in the shared unknown-store mode");
+    assert.equal(withClass(day, "unmatched-roster").length, 1);
     const people = withClass(day, "maid-entry").filter((entry) =>
       !entry.classList.contains("is-trainee-guess"));
     assert.ok(people.length > 0, "the fixture must contain assigned people");
@@ -1650,7 +1656,7 @@ assert.ok(
   }
 }
 
-// Popup-only day switching leaves the legacy prediction regressions above intact.
+// All surfaces use retained day evidence; dates without it keep their predictions.
 {
   const key = "2026-09-05";
   const originalPlans = schedule.schedule[key];
@@ -1658,6 +1664,7 @@ assert.ok(
   const originalActual = insights.actual[key];
   const originalStoreOnly = insights.actualWithoutRoster[key];
   const snapshot = windowShim.OBSERVED_SHIFTS;
+  const personalSnapshot = windowShim.PERSONAL_SHIFTS;
   const entries = names => names.map(name => ({ name }));
   const plansByShift = {
     "昼": entries(["つぼみ", "かなた", "まこっちゃん", "わたげ"]),
@@ -1671,6 +1678,17 @@ assert.ok(
     authorId: "822429861218131969", authorScreenName: "akibazettai",
     createdAt: "2026-09-05T03:00:00Z", observedAt: "2026-09-05T05:00:00Z"
   });
+  const personalPost = (kind, storeId, number = 1) => ({
+    id: `209650000000000000${number}`, url: `https://x.com/amu_zettai/status/209650000000000000${number}`,
+    name: "あむ", authorId: "1180156105181159424", authorScreenName: "amu_zettai",
+    createdAt: `2026-09-05T${number === 1 ? "02" : "10"}:00:00Z`, observedAt: "2026-09-05T11:00:00Z",
+    date: key, events: [{ shift: "夜", kind, ...(storeId ? { storeId } : {}), excerpt: `${kind}の案内` }]
+  });
+  const latePlans = { "昼": entries(["あむ"]), "夜": entries(["あむ"]) };
+  const explicitStoreLate = {
+    ...personalPost("late", "s2", 2),
+    events: [{ shift: "夜", kind: "late", storeId: "s2", time: "18:30", excerpt: "夜は2号店、18:30からです" }]
+  };
   const cases = [
     { name: "no person evidence", posts: [], mode: false },
     { name: "store-only actual", posts: [], mode: false, storeOnly: true },
@@ -1689,7 +1707,40 @@ assert.ok(
       confirmed: [["かなた"], []], unknown: [[], ["あむ", "かなた", "あらた"]] },
     { name: "unresolved absence candidate", posts: [post("昼", ["つぽみ"])],
       pending: [{ id: "2096000000000099999" }], mode: true,
-      confirmed: [["つぼみ"], []], unknown: [["かなた", "まこっちゃん", "わたげ"], ["あむ", "かなた", "あらた"]] }
+      confirmed: [["つぼみ"], []], unknown: [["かなた", "まこっちゃん", "わたげ"], ["あむ", "かなた", "あらた"]] },
+    { name: "personal evening placement", posts: [], personal: [personalPost("placement", "s2")], mode: true,
+      confirmed: [[], ["あむ"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]], own: true },
+    { name: "matching personal and collection", posts: [post("夜", ["あむ"])],
+      personal: [personalPost("placement", "s1")], mode: true,
+      confirmed: [[], ["あむ"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]] },
+    { name: "conflicting personal and collection", posts: [post("夜", ["あむ"])],
+      personal: [personalPost("placement", "s2")], mode: true,
+      confirmed: [[], []], unknown: ["昼", "夜"].map(shift => plansByShift[shift].map(entry => entry.name)), pending: true },
+    { name: "cancelled personal placement retains day gate", posts: [],
+      personal: [personalPost("placement", "s2"), personalPost("absence", null, 2)], mode: true, cancelled: true,
+      confirmed: [[], []], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]] },
+    { name: "cancelled collected person", posts: [post("夜", ["あむ"])],
+      personal: [personalPost("placement", "s1"), personalPost("absence", null, 2)], mode: true, cancelled: true,
+      confirmed: [[], []], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]] },
+    { name: "return without restoring old store", posts: [post("夜", ["あむ"])],
+      personal: [personalPost("placement", "s1"), personalPost("absence", null, 2), personalPost("return", null, 3)], mode: true,
+      confirmed: [[], []], unknown: ["昼", "夜"].map(shift => plansByShift[shift].map(entry => entry.name)) },
+    { name: "late is not absence", posts: [post("夜", ["あむ"])],
+      personal: [personalPost("late", null, 2)], mode: true,
+      confirmed: [[], ["あむ"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]] },
+    { name: "late with explicit shop gates both shifts", posts: [], plans: latePlans,
+      personal: [explicitStoreLate], mode: true, own: true, lateStore: true,
+      confirmed: [[], ["あむ"]], unknown: [["あむ"], []] },
+    { name: "late with shop does not revive cancellation", posts: [], plans: latePlans,
+      personal: [personalPost("absence", null), explicitStoreLate], mode: true, cancelled: true,
+      confirmed: [[], []], unknown: [["あむ"], []] },
+    { name: "late without shop does not invent placement", posts: [], plans: latePlans,
+      personal: [personalPost("late", null)], shiftModes: [false, true], unplaced: true,
+      confirmed: [[], []], unknown: [[], ["あむ"]] },
+    { name: "curated suppresses personal and old plans", posts: [],
+      personal: [personalPost("placement", "s1")], mode: true, curated: true,
+      records: { "夜": { stores: { s2: ["かなた"] }, trainees: [] } },
+      confirmed: [[], ["かなた"]], unknown: [plansByShift["昼"].map(entry => entry.name), []] }
   ];
   const namesIn = block => withClass(block, "maid-name").map(node => node.textContent).sort();
   try {
@@ -1704,8 +1755,9 @@ assert.ok(
         delete insights.actualWithoutRoster[key];
       }
       snapshot.posts = fixture.posts;
-      snapshot.pending = fixture.pending ?? [];
-      const preserved = JSON.stringify([schedule.schedule[key], snapshot]);
+      snapshot.pending = Array.isArray(fixture.pending) ? fixture.pending : [];
+      personalSnapshot.posts = fixture.personal ?? [];
+      const preserved = JSON.stringify([schedule.schedule[key], snapshot, personalSnapshot]);
       dispatch("reset-filters", "click");
       selectViewMode("calendar");
       const button = withClass(calendar, "day-button").find(node => node.dataset.date === key);
@@ -1717,7 +1769,7 @@ assert.ok(
       for (const [index, section] of sections.entries()) {
         const unknown = withClass(section, "unmatched-roster");
         const confirmed = withClass(section, "recorded-roster");
-        if (!fixture.mode) {
+        if (!(fixture.shiftModes?.[index] ?? fixture.mode)) {
           assert.equal(unknown.length, 0, fixture.name);
           assert.equal(confirmed.length, 0, fixture.name);
           if (fixture.storeOnly && index === 0) {
@@ -1734,7 +1786,7 @@ assert.ok(
           assert.ok(frame.getAttribute("aria-label").includes(["昼", "夜"][index]));
           assert.equal(withClass(frame, "maid-group-label").length, 0);
           const members = withClass(frame, "maid-entry");
-          assert.ok(members.every(entry => entry.dataset.evidence === "scheduled" && !entry.dataset.store));
+          assert.ok(members.every(entry => ["scheduled", "pending"].includes(entry.dataset.evidence) && !entry.dataset.store));
           assertDisplayOrder(members, fixture.name);
         }
         for (const redundant of ["store-outlook", "store-status-badge", "maid-store-chip", "is-trainee-guess"]) {
@@ -1743,8 +1795,57 @@ assert.ok(
         const names = namesIn(section);
         assert.equal(new Set(names).size, names.length, `${fixture.name}: no confirmed/unknown duplicates`);
       }
-      assert.equal(JSON.stringify([schedule.schedule[key], snapshot]), preserved, "the display never edits plans or evidence");
+      if (fixture.personal) {
+        const details = withClass(sections[1], "personal-details");
+        assert.equal(details.length, fixture.curated ? 0 : 1);
+        for (const block of details) {
+          assert.ok(!block.open);
+          assert.ok(block.textContent.includes("あむ"));
+          assert.ok(block.textContent.includes("勤務実績ではありません"));
+          assert.equal(withClass(block, "observation-source").length, 0, "never reuse an official source label for personal posts");
+          for (const link of withClass(block, "personal-source-link")) {
+            assert.ok(link.href.startsWith("https://x.com/amu_zettai/status/"));
+            assert.match(link.title, /本人ポスト/);
+            assert.doesNotMatch(link.title, /公式/);
+          }
+        }
+        if (fixture.cancelled) assert.ok(details[0].textContent.includes("取消の案内"));
+        if (fixture.lateStore) {
+          const person = withClass(sections[1], "maid-entry")[0];
+          assert.equal(person.dataset.store, "s2");
+          assert.equal(person.dataset.evidence, "personal");
+          assert.ok(person.textContent.includes("18:30"));
+          assert.ok(withClass(sections[0], "unmatched-roster")[0].textContent.includes("あむ"));
+        }
+      }
+      assert.equal(JSON.stringify([schedule.schedule[key], snapshot, personalSnapshot]), preserved, "the display never edits plans or evidence");
       dispatch("close-day-dialog", "click");
+      if (fixture.personal) {
+        elementById("date-from").value = key;
+        elementById("date-to").value = key;
+        dispatch("date-from", "change");
+        selectViewMode("forecast");
+        if (!fixture.shiftModes) {
+          assert.equal(withClass(calendar, "store-outlook").length, 0, "legacy store view uses the same day gate");
+        }
+        selectViewMode("maid");
+        const amu = withClass(calendar, "maid-plan").find(block =>
+          withClass(block, "maid-plan-name")[0].textContent.startsWith("あむ"));
+        const nightStop = amu && withClass(amu, "maid-plan-stop").find(stop =>
+          withClass(stop, "maid-plan-when")[0].textContent.endsWith("夜"));
+        if (fixture.cancelled) {
+          assert.equal(nightStop, undefined);
+          assert.ok(withClass(amu, "personal-details").some(block => block.textContent.includes("取消の案内")));
+        } else if (fixture.own || fixture.pending) {
+          assert.equal(nightStop.dataset.evidence, fixture.own ? "personal" : "pending");
+          assert.match(nightStop.title, /本人の当日案内/);
+          assert.doesNotMatch(nightStop.title, /にいた記録|実績があります/);
+          assert.equal(withClass(nightStop, "maid-plan-rate").length, 0);
+        } else if (fixture.unplaced) {
+          assert.equal(withClass(nightStop, "maid-plan-where")[0].dataset.store, "");
+          assert.equal(withClass(nightStop, "maid-plan-rate").length, 0);
+        }
+      }
     }
   } finally {
     schedule.schedule[key] = originalPlans;
@@ -1756,6 +1857,7 @@ assert.ok(
     else delete insights.actualWithoutRoster[key];
     snapshot.posts = [];
     snapshot.pending = [];
+    personalSnapshot.posts = [];
   }
 }
 

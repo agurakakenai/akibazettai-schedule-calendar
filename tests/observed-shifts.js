@@ -181,3 +181,188 @@ const otherNames = { ...correctionPost, names: ["みずれ", "みひん", "つ�
 assert.deepEqual([...api.observedShift({ ...fixture, posts: [otherNames] }, insights, "2026-09-05", "昼", correctionRules).byMaid.keys()],
   ["みずれ", "みひん", "つぼみ", "constructor", "toString"], "only explicitly owned raw-name keys may be corrected");
 console.log("Observed shifts valid: partial coverage, source identity, per-person evidence, aliases, and curated precedence.");
+
+const personalPost = (id, name, events, time = "2026-09-06T00:00:02+09:00", author = "amu_zettai") => ({
+  id, name, url: `https://x.com/${author}/status/${id}`,
+  authorId: "1180156105181159424", authorScreenName: author,
+  createdAt: time, observedAt: "2026-09-06T13:00:00+09:00", date: "2026-09-06", events
+});
+const announcement = (kind, storeId, extra = {}) => ({
+  shift: "夜", kind, excerpt: `${kind}の明示案内`, ...(storeId ? { storeId } : {}), ...extra
+});
+const personalFixture = {
+  schemaVersion: 1, complete: false, checkedAt: "2026-09-06T13:00:00+09:00",
+  lastSuccessAt: "2026-09-06T13:00:00+09:00", lastRun: { status: "ok" },
+  posts: [
+    personalPost("2096252018260062487", "あむ", [
+      announcement("placement", "s1", { shift: "昼" }), announcement("placement", "s2")
+    ]),
+    { ...personalPost("2096253883677044837", "ららこ", [
+      announcement("placement", "s1", { shift: "昼", excerpt: "1号店➡️2号店 12-22。2→1だと勘違いしていた" })
+    ], "2026-09-06T00:07:27+09:00", "rarako_zettai"), authorId: "2065375500131028992" }
+  ]
+};
+assert.equal(api.validatePersonalShifts(personalFixture), personalFixture);
+for (const mutate of [
+  x => { x.complete = true; }, x => { delete x.posts; }, x => { x.checkedAt = "today"; },
+  x => { x.posts[0].id = 2096252018260062487; }, x => { x.posts.push(x.posts[0]); },
+  x => { x.posts[0].url = "javascript:alert(1)"; }, x => { x.posts[0].authorId = "amu"; },
+  x => { x.posts[0].authorScreenName = "other"; }, x => { x.posts[0].name = ""; },
+  x => { x.posts[0].date = "2026-02-30"; }, x => { x.posts[0].createdAt = "2026-09-06T00:00:02"; },
+  x => { x.posts[0].events = []; }, x => { x.posts[0].events[0].shift = "終日"; },
+  x => { x.posts[0].events[0].kind = "closed"; }, x => { delete x.posts[0].events[0].storeId; },
+  x => { x.posts[0].events[0].kind = "absence"; },
+  x => { x.posts[0].events[0].storeId = "s5"; }, x => { x.posts[0].events[0].time = "25:00"; },
+  x => { x.posts[0].events[0].excerpt = ""; },
+  x => { x.posts[0].events[0].excerpt = "x".repeat(161); }
+]) {
+  const copy = JSON.parse(JSON.stringify(personalFixture));
+  mutate(copy);
+  assert.throws(() => api.validatePersonalShifts(copy));
+}
+for (const status of ["paused", "budget-exhausted", "outside-window", "unavailable", "partial"]) {
+  assert.ok(api.validatePersonalShifts({ ...personalFixture, lastRun: { status } }));
+}
+const dailyPlans = { "2026-09-06": {
+  "昼": [{ name: "あむ" }, { name: "ららこ" }, { name: "みりあ" }],
+  "夜": [{ name: "あむ" }, { name: "ららこ" }, { name: "ちゆ" }]
+} };
+const officialToday = { ...fixture, posts: [{
+  ...makePost("2096400000000000001", "s1", ["あむ", "ららこ"]),
+  date: "2026-09-06", createdAt: "2026-09-06T03:00:00Z"
+}] };
+const options = { insights, observations: officialToday, personal: personalFixture,
+  dateKey: "2026-09-06", schedule: dailyPlans, roster: schedule.roster };
+const unchanged = JSON.stringify([dailyPlans, personalFixture, officialToday, insights]);
+const lunch = api.resolveShiftRoster({ ...options, shift: "昼" });
+const night = api.resolveShiftRoster({ ...options, shift: "夜" });
+assert.equal(lunch.entries.filter(entry => entry.name === "あむ").length, 1);
+assert.equal(lunch.entries.find(entry => entry.name === "あむ").observed, true);
+assert.equal(lunch.entries.find(entry => entry.name === "あむ").personalPlacement, false);
+assert.equal(night.entries.find(entry => entry.name === "あむ").personalNotice.storeId, "s2");
+assert.equal(night.entries.find(entry => entry.name === "あむ").personalPlacement, true);
+assert.equal(night.entries.find(entry => entry.name === "ららこ").personalNotice, undefined,
+  "UI does not infer an evening store from arrows, 12-22, or quoted misunderstandings");
+assert.equal(api.dayHasPersonStoreEvidence(insights, null, options.dateKey, personalFixture), true);
+const planOf = (name, resolved) => api.maidItinerary({
+  name, dates: [options.dateKey], shifts: ["夜"], schedule: dailyPlans,
+  resolve: () => ({ ...resolved, confirmedOnly: true })
+});
+const nightPlan = planOf("あむ", night);
+assert.equal(nightPlan.stops[0].recorded, false);
+assert.equal(nightPlan.stops[0].observed, false);
+assert.equal(nightPlan.stops[0].personal, true);
+assert.equal(nightPlan.stops[0].state, "announced");
+assert.equal(nightPlan.stops[0].openRate, null);
+assert.equal(nightPlan.guesses, 0, "an announcement is neither an actual nor a statistical guess");
+assert.equal(planOf("ららこ", night).stops[0].storeId, null);
+
+const withEvents = (...posts) => ({ ...personalFixture, posts: [personalFixture.posts[0], ...posts] });
+const cancellation = personalPost("2096500000000000001", "あむ", [announcement("absence")], "2026-09-06T13:00:00+09:00");
+const restored = personalPost("2096500000000000002", "あむ", [announcement("return")], "2026-09-06T14:00:00+09:00");
+const officialNight = { ...officialToday, posts: [{ ...officialToday.posts[0], shift: "夜", names: ["あむ"], storeId: "s2" }] };
+const resolveNight = (personal, observations = officialNight, customInsights = insights) =>
+  api.resolveShiftRoster({ ...options, insights: customInsights, personal, observations, shift: "夜" });
+const cancelled = resolveNight(withEvents(cancellation));
+assert.ok(!cancelled.entries.some(entry => entry.name === "あむ"));
+assert.equal(cancelled.observed.byMaid.has("あむ"), false);
+assert.equal(cancelled.personal.byMaid.get("あむ").history.length, 2);
+assert.equal(planOf("あむ", cancelled).stops.length, 0);
+assert.equal(planOf("あむ", cancelled).changes.length, 1, "cancellation source history stays discoverable");
+assert.equal(api.dayHasPersonStoreEvidence(insights, null, options.dateKey, withEvents(cancellation)), true,
+  "cancellation cannot turn the day gate back into store guessing");
+const returned = resolveNight(withEvents(restored, cancellation));
+assert.equal(returned.entries.find(entry => entry.name === "あむ").personalPlacement, false);
+assert.equal(planOf("あむ", returned).stops[0].storeId, null, "return without a store must not restore an earlier shop");
+const returnedStore = resolveNight(withEvents(cancellation, {
+  ...restored, events: [announcement("return", "s4")]
+}));
+assert.equal(planOf("あむ", returnedStore).stops[0].storeId, "s4");
+assert.equal(planOf("あむ", returnedStore).stops[0].recorded, false);
+
+const late = personalPost("2096500000000000003", "あむ", [announcement("late")], "2026-09-06T15:00:00+09:00");
+const lateOnly = resolveNight(withEvents(late));
+assert.equal(lateOnly.entries.find(entry => entry.name === "あむ").observed, true, "late does not erase a collected person");
+assert.equal(lateOnly.personal.byMaid.get("あむ").late.time, null);
+assert.equal(resolveNight(withEvents(cancellation, late)).entries.some(entry => entry.name === "あむ"), false,
+  "late is not an explicit return after a cancellation");
+assert.equal(resolveNight(withEvents(cancellation, {
+  ...late, events: [announcement("placement", "s4")]
+})).entries.some(entry => entry.name === "あむ"), false, "a new placement alone is not an explicit return");
+const timedLate = resolveNight(withEvents({ ...late, events: [announcement("late", null, { time: "18:30" })] }));
+assert.equal(timedLate.personal.byMaid.get("あむ").late.time, "18:30");
+const explicitStoreLate = {
+  ...personalFixture, posts: [{ ...late,
+    events: [announcement("late", "s2", { time: "18:30", excerpt: "夜は2号店、18:30からです" })]
+  }]
+};
+const noOfficialPeople = { ...fixture, posts: [] };
+assert.equal(api.validatePersonalShifts(explicitStoreLate), explicitStoreLate);
+assert.equal(api.dayHasPersonStoreEvidence(insights, noOfficialPeople, options.dateKey, explicitStoreLate), true,
+  "a late notice with an explicit shop is retained day-level placement evidence");
+const placedLate = resolveNight(explicitStoreLate, noOfficialPeople);
+assert.equal(placedLate.entries.find(entry => entry.name === "あむ").personalPlacement, true);
+assert.equal(placedLate.personal.byMaid.get("あむ").storeId, "s2");
+assert.equal(placedLate.personal.byMaid.get("あむ").late.time, "18:30");
+assert.equal(planOf("あむ", placedLate).stops[0].storeId, "s2");
+assert.equal(planOf("あむ", placedLate).stops[0].recorded, false);
+assert.equal(planOf("あむ", placedLate).stops[0].openRate, null);
+const cancelledStoreLate = { ...explicitStoreLate, posts: [cancellation, ...explicitStoreLate.posts] };
+const stillCancelled = resolveNight(cancelledStoreLate, noOfficialPeople);
+assert.equal(stillCancelled.entries.some(entry => entry.name === "あむ"), false,
+  "a late notice with a shop must not revive a cancelled person");
+assert.equal(stillCancelled.personal.byMaid.get("あむ").storeId, null);
+assert.equal(stillCancelled.personal.byMaid.get("あむ").absent, true);
+assert.equal(api.dayHasPersonStoreEvidence(insights, noOfficialPeople, options.dateKey, cancelledStoreLate), true,
+  "the day gate reads the retained explicit shop even when its person is cancelled");
+const noStoreLate = { ...personalFixture, posts: [late] };
+assert.equal(api.dayHasPersonStoreEvidence(insights, noOfficialPeople, options.dateKey, noStoreLate), false,
+  "a late notice without a shop is not day-level placement evidence");
+assert.equal(planOf("あむ", resolveNight(noStoreLate, noOfficialPeople)).stops[0].storeId, null,
+  "without prior placement or an explicit shop, a late notice cannot invent one");
+const uncertain = personalPost("2096500000000000004", "あむ", [announcement("uncertain")], "2026-09-06T16:00:00+09:00");
+assert.equal(resolveNight(withEvents(uncertain)).entries.find(entry => entry.name === "あむ").observed, true,
+  "uncertain text does not cancel an earlier explicit placement");
+const pendingOnly = resolveNight({ ...personalFixture, posts: [uncertain] }, { ...fixture, posts: [] });
+assert.equal(planOf("あむ", pendingOnly).stops[0].storeId, null);
+assert.equal(planOf("あむ", pendingOnly).stops[0].recorded, false);
+assert.equal(api.dayHasPersonStoreEvidence(insights, null, options.dateKey, { ...personalFixture, posts: [uncertain] }), false);
+
+const contradiction = resolveNight(personalFixture, {
+  ...officialNight, posts: [{ ...officialNight.posts[0], storeId: "s4" }]
+});
+assert.equal(contradiction.personal.byMaid.get("あむ").conflict, true);
+assert.equal(contradiction.observed.byMaid.has("あむ"), false);
+assert.equal(contradiction.entries.filter(entry => entry.name === "あむ").length, 1);
+assert.equal(planOf("あむ", contradiction).stops[0].storeId, null);
+assert.equal(planOf("あむ", contradiction).stops[0].recorded, false);
+assert.equal(contradiction.observed.posts.length, 1, "conflicting original collection source remains intact");
+const laterCollection = resolveNight(withEvents(cancellation), {
+  ...officialNight, posts: [{ ...officialNight.posts[0], createdAt: "2026-09-06T15:00:00+09:00" }]
+});
+assert.equal(laterCollection.personal.byMaid.get("あむ").conflict, true,
+  "a newer collection post is not an implicit return");
+const multiple = resolveNight(withEvents({
+  ...personalFixture.posts[0], id: "2096252018260062488",
+  url: "https://x.com/amu_zettai/status/2096252018260062488"
+}));
+assert.equal(multiple.personal.byMaid.get("あむ").sources.length, 2);
+assert.equal(multiple.entries.filter(entry => entry.name === "あむ").length, 1);
+const aliasPersonal = { ...personalFixture, posts: [personalPost("2096500000000000005", "まこと", [announcement("placement", "s4")])] };
+assert.ok(resolveNight(aliasPersonal).entries.some(entry => entry.name === "まこっちゃん"));
+assert.equal(aliasPersonal.posts[0].name, "まこと", "display aliases do not alter source identity");
+const pastRoster = { ...insights, actualRoster: { ...insights.actualRoster, [options.dateKey]: {
+  "夜": { stores: { s1: ["あむ"] }, trainees: [] }
+} } };
+const past = resolveNight(withEvents(cancellation), officialNight, pastRoster);
+assert.deepEqual(past.entries.map(entry => entry.name), ["あむ"]);
+assert.equal(past.personal.posts.length, 0, "curated roster wins and excluded past planned people are not revived");
+assert.equal(past.assignment.recorded, true);
+assert.equal(JSON.stringify([dailyPlans, personalFixture, officialToday, insights]), unchanged,
+  "personal resolution must not mutate schedules, official posts, curated data or personal history");
+console.log("Personal announcements valid: real examples, schema, history, conflicts, cancellation/return, late, pending, aliases and non-actual evidence.");
+const personalFile = path.join(__dirname, "..", "data", "personal-shifts.json");
+if (fs.existsSync(personalFile)) {
+  api.validatePersonalShifts(JSON.parse(fs.readFileSync(personalFile, "utf8")));
+  console.log("Published personal snapshot conforms to the shared schema.");
+}

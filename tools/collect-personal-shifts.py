@@ -1,0 +1,1154 @@
+"""Optional personal announcements, isolated from official observations.
+
+JST calendar dates start at 00:00, not the official collector's 05:00.
+--dry-run suppresses publication only: private facts/ledgers, spent budgets and
+access-denial pauses remain durable. A saved pause requires manual review; this
+CLI deliberately has no automatic resume or budget-reset option.
+Exit: 0 normal/outside-window, 2 partial/budget-exhausted, 3 HTTP unavailable/paused,
+4 infrastructure/locking/invalid input (the cloud lease must remain fail-closed).
+"""
+import argparse
+from contextlib import ExitStack
+import copy
+import csv
+import datetime as dt
+import email.utils
+import html
+from html.parser import HTMLParser
+import http.client
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import time
+import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location('personal_official_helpers',
+                                              ROOT / 'tools' / 'collect-shifts.py')
+official = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(official)
+UTC, JST = official.UTC, official.JST
+Failure = official.FetchFailure
+
+
+class InfrastructureFailure(RuntimeError):
+    pass
+
+
+SEARCH_HOST = 'search.yahoo.co.jp'
+POST_HOST = official.POST_HOST
+DAILY_LIMITS = {'searches': 60, 'posts': 30}
+PILOT_BUDGETS = {'2026-09-06': {'searches': 7, 'posts': 2}}
+MAX_BODY = 4_000_000
+STATUSES = {'never', 'ok', 'partial', 'unavailable', 'no-new', 'no-results',
+            'paused', 'budget-exhausted', 'outside-window'}
+KINDS = {'placement', 'absence', 'late', 'return', 'uncertain'}
+PUBLIC_FIELDS = {'schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt', 'posts', 'lastRun'}
+PRIVATE_FIELDS = {'pending', 'resolved', 'budgets', 'paused', 'identityBindings',
+                  'originalTargets', 'lastRequests'}
+DENIAL = re.compile(
+    r'captcha|access denied|アクセス.{0,12}(?:拒否|制限)|ロボットではない|'
+    r'unusual traffic|verify you are human|permission denied|forbidden|unauthorized|'
+    r'could not authenticate|authentication required|login required|'
+    r'rate limit|too many requests|ログイン.{0,8}(?:必要|してください)', re.I)
+DATE_WORD = re.compile(r'(?<!\d)(\d{1,2})(?:月|/)(\d{1,2})(?:日)?(?!\d)')
+NODE_FALLBACK = Path(
+    r'C:\Users\manab\.copilot\session-state\5ed7cdc5-1b7a-4598-ac55-b2b55e2ed467'
+    r'\files\tools\node-v22.11.0-win-x64\node.exe')
+
+
+def public_url(handle, tid):
+    return f'https://x.com/{handle}/status/{tid}'
+
+
+def calendar_day(value):
+    return value.astimezone(JST).date()
+
+
+def stamp(value):
+    return value.astimezone(UTC).isoformat().replace('+00:00', 'Z')
+
+
+def empty_state():
+    return {'schemaVersion': 1, 'complete': False, 'checkedAt': None,
+            'lastSuccessAt': None, 'posts': [], 'pending': [], 'resolved': [],
+            'budgets': {}, 'paused': None, 'identityBindings': {},
+            'originalTargets': {}, 'lastRequests': {},
+            'lastRun': {'status': 'never'}}
+
+
+def public_state(state):
+    return {key: copy.deepcopy(state[key]) for key in (
+        'schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt', 'posts', 'lastRun')}
+
+
+def empty_snapshot():
+    return public_state(empty_state())
+
+
+def load_snapshot(path):
+    """Validate a full private state, or the six-field public projection.
+
+    A partial private state must not masquerade as public data: presence of any
+    private field requires the complete private schema.
+    """
+    if not path.exists():
+        return empty_snapshot()
+    try:
+        value = json.loads(path.read_text(encoding='utf-8-sig'))
+        if not isinstance(value, dict):
+            raise ValueError
+        private = bool(PRIVATE_FIELDS.intersection(value))
+    except (ValueError, TypeError):
+        raise ValueError('invalid_personal_state') from None
+    return read_state(path, private=private)
+
+
+def require_keys(value, required, optional=()):
+    if (not isinstance(value, dict) or not set(required) <= set(value)
+            or set(value) - set(required) - set(optional)):
+        raise ValueError('invalid_personal_state')
+
+
+def validate_failure(value):
+    if 'reason' in value and not re.fullmatch('[a-z_]+', value['reason']):
+        raise ValueError('invalid_personal_state')
+    if 'httpStatus' in value and (type(value['httpStatus']) is not int
+                                  or not 100 <= value['httpStatus'] <= 599):
+        raise ValueError('invalid_personal_state')
+    if 'retryAt' in value:
+        official.timestamp(value['retryAt'])
+
+
+def validate_last_run(value):
+    counts = {'sourceCount', 'targetCount', 'activeTargetCount', 'attemptedCount',
+              'newPostCount', 'newEventCount', 'skippedResolvedCount',
+              'pendingCount', 'deferredCount'}
+    require_keys(value, ('status',), counts | {
+        'date', 'dateBasis', 'source', 'sources', 'requests', 'failures', 'finishedAt', 'complete'})
+    for key in counts & value.keys():
+        if type(value[key]) is not int or value[key] < 0:
+            raise ValueError
+    if 'date' in value:
+        dt.date.fromisoformat(value['date'])
+    if 'dateBasis' in value and value['dateBasis'] != 'JST calendar date, 00:00 boundary':
+        raise ValueError
+    if 'source' in value and value['source'] != 'manually_reviewed_public_http_pilot':
+        raise ValueError
+    if 'complete' in value and value['complete'] is not False:
+        raise ValueError
+    if 'finishedAt' in value:
+        official.timestamp(value['finishedAt'])
+    if 'requests' in value:
+        require_keys(value['requests'], ('searches', 'posts'))
+        if any(type(count) is not int or count < 0 for count in value['requests'].values()):
+            raise ValueError
+    for key in ('sources', 'failures'):
+        if not isinstance(value.get(key, []), list):
+            raise ValueError
+    for source in value.get('sources', []):
+        require_keys(source, ('url', 'status'), ('candidateCount', 'reason', 'httpStatus', 'retryAt'))
+        if (source['status'] not in ('ok', 'failed')
+                or source['url'] not in search_urls(dt.date.fromisoformat(value['date']))
+                or ('candidateCount' in source and
+                    (type(source['candidateCount']) is not int or source['candidateCount'] < 0))):
+            raise ValueError
+        validate_failure(source)
+    for failure in value.get('failures', []):
+        require_keys(failure, ('reason',), ('id', 'httpStatus', 'retryAt'))
+        if 'id' in failure and (not isinstance(failure['id'], str)
+                                or not official.post_id(failure['id'])):
+            raise ValueError
+        validate_failure(failure)
+
+
+def valid_post(post):
+    require_keys(post, ('id', 'url', 'name', 'authorId', 'authorScreenName',
+                       'createdAt', 'observedAt', 'date', 'events'))
+    tid = official.post_id(post['id'])
+    handle = post['authorScreenName']
+    if (not isinstance(post['id'], str) or not tid
+            or not re.fullmatch(r'[A-Za-z0-9_]{1,15}', handle)
+            or not isinstance(post['name'], str)
+            or not re.fullmatch(r'[ぁ-んァ-ヶ一-龠ーａ-ｚA-Za-z0-9]{1,12}', post['name'])
+            or not isinstance(post['authorId'], str)
+            or not official.post_id(post['authorId'])
+            or post['authorId'] == official.AUTHOR_ID
+            or post['url'] != public_url(handle, tid)
+            or calendar_day(official.timestamp(post['createdAt'])).isoformat() != post['date']
+            or not isinstance(post['events'], list) or not post['events']):
+        raise ValueError('invalid_personal_post')
+    created, observed = official.timestamp(post['createdAt']), official.timestamp(post['observedAt'])
+    if observed < created or abs((official.snowflake_time(tid) - created).total_seconds()) >= 2:
+        raise ValueError('invalid_personal_post')
+    for event in post['events']:
+        if (set(event) - {'shift', 'kind', 'storeId', 'time', 'excerpt'}
+                or event['shift'] not in ('昼', '夜') or event['kind'] not in KINDS
+                or not isinstance(event['excerpt'], str)
+                or not 1 <= len(event['excerpt']) <= 160
+                or not event['excerpt'].strip()
+                or re.search(r'[\r\n\u2028\u2029]', event['excerpt'])
+                or ('storeId' in event and event['storeId'] not in ('s1', 's2', 's3', 's4'))
+                or (event['kind'] == 'placement' and 'storeId' not in event)
+                or (event['kind'] == 'absence' and 'storeId' in event)
+                or ('time' in event and not re.fullmatch(
+                    r'(?:[01]\d|2[0-3]):[0-5]\d', event['time']))):
+            raise ValueError('invalid_personal_event')
+
+
+def read_state(path, private=True):
+    if not path.exists():
+        return empty_state()
+    try:
+        value = json.loads(path.read_text(encoding='utf-8-sig'))
+        require_keys(value, PUBLIC_FIELDS | PRIVATE_FIELDS if private else PUBLIC_FIELDS)
+        if (type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
+                or value['complete'] is not False or value['lastRun']['status'] not in STATUSES
+                or not isinstance(value['posts'], list)):
+            raise ValueError
+        validate_last_run(value['lastRun'])
+        for key in ('checkedAt', 'lastSuccessAt'):
+            if value[key] is not None:
+                official.timestamp(value[key])
+        ids = set()
+        for post in value['posts']:
+            valid_post(post)
+            if post['id'] in ids:
+                raise ValueError
+            ids.add(post['id'])
+        if private:
+            for key in ('pending', 'resolved', 'budgets', 'paused', 'identityBindings',
+                        'originalTargets', 'lastRequests'):
+                if key not in value:
+                    raise ValueError
+            if not isinstance(value['budgets'], dict):
+                raise ValueError
+            for day, budget in value['budgets'].items():
+                if dt.date.fromisoformat(day).isoformat() != day:
+                    raise ValueError
+                require_keys(budget, ('searches', 'posts'))
+                if set(budget) != {'searches', 'posts'} or any(
+                        type(count) is not int or count < 0 for count in budget.values()):
+                    raise ValueError
+            for key in ('pending', 'resolved'):
+                seen = set()
+                if not isinstance(value[key], list):
+                    raise ValueError
+                for item in value[key]:
+                    if key == 'pending':
+                        require_keys(item, (
+                            'id', 'url', 'name', 'authorId', 'authorScreenName', 'date',
+                            'searchCreatedAt', 'reason', 'firstSeenAt', 'lastAttemptAt', 'attempts'),
+                            ('httpStatus', 'retryAt'))
+                    else:
+                        require_keys(item, ('id', 'url', 'name', 'date', 'reason', 'resolvedAt'))
+                    if (not isinstance(item['id'], str) or not official.post_id(item['id'])
+                            or item['id'] in seen
+                            or not isinstance(item['name'], str) or not item['name']
+                            or not re.fullmatch('[a-z_]+', item['reason'])):
+                        raise ValueError
+                    dt.date.fromisoformat(item['date'])
+                    if key == 'pending':
+                        handle = item['authorScreenName']
+                        if (not re.fullmatch(r'[A-Za-z0-9_]{1,15}', handle)
+                                or not isinstance(item['authorId'], str)
+                                or not official.post_id(item['authorId'])
+                                or item['authorId'] == official.AUTHOR_ID
+                                or item['url'] != public_url(handle, item['id'])
+                                or type(item['attempts']) is not int or item['attempts'] < 0
+                                or calendar_day(official.timestamp(item['searchCreatedAt'])).isoformat() != item['date']):
+                            raise ValueError
+                        official.timestamp(item['firstSeenAt'])
+                        if item['lastAttemptAt'] is not None:
+                            official.timestamp(item['lastAttemptAt'])
+                        validate_failure(item)
+                    else:
+                        official.timestamp(item['resolvedAt'])
+                        if not re.fullmatch(
+                                r'https://x\.com/[A-Za-z0-9_]{1,15}/status/' + item['id'],
+                                item['url']):
+                            raise ValueError
+                    seen.add(item['id'])
+            for mapping in ('identityBindings', 'originalTargets', 'lastRequests'):
+                if not isinstance(value[mapping], dict):
+                    raise ValueError
+            for item in value['identityBindings'].values():
+                require_keys(item, ('authorId', 'authorScreenName', 'verifiedAt'))
+                if (not official.post_id(item['authorId'])
+                        or not isinstance(item['authorId'], str)
+                        or not re.fullmatch(r'[A-Za-z0-9_]{1,15}', item['authorScreenName'])):
+                    raise ValueError
+                official.timestamp(item['verifiedAt'])
+            for day, targets in value['originalTargets'].items():
+                if dt.date.fromisoformat(day).isoformat() != day:
+                    raise ValueError
+                if not isinstance(targets, dict):
+                    raise ValueError
+                for name, target in targets.items():
+                    require_keys(target, ('name', 'handle', 'shifts'))
+                    if (target['name'] != name or not isinstance(name, str)
+                            or not re.fullmatch(r'[A-Za-z0-9_]{1,15}', target['handle'])
+                            or not isinstance(target['shifts'], list) or not target['shifts']
+                            or any(shift not in ('昼', '夜') for shift in target['shifts'])
+                            or len(set(target['shifts'])) != len(target['shifts'])):
+                        raise ValueError
+            if value['paused'] is not None:
+                require_keys(value['paused'], ('reason', 'host', 'at', 'retryAt'), ('httpStatus',))
+                if (not isinstance(value['paused'], dict)
+                        or value['paused']['host'] not in (SEARCH_HOST, POST_HOST)):
+                    raise ValueError
+                official.timestamp(value['paused']['at'])
+                validate_failure(value['paused'])
+            for host, at in value['lastRequests'].items():
+                if host not in (SEARCH_HOST, POST_HOST):
+                    raise ValueError
+                official.timestamp(at)
+        return value
+    except (KeyError, TypeError, ValueError, OverflowError):
+        raise ValueError('invalid_personal_state') from None
+
+
+def merge_seed(state, seed):
+    have = {post['id'] for post in state['posts']}
+    resolved = {item['id'] for item in state['resolved']}
+    for post in seed['posts']:
+        binding = state['identityBindings'].get(post['name'])
+        identity = {'authorId': post['authorId'],
+                    'authorScreenName': post['authorScreenName']}
+        if binding and any(binding[key] != value for key, value in identity.items()):
+            raise ValueError('seed_identity_conflict')
+        if post['id'] not in have:
+            state['posts'].append(copy.deepcopy(post))
+            have.add(post['id'])
+        state['identityBindings'][post['name']] = {
+            **identity, 'verifiedAt': post['observedAt']}
+        if post['id'] not in resolved:
+            state['resolved'].append({
+                'id': post['id'], 'name': post['name'], 'url': post['url'],
+                'date': post['date'], 'reason': 'seed_confirmed',
+                'resolvedAt': post['observedAt']})
+            resolved.add(post['id'])
+    state['pending'] = [item for item in state['pending'] if item['id'] not in resolved]
+    for day, floor in PILOT_BUDGETS.items():
+        budget = state['budgets'].setdefault(day, {'searches': 0, 'posts': 0})
+        for kind, count in floor.items():
+            budget[kind] = max(budget[kind], count)
+    if state['checkedAt'] is None:
+        state['checkedAt'] = seed['checkedAt']
+    if state['lastSuccessAt'] is None:
+        state['lastSuccessAt'] = seed['lastSuccessAt']
+
+
+def read_js(path, key, node=None):
+    text = path.read_text(encoding='utf-8-sig')
+    prefix = re.search(r'window\.' + re.escape(key) + r'\s*=\s*', text)
+    if not prefix:
+        raise ValueError('missing_input_assignment')
+    try:
+        return json.loads(text[prefix.end():].strip().removesuffix(';'))
+    except ValueError:
+        pass
+    executable = str(node or shutil.which('node') or NODE_FALLBACK)
+    script = """
+const fs=require('node:fs'),vm=require('node:vm');
+const input=JSON.parse(fs.readFileSync(0,'utf8'));
+const context=vm.createContext({window:Object.create(null)},
+ {codeGeneration:{strings:false,wasm:false}});
+vm.runInContext(input.text,context,{timeout:750});
+process.stdout.write(vm.runInContext('JSON.stringify(window.'+input.key+')',
+ context,{timeout:750}));
+"""
+    options = {}
+    if os.name == 'nt':
+        options['creationflags'] = subprocess.CREATE_NO_WINDOW
+        options['startupinfo'] = subprocess.STARTUPINFO()
+        options['startupinfo'].dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        options['startupinfo'].wShowWindow = 0
+    try:
+        result = subprocess.run(
+            [executable, '-e', script], input=json.dumps({'key': key, 'text': text}),
+            capture_output=True, encoding='utf-8', timeout=8, check=True, **options)
+        return json.loads(result.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        raise ValueError('unreadable_schedule_data') from None
+
+
+def select_targets(schedule, insights, accounts, date, state):
+    roster = set(schedule['roster'])
+    by_name, by_handle = {}, {}
+    for row in accounts:
+        by_name.setdefault(row['name'], []).append(row)
+        by_handle.setdefault(row['handle'], set()).add(row['name'])
+    eligible = {}
+    for name in roster:
+        rows = by_name.get(name, [])
+        if len(rows) != 1:
+            continue
+        row = rows[0]
+        handle = row['handle']
+        if (row['source'] not in ('公式サイト', '本人確認済み')
+                or not re.fullmatch(r'[A-Za-z0-9_]{1,15}', handle)
+                or len(by_handle[handle]) != 1
+                or insights.get('maidTendency', {}).get(name, {}).get('x') != handle):
+            continue
+        bound = state['identityBindings'].get(name)
+        if bound and bound['authorScreenName'] != handle:
+            continue
+        eligible[name] = handle
+    day = date.isoformat()
+    if day not in state['originalTargets']:
+        shifts = schedule.get('schedule', {}).get(day, {})
+        targets = {}
+        for shift in ('昼', '夜'):
+            for person in shifts.get(shift, []):
+                name = person['name']
+                if name in eligible:
+                    target = targets.setdefault(name, {
+                        'name': name, 'handle': eligible[name], 'shifts': []})
+                    if shift not in target['shifts']:
+                        target['shifts'].append(shift)
+        state['originalTargets'][day] = targets
+    targets = state['originalTargets'][day]
+    return {name: copy.deepcopy(target) for name, target in targets.items()
+            if eligible.get(name) == target['handle']}
+
+
+def active_targets(targets, date, now):
+    if calendar_day(now) != date:
+        return {}
+    local = now.astimezone(JST).timetz().replace(tzinfo=None)
+    return {name: target for name, target in targets.items()
+            if local <= dt.time(19 if '夜' in target['shifts'] else 13, 30)}
+
+
+def search_urls(date):
+    queries = (f'{date.month}月{date.day}日 号店',
+               '今日 お休み 絶対領域', f'{date.month}/{date.day} 号店')
+    return tuple('https://' + SEARCH_HOST + '/realtime/search?'
+                 + urllib.parse.urlencode({'p': query, 'ei': 'UTF-8'}) for query in queries)
+
+
+class NextData(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.capture = False
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'script' and dict(attrs).get('id') == '__NEXT_DATA__':
+            self.capture = True
+
+    def handle_endtag(self, tag):
+        if tag == 'script':
+            self.capture = False
+
+    def handle_data(self, data):
+        if self.capture:
+            self.parts.append(data)
+
+
+def search_page(document):
+    if not isinstance(document, str):
+        raise Failure('invalid_search_response')
+    parser = NextData()
+    parser.feed(document)
+    try:
+        value = json.loads(''.join(parser.parts))
+    except (ValueError, RecursionError):
+        raise Failure('invalid_search_response') from None
+    for key in ('props', 'pageProps', 'pageData'):
+        if not isinstance(value, dict):
+            raise Failure('invalid_search_response')
+        value = value.get(key)
+    if not isinstance(value, dict):
+        raise Failure('invalid_search_response')
+    return value
+
+
+def discover(document, targets, date, now, bindings):
+    page = search_page(document)
+    error = page.get('searchError')
+    if DENIAL.search(json.dumps(error, ensure_ascii=False)):
+        raise Failure('access_denied', status=200)
+    if error is None:
+        error = {}
+    if not isinstance(error, dict):
+        raise Failure('invalid_search_response')
+    if error.get('errorType') not in (None, '', 'zeromatch'):
+        raise Failure('search_error')
+    timeline = page.get('timeline')
+    if not isinstance(timeline, dict) or not isinstance(timeline.get('entry'), list):
+        raise Failure('invalid_search_response')
+    entries = timeline['entry']
+    handles = {target['handle']: target for target in targets.values()}
+    candidates = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise Failure('invalid_search_response')
+        handle = entry.get('screenName')
+        if not isinstance(handle, str) or handle not in handles:
+            continue
+        tid, uid = official.post_id(entry.get('id')), official.post_id(entry.get('userId'))
+        epoch = entry.get('createdAt')
+        if (not tid or not uid or uid == official.AUTHOR_ID
+                or isinstance(epoch, bool) or not isinstance(epoch, (str, int))
+                or not re.fullmatch(r'\d{10}', str(epoch))):
+            continue
+        try:
+            when = dt.datetime.fromtimestamp(int(epoch), UTC)
+            url = urllib.parse.urlsplit(official.unescape_urls(entry.get('url', '')))
+            if (url.scheme != 'https' or url.hostname not in ('x.com', 'twitter.com')
+                    or url.username or url.port
+                    or url.path != f'/{handle}/status/{tid}'
+                    or calendar_day(when) != date or when > now
+                    or abs((official.snowflake_time(tid) - when).total_seconds()) >= 2):
+                continue
+        except (ValueError, OSError, OverflowError, TypeError):
+            continue
+        target = handles[handle]
+        bound = bindings.get(target['name'])
+        if bound and bound['authorId'] != uid:
+            continue
+        candidates[tid] = {
+            'id': tid, 'url': public_url(handle, tid), 'name': target['name'],
+            'authorId': uid, 'authorScreenName': handle, 'date': date.isoformat(),
+            'searchCreatedAt': stamp(when)}
+    return list(candidates.values())
+
+
+def date_context(fragment):
+    words = [match.group(0) for match in DATE_WORD.finditer(fragment)]
+    words.extend(re.findall(r'今日|本日|昨日|明日|明後日|あした|あす|きのう', fragment))
+    return ' '.join(words)
+
+
+def announcement_clauses(text):
+    # A conjunction ends the predicate's store/time/shift scope. Do not carry an
+    # earlier store into a later predicate, or a later store into an earlier one.
+    text = re.sub(r'(です|ます|でした|ました)が', r'\1、', text)
+    text = re.sub(r'けれども?|けど|一方|そして', '、', text)
+    fragments, sentences = [], []
+    for sentence, body in enumerate(re.split(r'[。！？!?]+', text)):
+        clauses = re.split(r'[\n、,;；]+', body)
+        fragments.extend(clauses)
+        sentences.extend([sentence] * len(clauses))
+    negation = re.compile(r'ではなく|じゃなく|でなく|ではありません|'
+                          r'ではなかった|じゃなかった|ではない|じゃない')
+    for index, raw in enumerate(fragments):
+        fragment = raw.strip()
+        if (not re.search(r'昼|夜|昨日|明日|明後日|あした|あす|きのう', fragment)
+                and not DATE_WORD.search(fragment)
+                and re.search(r'復帰|戻(?:ります|りました)|出勤します|お給仕します', fragment)):
+            previous = index - 1
+            while previous >= 0 and not fragments[previous].strip():
+                previous -= 1
+            if previous >= 0 and re.search(r'お休み|おやすみ|欠勤', fragments[previous]):
+                fragments[previous] = date_context(fragments[previous])
+        correction = negation.search(fragment)
+        if correction is None:
+            continue
+        if not fragment[:correction.start()].strip():
+            # "昼1号店、ではなく昼2号店" retracts the preceding clause.
+            previous = index - 1
+            while previous >= 0 and not fragments[previous].strip():
+                previous -= 1
+            if previous >= 0:
+                fragments[previous] = date_context(fragments[previous])
+        context = date_context(fragment[:correction.start()])
+        replacement = fragment[correction.end():] if correction[0] in (
+            'ではなく', 'じゃなく', 'でなく') else ''
+        fragments[index] = context + ' ' + replacement
+    return list(zip(fragments, sentences))
+
+
+def third_party_subject(text, name, roster):
+    if (re.search(r'(?:ちゃん|さん)\s*(?:は|が|も|の)', text)
+            or re.search(r'@\w+|(?:友達|友人|彼女|相方|店舗|お店|スタッフ)\s*(?:が|は|の)', text)
+            or any(other != name and re.search(
+                re.escape(other) + r'\s*(?:は|が|も)', text) for other in roster)):
+        return True
+    without_dates = DATE_WORD.sub(' ', text)
+    own_subjects = {name, '私', 'わたし', '自分', '僕', 'ぼく', 'あたし',
+                    '今日', '本日', '昼', 'お昼', '夜', '今夜', '魔法', '体調',
+                    '出勤', 'お給仕', '時間', '予定'}
+    for match in re.finditer(r'([ぁ-んァ-ヶ一-龠ーA-Za-z0-9_]+?)\s*(?:は|が)', without_dates):
+        subject = match[1]
+        if subject.endswith(('です', 'ます', 'でした', 'ました')):
+            continue
+        if subject in ('で', 'じゃ') or re.search(r'(?:[1-4]号店|お休み|欠勤|遅刻)で$', subject):
+            continue
+        subject = re.sub(r'^(?:今日|本日)(?:の)?(?=.)', '', subject)
+        if subject not in own_subjects:
+            return True
+    return False
+
+
+def parse_events(text, created, date, shifts, name='', roster=()):
+    if calendar_day(created) != date:
+        return [], 'outside_date'
+    text = unicodedata.normalize('NFKC', text)
+    if (re.search(r'(^|\n)\s*(?:RT\s+@|@\w+|>|引用|転載)', text)
+            or re.search(r'[「」『』“”"]', text)):
+        return [], 'quoted_text'
+    if re.search(r'(?:予定|つもり)(?:でした|だった)|'
+                 r'(?:お休み|おやすみ|欠勤|遅刻)(?:する)?(?:でした|だった)|'
+                 r'撤回|取り消|取消|訂正|(?:^|[\n、。])\s*違(?:います|いました)', text):
+        return [], 'unresolved_shift'
+    if (re.search(r'お休み|おやすみ|欠勤|遅刻', text)
+            and re.search(r'予定|つもり|思って', text)):
+        return [], 'unresolved_shift'
+    if third_party_subject(text, name, roster):
+        return [], 'unresolved_shift'
+    if re.search(r'勘違い|間違い', text):
+        for fragment in re.split(r'[\n。！？!?、]+', text):
+            if re.search(r'勘違い|間違い', fragment) and not re.fullmatch(
+                    r'\s*[1-4](?:号店)?\s*[→➡️]+\s*[1-4](?:号店)?'
+                    r'\s*だと勘違いしていた\s*', fragment):
+                return [], 'unresolved_shift'
+    fragments = announcement_clauses(text)
+    scoped = False
+    saw_scope = False
+    unresolved = False
+    events = []
+    inherited_shifts = []
+    previous_sentence = None
+    for fragment, sentence in fragments:
+        if sentence != previous_sentence:
+            inherited_shifts = []
+            previous_sentence = sentence
+        fragment = re.sub(r'https?://\S+', '', fragment).strip()
+        if not fragment:
+            continue
+        dates = DATE_WORD.findall(fragment)
+        if dates:
+            inherited_shifts = []
+            scoped = all((int(month), int(day)) == (date.month, date.day)
+                         for month, day in dates)
+            if not scoped:
+                continue
+        if re.search(r'今日|本日', fragment):
+            scoped = True
+        if re.search(r'昨日|明日|明後日|あした|あす|きのう', fragment):
+            scoped = False
+            continue
+        saw_scope |= scoped
+        if not scoped:
+            continue
+        if (re.search(r'休憩|昼休み|お昼休み|[「『”"]|勘違い|間違|訂正|'
+                      r'ではな[くい]|じゃな[くい]|ではありません|'
+                      r'休みません|休まない|遅れません|復帰しません|戻りません|'
+                      r'(?:欠勤|遅刻|出勤|お給仕|お休み)しません|'
+                      r'聞きました|とのこと|らしい|だそう|によると|引用', fragment)
+                or re.search(r'(?:ちゃん|さん)(?:は|が|も|の)', fragment)
+                or re.search(r'@\w+|(?:友達|友人|彼女|相方|店舗|お店|スタッフ)(?:が|は|の)', fragment)
+                or any(other != name and re.search(re.escape(other) + r'(?:は|が|も)',
+                                                   fragment) for other in roster)):
+            unresolved = True
+            continue
+        mentioned = [shift for shift in ('昼', '夜') if shift in fragment]
+        if mentioned:
+            inherited_shifts = mentioned
+        stated = [shift for shift in shifts if shift in mentioned]
+        ambiguous = re.search(
+            r'人間の姿になれませんでした|魔法がうまくかかりませんでした|'
+            r'かもしれ(?:ません|ない)|かも|未定|わからない|分からない|行けるか|なら', fragment)
+        absence = re.search(
+            r'お休み(?:します|です|いただきます|させていただきます|になりました)?|'
+            r'おやすみ(?:します|です)|休み(?:ます|です)|欠勤(?:します|です)?|'
+            r'お給仕できません|出勤できません|行けなくなりました', fragment)
+        late = re.search(r'遅刻(?:します|です)?|遅れ(?:ます|そう|て)|遅くなります', fragment)
+        returned = re.search(r'復帰(?:します|しました|です)|戻(?:ります|りました)|'
+                             r'出勤再開|お給仕再開', fragment)
+        if absence and returned:
+            unresolved = True
+            continue
+        kind_match = next(((kind, match) for kind, match in (
+            ('uncertain', ambiguous), ('late', late), ('absence', absence),
+            ('return', returned)) if match), None)
+        if kind_match:
+            kind, match = kind_match
+            if len(mentioned) > 1 and not (
+                    kind == 'absence' and re.search(
+                        r'昼(?:も|と)?夜|夜(?:も|と)?昼|終日|全日|一日', fragment)):
+                unresolved = True
+                continue
+            event_shifts = stated
+            if kind == 'absence' and not mentioned:
+                if inherited_shifts:
+                    event_shifts = [shift for shift in shifts if shift in inherited_shifts]
+                elif re.search(r'今日|本日|終日|全日|一日', fragment) or DATE_WORD.search(fragment):
+                    event_shifts = list(shifts)
+            if not event_shifts:
+                unresolved = True
+                continue
+            for shift in event_shifts:
+                event = {'shift': shift, 'kind': kind, 'excerpt': match.group(0)[:160]}
+                if kind in ('late', 'return'):
+                    stores = set(re.findall(r'([1-4])号店', fragment))
+                    if len(stores) == 1:
+                        event['storeId'] = 's' + stores.pop()
+                    explicit = re.search(
+                        r'(?<!\d)([01]?\d|2[0-3])(?::([0-5]\d)|時(?:([0-5]?\d)分)?)(?!\d)',
+                        fragment)
+                    if explicit:
+                        event['time'] = f'{int(explicit[1]):02d}:{int(explicit[2] or explicit[3] or 0):02d}'
+                events.append(event)
+            continue
+        if re.search(r'だった|でした|いません|行きません|行かない|出ません|出ない|違います',
+                     fragment):
+            unresolved = True
+            continue
+        matches = list(re.finditer(r'([1-4])号店\s*(昼|夜)|'
+                                   r'(?:お)?(昼|夜)\s*(?:は|の|に)?\s*([1-4])号店',
+                                   fragment))
+        for match in matches:
+            store, shift = (match[1], match[2]) if match[1] else (match[4], match[3])
+            if shift in shifts:
+                events.append({'shift': shift, 'kind': 'placement',
+                               'storeId': 's' + store, 'excerpt': match.group(0)[:160]})
+    unique = []
+    for shift in shifts:
+        selected = [event for event in events if event['shift'] == shift]
+        stores = {event['storeId'] for event in selected if event['kind'] == 'placement'}
+        kinds = {event['kind'] for event in selected}
+        if len(stores) > 1 or ('absence' in kinds and kinds & {'placement', 'late', 'return'}):
+            selected = [{'shift': shift, 'kind': 'uncertain',
+                         'excerpt': ' / '.join(event['excerpt'] for event in selected)[:160]}]
+        for event in selected:
+            event['excerpt'] = ' '.join(event['excerpt'].split())[:160]
+            if event not in unique:
+                unique.append(event)
+    return unique, ('events' if unique else 'unresolved_shift' if unresolved
+                    else 'no_event' if saw_scope else 'explicit_date_required')
+
+
+def validate_post(candidate, payload, target, now, binding=None, roster=()):
+    tid, uid = candidate['id'], candidate['authorId']
+    if not isinstance(payload, dict) or not official.matching_id(payload, tid):
+        raise Failure('response_id_mismatch')
+    author = payload.get('user')
+    if (not isinstance(author, dict) or not official.matching_id(author, uid)
+            or author.get('screen_name') != candidate['authorScreenName']
+            or uid == official.AUTHOR_ID
+            or candidate['name'] != target['name']
+            or candidate['authorScreenName'] != target['handle']
+            or (binding and (binding['authorId'] != uid
+                             or binding['authorScreenName'] != target['handle']))):
+        raise Failure('author_mismatch')
+    try:
+        created = official.timestamp(payload.get('created_at'))
+        searched = official.timestamp(candidate['searchCreatedAt'])
+        date = dt.date.fromisoformat(candidate['date'])
+        if (created > now or calendar_day(created) != date
+                or abs((created - searched).total_seconds()) >= 1
+                or abs((official.snowflake_time(tid) - created).total_seconds()) >= 2):
+            raise Failure('timestamp_mismatch')
+    except (ValueError, TypeError, OverflowError, OSError):
+        raise Failure('invalid_created_at') from None
+    if any(payload.get(key) for key in (
+            'quoted_tweet', 'quoted_status', 'retweeted_status',
+            'in_reply_to_status_id_str', 'in_reply_to_status_id', 'in_reply_to_user_id_str',
+            'in_reply_to_screen_name')):
+        return None, 'quoted_or_reply'
+    text = payload.get('text')
+    if not isinstance(text, str):
+        raise Failure('missing_post_text')
+    events, reason = parse_events(text, created, date, target['shifts'], target['name'], roster)
+    if not events:
+        return None, reason
+    return {
+        'id': tid, 'url': public_url(target['handle'], tid), 'name': target['name'],
+        'authorId': uid, 'authorScreenName': target['handle'], 'createdAt': stamp(created),
+        'observedAt': stamp(now), 'date': date.isoformat(), 'events': events,
+    }, reason
+
+
+class DurableHttp:
+    def __init__(self, state, snapshot, http_state, date, targets, max_searches, max_posts,
+                 clock=official.utc_now, sleep=time.sleep):
+        self.state, self.snapshot, self.http_state = state, snapshot, http_state
+        self.date, self.targets = date, targets
+        self.clock, self.sleep = clock, sleep
+        self.started = clock()
+        self.caps = {'searches': max_searches, 'posts': max_posts}
+        self.used = {'searches': 0, 'posts': 0}
+        self.cooldowns = official.load_transport(http_state)
+        self.post_target = None
+
+    def save(self):
+        official.atomic_json(self.snapshot, self.state)
+
+    def save_http(self):
+        latest = official.load_transport(self.http_state)
+        for host, until in latest.items():
+            if host not in self.cooldowns or official.timestamp(until) > official.timestamp(self.cooldowns[host]):
+                self.cooldowns[host] = until
+        official.atomic_json(self.http_state, {'schemaVersion': 1, 'cooldowns': self.cooldowns})
+
+    def preflight(self):
+        self.save()
+        self.save_http()
+
+    def check_window(self, target_name=None):
+        active = active_targets(self.targets, self.date, self.clock())
+        if not active or (target_name is not None and target_name not in active):
+            raise Failure('outside_window')
+
+    def reserve(self, host, kind, target_name=None):
+        if self.state['paused']:
+            raise Failure('paused')
+        target_name = target_name or (self.post_target if kind == 'posts' else None)
+        self.check_window(target_name)
+        self.cooldowns = official.load_transport(self.http_state)
+        if host in self.cooldowns and official.timestamp(self.cooldowns[host]) > self.clock():
+            raise Failure('shared_host_cooldown', retry_at=official.timestamp(self.cooldowns[host]))
+        budget = self.state['budgets'].setdefault(self.date.isoformat(), {'searches': 0, 'posts': 0})
+        if self.used[kind] >= self.caps[kind] or budget[kind] >= DAILY_LIMITS[kind]:
+            raise Failure('budget_exhausted')
+        previous = official.timestamp(self.state['lastRequests'][host]) if host in self.state['lastRequests'] else self.started
+        self.sleep(max(0, 12 - (self.clock() - previous).total_seconds()))
+        self.check_window(target_name)
+        # Reservations are durable before any network side effect, including dry runs.
+        self.save_http()
+        if host in self.cooldowns and official.timestamp(self.cooldowns[host]) > self.clock():
+            raise Failure('shared_host_cooldown', retry_at=official.timestamp(self.cooldowns[host]))
+        budget[kind] += 1
+        self.used[kind] += 1
+        self.state['lastRequests'][host] = stamp(self.clock())
+        self.save()
+        self.check_window(target_name)
+
+    def deny(self, host, reason, status=None, retry_after=None):
+        now = self.clock()
+        until = now + dt.timedelta(hours=1)
+        if retry_after:
+            try:
+                until = now + dt.timedelta(seconds=max(0, int(retry_after)))
+            except (ValueError, OverflowError):
+                try:
+                    until = official.timestamp(
+                        email.utils.parsedate_to_datetime(retry_after).isoformat())
+                except (ValueError, TypeError, OverflowError):
+                    pass
+        prior = official.load_transport(self.http_state).get(host)
+        if prior:
+            until = max(until, official.timestamp(prior))
+        until = max(now, until)
+        self.cooldowns[host] = stamp(until)
+        self.state['paused'] = {'reason': reason, 'host': host, 'at': stamp(now),
+                                'retryAt': stamp(until)}
+        if status is not None:
+            self.state['paused']['httpStatus'] = status
+        errors = []
+        for save in (self.save, self.save_http):
+            try:
+                save()
+            except OSError as exc:
+                errors.append(exc)
+        if errors:
+            raise InfrastructureFailure('transport_state_save_failed') from None
+        raise Failure(reason, status, until)
+
+
+class PersonalClient(official.PublicClient):
+    def __init__(self, durable):
+        super().__init__(clock=durable.clock, sleep=durable.sleep)
+        self.durable = durable
+        self.urls = search_urls(durable.date)
+
+    def open(self, request, timeout=35):
+        url = request.full_url
+        parsed = urllib.parse.urlsplit(url)
+        if url in self.urls:
+            kind = 'searches'
+        elif (parsed.scheme == 'https' and parsed.hostname == POST_HOST
+              and not parsed.username and not parsed.port and not parsed.fragment
+              and parsed.path == '/tweet-result'
+              and re.fullmatch(r'id=[1-9][0-9]{9,24}&lang=ja&token=a', parsed.query)):
+            kind = 'posts'
+        else:
+            raise Failure('route_refused')
+        host = parsed.hostname
+        target_name = None
+        if kind == 'posts':
+            target_name = self.durable.post_target
+            if target_name is None:
+                tid = urllib.parse.parse_qs(parsed.query)['id'][0]
+                target_name = next((item['name'] for item in self.durable.state['pending']
+                                    if item['id'] == tid), None)
+            if target_name is None:
+                raise Failure('missing_post_target')
+        self.durable.reserve(host, kind, target_name=target_name)
+        try:
+            self.durable.check_window(target_name)
+            with self.opener.open(urllib.request.Request(url), timeout=min(timeout, 35)) as response:
+                status = response.getcode()
+                headers = response.headers
+                if status in (401, 403, 429):
+                    self.durable.deny(host, 'access_denied', status, headers.get('Retry-After'))
+                if status != 200:
+                    raise Failure('unexpected_http_status', status)
+                official.check_http_metadata(headers, self.clock())
+                body = response.read(MAX_BODY + 1)
+                if len(body) > MAX_BODY:
+                    raise Failure('response_too_large')
+                text = body.decode('utf-8', 'strict')
+                title = re.search(r'<title[^>]*>(.*?)</title>', text, re.I | re.S)
+                challenge = bool(title and DENIAL.search(html.unescape(title[1])))
+                if challenge:
+                    self.durable.deny(host, 'access_denied', status, headers.get('Retry-After'))
+                if kind == 'searches':
+                    if '__NEXT_DATA__' not in text and DENIAL.search(text):
+                        challenge = True
+                    if '__NEXT_DATA__' in text:
+                        error = search_page(text).get('searchError')
+                        challenge |= bool(DENIAL.search(json.dumps(error, ensure_ascii=False)))
+                else:
+                    try:
+                        error = json.loads(text)
+                        if isinstance(error, dict):
+                            challenge |= any(DENIAL.search(str(error.get(key, '')))
+                                             for key in ('error', 'errors', 'message', 'detail'))
+                    except ValueError:
+                        challenge |= bool(DENIAL.search(text))
+                if challenge:
+                    self.durable.deny(host, 'access_denied', status, headers.get('Retry-After'))
+                return io.BytesIO(body)
+        except urllib.error.HTTPError as exc:
+            status, retry = exc.code, exc.headers.get('Retry-After') if exc.headers else None
+            exc.close()
+            if status in (401, 403, 429):
+                self.durable.deny(host, 'access_denied', status, retry)
+            raise Failure('http_error', status) from None
+        except Failure as exc:
+            if exc.reason == 'redirect_refused':
+                self.durable.deny(host, 'redirect_refused', exc.status)
+            raise
+        except (OSError, http.client.HTTPException, UnicodeError):
+            raise Failure('network_error') from None
+
+    def search(self, url, targets, date, now, bindings):
+        with self.open(urllib.request.Request(url)) as response:
+            try:
+                return discover(response.read().decode('utf-8'), targets, date, now, bindings)
+            except Failure as exc:
+                if exc.reason == 'access_denied':
+                    self.durable.deny(SEARCH_HOST, 'access_denied', exc.status)
+                raise
+
+    def fetch_post(self, tid):
+        try:
+            return self.importer.fetch(tid)
+        except (json.JSONDecodeError, UnicodeError, RecursionError):
+            raise Failure('invalid_post_json') from None
+
+
+def collect(state, durable, client, targets, date, max_searches, max_posts,
+            clock=official.utc_now, roster=()):
+    state['checkedAt'] = stamp(clock())
+    sources, failures, new_posts = [], [], []
+    resolved = {item['id'] for item in state['resolved']} | {post['id'] for post in state['posts']}
+    pending = {item['id']: item for item in state['pending'] if item['id'] not in resolved}
+    active = active_targets(targets, date, clock())
+    skipped = 0
+    early_status = 'paused' if state['paused'] else 'outside-window' if not active else None
+    for url in search_urls(date)[:max_searches] if not early_status else ():
+        try:
+            candidates = client.search(url, active_targets(targets, date, clock()),
+                                       date, clock(), state['identityBindings'])
+            sources.append({'url': url, 'status': 'ok', 'candidateCount': len(candidates)})
+            for candidate in candidates:
+                tid = candidate['id']
+                if tid in resolved:
+                    skipped += 1
+                    continue
+                if tid not in pending:
+                    pending[tid] = {**candidate, 'reason': 'discovered',
+                                    'firstSeenAt': stamp(clock()), 'lastAttemptAt': None,
+                                    'attempts': 0}
+            state['pending'] = list(pending.values())
+            durable.save()
+        except Failure as exc:
+            sources.append({'url': url, 'status': 'failed', **exc.facts()})
+            failures.append(exc.facts())
+            if exc.reason in ('budget_exhausted', 'outside_window', 'shared_host_cooldown') or state['paused']:
+                break
+    attempted = deferred = 0
+    for item in sorted(pending.values(), key=lambda item: (item.get('lastAttemptAt') or '', -int(item['id']))):
+        if item['date'] != date.isoformat():
+            continue
+        target = active_targets(targets, date, clock()).get(item['name'])
+        if target is None or target['handle'] != item['authorScreenName']:
+            continue
+        if attempted >= max_posts or state['paused']:
+            item['reason'] = 'paused' if state['paused'] else 'post_limit'
+            deferred += 1
+            continue
+        attempted += 1
+        item['lastAttemptAt'] = stamp(clock())
+        item['attempts'] += 1
+        state['pending'] = list(pending.values())
+        durable.save()
+        try:
+            durable.post_target = item['name']
+            value = client.fetch_post(item['id'])
+            post, reason = validate_post(
+                item, value, target, clock(), state['identityBindings'].get(item['name']), roster)
+            state['identityBindings'][item['name']] = {
+                'authorId': item['authorId'], 'authorScreenName': item['authorScreenName'],
+                'verifiedAt': stamp(clock())}
+            state['resolved'].append({
+                'id': item['id'], 'url': item['url'], 'name': item['name'], 'date': item['date'],
+                'reason': reason, 'resolvedAt': stamp(clock())})
+            pending.pop(item['id'])
+            if post:
+                state['posts'].append(post)
+                new_posts.append(post)
+                if any(event['kind'] == 'uncertain' for event in post['events']):
+                    failures.append({'id': item['id'], 'reason': 'uncertain_guidance'})
+            elif reason in ('unresolved_shift', 'explicit_date_required'):
+                failures.append({'id': item['id'], 'reason': reason})
+        except Failure as exc:
+            item.update(exc.facts())
+            failures.append({'id': item['id'], **exc.facts()})
+            if exc.reason in ('budget_exhausted', 'shared_host_cooldown', 'outside_window'):
+                deferred += 1
+        finally:
+            durable.post_target = None
+        state['pending'] = list(pending.values())
+        durable.save()
+    codes = {failure['reason'] for failure in failures}
+    if state['paused'] or 'shared_host_cooldown' in codes:
+        status = 'paused'
+    elif early_status:
+        status = early_status
+    elif 'budget_exhausted' in codes:
+        status = 'budget-exhausted'
+    elif failures:
+        status = 'partial' if any(source['status'] == 'ok' for source in sources) or new_posts else 'unavailable'
+    elif deferred:
+        status = 'partial'
+    elif new_posts:
+        status = 'ok'
+    elif skipped:
+        status = 'no-new'
+    else:
+        status = 'no-results'
+    if status in ('ok', 'no-new', 'no-results'):
+        state['lastSuccessAt'] = stamp(clock())
+    state['posts'].sort(key=lambda post: (post['createdAt'], int(post['id'])))
+    state['pending'] = list(pending.values())
+    state['lastRun'] = {
+        'status': status, 'date': date.isoformat(), 'dateBasis': 'JST calendar date, 00:00 boundary',
+        'sourceCount': sum(source['status'] == 'ok' for source in sources),
+        'sources': sources, 'targetCount': len(targets), 'activeTargetCount': len(active),
+        'attemptedCount': attempted, 'requests': dict(durable.used),
+        'newPostCount': len(new_posts), 'newEventCount': sum(len(post['events']) for post in new_posts),
+        'skippedResolvedCount': skipped, 'pendingCount': len(pending), 'deferredCount': deferred,
+        'failures': failures, 'finishedAt': stamp(clock()), 'complete': False}
+    durable.save()
+    return {'component': 'personal', **state['lastRun'], 'budgets': state['budgets'],
+            'paused': state['paused']}, (3 if status in ('paused', 'unavailable')
+                                      else 2 if status in ('partial', 'budget-exhausted') else 0)
+
+
+def argument_parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--once', action='store_true', help='one bounded run (default)')
+    parser.add_argument('--snapshot', type=Path, required=True, help='private durable canonical state')
+    parser.add_argument('--http-state', type=Path, required=True, help='shared official HTTP sidecar')
+    parser.add_argument('--publish', type=Path, help='optional public fact-only JSON mirror')
+    parser.add_argument('--report', type=Path, help='fact-only component report')
+    parser.add_argument('--seed', type=Path, default=ROOT / 'data' / 'personal-shifts.json')
+    parser.add_argument('--schedule', type=Path, default=ROOT / 'data' / 'schedule.js')
+    parser.add_argument('--insights', type=Path, default=ROOT / 'data' / 'store-insights.js')
+    parser.add_argument('--accounts', type=Path, default=ROOT / 'tools' / 'data' / 'accounts.csv')
+    parser.add_argument('--node', type=Path, help='existing Node executable for the local schedule JS')
+    parser.add_argument('--date', help='JST calendar date; only today may make requests')
+    parser.add_argument('--max-searches', type=int, default=2, help='maximum 1..3 pages/run')
+    parser.add_argument('--max-posts', type=int, default=3, help='maximum 1..3 new individual GETs/run')
+    parser.add_argument('--dry-run', action='store_true', help='persist private safety/facts, do not publish')
+    return parser
+
+
+def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalClient):
+    snapshot, http_state = args.snapshot.resolve(), args.http_state.resolve()
+    publish = args.publish.resolve() if args.publish else None
+    report_path = args.report.resolve() if args.report else None
+    writes = [path for path in (snapshot, http_state, publish, report_path) if path]
+    inputs = {path.resolve() for path in (args.schedule, args.insights, args.accounts)}
+    if (len(set(writes)) != len(writes) or any(path.suffix != '.json' for path in writes)
+            or any(path in inputs for path in writes)
+            or snapshot == args.seed.resolve() or http_state == args.seed.resolve()
+            or not http_state.name.endswith('.http-state.json')
+            or snapshot == ROOT / 'data' / 'personal-shifts.json'
+            or any(path.name in ('observed-shifts.json', 'schedule.js', 'store-insights.js')
+                   for path in (snapshot, publish, report_path) if path)):
+        raise ValueError('unsafe_storage_paths')
+    official_lock = http_state.with_name(
+        http_state.name.removesuffix('.http-state.json') + '.lock')
+    lock_paths = {snapshot.with_suffix('.lock'), http_state.with_suffix('.lock'), official_lock}
+    if publish:
+        lock_paths.add(publish.with_suffix('.lock'))
+    if set(writes) & lock_paths:
+        raise ValueError('unsafe_storage_paths')
+    with ExitStack() as locks:
+        for path in sorted(lock_paths, key=lambda item: str(item).casefold()):
+            locks.enter_context(official.ProcessLock(path))
+        state = read_state(snapshot)
+        merge_seed(state, read_state(args.seed, private=False))
+        date = dt.date.fromisoformat(args.date) if args.date else calendar_day(clock())
+        schedule = read_js(args.schedule, 'SCHEDULE_DATA', args.node)
+        insights = read_js(args.insights, 'STORE_INSIGHTS', args.node)
+        with args.accounts.open(encoding='utf-8-sig', newline='') as source:
+            accounts = list(csv.DictReader(source))
+        targets = select_targets(schedule, insights, accounts, date, state)
+        durable = DurableHttp(state, snapshot, http_state, date, targets,
+                              args.max_searches, args.max_posts, clock, sleep)
+        durable.preflight()
+        client = client_factory(durable)
+        report, code = collect(state, durable, client, targets, date,
+                               args.max_searches, args.max_posts, clock, schedule['roster'])
+        report.update(dryRun=args.dry_run, published=False, exitCode=code)
+        if publish and not args.dry_run:
+            official.atomic_json(publish, public_state(state))
+            report['published'] = True
+        official.write_report(report, report_path)
+        return code
+
+
+def main(argv=None):
+    parser = argument_parser()
+    try:
+        args = parser.parse_args(argv)
+        if not 1 <= args.max_searches <= 3 or not 1 <= args.max_posts <= 3:
+            parser.error('--max-searches and --max-posts must be 1..3')
+    except SystemExit as exc:
+        if exc.code != 2:
+            raise
+        print(json.dumps({'component': 'personal', 'status': 'unavailable',
+                          'reason': 'invalid_cli_arguments', 'exitCode': 4}))
+        return 4
+    try:
+        return run(args)
+    except (OSError, ValueError, KeyError, TypeError, OverflowError, InfrastructureFailure) as exc:
+        reason = str(exc) if isinstance(exc, (ValueError, InfrastructureFailure)) else 'infrastructure_error'
+        if not re.fullmatch(r'[a-z_]+', reason):
+            reason = 'invalid_local_data'
+        print(json.dumps({'component': 'personal', 'status': 'unavailable',
+                          'reason': reason, 'exitCode': 4}))
+        return 4
+
+
+if __name__ == '__main__':
+    sys.exit(main())

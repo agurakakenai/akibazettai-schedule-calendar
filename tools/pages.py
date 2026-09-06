@@ -32,7 +32,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_FILES = (
     'index.html', 'app.js', 'styles.css', 'data/schedule.js',
-    'data/store-insights.js', 'data/observed-shifts.json',
+    'data/store-insights.js', 'data/observed-shifts.json', 'data/personal-shifts.json',
 )
 POST_FIELDS = (
     'id', 'url', 'authorId', 'authorScreenName', 'createdAt', 'date',
@@ -79,6 +79,16 @@ def load_collector():
         _source_file(ROOT, 'tools/add-shifts.py')
         spec = importlib.util.spec_from_file_location(
             'pages_collect_shifts', source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+
+@lru_cache(maxsize=1)
+def load_personal_collector():
+    with _no_bytecode():
+        source = _source_file(ROOT, 'tools/collect-personal-shifts.py')
+        spec = importlib.util.spec_from_file_location('pages_personal_shifts', source)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
@@ -190,6 +200,102 @@ def load_public_snapshot(path, *, collector=None):
         return public_projection(collector.load_snapshot(Path(path)), collector=collector)
     except (ValueError, TypeError, KeyError, OverflowError, AttributeError):
         raise PagesError('invalid_public_snapshot') from None
+
+
+def personal_projection(state, *, collector=None):
+    """Publish extracted personal guidance, never transport state or full text."""
+    collector = collector or load_collector()
+    statuses = {
+        'never', 'ok', 'partial', 'unavailable', 'no-new', 'no-results',
+        'paused', 'budget-exhausted', 'outside-window',
+    }
+    kinds = {'placement', 'absence', 'late', 'return', 'uncertain'}
+    counts = (
+        'sourceCount', 'newPostCount', 'newEventCount', 'unresolvedCount',
+        'deferredCount', 'budgetDeferredCount', 'targetCount', 'activeTargetCount', 'checkedAccountCount',
+    )
+    try:
+        if (not isinstance(state, dict) or type(state['schemaVersion']) is not int
+                or state['schemaVersion'] != 1 or state['complete'] is not False
+                or not isinstance(state['posts'], list) or not isinstance(state['lastRun'], dict)):
+            raise ValueError
+        result = {
+            'schemaVersion': 1, 'complete': False,
+            'checkedAt': _timestamp(state['checkedAt'], collector, nullable=True),
+            'lastSuccessAt': _timestamp(state['lastSuccessAt'], collector, nullable=True),
+            'posts': [],
+        }
+        ids = set()
+        for post in state['posts']:
+            item = {field: post[field] for field in (
+                'id', 'url', 'name', 'authorId', 'authorScreenName',
+                'createdAt', 'observedAt', 'date',
+            )}
+            tid, handle = item['id'], item['authorScreenName']
+            if (not isinstance(tid, str) or not collector.post_id(tid) or tid in ids
+                    or not isinstance(handle, str) or not re.fullmatch(r'[A-Za-z0-9_]{1,15}', handle)
+                    or handle.casefold() == collector.AUTHOR.casefold()
+                    or not isinstance(item['authorId'], str)
+                    or not re.fullmatch(r'[1-9][0-9]{0,24}', item['authorId'])
+                    or item['authorId'] == collector.AUTHOR_ID
+                    or item['url'] != f'https://x.com/{handle}/status/{tid}'
+                    or not isinstance(item['name'], str) or not NAME_RE.fullmatch(item['name'])):
+                raise ValueError
+            created = collector.timestamp(item['createdAt'])
+            observed = collector.timestamp(item['observedAt'])
+            if (_date(item['date']) != created.astimezone(dt.timezone(dt.timedelta(hours=9))).date().isoformat()
+                    or abs((collector.snowflake_time(tid) - created).total_seconds()) >= 2
+                    or observed < created or not isinstance(post['events'], list)):
+                raise ValueError
+            item['createdAt'], item['observedAt'] = collector.iso(created), collector.iso(observed)
+            item['events'] = []
+            for event in post['events']:
+                if (not isinstance(event, dict) or event['shift'] not in ('昼', '夜')
+                        or event['kind'] not in kinds or not isinstance(event['excerpt'], str)
+                        or not event['excerpt'].strip() or len(event['excerpt']) > 160
+                        or '\n' in event['excerpt'] or '\r' in event['excerpt']):
+                    raise ValueError
+                public_event = {field: event[field] for field in ('shift', 'kind', 'excerpt')}
+                store = event.get('storeId')
+                if 'storeId' in event:
+                    if store not in collector.STORE_IDS.values():
+                        raise ValueError
+                    public_event['storeId'] = store
+                if event['kind'] == 'placement' and store is None:
+                    raise ValueError
+                if event['kind'] == 'absence' and store is not None:
+                    raise ValueError
+                when = event.get('time')
+                if 'time' in event:
+                    if not isinstance(when, str) or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', when):
+                        raise ValueError
+                    public_event['time'] = when
+                item['events'].append(public_event)
+            ids.add(tid)
+            result['posts'].append(item)
+        run = state['lastRun']
+        if not isinstance(run['status'], str) or run['status'] not in statuses:
+            raise ValueError
+        result['lastRun'] = {'status': run['status']}
+        for field in ('date', 'dateFrom', 'dateTo'):
+            if run.get(field) is not None:
+                result['lastRun'][field] = _date(run[field])
+        for field in counts:
+            if field in run:
+                result['lastRun'][field] = _count(run[field])
+        if (result['lastRun'].get('sourceCount', 0) > 3
+                or result['lastRun'].get('newPostCount', 0) > len(result['posts'])):
+            raise ValueError
+        return result
+    except (KeyError, ValueError, TypeError, OverflowError, OSError, AttributeError):
+        raise PagesError('invalid_personal_snapshot') from None
+
+
+def load_public_personal_snapshot(path):
+    try:
+        return personal_projection(load_personal_collector().load_snapshot(Path(path)))
+    except (ValueError, TypeError, KeyError, OverflowError, AttributeError):
+        raise PagesError('invalid_personal_snapshot') from None
 
 
 def _plain_path(path):
@@ -329,6 +435,8 @@ def stage(output, revision, *, root=ROOT, clock=None):
         if name == 'data/observed-shifts.json':
             observation = load_public_snapshot(source)
             files[name] = json_bytes(observation)
+        elif name == 'data/personal-shifts.json':
+            files[name] = json_bytes(load_public_personal_snapshot(source))
         else:
             files[name] = source.read_bytes()
     events = _plain_path(root / 'assets' / 'events')

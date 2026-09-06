@@ -1,6 +1,7 @@
 """Data-only collector-state orchestration for trusted GitHub Actions main runs.
 
-CLI: --mode restore|collect --output data/observed-shifts.json
+CLI: --mode restore|collect|personal|both --output data/observed-shifts.json
+collect remains official-only; personal/both require an explicit manual event.
 Optional: --recovery-dir .cloud-collection-recovery (not a Pages artifact).
 Collect needs contents:write and GH_TOKEN supplied from the existing GITHUB_TOKEN;
 restore needs contents:read. Checkout latest main with persist-credentials:false,
@@ -10,16 +11,22 @@ cancel-in-progress:false. Only code from that checkout is ever executed.
 Exit 0 means the canonical handoff is durable (including collector codes 2/3).
 Exit 1 stops deployment. JSON stdout/GITHUB_OUTPUT expose collectionStatus,
 collectionCode, stateCommit, sourceCodeSHA, stateSource, persistenceStatus.
+officialCollectionStatus/Code and personalCollectionStatus/Code describe each
+component separately. Paused/budget/unavailable components still publish saved
+facts; storage/process/completion-attestation failures retain the remote lease.
 Never automatically expire or clear a lease, including on a rerun of the same job.
 The permanent state-owner.json marker is mandatory on every existing state
 branch. Missing/mismatched markers are never adopted automatically. Only the
 fixed collector-state ref is allowed, and it must not be the remote default.
-Recovery: inspect the failed run's two recovery JSON files and cooldowns, commit
+personal-shifts.json is optional on legacy branches. Restore uses a checked main
+seed when absent; only manual personal/both first adds it to the branch.
+Recovery: inspect the failed run's recovery JSON files and shared cooldowns, commit
 them to collector-state without force and remove lease.json in that same commit,
 preserving state-owner.json, then run again. Reports and the private scratch
 repository are never artifacts.
 """
 import argparse
+import copy
 import datetime as dt
 import importlib.util
 import json
@@ -41,9 +48,10 @@ REF = 'refs/heads/' + BRANCH
 MAIN_REF = 'refs/heads/main'
 SNAPSHOT = 'observed-shifts.json'
 HTTP_STATE = 'observed-shifts.http-state.json'
+PERSONAL = 'personal-shifts.json'
 LEASE = 'lease.json'
 OWNER_FILE = 'state-owner.json'
-FILES = {SNAPSHOT, HTTP_STATE, OWNER_FILE, LEASE}
+FILES = {SNAPSHOT, HTTP_STATE, PERSONAL, OWNER_FILE, LEASE}
 MANAGER = 'cloud-collection/v1'
 STATE_OWNER = {
     'schemaVersion': 1, 'owner': 'agurakakenai', 'managedBy': MANAGER,
@@ -52,8 +60,9 @@ STATE_OWNER = {
 MAX_JSON_BYTES = 16 * 1024 * 1024
 SHA_RE = re.compile(r'[0-9a-f]{40}\Z')
 RECOVERY = (
-    '失敗runのrecovery JSONが両方揃っていることを検査しcooldownを確認してください。'
-    '恒久markerを維持し、collector-stateへ非force commitで両JSONを戻して'
+    '失敗runの公式JSON・共有HTTPstate・本人JSON（導入済みの場合）が揃っていることを'
+    '検査し、cooldownと本人pause/budgetを確認してください。'
+    '恒久markerを維持し、collector-stateへ非force commitでstate JSON一式を戻して'
     '同じcommitでlease.jsonを除去後、'
     '次runを実行してください。leaseは自動失効しません。')
 
@@ -70,6 +79,14 @@ def require(condition, reason='unsafe_state'):
 def load_collector():
     spec = importlib.util.spec_from_file_location(
         'cloud_observation_collector', ROOT / 'tools' / 'collect-shifts.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_personal_collector():
+    spec = importlib.util.spec_from_file_location(
+        'cloud_personal_collector', ROOT / 'tools' / 'collect-personal-shifts.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -241,6 +258,121 @@ def validate_transport(path, collector):
     return state, raw
 
 
+def validate_personal(path, personal=None, *, private=True):
+    state, raw = read_json(path)
+    personal = personal or load_personal_collector()
+    personal.read_state(path, private=private)
+    public_fields = ('schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt', 'posts', 'lastRun')
+    private_fields = ('pending', 'resolved', 'budgets', 'paused', 'identityBindings',
+                      'originalTargets', 'lastRequests')
+    fields = (*public_fields, *private_fields) if private else public_fields
+    keys(state, fields, fields)
+    official = personal.official
+
+    def name(value):
+        require(isinstance(value, str)
+                and re.fullmatch(r'[ぁ-んァ-ヶ一-龠ーａ-ｚA-Za-z0-9]{1,12}', value))
+
+    def identity(value):
+        name(value['name'])
+        require(isinstance(value['authorId'], str) and official.post_id(value['authorId'])
+                and value['authorId'] != official.AUTHOR_ID)
+        require(isinstance(value['authorScreenName'], str)
+                and re.fullmatch(r'[A-Za-z0-9_]{1,15}', value['authorScreenName']))
+        require(value['url'] == personal.public_url(value['authorScreenName'], value['id']))
+
+    for post in state['posts']:
+        fields = ('id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt',
+                  'observedAt', 'date', 'events')
+        keys(post, fields, fields)
+        identity(post)
+        for event in post['events']:
+            require(event['kind'] != 'absence' or 'storeId' not in event,
+                    'invalid_personal_absence')
+        require(abs((official.snowflake_time(post['id'])
+                     - official.timestamp(post['createdAt'])).total_seconds()) < 2)
+    run = state['lastRun']
+    counts = ('sourceCount', 'targetCount', 'activeTargetCount', 'attemptedCount',
+              'newPostCount', 'newEventCount', 'skippedResolvedCount', 'pendingCount', 'deferredCount')
+    keys(run, (*counts, 'status', 'date', 'dateBasis', 'source', 'sources', 'requests',
+               'failures', 'finishedAt', 'complete'), ('status',))
+    for field in counts:
+        if field in run:
+            integer(run[field])
+    if 'date' in run:
+        require(dt.date.fromisoformat(run['date']).isoformat() == run['date'])
+    for field, expected in (
+            ('dateBasis', 'JST calendar date, 00:00 boundary'),
+            ('source', 'manually_reviewed_public_http_pilot'), ('complete', False)):
+        if field in run:
+            require(run[field] is False if expected is False else run[field] == expected)
+    if 'finishedAt' in run:
+        official.timestamp(run['finishedAt'])
+    if 'requests' in run:
+        keys(run['requests'], ('searches', 'posts'), ('searches', 'posts'))
+        for count in run['requests'].values():
+            integer(count)
+    for field in ('sources', 'failures'):
+        require(isinstance(run.get(field, []), list))
+    for source in run.get('sources', []):
+        keys(source, ('url', 'status', 'candidateCount', 'reason', 'httpStatus', 'retryAt'),
+             ('url', 'status'))
+        require(source['status'] in ('ok', 'failed')
+                and source['url'] in personal.search_urls(dt.date.fromisoformat(run['date'])))
+        if 'candidateCount' in source:
+            integer(source['candidateCount'])
+        validate_failure(source, official)
+    for failure in run.get('failures', []):
+        keys(failure, ('id', 'reason', 'httpStatus', 'retryAt'), ('reason',))
+        if 'id' in failure:
+            require(isinstance(failure['id'], str) and official.post_id(failure['id']))
+        validate_failure(failure, official)
+    if private:
+        for item in state['pending']:
+            fields = ('id', 'url', 'name', 'authorId', 'authorScreenName', 'date',
+                      'searchCreatedAt', 'reason', 'firstSeenAt', 'lastAttemptAt', 'attempts')
+            keys(item, (*fields, 'httpStatus', 'retryAt'), fields)
+            identity(item)
+            require(personal.calendar_day(official.timestamp(item['searchCreatedAt'])).isoformat()
+                    == item['date'])
+            require(abs((official.snowflake_time(item['id'])
+                         - official.timestamp(item['searchCreatedAt'])).total_seconds()) < 2)
+            official.timestamp(item['firstSeenAt'])
+            if item['lastAttemptAt'] is not None:
+                official.timestamp(item['lastAttemptAt'])
+            integer(item['attempts'])
+            validate_failure(item, official)
+        for item in state['resolved']:
+            fields = ('id', 'url', 'name', 'date', 'reason', 'resolvedAt')
+            keys(item, fields, fields)
+            name(item['name'])
+            require(re.fullmatch(r'https://x\.com/[A-Za-z0-9_]{1,15}/status/' + item['id'],
+                                 item['url']))
+            require(dt.date.fromisoformat(item['date']).isoformat() == item['date'])
+            require(personal.calendar_day(official.snowflake_time(item['id'])).isoformat() == item['date'])
+            official.timestamp(item['resolvedAt'])
+        for person, binding in state['identityBindings'].items():
+            name(person)
+            keys(binding, ('authorId', 'authorScreenName', 'verifiedAt'),
+                 ('authorId', 'authorScreenName', 'verifiedAt'))
+            require(binding['authorId'] != official.AUTHOR_ID)
+            official.timestamp(binding['verifiedAt'])
+        for day, targets in state['originalTargets'].items():
+            require(dt.date.fromisoformat(day).isoformat() == day and isinstance(targets, dict))
+            for person, target in targets.items():
+                name(person)
+                keys(target, ('name', 'handle', 'shifts'), ('name', 'handle', 'shifts'))
+                require(target['name'] == person and re.fullmatch(r'[A-Za-z0-9_]{1,15}', target['handle'])
+                        and isinstance(target['shifts'], list) and target['shifts']
+                        and set(target['shifts']) <= {'昼', '夜'}
+                        and len(set(target['shifts'])) == len(target['shifts']))
+        if state['paused'] is not None:
+            keys(state['paused'], ('reason', 'host', 'at', 'retryAt', 'httpStatus'),
+                 ('reason', 'host', 'at', 'retryAt'))
+            validate_failure(state['paused'], official)
+    return state, raw
+
+
 def validate_state_target():
     require(REPOSITORY == 'agurakakenai/akibazettai-schedule-calendar'
             and BRANCH == 'collector-state' and REF == 'refs/heads/collector-state'
@@ -294,6 +426,18 @@ def trusted_context(environment):
         if environment['GITHUB_EVENT_NAME'] == 'push':
             require(event.get('ref') == MAIN_REF and event.get('deleted') is False,
                     'untrusted_event')
+    except (KeyError, TypeError, ValueError, OSError):
+        raise CloudError('untrusted_event') from None
+
+
+def require_manual_personal(mode, environment):
+    if mode not in ('personal', 'both'):
+        return
+    require(environment.get('GITHUB_EVENT_NAME') == 'workflow_dispatch',
+            'personal_requires_manual_run')
+    try:
+        event = json.loads(Path(environment['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
+        require(event.get('inputs', {}).get('mode') == mode, 'personal_requires_explicit_input')
     except (KeyError, TypeError, ValueError, OSError):
         raise CloudError('untrusted_event') from None
 
@@ -397,11 +541,14 @@ class StateRepository:
                          (json.dumps(STATE_OWNER, sort_keys=True, indent=2) + '\n').encode('utf-8'))
         return source
 
-    def persist(self, collector, *, leased):
+    def persist(self, collector, *, leased, personal=None):
         validate_state_target()
         validate_owner(self.path / OWNER_FILE)
         validate_snapshot(self.path / SNAPSHOT, collector)
         validate_transport(self.path / HTTP_STATE, collector)
+        has_personal = (self.path / PERSONAL).exists()
+        if has_personal:
+            validate_personal(self.path / PERSONAL, personal)
         if leased:
             validate_lease(self.path / LEASE, collector)
         else:
@@ -410,6 +557,8 @@ class StateRepository:
                 'unexpected_state_files')
         # The isolated index has never seen ROOT; explicit paths are still used.
         self.git('add', '--', SNAPSHOT, HTTP_STATE, OWNER_FILE, reason='state_stage_failed')
+        if has_personal:
+            self.git('add', '--', PERSONAL, reason='state_stage_failed')
         if leased:
             self.git('add', '--', LEASE, reason='state_stage_failed')
         else:
@@ -441,21 +590,28 @@ def checked_paths(root, output, recovery):
             break
         require(not path.is_symlink(), 'unsafe_recovery_path')
     if recovery.exists():
-        require(recovery.is_dir() and {p.name for p in recovery.iterdir()} <= {SNAPSHOT, HTTP_STATE},
+        require(recovery.is_dir() and {p.name for p in recovery.iterdir()} <= {
+            SNAPSHOT, HTTP_STATE, PERSONAL},
                 'unsafe_recovery_path')
     return output, recovery
 
 
-def copy_pair(source, destination, collector):
+def copy_pair(source, destination, collector, *, include_personal=False, personal=None):
     _, canonical = validate_snapshot(source / SNAPSHOT, collector)
     _, transport = validate_transport(source / HTTP_STATE, collector)
+    extra = validate_personal(source / PERSONAL, personal)[1] if include_personal else None
     atomic_bytes(destination / SNAPSHOT, canonical)
     atomic_bytes(destination / HTTP_STATE, transport)
+    if extra is not None:
+        atomic_bytes(destination / PERSONAL, extra)
 
 
-def save_recovery(source, destination, collector):
+def save_recovery(source, destination, collector, *, include_personal=False, personal=None):
     invalid = False
-    for name, validate in ((SNAPSHOT, validate_snapshot), (HTTP_STATE, validate_transport)):
+    validators = [(SNAPSHOT, validate_snapshot), (HTTP_STATE, validate_transport)]
+    if include_personal:
+        validators.append((PERSONAL, lambda path, _: validate_personal(path, personal)))
+    for name, validate in validators:
         try:
             _, raw = validate(source / name, collector)
         except (CloudError, ValueError, TypeError, OSError):
@@ -480,10 +636,50 @@ def invoke_collector(root, state, report, environment):
     return process.returncode
 
 
-def orchestrate(args, *, root=ROOT, environment=None, collector=None):
+def invoke_personal_collector(root, state, report, environment):
+    try:
+        process = child_process(
+            [sys.executable, '-I', '-B', str(root / 'tools' / 'collect-personal-shifts.py'),
+             '--once', '--snapshot', str(state / PERSONAL),
+             '--http-state', str(state / HTTP_STATE),
+             '--seed', str(state.parent / 'personal-seed.json'),
+             '--max-searches', '3', '--max-posts', '3', '--report', str(report)],
+            cwd=root, environment=safe_environment(environment), timeout=600)
+    except (OSError, subprocess.SubprocessError):
+        raise CloudError('personal_process_failed') from None
+    return process.returncode
+
+
+def combined_status(official, personal):
+    incomplete = {'partial', 'unavailable', 'paused', 'budget-exhausted'}
+    if official in incomplete or personal in incomplete:
+        return 'unavailable' if official in incomplete and personal in incomplete else 'partial'
+    return 'ok' if 'ok' in (official, personal) else official
+
+
+def validate_personal_completion(path, status, code):
+    require(path.is_file() and not path.is_symlink() and path.stat().st_size <= MAX_JSON_BYTES,
+            'personal_report_missing')
+    try:
+        report = json.loads(path.read_text(encoding='utf-8'), object_pairs_hook=no_duplicate_keys)
+    except (OSError, ValueError, UnicodeError, RecursionError):
+        raise CloudError('personal_report_invalid') from None
+    # Only inspect a completion attestation. Never copy or log the report, which
+    # is permitted to contain internal paths and other operational diagnostics.
+    require(isinstance(report, dict) and report.get('component') == 'personal'
+            and report.get('status') == status and type(report.get('exitCode')) is int
+            and report['exitCode'] == code, 'personal_report_mismatch')
+
+
+def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=None):
     environment = dict(os.environ if environment is None else environment)
-    if args.mode == 'collect':
+    require(args.mode in ('restore', 'collect', 'personal', 'both'), 'invalid_collection_mode')
+    writing = args.mode != 'restore'
+    collect_official = args.mode in ('collect', 'both')
+    collect_personal = args.mode in ('personal', 'both')
+    if writing:
         trusted_context(environment)
+        require_manual_personal(args.mode, environment)
     output, recovery = checked_paths(root, args.output, args.recovery_dir)
     collector = collector or load_collector()
     work = root / ('.cc-work-' + uuid.uuid4().hex[:16])
@@ -492,7 +688,7 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None):
     state_dir.mkdir()
     repo = StateRepository(state_dir, environment)
     try:
-        source = repo.initialize(root, writing=args.mode == 'collect')
+        source = repo.initialize(root, writing=writing)
         if repo.head:
             canonical, _ = validate_snapshot(state_dir / SNAPSHOT, collector)
             validate_transport(state_dir / HTTP_STATE, collector)
@@ -509,15 +705,51 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None):
             else:
                 collector.atomic_json(state_dir / HTTP_STATE, {
                     'schemaVersion': 1, 'cooldowns': canonical.get('cooldowns', {})})
+        has_personal = (state_dir / PERSONAL).exists()
+        personal_seed = output.parent / PERSONAL
+        personal_state = None
+        personal_source = 'absent'
+        if has_personal or personal_seed.exists():
+            personal = personal or load_personal_collector()
+            if has_personal:
+                personal_state, personal_raw = validate_personal(state_dir / PERSONAL, personal)
+            else:
+                seed, _ = read_json(personal_seed)
+                if 'pending' in seed:
+                    personal_state, personal_raw = validate_personal(personal_seed, personal)
+                else:
+                    seed, _ = validate_personal(personal_seed, personal, private=False)
+                    personal_state = personal.empty_state()
+                    personal.merge_seed(personal_state, seed)
+                    personal_state['lastRun'] = copy.deepcopy(seed['lastRun'])
+                    seed_path = work / PERSONAL
+                    collector.atomic_json(seed_path, personal_state)
+                    personal_state, personal_raw = validate_personal(seed_path, personal)
+            personal_source = 'branch' if has_personal else 'seed'
+        if collect_personal:
+            require(personal_state is not None, 'missing_personal_seed')
+            if not has_personal:
+                # Do not extend the remote format during an official cron run.
+                # The first explicit manual run from merged main owns migration.
+                atomic_bytes(state_dir / PERSONAL, personal_raw)
+                has_personal = True
+        bundle = {'include_personal': has_personal, 'personal': personal}
         result = {
             'sourceCodeSHA': source, 'stateCommit': repo.head,
             'stateSource': 'branch' if repo.head else 'seed',
             'collectionStatus': canonical['lastRun']['status'],
             'collectionCode': -1, 'persistenceStatus': 'restored',
+            'collectionMode': args.mode,
+            'officialCollectionStatus': canonical['lastRun']['status'],
+            'officialCollectionCode': -1,
+            'personalCollectionStatus': personal_state['lastRun']['status'] if personal_state else 'never',
+            'personalCollectionCode': -1, 'personalStateSource': personal_source,
         }
         if args.mode == 'restore':
             # Byte-exact state handoff, and no seed replacement with an empty file.
-            copy_pair(state_dir, output.parent, collector)
+            copy_pair(state_dir, output.parent, collector, **bundle)
+            if personal_state is not None and not has_personal:
+                atomic_bytes(personal_seed, personal_raw)
             return result
 
         if repo.head and output.exists():
@@ -550,26 +782,55 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None):
             'createdAt': collector.iso(collector.utc_now()), 'sourceCodeSHA': source,
         }
         collector.atomic_json(state_dir / LEASE, lease)
-        copy_pair(state_dir, recovery, collector)
-        repo.persist(collector, leased=True)
+        copy_pair(state_dir, recovery, collector, **bundle)
+        if not has_personal:
+            (recovery / PERSONAL).unlink(missing_ok=True)
+        repo.persist(collector, leased=True, personal=personal)
         collected = work / 'collected'
-        copy_pair(state_dir, collected, collector)
+        copy_pair(state_dir, collected, collector, **bundle)
         try:
-            code = invoke_collector(root, collected, work / 'report.json', environment)
+            if collect_official:
+                code = invoke_collector(root, collected, work / 'official-report.json', environment)
+                require(code in (0, 2, 3), 'collector_local_failure')
+                canonical, _ = validate_snapshot(collected / SNAPSHOT, collector)
+                status = canonical['lastRun']['status']
+                require(status != 'never' and code == {'partial': 2, 'unavailable': 3}.get(status, 0),
+                        'collector_status_mismatch')
+                result.update(officialCollectionStatus=status, officialCollectionCode=code)
+            if collect_personal:
+                collector.atomic_json(work / 'personal-seed.json', personal.public_state(personal_state))
+                code = invoke_personal_collector(
+                    root, collected, work / 'personal-report.json', environment)
+                require(code in (0, 2, 3), 'personal_local_failure')
+                personal_state, _ = validate_personal(collected / PERSONAL, personal)
+                status = personal_state['lastRun']['status']
+                require(status in ('ok', 'partial', 'unavailable', 'no-new', 'no-results',
+                                   'paused', 'budget-exhausted', 'outside-window'),
+                        'personal_status_mismatch')
+                require(code == (3 if status in ('unavailable', 'paused') else
+                                 2 if status in ('partial', 'budget-exhausted') else 0),
+                        'personal_status_mismatch')
+                validate_personal_completion(work / 'personal-report.json', status, code)
+                result.update(personalCollectionStatus=status, personalCollectionCode=code)
         finally:
             # Capture the actual saved bytes, not an in-memory report/projection.
             # Invalid data is never copied; retain a valid HTTP-only save so its
             # cooldowns can still be inspected during manual recovery.
-            save_recovery(collected, recovery, collector)
-        require(code in (0, 2, 3), 'collector_local_failure')
-        canonical, _ = validate_snapshot(collected / SNAPSHOT, collector)
-        status = canonical['lastRun']['status']
-        require(status != 'never' and code == {'partial': 2, 'unavailable': 3}.get(status, 0),
-                'collector_status_mismatch')
-        copy_pair(collected, state_dir, collector)
+            save_recovery(collected, recovery, collector, **bundle)
+        if args.mode == 'both':
+            status = combined_status(
+                result['officialCollectionStatus'], result['personalCollectionStatus'])
+            code = {'partial': 2, 'unavailable': 3}.get(status, 0)
+        elif collect_personal:
+            status, code = result['personalCollectionStatus'], result['personalCollectionCode']
+        else:
+            status, code = result['officialCollectionStatus'], result['officialCollectionCode']
+        copy_pair(collected, state_dir, collector, **bundle)
         (state_dir / LEASE).unlink()
-        result['stateCommit'] = repo.persist(collector, leased=False)
-        copy_pair(state_dir, output.parent, collector)
+        result['stateCommit'] = repo.persist(collector, leased=False, personal=personal)
+        copy_pair(state_dir, output.parent, collector, **bundle)
+        if personal_state is not None and not has_personal:
+            atomic_bytes(personal_seed, personal_raw)
         result.update(collectionStatus=status, collectionCode=code, persistenceStatus='saved')
         return result
     finally:
@@ -581,7 +842,10 @@ def emit(result, environment):
     if output:
         # Only fixed names and single-line values; no report/paths/token payloads.
         allowed = ('sourceCodeSHA', 'stateCommit', 'stateSource', 'collectionStatus',
-                   'collectionCode', 'persistenceStatus', 'reason')
+                   'collectionCode', 'persistenceStatus', 'collectionMode',
+                   'officialCollectionStatus', 'officialCollectionCode',
+                   'personalCollectionStatus', 'personalCollectionCode', 'personalStateSource',
+                   'reason')
         lines = []
         for key in allowed:
             if key in result:
@@ -595,7 +859,7 @@ def emit(result, environment):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode', choices=('restore', 'collect'), required=True)
+    parser.add_argument('--mode', choices=('restore', 'collect', 'personal', 'both'), required=True)
     parser.add_argument('--output', type=Path, default=Path('data') / SNAPSHOT)
     parser.add_argument('--recovery-dir', type=Path, default=Path('.cloud-collection-recovery'))
     args = parser.parse_args(argv)

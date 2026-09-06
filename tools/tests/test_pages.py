@@ -61,6 +61,23 @@ def snapshot():
     return value
 
 
+def personal_snapshot():
+    value = pages.load_personal_collector().empty_snapshot()
+    value.update(checkedAt=collector.iso(NOW), lastSuccessAt=collector.iso(NOW))
+    value['posts'] = [{
+        'id': '2096252018260062487', 'name': 'あむ',
+        'url': 'https://x.com/amu_zettai/status/2096252018260062487',
+        'authorId': '1180156105181159424', 'authorScreenName': 'amu_zettai',
+        'createdAt': '2026-09-05T15:00:02Z', 'observedAt': collector.iso(NOW),
+        'date': '2026-09-06', 'events': [
+            {'shift': '昼', 'kind': 'placement', 'storeId': 's1', 'excerpt': '1号店昼'},
+            {'shift': '夜', 'kind': 'placement', 'storeId': 's2', 'excerpt': '2号店夜'},
+        ],
+    }]
+    value['lastRun'] = {'status': 'ok', 'sourceCount': 1, 'newPostCount': 1}
+    return value
+
+
 def payload(tid=TID, created=CREATED, text=None):
     return {
         'id_str': tid, 'user': {'id_str': collector.AUTHOR_ID, 'screen_name': collector.AUTHOR},
@@ -132,6 +149,7 @@ class WorkspaceTests(unittest.TestCase):
         self.write('data/schedule.js', b'window.SCHEDULE_DATA = {};\r\n')
         self.write('data/store-insights.js', b'window.STORE_INSIGHTS = {};\r\n')
         self.write('data/observed-shifts.json', pages.json_bytes(snapshot()))
+        self.write('data/personal-shifts.json', pages.json_bytes(personal_snapshot()))
         self.write('assets/events/flower.svg', b'<svg xmlns="http://www.w3.org/2000/svg"/>\r\n')
         self.write('tools/data/shifts.csv', ('tweet_id,maid\n' + CURATED + ',あむ\n').encode('utf-8'))
 
@@ -158,6 +176,60 @@ class WorkspaceTests(unittest.TestCase):
 
 
 class ProjectionTests(WorkspaceTests):
+    def test_personal_projection_keeps_midnight_guidance_separate_from_attendance(self):
+        state = personal_snapshot()
+        result = pages.personal_projection(state)
+        self.assertEqual(set(result), {
+            'schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt', 'posts', 'lastRun'})
+        self.assertEqual(result['posts'][0]['date'], '2026-09-06')
+        self.assertEqual(result['posts'][0]['events'][1]['storeId'], 's2')
+        self.assertNotEqual(
+            collector.service_day(collector.timestamp(result['posts'][0]['createdAt'])).isoformat(),
+            result['posts'][0]['date'])
+        self.assertEqual(state['posts'][0]['events'], result['posts'][0]['events'])
+        result['posts'][0]['events'][0]['storeId'] = 's4'
+        self.assertEqual(state['posts'][0]['events'][0]['storeId'], 's1')
+
+    def test_personal_private_state_and_raw_text_never_cross_public_boundary(self):
+        state = personal_snapshot()
+        state.update(pending=[{'text': SECRET}], budgets={'private': SECRET},
+                     paused={'internalPath': SECRET}, rawText=SECRET, lease=SECRET)
+        state['posts'][0]['text'] = SECRET
+        state['posts'][0]['events'][0]['rawText'] = SECRET
+        state['lastRun'].update(failures=[SECRET], budgetState=SECRET)
+        encoded = json.dumps(pages.personal_projection(state), ensure_ascii=False)
+        for value in (SECRET, 'pending', 'budgets', 'rawText', 'lease', 'internalPath', 'failures'):
+            self.assertNotIn(value, encoded)
+
+    def test_personal_fact_validation_rejects_forged_or_malformed_fields(self):
+        for field, value in (
+            ('url', collector.canonical(TID)), ('authorId', collector.AUTHOR_ID),
+            ('authorScreenName', collector.AUTHOR), ('authorId', 1180156105181159424),
+            ('name', SECRET), ('createdAt', '2026-09-06T03:00:00Z'),
+            ('observedAt', '2026-09-05T14:59:00Z'), ('date', '2026-09-05'),
+        ):
+            with self.subTest(field=field):
+                state = personal_snapshot()
+                state['posts'][0][field] = value
+                with self.assertRaisesRegex(pages.PagesError, 'invalid_personal_snapshot'):
+                    pages.personal_projection(state)
+        for event in (
+            {'shift': '夜', 'kind': 'placement', 'excerpt': '店舗未定'},
+            {'shift': '夜', 'kind': 'absence', 'storeId': 's2', 'excerpt': 'お休み'},
+            {'shift': '夜', 'kind': 'late', 'time': '25:00', 'excerpt': '遅刻'},
+            {'shift': '不明', 'kind': 'absence', 'excerpt': 'お休み'},
+            {'shift': '夜', 'kind': 'placement', 'storeId': 's5', 'excerpt': '不明'},
+            {'shift': '夜', 'kind': 'uncertain', 'excerpt': 'a' * 161},
+            {'shift': '夜', 'kind': 'uncertain', 'excerpt': '夜\n2号店'},
+            {'shift': '夜', 'kind': 'late', 'storeId': None, 'excerpt': '遅刻'},
+            {'shift': '夜', 'kind': 'late', 'time': None, 'excerpt': '遅刻'},
+        ):
+            with self.subTest(event=event):
+                state = personal_snapshot()
+                state['posts'][0]['events'] = [event]
+                with self.assertRaisesRegex(pages.PagesError, 'invalid_personal_snapshot'):
+                    pages.personal_projection(state)
+
     def test_projection_drops_unknown_private_metadata_and_unverified_ids(self):
         state = snapshot()
         state.update(

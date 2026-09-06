@@ -27,10 +27,27 @@ async function main() {
   let observationFailure = false;
   let holdObservation = false;
   const heldObservationResponses = [];
+  let personalResponse = {
+    schemaVersion: 1, complete: false, checkedAt: null, lastSuccessAt: null,
+    posts: [], lastRun: { status: "never" }
+  };
+  let personalFailure = 0;
+  let holdPersonal = false;
+  const heldPersonalResponses = [];
   const profile = fs.mkdtempSync(path.join(path.relative(process.cwd(), root), ".calendar-headless-"));
   const mime = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
   const server = http.createServer((req, res) => {
     const pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
+    if (pathname === "/data/personal-shifts.json") {
+      if (holdPersonal) {
+        heldPersonalResponses.push(res);
+        return;
+      }
+      res.setHeader("Content-Type", "application/json");
+      res.writeHead(personalFailure || 200);
+      res.end(JSON.stringify(personalResponse));
+      return;
+    }
     if (pathname === "/data/observed-shifts.json" && (observationResponse || observationFailure)) {
       if (holdObservation) {
         heldObservationResponses.push(res);
@@ -149,6 +166,7 @@ async function main() {
     await call("Page.navigate", { url: `${origin}/${publicOrigin ? "?smoke=" + Date.now() : ""}` });
     await wait('document.querySelectorAll(".day-button").length === 30');
     await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
     await wait('[...document.querySelectorAll(".event-image")].every(img => img.complete && img.naturalWidth > 0)');
     const lightSelectors = ["html", "body", ".calendar-card", ".day-button", "#date-from", "#date-to"];
     const lightPalette = await palette(lightSelectors);
@@ -643,6 +661,176 @@ async function main() {
     await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
     assert.equal(await evaluate('document.querySelectorAll(".maid-plan-stop[data-date=\\"2026-09-01\\"][data-evidence=observed]").length'), 0,
       "a curated roster must take precedence");
+
+    // Personal same-day notices: offline-only, separate readiness and source identity.
+    observationResponse = JSON.parse(fs.readFileSync(path.join(root, "data", "observed-shifts.json"), "utf8"));
+    observationResponse.posts = observationResponse.posts.filter(post => post.date !== "2026-09-06" || post.shift === "昼");
+    const personalSeed = {
+      schemaVersion: 1, complete: false, checkedAt: "2026-09-06T13:00:00+09:00",
+      lastSuccessAt: "2026-09-06T13:00:00+09:00", lastRun: { status: "ok" }, posts: [
+        { id: "2096252018260062487", url: "https://x.com/amu_zettai/status/2096252018260062487",
+          name: "あむ", authorId: "1180156105181159424", authorScreenName: "amu_zettai",
+          createdAt: "2026-09-06T00:00:02+09:00", observedAt: "2026-09-06T13:00:00+09:00",
+          date: "2026-09-06", events: [
+            { shift: "昼", kind: "placement", storeId: "s1", excerpt: "昼は1号店" },
+            { shift: "夜", kind: "placement", storeId: "s2", excerpt: "夜は2号店" }
+          ] },
+        { id: "2096253883677044837", url: "https://x.com/rarako_zettai/status/2096253883677044837",
+          name: "ららこ", authorId: "2065375500131028992", authorScreenName: "rarako_zettai",
+          createdAt: "2026-09-06T00:07:27+09:00", observedAt: "2026-09-06T13:00:00+09:00",
+          date: "2026-09-06", events: [
+            { shift: "昼", kind: "placement", storeId: "s1", excerpt: "1号店➡️2号店 12-22。2→1だと勘違いしていた" }
+          ] }
+      ]
+    };
+    personalResponse = JSON.parse(JSON.stringify(personalSeed));
+    const setMode = (value) => evaluate(`(() => {
+      const input = document.querySelector('input[name="view-mode"][value="${value}"]');
+      input.checked=true; input.dispatchEvent(new Event("change"));
+    })()`);
+    await click("#reset-filters");
+    await setMode("calendar");
+    await click("#refresh-observations");
+    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await click("#refresh-personal");
+    await wait('document.querySelector("#personal-status").dataset.loaded === "true" && document.querySelector("#personal-status").dataset.error === "false"');
+    const sourceBaseline = await evaluate('JSON.stringify([window.SCHEDULE_DATA.schedule,window.STORE_INSIGHTS.actual,window.STORE_INSIGHTS.actualRoster])');
+    await click('[data-date="2026-09-06"]');
+    const todayNames = await evaluate(`["#dialog-day","#dialog-night"].map(selector => {
+      const section=document.querySelector(selector);
+      return [...section.querySelectorAll(".maid-entry")].map(row => ({
+        name:row.querySelector(".maid-name").textContent,store:row.dataset.store || null,
+        evidence:row.dataset.evidence,title:row.title
+      }));
+    })`);
+    const amuNight = todayNames[1].filter(row => row.name === "あむ");
+    assert.equal(amuNight.length, 1);
+    assert.equal(amuNight[0].store, "s2");
+    assert.equal(amuNight[0].evidence, "personal");
+    assert.match(amuNight[0].title, /本人.*勤務実績ではありません/);
+    assert.equal(todayNames[1].find(row => row.name === "ららこ").store, null);
+    assert.ok(todayNames.every(rows => new Set(rows.map(row => row.name)).size === rows.length));
+    if (observationResponse.posts.some(post => post.date === "2026-09-06" && post.shift === "昼")) {
+      assert.equal(todayNames[0].filter(row => row.name === "あむ").length, 1);
+      assert.equal(todayNames[0].find(row => row.name === "あむ").evidence, "observed");
+    }
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-night .observation-details").length'), 0,
+      "a personal-only placement must not acquire a collection-source heading");
+    assert.ok(await evaluate('[...document.querySelectorAll("#day-dialog .personal-details")].every(details => !details.open)'));
+    assert.ok(await evaluate('[...document.querySelectorAll("#day-dialog .personal-source-link")].every(link => !link.title.includes("公式") && link.title.includes("本人ポスト"))'));
+    await captureDailyFrame("popup-personal-2026-09-06");
+    await click("#jump-night");
+    await capture("popup-personal-night-mobile-320");
+
+    holdPersonal = true;
+    await click("#close-day-dialog");
+    await click("#refresh-personal");
+    await wait('document.querySelector("#personal-status").dataset.loaded === "false"');
+    assert.equal(await evaluate('document.querySelector("#observation-status").dataset.loaded'), "true",
+      "personal loading must not reset official readiness");
+    await click('[data-date="2026-09-06"]');
+    await click("#jump-night");
+    await click("#dialog-night .personal-details summary");
+    await evaluate('document.querySelector("#dialog-night .personal-details summary").focus({preventScroll:true})');
+    const interactionBefore = await evaluate('({open:document.querySelector("#dialog-night .personal-details").open,key:document.activeElement.dataset.focusKey,scroll:document.querySelector("#day-dialog-content").scrollTop})');
+    personalResponse.checkedAt = "2026-09-06T13:01:00+09:00";
+    holdPersonal = false;
+    assert.ok(heldPersonalResponses.length > 0);
+    for (const res of heldPersonalResponses.splice(0)) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(personalResponse));
+    }
+    await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+    assert.deepEqual(await evaluate('({open:document.querySelector("#dialog-night .personal-details").open,key:document.activeElement.dataset.focusKey,scroll:document.querySelector("#day-dialog-content").scrollTop})'),
+      interactionBefore, "personal refresh must preserve its expanded summary, focus and scroll");
+    const originalOfficial = observationResponse;
+    const collectionPost = (shift, storeId, names, id) => ({
+      id, url: `https://x.com/akibazettai/status/${id}`, authorId: "822429861218131969",
+      authorScreenName: "akibazettai", createdAt: "2026-09-06T03:00:00Z",
+      observedAt: "2026-09-06T04:00:00Z", date: "2026-09-06", shift, storeId, names
+    });
+    observationResponse = { ...originalOfficial, posts: [
+      ...originalOfficial.posts.filter(post => post.date !== "2026-09-06"),
+      collectionPost("昼", "s1", ["あむ", "ららこ"], "2096550000000000001"),
+      collectionPost("夜", "s4", ["あむ"], "2096550000000000002")
+    ] };
+    await click("#refresh-observations");
+    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-day [data-evidence=observed]").length'), 2);
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-day [data-evidence=personal]").length'), 0,
+      "matching personal and collection sources share one person row");
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=pending]").length'), 1);
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=personal], #dialog-night [data-evidence=observed]").length'), 0,
+      "contradictory sources cannot settle the person's store");
+    assert.ok(await evaluate('document.querySelector("#dialog-night .personal-details").open'));
+    assert.equal(await evaluate('document.activeElement.dataset.focusKey'), interactionBefore.key,
+      "official refresh also preserves the focused personal disclosure");
+    observationResponse = originalOfficial;
+    await click("#refresh-observations");
+    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=personal]").length'), 1);
+    await click("#close-day-dialog");
+    for (const code of [404, 503]) {
+      personalFailure = code;
+      await click("#refresh-personal");
+      await wait(`document.querySelector("#personal-status").textContent.includes("HTTP ${code}")`);
+      await click('[data-date="2026-09-06"]');
+      assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=personal]").length'), 1);
+      assert.deepEqual(await evaluate('[...document.querySelectorAll("#dialog-day [data-evidence=observed] .maid-name")].map(row=>row.textContent).sort()'),
+        todayNames[0].filter(row => row.evidence === "observed").map(row => row.name).sort());
+      await click("#close-day-dialog");
+    }
+    personalFailure = 0;
+    personalResponse = { ...personalSeed, complete: true };
+    await click("#refresh-personal");
+    await wait('document.querySelector("#personal-status").dataset.error === "true" && !document.querySelector("#personal-status").textContent.includes("HTTP")');
+    await click('[data-date="2026-09-06"]');
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=personal]").length'), 1);
+    await click("#close-day-dialog");
+    personalResponse = JSON.parse(JSON.stringify(personalSeed));
+    personalResponse.lastRun.status = "budget-exhausted";
+    await click("#refresh-personal");
+    await wait('document.querySelector("#personal-status").textContent.includes("取得予算待ち")');
+    await setMode("maid");
+    const personalStops = await evaluate('[...document.querySelectorAll(".maid-plan-stop[data-date=\\"2026-09-06\\"][data-evidence=personal]")].map(row => ({text:row.textContent,title:row.title,rate:row.querySelector(".maid-plan-rate")?.textContent}))');
+    assert.ok(personalStops.some(row => row.text.includes("2号店") && row.text.includes("本人")));
+    assert.ok(personalStops.every(row => !row.rate && row.title.includes("勤務実績ではありません") && !row.title.includes("にいた記録")));
+    await evaluate(`document.querySelector("#date-from").value="2026-09-07";
+      document.querySelector("#date-to").value="2026-09-08";
+      document.querySelector("#date-from").dispatchEvent(new Event("change"));`);
+    assert.equal(await evaluate('document.querySelectorAll(".maid-plan-stop[data-date=\\"2026-09-06\\"]").length'), 0);
+    await click("#reset-filters");
+    await setMode("calendar");
+
+    const personalChange = (kind, suffix, storeId) => ({
+      ...personalSeed.posts[0], id: `209660000000000000${suffix}`,
+      url: `https://x.com/amu_zettai/status/209660000000000000${suffix}`,
+      createdAt: `2026-09-06T${15 + suffix}:00:00+09:00`,
+      events: [{ shift: "夜", kind, ...(storeId ? { storeId } : {}), excerpt: `${kind}の明示変更` }]
+    });
+    personalResponse.posts.push(personalChange("absence", 1));
+    await click("#refresh-personal");
+    await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+    await click('[data-date="2026-09-06"]');
+    assert.equal(await evaluate('[...document.querySelectorAll("#dialog-night .maid-name")].some(row => row.textContent === "あむ")'), false);
+    assert.ok(await evaluate('document.querySelector("#dialog-night .personal-details").textContent.includes("あむ：取消の案内")'));
+    assert.equal(await evaluate('document.querySelectorAll("#day-dialog .store-outlook, #day-dialog .is-trainee-guess").length'), 0);
+    await click("#close-day-dialog");
+    personalResponse.posts.push(personalChange("return", 2));
+    await click("#refresh-personal");
+    await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+    await click('[data-date="2026-09-06"]');
+    assert.ok(await evaluate('[...document.querySelectorAll("#dialog-night .unmatched-roster .maid-name")].some(row => row.textContent === "あむ")'));
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=personal]").length'), 0);
+    await click("#close-day-dialog");
+    personalResponse.posts.push(personalChange("return", 3, "s4"));
+    await click("#refresh-personal");
+    await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+    await click('[data-date="2026-09-06"]');
+    assert.equal(await evaluate('document.querySelector("#dialog-night [data-evidence=personal]").dataset.store'), "s4");
+    await click("#close-day-dialog");
+    assert.equal(await evaluate('JSON.stringify([window.SCHEDULE_DATA.schedule,window.STORE_INSIGHTS.actual,window.STORE_INSIGHTS.actualRoster])'), sourceBaseline);
+
     await call("Page.navigate", { url: `${origin}/unauthorized.html?scoutTheme=dark` });
     await wait('document.title.startsWith("閲覧権限")');
     await wait('document.querySelector("link[rel=stylesheet]").sheet !== null');
