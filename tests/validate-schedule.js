@@ -228,6 +228,9 @@ for (const [postId, names] of Object.entries(data.observationNameCorrections ?? 
       "an explicit correction needs a traceable confirmation reason");
   }
 }
+for (const [name, before] of Object.entries(data.normalOrderBefore ?? {})) {
+  assert.ok(name.trim() && typeof before === "string" && before.trim() && name !== before);
+}
 
 // --- キャッシュ避け -----------------------------------------------------
 // GitHub Pages は max-age=600 を返すので、読み込みにハッシュが付いていないと、

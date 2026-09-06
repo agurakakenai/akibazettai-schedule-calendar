@@ -49,6 +49,14 @@ window.SCHEDULE_DATA = {
     }
   },
 
+  // Keep the saved official first-service rank. Insert confirmed unpublished normals:
+  // debuts.csv: yume 2026-04-17 < milestones.csv: cheru 2026-04-20;
+  // debuts.csv: mochi 2026-06-04 < piano 2026-06-08. No observed-first-date inference.
+  normalOrderBefore: {
+    "ゆめ": "ちぇる",
+    "もち": "ぴあの"
+  },
+
   roster: [
     "ひかり",
     "あむ",

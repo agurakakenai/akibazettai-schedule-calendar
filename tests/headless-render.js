@@ -10,6 +10,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const repo = process.argv[2] || path.join(__dirname, "..");
+const { orderRosterEntries } = require(path.join(repo, "app.js"));
 const listeners = [];
 
 function makeClassList() {
@@ -226,6 +227,16 @@ function walk(node, out = []) {
 
 const withClass = (root, name) =>
   walk(root).filter((node) => node.classList && node.classList.contains(name));
+
+function assertDisplayOrder(members, message) {
+  const entries = members.map(member => ({
+    name: withClass(member, "maid-name")[0].textContent,
+    trainee: member.classList.contains("is-trainee")
+  }));
+  assert.deepEqual(entries.map(entry => entry.name),
+    orderRosterEntries(entries, schedule.roster, schedule.kitchenStaff, schedule.normalOrderBefore)
+      .map(entry => entry.name), message);
+}
 
 const calendar = elementById("calendar");
 
@@ -580,15 +591,9 @@ for (const section of shiftSections) {
       "the common heading names the store without repeating a tally"
     );
 
-    let previousRoster = -1;
+    assertDisplayOrder(members, `${storeId}: first-service rank, trainees and kitchen`);
     for (const member of members) {
       const name = withClass(member, "maid-name")[0].textContent;
-      const position = rosterIndex.get(name);
-      assert.ok(
-        position > previousRoster,
-        `${storeId}: ${name} breaks the official roster order`
-      );
-      previousRoster = position;
 
       // 見出しがその店を名乗っているので、チップは繰り返さない。
       assert.equal(
@@ -640,14 +645,8 @@ assert.equal(
 const rosterOrder = new Map(schedule.roster.map((name, index) => [name, index]));
 for (const cell of withClass(calendar, "calendar-day")) {
   for (const section of withClass(cell, "shift-section")) {
-    const order = withClass(section, "maid-entry").map(
-      (entry) => rosterOrder.get(withClass(entry, "maid-name")[0].textContent) ?? Infinity
-    );
-    assert.deepEqual(
-      order,
-      [...order].sort((a, b) => a - b),
-      "the roster mode must keep the official roster order"
-    );
+    assertDisplayOrder(withClass(section, "maid-entry"),
+      "the roster mode must keep the shared display order");
   }
 }
 

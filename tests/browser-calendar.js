@@ -234,6 +234,8 @@ async function main() {
         assert.equal(await evaluate(`document.querySelectorAll("#day-dialog .recorded-roster[data-record-type=${type}]").length`), 2);
         assert.ok(await evaluate('[...document.querySelectorAll("#day-dialog .maid-list")].every(list => list.children.length > 0)'));
         assert.ok(await evaluate('[...document.querySelectorAll("#day-dialog .observation-details")].every(details => !details.open)'));
+        assert.ok(await evaluate('[...document.querySelectorAll("#day-dialog .observation-details summary")].every(summary => summary.textContent === "集合ポスト")'));
+        assert.doesNotMatch(await evaluate('document.querySelector("#day-dialog").textContent'), /JST|原表記|利用者確認/);
         assert.ok(await evaluate('[...document.querySelectorAll("#day-dialog .unmatched-roster")].every(block => block.querySelectorAll(".maid-name").length > 0)'));
         if (curated || date === "2026-09-04") assert.equal(await evaluate('document.querySelectorAll("#day-dialog .unmatched-heading").length'), 0,
           "do not render an empty unconfirmed-plan block when all scheduled names were observed");
@@ -268,15 +270,34 @@ async function main() {
             const expectedMarked = shown.map(value => value.split("|")[1]).filter(name => record
               ? record.trainees?.includes(name)
               : insights.traineePeriods?.byName?.[name]?.from <= date && date <= insights.traineePeriods.byName[name].to);
+            const displayOrder = [...window.SCHEDULE_DATA.roster];
+            for (const [name, before] of Object.entries(window.SCHEDULE_DATA.normalOrderBefore ?? {})) {
+              if (!displayOrder.includes(name) || !displayOrder.includes(before)) continue;
+              displayOrder.splice(displayOrder.indexOf(name), 1);
+              displayOrder.splice(displayOrder.indexOf(before), 0, name);
+            }
+            const rank = new Map(displayOrder.map((name, index) => [name, index]));
+            const kitchen = new Set(window.SCHEDULE_DATA.kitchenStaff);
+            const category = name => kitchen.has(name) ? 3 : expectedMarked.includes(name) ? 1
+              : rank.has(name) ? 0 : 2;
+            const orders = [...section.querySelectorAll(".recorded-roster .maid-list")].map(list => {
+              const actual = [...list.querySelectorAll(".maid-name")].map(node => node.textContent);
+              const expected = [...actual].sort((a, b) => category(a) - category(b) ||
+                ((category(a) === 0 || category(a) === 3) ? (rank.get(a) ?? rank.size) - (rank.get(b) ?? rank.size) : 0) ||
+                a.localeCompare(b, "ja"));
+              return {actual, expected};
+            });
             return { shown: shown.sort(), expected: expected.sort(), sources: sourceLinks.sort(),
               expectedSources: expectedLinks.sort(), details: details.textContent,
-              marked: marked.sort(), expectedMarked: expectedMarked.sort() };
+              marked: marked.sort(), expectedMarked: expectedMarked.sort(), orders };
           });
         })()`);
         for (const [index, result] of names.entries()) {
           assert.deepEqual(result.shown, result.expected, `${date} ${index}: person/store facts must match their own source`);
           assert.deepEqual(result.sources, result.expectedSources, `${date} ${index}: no invented or cross-shift source URL`);
           assert.deepEqual(result.marked, result.expectedMarked, `${date} ${index}: trainees use only documented metadata`);
+          for (const order of result.orders) assert.deepEqual(order.actual, order.expected,
+            `${date} ${index}: store members use first-service rank, trainees and kitchen`);
           if (curated) assert.ok(result.details.includes(`${date} ${index === 0 ? "昼" : "夜"}`) &&
             result.details.includes("data/store-insights.js・actualRoster"));
         }
@@ -284,7 +305,8 @@ async function main() {
           assert.equal(await evaluate('[...document.querySelectorAll("#dialog-day .recorded-roster .maid-entry")].filter(row => row.dataset.store === "s1" && row.querySelector(".maid-name").textContent === "つぼみ").length'), 1);
           assert.equal(await evaluate('[...document.querySelectorAll("#dialog-day .unmatched-roster .maid-name")].filter(node => node.textContent === "つぼみ").length'), 0);
           assert.equal(await evaluate('[...document.querySelectorAll("#dialog-day .recorded-roster .maid-name")].filter(node => node.textContent === "つぽみ").length'), 0);
-          assert.ok(await evaluate('document.querySelector("#dialog-day .observation-details").textContent.includes("原表記「つぽみ」")'));
+          assert.doesNotMatch(await evaluate('document.querySelector("#dialog-day").textContent'), /原表記|利用者確認/);
+          assert.ok(await evaluate('[...document.querySelectorAll("#dialog-day [title], #dialog-day [aria-label]")].every(node => !/原表記|利用者確認/.test((node.title || "") + (node.getAttribute("aria-label") || "")))'));
           assert.ok(await evaluate('(async () => (await (await fetch("data/observed-shifts.json")).json()).posts.find(post => post.id === "2096074325120237794").names.includes("つぽみ"))()'),
             "the displayed correction must not rewrite the published raw observations");
         }
@@ -339,7 +361,7 @@ async function main() {
     assert.equal(correctedStop[0].evidence, "observed");
     assert.equal(correctedStop[0].store, "s1");
     assert.equal(correctedStop[0].source, true);
-    assert.match(correctedStop[0].title, /原表記「つぽみ」/);
+    assert.doesNotMatch(correctedStop[0].title, /原表記|利用者確認/);
     await click("#reset-filters");
     if (publicOrigin) {
       const stored = await evaluate('(async () => (await (await fetch("data/observed-shifts.json", {cache:"no-store"})).json()).posts.length)()');

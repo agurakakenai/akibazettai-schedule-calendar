@@ -177,10 +177,6 @@
     return key >= period.from && key <= period.to;
   }
 
-  function nameCorrectionNote(correction) {
-    return `原表記「${correction.rawName}」を「${correction.name}」として表示（${correction.reason}・この投稿のみ）`;
-  }
-
   function observationEntries(planned, observed, roster) {
     const entries = new Map(planned.map((entry) => [entry.name, { ...entry }]));
     for (const name of observed.byMaid.keys()) {
@@ -192,6 +188,30 @@
     const rank = new Map(roster.map((name, index) => [name, index]));
     return [...entries.values()].sort((a, b) =>
       (rank.get(a.name) ?? Infinity) - (rank.get(b.name) ?? Infinity));
+  }
+
+  function orderRosterEntries(entries, roster, kitchen, normalOrderBefore = {}) {
+    const cooks = kitchen instanceof Set ? kitchen : new Set(kitchen ?? []);
+    const displayOrder = [...roster];
+    for (const [name, before] of Object.entries(normalOrderBefore)) {
+      // An anchor can leave the current roster; retain the saved rank in that case.
+      if (!displayOrder.includes(name) || !displayOrder.includes(before) || name === before ||
+          cooks.has(name) || cooks.has(before)) continue;
+      displayOrder.splice(displayOrder.indexOf(name), 1);
+      displayOrder.splice(displayOrder.indexOf(before), 0, name);
+    }
+    const rank = new Map(displayOrder.map((name, index) => [name, index]));
+    const category = (entry) => cooks.has(entry.name) ? 3
+      : entry.trainee === true ? 1 : rank.has(entry.name) ? 0 : 2;
+    return [...entries].sort((left, right) => {
+      const group = category(left) - category(right);
+      if (group) return group;
+      if (category(left) === 0 || category(left) === 3) {
+        const official = (rank.get(left.name) ?? roster.length) - (rank.get(right.name) ?? roster.length);
+        if (official) return official;
+      }
+      return left.name.localeCompare(right.name, "ja");
+    });
   }
 
   const SHIFT_NAMES = ["昼", "夜"];
@@ -1985,6 +2005,7 @@
       observedShift,
       observedTrainee,
       observationEntries,
+      orderRosterEntries,
       nearMissNote,
       nearMissStores,
       openCountCeilingNote,
@@ -2332,8 +2353,8 @@
     link.target = "_blank";
     link.rel = "noopener noreferrer";
     link.className = "observation-source";
-    link.textContent = label ?? `公式投稿 ${observationTime(post.createdAt)} JST`;
-    link.title = `@${post.authorScreenName} / ${post.id} / 取得 ${observationTime(post.observedAt)} JST`;
+    link.textContent = label ?? `公式投稿 ${observationTime(post.createdAt)}`;
+    link.title = `@${post.authorScreenName} / ${post.id} / 取得 ${observationTime(post.observedAt)}`;
     return link;
   }
 
@@ -2358,9 +2379,7 @@
       name.tabIndex = -1;
     }
     item.append(name);
-    const descriptions = [
-      ...(note ? [note] : []), ...(entry.nameCorrections ?? []).map(nameCorrectionNote)
-    ];
+    const descriptions = note ? [note] : [];
     if (kitchenStaff.has(entry.name)) {
       item.classList.add("is-kitchen");
       descriptions.push("キッチンにゃんこ");
@@ -2396,7 +2415,8 @@
     }
     const list = document.createElement("ul");
     list.className = "maid-list";
-    members.forEach((entry) => list.append(renderEntry(entry)));
+    orderRosterEntries(members, data.roster, kitchenStaff, data.normalOrderBefore)
+      .forEach((entry) => list.append(renderEntry(entry)));
     target.append(list);
   }
 
@@ -2409,7 +2429,7 @@
     details.className = "observation-details";
     details.dataset.stateKey = `${key}|${shift}|observation-details`;
     const summary = document.createElement("summary");
-    summary.textContent = "更新情報";
+    summary.textContent = "集合ポスト";
     summary.dataset.focusKey = `${key}|${shift}|observation-summary`;
     details.append(summary);
     for (const { store, entries } of groups) {
@@ -2426,16 +2446,9 @@
       const sourceList = document.createElement("p");
       sourceList.className = "observation-sources";
       for (const source of sources) {
-        const link = createObservationLink(source, `${store.short} ${observationTime(source.createdAt)} JST`);
+        const link = createObservationLink(source, `${store.short} ${observationTime(source.createdAt)}`);
         link.dataset.focusKey = `${key}|${shift}|${store.id}|${source.id}`;
         sourceList.append(link);
-        for (const correction of shown.flatMap((entry) => entry.nameCorrections ?? [])
-          .filter((entry) => entry.postId === source.id)) {
-          const note = document.createElement("span");
-          note.className = "observation-name-correction";
-          note.textContent = nameCorrectionNote(correction);
-          sourceList.append(note);
-        }
       }
       details.append(sourceList);
     }
@@ -2487,7 +2500,7 @@
     const old = Date.now() - Date.parse(observations.checkedAt) > 2 * 3600000;
     const range = observations.lastRun.dateFrom && observations.lastRun.dateTo
       ? `・対象 ${observations.lastRun.dateFrom}〜${observations.lastRun.dateTo}` : "";
-    status.textContent = `自動収集：${labels[observations.lastRun.status]}・試行 ${observationTime(observations.checkedAt)} JST${range}` +
+    status.textContent = `自動収集：${labels[observations.lastRun.status]}・試行 ${observationTime(observations.checkedAt)}${range}` +
       `${old ? "（結果が古い可能性があります）" : ""}。検索は全投稿を保証しません。0件でも休業・投稿なしとは断定しません。`;
   }
 
@@ -2735,7 +2748,7 @@
       const list = document.createElement("ul");
       // 店ごとの一覧（.maid-list）は「見出しと1対1」で店を名乗る約束なので混ぜない。
       list.className = "maid-kitchen-list";
-      members.forEach((entry) => {
+      orderRosterEntries(members, data.roster, kitchenStaff, data.normalOrderBefore).forEach((entry) => {
         // 店を名乗らないと決めた以上、チップで店を出しては辻褄が合わない。
         const item = createMaidEntry(entry, null, true);
         item.setAttribute(
@@ -3429,8 +3442,7 @@
     const where = storeShort(insights, stop.storeId);
     if (stop.observed) {
       return `${stop.storeIds.map((id) => storeShort(insights, id)).join("・")}の公式のお給仕投稿で確認しています。` +
-        "確認できた投稿の範囲の情報で、この時間帯の全員・全店舗を網羅するものではありません。" +
-        (stop.nameCorrections ?? []).map(nameCorrectionNote).join("。");
+        "確認できた投稿の範囲の情報で、この時間帯の全員・全店舗を網羅するものではありません。";
     }
     // 過ぎた日と、これからの日を混ぜない。記録があるのは過ぎた日だけ。
     if (stop.recorded) {
@@ -3624,7 +3636,7 @@
 
   elements.dateFrom.value = state.dateFrom;
   elements.dateTo.value = state.dateTo;
-  elements.lastUpdated.textContent = `最終更新：${data.lastUpdated}`;
+  elements.lastUpdated.textContent = `最終更新：${data.lastUpdated.replace(/\s*JST\b/g, "")}`;
   const systemNote = scheduleSystemNote(insights, tokyoToday());
   if (systemNote && elements.scheduleSystemNote) {
     elements.scheduleSystemNote.textContent = systemNote;
