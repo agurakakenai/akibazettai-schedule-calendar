@@ -1,0 +1,98 @@
+{
+  "budgets": {
+    "2026-09-06": {
+      "posts": 2,
+      "searches": 7
+    }
+  },
+  "checkedAt": "2026-09-06T04:13:50.213846Z",
+  "complete": false,
+  "identityBindings": {
+    "あむ": {
+      "authorId": "1180156105181159424",
+      "authorScreenName": "amu_zettai",
+      "verifiedAt": "2026-09-06T04:13:50.213846Z"
+    },
+    "ららこ": {
+      "authorId": "2065375500131028992",
+      "authorScreenName": "rarako_zettai",
+      "verifiedAt": "2026-09-06T04:14:02.214117Z"
+    }
+  },
+  "lastRequests": {},
+  "lastRun": {
+    "complete": false,
+    "date": "2026-09-06",
+    "newEventCount": 3,
+    "newPostCount": 2,
+    "source": "manually_reviewed_public_http_pilot",
+    "status": "ok"
+  },
+  "lastSuccessAt": "2026-09-06T04:14:02.214117Z",
+  "originalTargets": {},
+  "paused": null,
+  "pending": [],
+  "posts": [
+    {
+      "authorId": "1180156105181159424",
+      "authorScreenName": "amu_zettai",
+      "createdAt": "2026-09-05T15:00:02Z",
+      "date": "2026-09-06",
+      "events": [
+        {
+          "excerpt": "1号店昼",
+          "kind": "placement",
+          "shift": "昼",
+          "storeId": "s1"
+        },
+        {
+          "excerpt": "2号店夜",
+          "kind": "placement",
+          "shift": "夜",
+          "storeId": "s2"
+        }
+      ],
+      "id": "2096252018260062487",
+      "name": "あむ",
+      "observedAt": "2026-09-06T04:13:50.213846Z",
+      "url": "https://x.com/amu_zettai/status/2096252018260062487"
+    },
+    {
+      "authorId": "2065375500131028992",
+      "authorScreenName": "rarako_zettai",
+      "createdAt": "2026-09-05T15:07:27Z",
+      "date": "2026-09-06",
+      "events": [
+        {
+          "excerpt": "お昼1号店",
+          "kind": "placement",
+          "shift": "昼",
+          "storeId": "s1"
+        }
+      ],
+      "id": "2096253883677044837",
+      "name": "ららこ",
+      "observedAt": "2026-09-06T04:14:02.214117Z",
+      "url": "https://x.com/rarako_zettai/status/2096253883677044837"
+    }
+  ],
+  "resolved": [
+    {
+      "date": "2026-09-06",
+      "id": "2096252018260062487",
+      "name": "あむ",
+      "reason": "seed_confirmed",
+      "resolvedAt": "2026-09-06T04:13:50.213846Z",
+      "url": "https://x.com/amu_zettai/status/2096252018260062487"
+    },
+    {
+      "date": "2026-09-06",
+      "id": "2096253883677044837",
+      "name": "ららこ",
+      "reason": "seed_confirmed",
+      "resolvedAt": "2026-09-06T04:14:02.214117Z",
+      "url": "https://x.com/rarako_zettai/status/2096253883677044837"
+    }
+  ],
+  "schemaVersion": 1
+}
