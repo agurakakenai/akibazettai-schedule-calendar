@@ -32,6 +32,11 @@
       "authorId": "2065375500131028992",
       "authorScreenName": "rarako_zettai",
       "verifiedAt": "2026-09-06T04:14:02.214117Z"
+    },
+    "るるか": {
+      "authorId": "2017568855321964544",
+      "authorScreenName": "ruruka_zettai",
+      "verifiedAt": "2026-09-06T07:32:04.022Z"
     }
   },
   "lastRequests": {
@@ -209,19 +214,6 @@
   "pending": [
     {
       "attempts": 0,
-      "authorId": "2017568855321964544",
-      "authorScreenName": "ruruka_zettai",
-      "date": "2026-09-06",
-      "firstSeenAt": "2026-09-06T05:44:53.145419Z",
-      "id": "2096252860845748298",
-      "lastAttemptAt": null,
-      "name": "るるか",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-05T15:03:23Z",
-      "url": "https://x.com/ruruka_zettai/status/2096252860845748298"
-    },
-    {
-      "attempts": 0,
       "authorId": "1839927788377387011",
       "authorScreenName": "kirari_zettai",
       "date": "2026-09-06",
@@ -294,6 +286,72 @@
       "name": "あめる",
       "observedAt": "2026-09-06T05:45:40.590139Z",
       "url": "https://x.com/ameru_zettai/status/2096254403745640753"
+    },
+    {
+      "authorId": "2017568855321964544",
+      "authorScreenName": "ruruka_zettai",
+      "createdAt": "2026-09-05T15:03:23Z",
+      "date": "2026-09-06",
+      "events": [
+        {
+          "excerpt": "4号店",
+          "kind": "placement",
+          "shift": "昼",
+          "storeId": "s4"
+        },
+        {
+          "excerpt": "2号店",
+          "kind": "placement",
+          "shift": "夜",
+          "storeId": "s2"
+        }
+      ],
+      "id": "2096252860845748298",
+      "name": "るるか",
+      "observedAt": "2026-09-06T07:32:04.022Z",
+      "url": "https://x.com/ruruka_zettai/status/2096252860845748298"
+    },
+    {
+      "authorId": "1937381891445075968",
+      "authorScreenName": "shachi_zettai",
+      "createdAt": "2026-09-05T15:10:08Z",
+      "date": "2026-09-06",
+      "events": [
+        {
+          "excerpt": "1号店",
+          "kind": "placement",
+          "shift": "夜",
+          "storeId": "s1"
+        }
+      ],
+      "id": "2096254559115264361",
+      "name": "しゃち",
+      "observedAt": "2026-09-06T07:31:31.289Z",
+      "url": "https://x.com/shachi_zettai/status/2096254559115264361"
+    },
+    {
+      "authorId": "2090672918976221185",
+      "authorScreenName": "piano1_zettai",
+      "createdAt": "2026-09-05T16:01:34Z",
+      "date": "2026-09-06",
+      "events": [
+        {
+          "excerpt": "2号店",
+          "kind": "placement",
+          "shift": "昼",
+          "storeId": "s2"
+        },
+        {
+          "excerpt": "1号店",
+          "kind": "placement",
+          "shift": "夜",
+          "storeId": "s1"
+        }
+      ],
+      "id": "2096267503790080085",
+      "name": "ぴあの",
+      "observedAt": "2026-09-06T07:30:42.761Z",
+      "url": "https://x.com/piano1_zettai/status/2096267503790080085"
     }
   ],
   "resolved": [
@@ -315,22 +373,6 @@
     },
     {
       "date": "2026-09-06",
-      "id": "2096267503790080085",
-      "name": "ぴあの",
-      "reason": "no_event",
-      "resolvedAt": "2026-09-06T05:45:16.623381Z",
-      "url": "https://x.com/piano1_zettai/status/2096267503790080085"
-    },
-    {
-      "date": "2026-09-06",
-      "id": "2096254559115264361",
-      "name": "しゃち",
-      "reason": "no_event",
-      "resolvedAt": "2026-09-06T05:45:28.581221Z",
-      "url": "https://x.com/shachi_zettai/status/2096254559115264361"
-    },
-    {
-      "date": "2026-09-06",
       "id": "2096254403745640753",
       "name": "あめる",
       "reason": "events",
@@ -338,5 +380,134 @@
       "url": "https://x.com/ameru_zettai/status/2096254403745640753"
     }
   ],
+  "savedPersonalImports": {
+    "4f725db8f3cbf5ac349228339d0f615d8f18ebfb9d8080c4deb808d55bcd2c19": {
+      "amendment": {
+        "events": [
+          {
+            "excerpt": "4号店",
+            "kind": "placement",
+            "shift": "昼",
+            "storeId": "s4"
+          },
+          {
+            "excerpt": "2号店",
+            "kind": "placement",
+            "shift": "夜",
+            "storeId": "s2"
+          }
+        ],
+        "id": "2096252860845748298",
+        "schemaVersion": 1,
+        "source": {
+          "analysisReceiptHash": "36e34c6113794f7f3cbbbc8f114d6cf4db2b0b07d844a1131864ba3c1a746553",
+          "analysisResultHash": "eb691b123766884c391b16de0702ade1f298c03ba27b6e16ec2727cd1c431ee7",
+          "analyzedAt": "2026-09-06T16:23:45.487134+00:00",
+          "authorId": "2017568855321964544",
+          "authorScreenName": "ruruka_zettai",
+          "bodyHash": "5114841875098a260b6a1f7841c2823c95b345afdef43327b4489f531959b1af",
+          "contractHash": "93adf39af21b0b084ea98864f8ac3e2112e84407980c7bad091706c738f8fe2a",
+          "contractVersion": "personal-line-ids-v4",
+          "createdAt": "2026-09-05T15:03:23Z",
+          "date": "2026-09-06",
+          "deployment": "gpt-5.6-luna",
+          "fetchedAt": "2026-09-06T07:32:04.022Z",
+          "model": "gpt-5.6-luna",
+          "modelVersion": "2026-07-09",
+          "name": "るるか",
+          "provenance": "search",
+          "searchCreatedAt": "2026-09-05T15:03:23Z",
+          "sourceHash": "fb3c393c8503f264e85b7e729cfeeb11c0416098a3c0cafddac22458f0656de5",
+          "sourceManifestHash": "3f35b2be783f4c19cf6f2d74cfb80d0249ff26a94428cb96c5cb5ff0ec1ea747",
+          "url": "https://x.com/ruruka_zettai/status/2096252860845748298",
+          "usageReceiptId": "90da3b9c0a830af262e78aa0fd81438c63b72932c44dae901f56d87f2dacfea4",
+          "usageSourceHash": "623b3cc1042bca9d8fb82f37c48e2dc9e54507359b51a7e145adacc7d4cded85"
+        }
+      },
+      "expectedSubjectHash": "f640f6c5c131b6d28b3b146472bb1a2ac6dc6960233ff738306668b746b6cd6f"
+    },
+    "61ce289470966079f25c3d2a4bcf8adf04e951799a557412164f880806f5c6c4": {
+      "amendment": {
+        "events": [
+          {
+            "excerpt": "1号店",
+            "kind": "placement",
+            "shift": "夜",
+            "storeId": "s1"
+          }
+        ],
+        "id": "2096254559115264361",
+        "schemaVersion": 1,
+        "source": {
+          "analysisReceiptHash": "c9e1a3e756ec26690fc1482bca9e5ea40a8cb68f8734dfa27a52d6aedf20a357",
+          "analysisResultHash": "eb691b123766884c391b16de0702ade1f298c03ba27b6e16ec2727cd1c431ee7",
+          "analyzedAt": "2026-09-06T16:24:45.488162+00:00",
+          "authorId": "1937381891445075968",
+          "authorScreenName": "shachi_zettai",
+          "bodyHash": "cfde3ad720e8da5b499e339c4909979d630500f37661ab312b24c793a3d11f02",
+          "contractHash": "93adf39af21b0b084ea98864f8ac3e2112e84407980c7bad091706c738f8fe2a",
+          "contractVersion": "personal-line-ids-v4",
+          "createdAt": "2026-09-05T15:10:08Z",
+          "date": "2026-09-06",
+          "deployment": "gpt-5.6-luna",
+          "fetchedAt": "2026-09-06T07:31:31.289Z",
+          "model": "gpt-5.6-luna",
+          "modelVersion": "2026-07-09",
+          "name": "しゃち",
+          "provenance": "direct",
+          "sourceHash": "f3d07e11dff4ef77c92b77ec0090424548d595e29069ef6cc1d6aeb2901b5a3f",
+          "sourceManifestHash": "3f35b2be783f4c19cf6f2d74cfb80d0249ff26a94428cb96c5cb5ff0ec1ea747",
+          "url": "https://x.com/shachi_zettai/status/2096254559115264361",
+          "usageReceiptId": "90da3b9c0a830af262e78aa0fd81438c63b72932c44dae901f56d87f2dacfea4",
+          "usageSourceHash": "623b3cc1042bca9d8fb82f37c48e2dc9e54507359b51a7e145adacc7d4cded85"
+        }
+      },
+      "expectedSubjectHash": "1c0292b8876262eef8faf15ac3371a2f0ffaaf06d073c335aeb878151f5c5b04"
+    },
+    "8c93700a36d0634b5f95b1956f6d89dd61d3e5e4f20a609e056b70fccbcd9a79": {
+      "amendment": {
+        "events": [
+          {
+            "excerpt": "2号店",
+            "kind": "placement",
+            "shift": "昼",
+            "storeId": "s2"
+          },
+          {
+            "excerpt": "1号店",
+            "kind": "placement",
+            "shift": "夜",
+            "storeId": "s1"
+          }
+        ],
+        "id": "2096267503790080085",
+        "schemaVersion": 1,
+        "source": {
+          "analysisReceiptHash": "bc6b3d8f01774e869fcf747b0f6ad3dfef7234486737308e4dbe9e40b30b34ea",
+          "analysisResultHash": "eb691b123766884c391b16de0702ade1f298c03ba27b6e16ec2727cd1c431ee7",
+          "analyzedAt": "2026-09-06T16:25:45.488811+00:00",
+          "authorId": "2090672918976221185",
+          "authorScreenName": "piano1_zettai",
+          "bodyHash": "55296a4d486a6408daeb7a5332d0823b67d3c11a3321f8a1af21f231a5338bc6",
+          "contractHash": "93adf39af21b0b084ea98864f8ac3e2112e84407980c7bad091706c738f8fe2a",
+          "contractVersion": "personal-line-ids-v4",
+          "createdAt": "2026-09-05T16:01:34Z",
+          "date": "2026-09-06",
+          "deployment": "gpt-5.6-luna",
+          "fetchedAt": "2026-09-06T07:30:42.761Z",
+          "model": "gpt-5.6-luna",
+          "modelVersion": "2026-07-09",
+          "name": "ぴあの",
+          "provenance": "direct",
+          "sourceHash": "6c8beded1d926125a363ca2d2a501183e6c5db0449891a9aa42e3a8950bbc5bd",
+          "sourceManifestHash": "3f35b2be783f4c19cf6f2d74cfb80d0249ff26a94428cb96c5cb5ff0ec1ea747",
+          "url": "https://x.com/piano1_zettai/status/2096267503790080085",
+          "usageReceiptId": "90da3b9c0a830af262e78aa0fd81438c63b72932c44dae901f56d87f2dacfea4",
+          "usageSourceHash": "623b3cc1042bca9d8fb82f37c48e2dc9e54507359b51a7e145adacc7d4cded85"
+        }
+      },
+      "expectedSubjectHash": "c1e57e3d7f9aa95d131e1c229e295a6dd671cec576d0506b2930cb4b05b11f69"
+    }
+  },
   "schemaVersion": 1
 }
