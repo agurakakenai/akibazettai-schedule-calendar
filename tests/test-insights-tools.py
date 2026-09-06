@@ -4,6 +4,7 @@ import datetime as dt
 from decimal import Decimal
 import importlib.util
 import io
+import re
 from pathlib import Path
 import sys
 import unittest
@@ -282,6 +283,18 @@ class ProductionRegression(unittest.TestCase):
         expected.pop("generatedAt")
         actual.pop("generatedAt")
         self.assertEqual(actual, expected)
+
+    def test_display_rank_adjustments_have_confirmed_debut_evidence(self):
+        source = (ROOT / "data" / "schedule.js").read_text(encoding="utf-8")
+        block = re.search(r"normalOrderBefore:\s*\{([^}]+)\}", source).group(1)
+        milestones = builder.read_milestones()
+        debuts = builder.read_debuts()
+        for name, before in re.findall(r'"([^"]+)":\s*"([^"]+)"', block):
+            left = milestones.get(builder.ALIAS.get(name, name), {}).get("debut") or debuts.get(name)
+            right = milestones.get(builder.ALIAS.get(before, before), {}).get("debut") or debuts.get(before)
+            self.assertIsNotNone(left, name)
+            self.assertIsNotNone(right, before)
+            self.assertLess(left, right, (name, before))
 
     def test_review_threshold_population(self):
         result = evaluation.thresholds(self.cases)

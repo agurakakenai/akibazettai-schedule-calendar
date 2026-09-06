@@ -101,6 +101,28 @@ assert.equal(api.observedShift(fixture, curated, "2026-09-05", "昼").posts.leng
 assert.equal(JSON.stringify(insights), before, "observations must not train or mutate historical tables");
 assert.deepEqual(api.getStoreOutlook({ insights, dateKey: "2026-09-05", shift: "昼" }), baseOutlook);
 
+const orderingInput = [
+  { name: "あらた", trainee: true }, { name: "わたげ", trainee: true },
+  { name: "もち" }, { name: "あむ" }, { name: "あるか", trainee: true },
+  { name: "ゆめ" }, { name: "未分類" }, { name: "ちゆ" }, { name: "ぴあの" }, { name: "にゃな" }
+];
+const orderingBefore = JSON.stringify(orderingInput);
+const ordered = api.orderRosterEntries(orderingInput,
+  ["ちゆ", "あむ", "にゃな", "ぴあの", "ゆめ", "もち", "あらた"], ["あらた"],
+  { "ゆめ": "にゃな", "もち": "ぴあの" });
+assert.deepEqual(ordered.map(entry => entry.name),
+  ["ちゆ", "あむ", "ゆめ", "にゃな", "もち", "ぴあの", "あるか", "わたげ", "未分類", "あらた"]);
+assert.equal(ordered.find(entry => entry.name === "もち").trainee, undefined);
+assert.equal(ordered.find(entry => entry.name === "未分類").trainee, undefined);
+assert.equal(JSON.stringify(orderingInput), orderingBefore, "display ordering does not alter source order or roles");
+assert.deepEqual(api.orderRosterEntries([{ name: "新しい方" }, { name: "あむ" }],
+  ["あむ", "新しい方"], [], { "新しい方": "既に卒業した方" }).map(entry => entry.name),
+  ["あむ", "新しい方"], "missing debut anchors retain the saved order");
+assert.deepEqual(api.orderRosterEntries(
+  ["いと", "ぴあの", "ゆめ", "ちぇる", "もち", "にゃな"].map(name => ({ name })),
+  schedule.roster, schedule.kitchenStaff, schedule.normalOrderBefore).map(entry => entry.name),
+  ["ゆめ", "ちぇる", "いと", "にゃな", "もち", "ぴあの"], "confirmed unpublished normals join the first-service rank");
+
 const correctionPost = makePost("2096074325120237794", "s1", ["つぽみ"]);
 const correctionFixture = { ...fixture, posts: [correctionPost] };
 const correctionRules = schedule.observationNameCorrections;
