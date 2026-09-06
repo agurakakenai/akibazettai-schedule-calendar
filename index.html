@@ -46,10 +46,10 @@
   --cp-store-s4-soft: rgba(31, 111, 168, 0.1);
 }
     </style>
-    <link rel="stylesheet" href="styles.css?v=f7d152caf9">
+    <link rel="stylesheet" href="styles.css?v=9e28bf67a4">
     <script src="data/schedule.js?v=1612342fbd" defer></script>
     <script src="data/store-insights.js?v=09f8ea4436" defer></script>
-    <script src="app.js?v=54ef9b85ce" defer></script>
+    <script src="app.js?v=4744bc584f" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#calendar">カレンダーへ移動</a>
@@ -182,7 +182,9 @@
           <p id="last-updated" class="last-updated"></p>
           <div class="observation-status">
             <p id="observation-status" aria-live="polite">自動収集結果を読み込み中…</p>
-            <button id="refresh-observations" class="button button-secondary" type="button">取得結果を再読込</button>
+            <button id="refresh-observations" class="button button-secondary" type="button">集合ポストを再読込</button>
+            <p id="personal-status" aria-live="polite">本人案内を読み込み中…</p>
+            <button id="refresh-personal" class="button button-secondary" type="button">本人案内を再読込</button>
           </div>
         </div>
       </section>

@@ -10,11 +10,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Deploy current data, collect and deploy, or probe public HTTP
+        description: Deploy, collect official posts, explicitly collect personal/both, or probe
         type: choice
         options:
           - deploy
           - collect
+          - personal
+          - both
           - probe
         default: deploy
 
@@ -22,7 +24,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: pages
+  group: ${{ github.event_name == 'pull_request' && format('pages-pr-{0}', github.event.pull_request.number) || 'pages' }}
   cancel-in-progress: false
 
 jobs:
@@ -51,7 +53,12 @@ jobs:
 
   collect:
     name: Collect with durable state
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.mode == 'collect')
+    if: >-
+      github.repository == 'agurakakenai/akibazettai-schedule-calendar' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' &&
+        (inputs.mode == 'collect' || inputs.mode == 'personal' || inputs.mode == 'both')))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -62,12 +69,27 @@ jobs:
         with:
           ref: main
           persist-credentials: false
+      - name: Route the triggering event without using the runner clock
+        id: route
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_MODE: ${{ inputs.mode }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+        run: python tools/collection-routing.py
       - name: Collect with durable state
+        id: collection
         env:
           GH_TOKEN: ${{ github.token }}
           GH_PROMPT_DISABLED: "1"
           GIT_TERMINAL_PROMPT: "0"
-        run: python tools/cloud-collection.py --mode collect --output data/observed-shifts.json --recovery-dir _recovery-state
+        run: python tools/cloud-collection.py --mode "${{ steps.route.outputs.collectionMode }}" --output data/observed-shifts.json --recovery-dir _recovery-state
+      - name: Warn when verified data is published with incomplete collection
+        if: >-
+          steps.collection.outputs.collectionStatus == 'partial' ||
+          steps.collection.outputs.collectionStatus == 'unavailable' ||
+          steps.collection.outputs.personalCollectionStatus == 'paused' ||
+          steps.collection.outputs.personalCollectionStatus == 'budget-exhausted'
+        run: echo "::warning::Collection was incomplete or paused; only saved, verified facts will be published."
       - name: Preserve data for explicit recovery after a failure
         if: failure() && hashFiles('_recovery-state/**') != ''
         uses: actions/upload-artifact@v4
@@ -80,8 +102,13 @@ jobs:
     name: Validate and stage current production site
     needs: collect
     if: >-
-      always() && !cancelled() && github.ref == 'refs/heads/main' &&
-      github.event_name != 'pull_request' && inputs.mode != 'probe' &&
+      always() && !cancelled() &&
+      github.repository == 'agurakakenai/akibazettai-schedule-calendar' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' &&
+        (inputs.mode == 'deploy' || inputs.mode == 'collect' ||
+         inputs.mode == 'personal' || inputs.mode == 'both'))) &&
       (needs.collect.result == 'success' || needs.collect.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
@@ -109,6 +136,7 @@ jobs:
     needs: build
     if: >-
       always() && !cancelled() && needs.build.result == 'success' &&
+      github.repository == 'agurakakenai/akibazettai-schedule-calendar' &&
       github.ref == 'refs/heads/main' && github.event_name != 'pull_request' &&
       inputs.mode != 'probe'
     runs-on: ubuntu-latest

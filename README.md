@@ -57,7 +57,7 @@ node tests\browser-calendar.js .\browser-artifacts
 
 **その日に1人でも具体的な店舗の人物記録・公式観測があれば、popupは昼夜とも確認済み配属だけを店別に表示します。**記録のない時間帯や部分観測で残る予定者は、時間帯ごとの中立色の枠「**店舗未定**」へまとめます。店舗だけの営業実績・予測・イベント主役の所属店は切替の根拠にしません。人物の絞り込みで根拠のある方が隠れても切替は維持し、同じ時間帯の確認済み人物を未定枠へ重複表示せず、空枠も作りません。人物名簿を確定資料としている手動実績の名前集合は従来どおりで、記録に無い過去の予定者を復活させません。
 
-日単位の切替は表示中の配属ではなく**保存済みの人物店舗根拠の履歴**から判断します。将来、本人の明示的な取消を扱う場合も原根拠を保持し、未確定者を予測店舗へ戻さないための境界です。本人投稿の取得・当欠判定はまだこの変更には含みません。人物店舗根拠がまだ無い日のpopup、および補助的な従来一覧・人物別の予測ロジックは変更しません。
+日単位の切替は表示中の配属ではなく**保存済みの人物店舗根拠の履歴**から判断します。本人の明示的な取消後も原根拠を保持し、未確定者を予測店舗へ戻しません。下記の本人案内は勤務実績とは区別し、日付・時間帯・店舗が明確な情報だけを反映します。人物店舗根拠がまだ無い日の既存表示や、統計モデル自体は変更しません。
 
 画像設定は `data/schedule.js` の `eventImages` です。優先順位は**日付＋主役 → 人物 → 共通fallback → `assets/events/flower.svg`**。画像を設定しただけではイベントや出勤予定は追加されません。`milestones` の入店日からも、イベントや出勤は自動生成しません。
 
@@ -1039,6 +1039,33 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 
 ブラウザーは同じサイトの `observed-shifts.json` を `cache: "no-store"` で読むだけです。表示中は1分おきにこのJSONを再読込し、詳細popupを開いている間は自動更新を待ちます。「取得結果を再読込」でも更新できます。既に読込中の応答がpopupへ到着した場合も、選択日・「集合ポスト」の展開・focus・scrollを保持します。ブラウザーからYahooやXの検索を実行したり、統計を学習したりしません。アプリ・CSSなどの既存刻印は従来どおり更新します。
 
+### 本人投稿の当日案内
+
+`data/personal-shifts.json` は、店舗公式の集合ポストとは別に保存する**本人の当日案内**です。本人が店・時間帯を明示していても、そこで実際に勤務した実績とは扱いません。原予定、`actualRoster`、公式観測、統計モデルは書き換えません。画面では本人の出典を「集合ポスト」と混ぜずに案内し、未照合の残りは店舗未定枠へ残します。
+
+対象は**元の当日公開予定にいる現役者**のうち、`accounts.csv` の公式サイト・本人確認済みアカウントと既存の `maidTendency[name].x` が一致する人です。場所が判明したり欠勤の案内が出たりしても、元予定から作った追跡対象は消さず、後の明示的な訂正・復帰を確認できるようにします。新しい在籍者・卒業・初日の自動判定や、未提出者の推定追加は行いません。
+
+本人投稿の日付は**本文の明示月日、または「今日」と投稿metadataの日本時間0時区切り**を照合します。店舗公式の朝5時区切りは流用しません。昨日・明日・他人の話・引用・返信だけの内容や、時刻からの昼夜推測は採用しません。初期の確認例は次のとおりです。
+
+| 本人の原典 | 採用する情報 | 採用しない推測 |
+|---|---|---|
+| [あむ・2026-09-06 00:00:02](https://x.com/amu_zettai/status/2096252018260062487) | 昼1号店、夜2号店 | 勤務した実績への格上げ |
+| [ららこ・2026-09-06 00:07:27](https://x.com/rarako_zettai/status/2096253883677044837) | 昼1号店 | 「1号店→2号店」「12–22」からの夜2号店確定、勘違いしていた旧方向の採用、休憩の欠勤扱い |
+
+明確な当日の全休・片方の時間帯だけの休み・遅刻・復帰・訂正は分け、対象範囲だけを扱います。「人間の姿になれませんでした」「魔法がうまくかかりませんでした」等も、それだけで日付や時間帯を埋めません。**曖昧な変更や解決できない根拠の矛盾は保留**し、検索に出ないことを欠勤・不在にはしません。健康状態・病名は推測しません。明確な取消は通常の出勤一覧から外しても、元予定と本人イベント・出典の履歴は残します。
+
+取得は日付と店舗語等の**バッチ検索**を使い、本人ごとの無制限検索はしません。本人枠の上限は1回につきYahoo検索3ページ・新規個別確認3投稿、日本時間の1日につき検索60・個別確認30です。確認済みIDは再取得せず、予算に入らない候補は保留します。この上限は安全性や網羅性が実測で保証された値ではなく、制限を受けたら停止するための上限です。初期seedは上記pilotの確認済み2投稿を再利用し、既知の使用量（pilot検索6＋追加の小規模確認1、個別確認2）も当日予算に含めます。これを本番CLIで新規取得した成果とは数えません。
+
+採用クエリは「`M月D日 号店`」「`今日 お休み 絶対領域`」「`M/D 号店`」の各1ページです。欠勤語クエリは1回/runだけで、そこに出たこと自体を欠勤の証拠にはしません。原予定の昼だけの人は13:30まで、夜の予定がある人は19:30までを取得対象にし、待機後・HTTP直前にも人物ごとの締切を確認します。取得処理が遅れて締切を過ぎた対象は追跡を延長しません。
+
+ローカルの単発CLIは既存のPythonとNodeを使い、`--snapshot` に非公開の永続JSON、`--http-state` に公式と共用するsidecarを明示します。`--publish` は公開用JSONの追加出力です。本人CLIの`--dry-run`は**公開mirror更新だけを抑止**し、通信予算・停止状態と検証済みの本人factsはprivate snapshotへ保存します（公式CLIのdry-runとは保存範囲が異なります）。取得を試すだけでも通信と永続stateの変更があるため、稼働中のcloudと同時には実行しません。
+
+本人用の取得が403・429・アクセス拒否等を受けた場合は、残りの同host要求を止め、共有の`Retry-After`と本人機能のpauseを永続化します。**時間が過ぎただけで本人機能を勝手に再開しません。**別クエリ・UA・proxyで迂回せず、公式更新を優先します。本人側の候補不足・意味不明・予算待ち・取得不能は本人componentの状態として表示し、正常な公式観測を空にしません。保存・leaseの障害は従来どおりfail-closedです。
+
+本文全文は保存せず、作者・投稿ID・日時・出典、時間帯ごとの抽出イベントと必要な短い引用だけを保持します。公開用JSONでは内部の予算、pending/resolved、pause詳細、HTTP制限を除外します。ブラウザーは同じサイトのJSONを読むだけで、本人検索を実行しません。
+
+**有効化は段階的に行います。**先に互換コードと手動の本人/両方モードを公開し、既存stateを壊さない少量のmain実行と本番表示を確認してから定期枠を有効にします。この段階では公式の1日8回cronを維持し、本人の定期枠はまだ追加していません。
+
 ### GitHub Actionsから収集・公開する構成
 
 本番の継続更新は、標準のGitHub-hosted runnerで**収集→状態保存→検証→frontend限定staging→同じworkflowでPages公開**する構成です。X用APIキーやCookieは使いません。GitHubへの状態保存には、そのrunの既存`GITHUB_TOKEN`を使います。tokenを公開HTTPへ送ったり、stateやartifactへ保存したりしません。
@@ -1048,6 +1075,10 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 gh workflow run deploy-pages.yml --ref main -f mode=probe
 # 最新の公開コードで収集・保存・検証・公開
 gh workflow run deploy-pages.yml --ref main -f mode=collect
+# 本人投稿だけを上限内で確認して保存・公開（公式の取得は増やさない）
+gh workflow run deploy-pages.yml --ref main -f mode=personal
+# 公式を先に、本人を後に各1回確認して保存・公開
+gh workflow run deploy-pages.yml --ref main -f mode=both
 # 取得はせず、最新の保存済み観測と現在のmainで公開
 gh workflow run deploy-pages.yml --ref main -f mode=deploy
 ```
@@ -1056,21 +1087,21 @@ probeと手動`collect`で実際の取得・保存・Pages配信を確認した�
 
 コード公開と収集公開は同じPages concurrency groupで直列化します。production runは実行開始時の**最新main**をcheckoutし、コードpush時にもstate branchの最新観測を復元します。古いcollector runが古いUIやmain同梱の古い観測へ巻き戻すことを避けます。`GITHUB_TOKEN`のpushで別workflowが起動することには依存しません。
 
-`collector-state` branchは**data専用**です。観測snapshot、pending、resolved、通信制限sidecar、恒久の`state-owner.json`、収集中の`lease.json`だけを保存し、そのbranchのコードを実行しません。main/default/code branchの誤指定、所有marker欠落、予期しないファイル、non-fast-forwardを拒否します。force pushはしません。
+`collector-state` branchは**data専用**です。公式観測・本人イベントのsnapshot、pending、resolved、本人の予算・pause、共有通信制限sidecar、恒久の`state-owner.json`、収集中の`lease.json`だけを保存し、そのbranchのコードを実行しません。本人snapshotがない既存stateは互換コードで読み、コード公開前にstateだけを移行しません。main/default/code branchの誤指定、所有marker欠落、予期しないファイル、non-fast-forwardを拒否します。force pushはしません。
 
 HTTPの前にleaseをremoteへ保存します。収集後、成功・部分失敗・取得不能のどれでも保存できた事実と通信制限を永続化し、同じcommitでleaseを消します。remote保存が失敗した場合はleaseを残し、次runはHTTPを始めず停止します。部分失敗でも有効な保存済み観測を配信できますが、**Pages構築成功と収集完全成功は別**です。`collectionStatus` / `collectionCode`とUIの更新状態で区別します。
 
 #### 保存失敗時の回復
 
 1. `gh workflow disable deploy-pages.yml` で繰り返し起動を止め、失敗runのログと`collector-recovery-<run-id>` artifactを確認します。このrecovery artifactはPagesには入りません。
-2. そのrunのcanonical JSONとHTTP-state JSONを取得し、JSONの形式・作者/日時・pending/resolved・`Retry-After`を確認します。失敗後に別のrunを空stateで始めて制限を無視しないでください。
+2. そのrunの公式snapshot・共有HTTP-stateと、移行後は本人snapshotも取得し、JSONの形式・作者/日時・pending/resolved・本人予算とpause・`Retry-After`を確認します。失敗後に別のrunを空stateで始めて制限を無視しないでください。
 3. `collector-state`だけの作業コピーで最新remoteを取得し、`state-owner.json`が同じ管理情報であること、leaseが失敗runのものであることを照合します。data branchのスクリプトは実行しません。
-4. 検査した2つのstate JSONを復元し、所有markerを維持したまま該当leaseだけを削除して、通常のcommit/pushを行います。競合したら取り直して照合し、forceしません。
+4. 検査した一式のstate JSONを復元し、所有markerを維持したまま該当leaseだけを削除して、通常のcommit/pushを行います。本人snapshotだけを古いseedへ戻して予算・pauseを消さないでください。競合したら取り直して照合し、forceしません。
 5. `gh workflow enable deploy-pages.yml` 後に`mode=collect`で再開します。保存されたcooldownは維持され、期限前はHTTPを保留します。
 
 ### Pagesへ載せるファイル
 
-`tools\pages.py stage` は新しい`_site`に、index/app/styles、公開用data、イベントSVGと`version.json`だけを構築します。観測JSONはwhitelist projectionにし、内部pending/resolved/cooldown・ローカルpath・SID・PID・config・log・lock・全文postをfrontendへ持ち込みません。backend、tests、`.git`、README等もPages artifactから除外します。
+`tools\pages.py stage` は新しい`_site`に、index/app/styles、公開用data、イベントSVGと`version.json`だけを構築します。公式の`observed-shifts.json`と本人の`personal-shifts.json`は別々にwhitelist projectionし、内部pending/resolved/cooldown/budget/pause詳細・ローカルpath・SID・PID・config・log・lock・全文postをfrontendへ持ち込みません。backend、tests、`.git`、README等もPages artifactから除外します。
 
 `version.json`は公開コードのSHA、観測の確認時刻、各公開資産のraw SHA256を持ちます。`index.html`の改行正規化済みcache刻印とは用途が違い、配信物そのものの照合に使います。GitHub Pagesのリポジトリsubpathで動くよう、JSON・画像・scriptは相対参照のままです。
 
@@ -1101,7 +1132,7 @@ Task Schedulerに現在ユーザーの非昇格・パスワード保存なしの
 
 ## お給仕情報の更新
 
-事前の予定は [`data/schedule.js`](data/schedule.js)、手動実績から生成した統計は `data/store-insights.js`、公開HTTPの部分観測は `data/observed-shifts.json` に分離しています。描画処理は [`app.js`](app.js) にあるため、通常の予定更新で HTML や描画ロジックを変更する必要はありません。
+事前の予定は [`data/schedule.js`](data/schedule.js)、手動実績から生成した統計は `data/store-insights.js`、公式の部分観測は `data/observed-shifts.json`、本人の当日案内は `data/personal-shifts.json` に分離しています。描画処理は [`app.js`](app.js) にあるため、通常の予定更新で HTML や描画ロジックを変更する必要はありません。
 
 1. `lastUpdated` を更新します。
 2. `schedule` の日付に、`昼` と `夜` の配列を追加・編集します。
