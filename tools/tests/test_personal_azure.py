@@ -4,6 +4,9 @@ import copy
 import datetime as dt
 import io
 import json
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,8 +22,8 @@ ENV = {'AZURE_OPENAI_ENDPOINT': 'https://offline.openai.azure.com/',
        'AZURE_OPENAI_API_KEY': 'OFFLINE_AZURE_SENTINEL'}
 
 
-def event(shift, kind, evidence, store=None, time=None):
-    return {'shift': shift, 'kind': kind, 'evidence': evidence, 'storeId': store, 'time': time}
+def event(shift, kind, line_ids, store=None, time=None):
+    return {'shift': shift, 'kind': kind, 'evidenceLineIds': line_ids, 'storeId': store, 'time': time}
 
 
 def result(*events, decision=None):
@@ -105,18 +108,38 @@ class AzureTests(base.Offline):
         text = '今日 昼1号店、夜2。新刊を買うかも'
         self.assertEqual(len(personal.parse_events(
             text, personal.official.timestamp(base.CREATED), base.DATE, base.AMU['shifts'])[0]), 1)
-        post, _ = self.parse(text, result(event('昼', 'placement', '昼1号店', 's1'),
-                                          event('夜', 'placement', '夜2', 's2')))
+        post, _ = self.parse(text, result(event('昼', 'placement', [1], 's1'),
+                                          event('夜', 'placement', [1], 's2')))
         self.assertEqual([e['storeId'] for e in post['events']], ['s1', 's2'])
         self.opener.open.assert_called_once()
         sent = json.loads(self.opener.open.call_args.args[0].data)
         self.assertEqual(json.loads(sent['messages'][1]['content']), {
-            'body': text, 'postedAt': base.CREATED, 'date': '2026-09-06',
+            'bodyLines': [{'id': 1, 'text': text}], 'postedAt': base.CREATED, 'date': '2026-09-06',
             'author': 'あむ', 'allowedShifts': ['昼', '夜']})
         self.assertEqual(sent['reasoning_effort'], 'none')
         self.assertEqual(sent['max_completion_tokens'], 1200)
         self.assertNotIn('tools', sent)
         self.assertNotIn(ENV['AZURE_OPENAI_API_KEY'], json.dumps(sent))
+
+    def test_line_ids_preserve_endings_blank_lines_and_unicode_without_offsets(self):
+        text = '🍓\r\n\r\n　♡ ꒱\n最後\r'
+        lines = azure.source_lines(text)
+        self.assertEqual([line['text'] for line in lines], ['🍓\r\n', '\r\n', '　♡ ꒱\n', '最後\r', ''])
+        self.assertEqual([line['id'] for line in lines], [1, 2, 3, 4, 5])
+        self.assertEqual(''.join(line['text'] for line in lines), text)
+        for line in lines:
+            self.assertEqual(text[line['start']:line['end']], line['text'])
+        self.assertEqual(azure.source_lines('')[0]['text'], '')
+        self.parse(text, result())
+        sent = json.loads(self.opener.open.call_args.args[0].data)
+        body_lines = json.loads(sent['messages'][1]['content'])['bodyLines']
+        self.assertTrue(all(set(line) == {'id', 'text'} for line in body_lines))
+        self.assertEqual(''.join(line['text'] for line in body_lines), text)
+        schema = sent['response_format']['json_schema']['schema']
+        ids = schema['properties']['events']['items']['properties']['evidenceLineIds']
+        self.assertEqual(ids['items']['enum'], [1, 2, 3, 4, 5])
+        self.assertEqual(ids['maxItems'], 5)
+        self.assertNotIn('enum', azure.SCHEMA['properties']['events']['items']['properties']['evidenceLineIds']['items'])
 
     def test_body_wording_reaches_model_without_a_semantic_prefilter(self):
         for text in ('明日 夜2号店', '今日「夜2号店」', '今日 ららこは夜2号店',
@@ -132,52 +155,80 @@ class AzureTests(base.Offline):
         for text in ('今日 夜2号店かも', '今日 夜2号店には出ません',
                      '明日 夜2号店', '今日「夜2号店」', '今日 夜2号店、訂正、夜3号店'):
             with self.subTest(text=text):
-                events, _ = self.validate(text, result(event('夜', 'placement', '夜2号店', 's2')))
+                events, _ = self.validate(text, result(event('夜', 'placement', [1], 's2')))
                 self.assertEqual(events[0]['storeId'], 's2')
         # These deliberately wrong model decisions require model evaluation,
         # not another Japanese interpreter hidden in the mechanical validator.
 
     def test_shared_multishift_evidence_is_converted_once_per_event(self):
-        evidence = '3号店ひる→2号店よる'
-        post, _ = self.parse('今日 ' + evidence, result(
-            event('昼', 'placement', evidence, 's3'), event('夜', 'placement', evidence, 's2')))
+        text = '今日🍓\r\n　♡ 3号店ひる→2号店よる ꒱\r\n'
+        selected = azure.selected_lines(azure.source_lines(text), [3, 2, 1])
+        self.assertEqual([line['text'] for line in selected], ['今日🍓\r\n', '　♡ 3号店ひる→2号店よる ꒱\r\n', ''])
+        post, _ = self.parse(text, result(
+            event('昼', 'placement', [1, 2, 3], 's3'), event('夜', 'placement', [2], 's2')))
         self.assertEqual(post['events'], [
             {'shift': '昼', 'kind': 'placement', 'storeId': 's3', 'excerpt': '3号店'},
             {'shift': '夜', 'kind': 'placement', 'storeId': 's2', 'excerpt': '2号店'}])
         post, _ = self.parse('今日 昼4/夜2', result(
-            event('昼', 'placement', '昼4/夜2', 's4'), event('夜', 'placement', '昼4/夜2', 's2')))
+            event('昼', 'placement', [1], 's4'), event('夜', 'placement', [1], 's2')))
         self.assertEqual([e['storeId'] for e in post['events']], ['s4', 's2'])
 
-    def test_numeric_contradictions_and_fabricated_evidence_are_rejected(self):
+    def test_noncontiguous_lines_never_form_an_invented_number_or_quote(self):
+        text = '今日\n1\n余談\n号店\n19:\n余談\n30に遅れます'
+        selected = azure.selected_lines(azure.source_lines(text), [2, 4, 5, 7])
+        self.assertEqual([line['text'] for line in selected], ['1\n', '号店\n', '19:\n', '30に遅れます'])
+        for proposed in (event('夜', 'placement', [2, 4], 's1'),
+                         event('夜', 'late', [5, 7], time='19:30')):
+            with self.subTest(proposed=proposed), self.assertRaises(azure.AnalysisFailure):
+                self.validate(text, result(proposed))
+        events, _ = self.validate('今日\n3号店\n余談🍓\n夜19時に遅れます', result(
+            event('夜', 'late', [2, 4], 's3', '19:00')))
+        self.assertEqual(events[0]['storeId'], 's3')
+        self.assertEqual(events[0]['time'], '19:00')
+
+    def test_bad_line_id_types_duplicates_and_limits_are_rejected(self):
+        text = '今日\n2号店\n夜\n'
+        for ids in (None, '2', 2, [], [0], [-1], [5], [True], [2.0], ['2'], [[2]], [2, 2],
+                    list(range(1, azure.MAX_EVIDENCE_LINES + 2))):
+            with self.subTest(ids=ids), self.assertRaises(azure.AnalysisFailure):
+                self.validate(text, result(event('夜', 'placement', ids, 's2')))
+        with self.assertRaises(azure.AnalysisFailure):
+            self.validate(text, result(event('夜', 'absence', [4])))
+        boundary = '2号店\n' + '\n' * (azure.MAX_SOURCE_LINES - 2)
+        self.assertEqual(len(azure.source_lines(boundary)), azure.MAX_SOURCE_LINES)
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_input_limit'):
+            self.parse(boundary + '\n', result())
+        self.opener.open.assert_not_called()
+
+    def test_numeric_contradictions_and_cropped_numbers_are_rejected(self):
         cases = [
-            ('今日 昼4号店', event('昼', 'placement', '昼4号店', 's1')),
-            ('今日 夜2号店', event('夜', 'placement', '夜3号店', 's3')),
-            ('今日 夜2号店', event('夜', 'placement', '夜２号店', 's2')),
-            ('今日 夜は遅れます', event('夜', 'late', '夜は遅れます', 's2')),
-            ('今日 夜19時に遅れます', event('夜', 'late', '夜19時に遅れます', time='20:00')),
-            ('今日 41号店', event('夜', 'placement', '41号店', 's1')),
-            ('今日 夜41号店', event('夜', 'placement', '1号店', 's1')),
-            ('今日 夜2時', event('夜', 'placement', '夜2', 's2')),
-            ('今日 夜19:30に遅れます', event('夜', 'late', '9:30に遅れます', time='09:30')),
-            ('今日 夜19時30分に遅れます', event('夜', 'late', '夜19時', time='19:00')),
-            ('今日 夜19時半に遅れます', event('夜', 'late', '夜19時', time='19:00')),
+            ('今日 昼4号店', event('昼', 'placement', [1], 's1')),
+            ('今日 夜2号店', event('夜', 'placement', [1], 's3')),
+            ('今日\n2号店\n夜は遅れます', event('夜', 'late', [3], 's2')),
+            ('今日 夜19時に遅れます', event('夜', 'late', [1], time='20:00')),
+            ('今日 41号店', event('夜', 'placement', [1], 's1')),
+            ('今日 夜41号店', event('夜', 'placement', [1], 's1')),
+            ('今日 夜2時', event('夜', 'placement', [1], 's2')),
+            ('今日 夜19:30に遅れます', event('夜', 'late', [1], time='09:30')),
+            ('今日 夜19時30分に遅れます', event('夜', 'late', [1], time='19:00')),
+            ('今日 夜19時半に遅れます', event('夜', 'late', [1], time='19:00')),
         ]
         for text, proposed in cases:
             with self.subTest(text=text), self.assertRaises(azure.AnalysisFailure):
                 self.validate(text, result(proposed))
         post, _ = self.parse('今日 夜４号店に１９時３０分から遅れて行きます', result(
-            event('夜', 'late', '夜４号店に１９時３０分から遅れて行きます', 's4', '19:30')))
+            event('夜', 'late', [1], 's4', '19:30')))
         self.assertEqual(post['events'][0], {
             'shift': '夜', 'kind': 'late', 'storeId': 's4', 'time': '19:30', 'excerpt': '４号店'})
         for evidence in ('夜　２', '夜\u00a0２', '夜\t２'):
             with self.subTest(evidence=evidence):
-                events, _ = self.validate('今日 ' + evidence, result(event('夜', 'placement', evidence, 's2')))
+                events, _ = self.validate('今日 ' + evidence, result(event('夜', 'placement', [1], 's2')))
                 self.assertEqual(events[0]['storeId'], 's2')
                 self.assertEqual(events[0]['excerpt'], evidence.replace('\t', ' '))
 
     def test_schema_target_boundaries_and_duplicate_events_fail_closed(self):
         text = '今日 昼1号店、夜2号店'
-        valid = event('夜', 'placement', '夜2号店', 's2')
+        valid = event('夜', 'placement', [1], 's2')
         cases = [result(valid, valid), result(valid, valid, valid),
                  {'date': '2026-09-07', 'decision': 'events', 'events': [valid]},
                  {'date': base.DATE.isoformat(), 'decision': 'no_event', 'events': [valid]},
@@ -185,11 +236,13 @@ class AzureTests(base.Offline):
                  result({**valid, 'confidence': 1}),
                  result({**valid, 'shift': '朝'}), result({**valid, 'shift': []}),
                  result({**valid, 'storeId': 's5'}), result({**valid, 'storeId': 2}),
-                 result({**valid, 'kind': 'working'}), result({**valid, 'evidence': None}),
+                 result({**valid, 'kind': 'working'}), result({**valid, 'evidenceLineIds': None}),
+                 result({'shift': '夜', 'kind': 'placement', 'storeId': 's2', 'time': None,
+                         'evidence': '夜2号店'}),
                  result({**valid, 'storeId': None}),
                  result({**valid, 'time': '19:00'}),
-                 result(event('夜', 'absence', '夜2号店', 's2')),
-                 result(event('夜', 'return', '夜2号店', 's2', False))]
+                 result(event('夜', 'absence', [1], 's2')),
+                 result(event('夜', 'return', [1], 's2', False))]
         for value in cases:
             with self.subTest(value=value), self.assertRaises(azure.AnalysisFailure):
                 self.validate(text, value)
@@ -198,12 +251,12 @@ class AzureTests(base.Offline):
 
     def test_short_public_anchors_do_not_persist_full_evidence_or_health_prose(self):
         text = '今日は体調の事情で、今日は終日お休みします'
-        post, _ = self.parse(text, result(event('夜', 'absence', '今日は終日お休みします')),
+        post, _ = self.parse(text, result(event('夜', 'absence', [1])),
                             target={**base.AMU, 'shifts': ['夜']})
         self.assertEqual(post['events'], [{'shift': '夜', 'kind': 'absence', 'excerpt': 'お休み'}])
         self.assertNotIn('体調', self.snapshot.read_text(encoding='utf-8'))
         evidence = '2号店\n15時〜21時\n早めの夜担当です'
-        post, _ = self.parse('今日\n' + evidence, result(event('夜', 'placement', evidence, 's2')))
+        post, _ = self.parse('今日\n' + evidence, result(event('夜', 'placement', [2, 3, 4], 's2')))
         self.assertEqual(post['events'], [{'shift': '夜', 'kind': 'placement',
                                           'storeId': 's2', 'excerpt': '2号店'}])
         self.assertNotIn('evidence', self.snapshot.read_text(encoding='utf-8'))
@@ -227,8 +280,8 @@ class AzureTests(base.Offline):
 
     def test_same_body_cache_edit_and_old_version_failure_are_separate(self):
         text = '今日 昼1号店'
-        expected = result(event('昼', 'placement', '昼1号店', 's1'))
-        with mock.patch.object(azure, 'VERSION', 'personal-nano-v2-gpt-5.4-nano-2026-03-17'):
+        expected = result(event('昼', 'placement', [1], 's1'))
+        with mock.patch.object(azure, 'VERSION', 'personal-nano-v3-gpt-5.4-nano-2026-03-17'):
             old = self.make_analyzer()
         self.opener.open.side_effect = TimeoutError()
         with self.assertRaises(azure.AnalysisFailure):
@@ -241,7 +294,7 @@ class AzureTests(base.Offline):
         for _ in range(2):
             self.parse(text, expected, analyzer=current)
         self.assertEqual(self.opener.open.call_count, 2)
-        self.parse('今日 昼2号店', result(event('昼', 'placement', '昼2号店', 's2')), analyzer=current)
+        self.parse('今日 昼2号店', result(event('昼', 'placement', [1], 's2')), analyzer=current)
         self.assertEqual(self.opener.open.call_count, 3)
         for key, entry in old_cache.items():
             self.assertEqual(current.state['cache'][key], entry)
@@ -251,7 +304,7 @@ class AzureTests(base.Offline):
                  response(result(), finish='length'),
                  response(content='{"date":"2026-09-06","date":"2026-09-06","decision":"no_event","events":[]}'),
                  response({'decision': 'events', 'date': 'wrong', 'events': []}),
-                 response(result(event('昼', 'placement', 'not in source', 's1')))]
+                 response(result(event('昼', 'placement', [999], 's1')))]
         for reply in cases:
             with self.subTest(reply=reply):
                 self.state = personal.empty_state()
@@ -323,15 +376,15 @@ class AzureTests(base.Offline):
 
     def test_saved_edit_preserves_original_chronology_before_later_absence(self):
         self.known()
-        self.opener.open.return_value = response(result(event('昼', 'placement', '昼1号店', 's1')))
+        self.opener.open.return_value = response(result(event('昼', 'placement', [1], 's1')))
         self.collect(payloads={base.TID: base.post('今日 昼1号店')})
         original = copy.deepcopy(self.state['posts'][0])
         later_time = '2026-09-06T02:00:00Z'
         later_id = base.snowflake(later_time)
         self.known(later_id, later_time)
-        self.opener.open.return_value = response(result(event('昼', 'absence', '昼お休みします')))
+        self.opener.open.return_value = response(result(event('昼', 'absence', [1])))
         self.collect(payloads={later_id: base.post('今日 昼お休みします', later_id, later_time)})
-        self.opener.open.return_value = response(result(event('昼', 'placement', '昼2号店', 's2')))
+        self.opener.open.return_value = response(result(event('昼', 'placement', [1], 's2')))
         self.collect(payloads={base.TID: base.post('今日 昼2号店')})
         self.assertEqual([p['id'] for p in self.state['posts']], [base.TID, later_id])
         self.assertEqual(self.state['posts'][0]['createdAt'], original['createdAt'])
@@ -357,7 +410,7 @@ class AzureTests(base.Offline):
                     {**ENV, 'AZURE_OPENAI_ENDPOINT': 'https://example.com/'}):
             with self.assertRaisesRegex(ValueError, 'invalid_azure_configuration'):
                 self.make_analyzer(env)
-        self.parse('今日 昼1号店', result(event('昼', 'placement', '昼1号店', 's1')))
+        self.parse('今日 昼1号店', result(event('昼', 'placement', [1], 's1')))
         self.assertNotIn('azureAnalysis', personal.public_state(self.state))
         self.assertNotIn(ENV['AZURE_OPENAI_API_KEY'], self.snapshot.read_text(encoding='utf-8'))
         self.assertNotIn('offline.openai.azure.com', self.snapshot.read_text(encoding='utf-8'))
@@ -375,7 +428,7 @@ class AzureTests(base.Offline):
             'maidTendency': {'あむ': {'x': 'amu_zettai'}}}) + ';', encoding='utf-8')
         accounts.write_text('name,handle,source\nあむ,amu_zettai,本人確認済み\n', encoding='utf-8')
         personal.official.atomic_json(saved, {base.TID: base.post('今日 昼1号店')})
-        self.opener.open.return_value = response(result(event('昼', 'placement', '昼1号店', 's1')))
+        self.opener.open.return_value = response(result(event('昼', 'placement', [1], 's1')))
         args = personal.argument_parser().parse_args([
             '--snapshot', str(self.snapshot), '--http-state', str(self.http),
             '--seed', str(seed), '--schedule', str(schedule), '--insights', str(insights),
@@ -401,7 +454,7 @@ class AzureTests(base.Offline):
 
     def test_no_event_pending_and_budget_do_not_delete_existing_facts(self):
         self.known()
-        self.opener.open.return_value = response(result(event('昼', 'placement', '昼1号店', 's1')))
+        self.opener.open.return_value = response(result(event('昼', 'placement', [1], 's1')))
         self.collect(payloads={base.TID: base.post('今日 昼1号店')})
         original = copy.deepcopy(self.state['posts'])
         resolved = copy.deepcopy(self.state['resolved'])
@@ -426,6 +479,35 @@ class AzureTests(base.Offline):
         seed = {**personal.empty_snapshot(), 'posts': [old]}
         personal.merge_seed(self.state, seed)
         self.assertEqual(self.state['posts'], [])
+
+    def test_line_id_response_reaches_existing_history_and_ui_resolver(self):
+        executable = shutil.which('node') or str(personal.NODE_FALLBACK)
+        if not Path(executable).is_file():
+            self.skipTest('Existing Node runtime is unavailable')
+        self.known()
+        text = '今日🍓\r\n　♡ 3号店ひる→2号店よる ꒱\r\n'
+        self.opener.open.return_value = response(result(
+            event('昼', 'placement', [1, 2, 3], 's3'), event('夜', 'placement', [2], 's2')))
+        _, code, client = self.collect(payloads={base.TID: base.post(text)})
+        self.assertEqual(code, 0)
+        client.fetch_post.assert_not_called()
+        public = personal.public_state(self.state)
+        encoded = json.dumps(public, ensure_ascii=False)
+        for private in ('🍓', '꒱', 'evidenceLineIds', 'bodyLines'):
+            self.assertNotIn(private, encoded)
+        script = """
+const api=require('./app.js'),fs=require('node:fs');
+const snapshot=JSON.parse(fs.readFileSync(0,'utf8'));
+api.validatePersonalShifts(snapshot);
+const person=api.personalShift(snapshot,{},'2026-09-06','夜',{byMaid:new Map()}).byMaid.get('あむ');
+process.stdout.write(JSON.stringify({store:person.storeId,history:person.history.map(x=>x.post.id)}));
+"""
+        process = subprocess.run(
+            [executable, '-e', script], cwd=personal.ROOT, input=encoded,
+            capture_output=True, encoding='utf-8', timeout=10, check=True,
+            env={key: value for key, value in os.environ.items() if not key.startswith('AZURE_OPENAI_')},
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        self.assertEqual(json.loads(process.stdout), {'store': 's2', 'history': [base.TID]})
 
 
 if __name__ == '__main__':

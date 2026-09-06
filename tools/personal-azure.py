@@ -17,8 +17,10 @@ import urllib.parse
 import urllib.request
 
 
-VERSION = 'personal-nano-v3-gpt-5.4-nano-2026-03-17'
+VERSION = 'personal-nano-v4-gpt-5.4-nano-2026-03-17'
 MAX_INPUT_BYTES = 6000
+MAX_SOURCE_LINES = 128
+MAX_EVIDENCE_LINES = 16
 MAX_OUTPUT_TOKENS = 1200
 MAX_RESPONSE_BYTES = 24000
 RUN_LIMIT, DAY_LIMIT = 3, 30
@@ -36,9 +38,11 @@ return to work. An all-day absence covers only allowed shifts. Breaks are not
 absence or return. Explicit day/night labels override customary hours; an early
 night start is not lateness. Never invent a store, shift or time from an arrow,
 hours, or an unstated detail. Store numbers 1..4 map to s1..s4.
-Each event needs exact original evidence of at most 160 characters, without
-health reasons. The same evidence may support multiple shifts and span lines.
-Include the stated store/time in evidence when supplied; otherwise use null.
+The body is supplied as ordered bodyLines with integer IDs and unchanged text.
+For each event select evidenceLineIds from those IDs, at most 16 distinct lines.
+Do not copy, rewrite or quote the body and do not calculate character offsets.
+Lines may be shared by multiple shifts. Select the lines supporting the stated
+store/time and interpretation; unstated store/time must be null.
 time is only an explicit arrival time for late/return, not a work-time range;
 placement/absence time must be null. If no relevant announcement, use no_event;
 if its meaning is unresolved, use pending. Both have empty events. Return the
@@ -52,13 +56,14 @@ SCHEMA = {
         'date': {'type': 'string'},
         'events': {'type': 'array', 'items': {
             'type': 'object', 'additionalProperties': False,
-            'required': ['shift', 'kind', 'storeId', 'time', 'evidence'],
+            'required': ['shift', 'kind', 'storeId', 'time', 'evidenceLineIds'],
             'properties': {
                 'shift': {'type': 'string', 'enum': ['昼', '夜']},
                 'kind': {'type': 'string', 'enum': ['placement', 'absence', 'late', 'return']},
                 'storeId': {'type': ['string', 'null'], 'enum': ['s1', 's2', 's3', 's4', None]},
                 'time': {'type': ['string', 'null']},
-                'evidence': {'type': 'string'},
+                'evidenceLineIds': {'type': 'array', 'minItems': 1, 'maxItems': MAX_EVIDENCE_LINES,
+                                    'items': {'type': 'integer'}},
             },
         }},
     },
@@ -155,13 +160,44 @@ CACHE_REASONS = {
 }
 
 
-def numeric_references(text, evidence):
-    spans = [match.span() for match in re.finditer(re.escape(evidence), text)]
+def source_lines(text):
+    """CRLF, LF and CR terminate lines; preserve endings and a final empty line."""
+    if len(text.encode('utf-8')) > MAX_INPUT_BYTES:
+        raise AnalysisFailure('azure_input_limit')
+    ends = [match.end() for match in re.finditer(r'\r\n|\r|\n', text)] + [len(text)]
+    if len(ends) > MAX_SOURCE_LINES:
+        raise AnalysisFailure('azure_input_limit')
+    return [{'id': index + 1, 'text': text[start:end], 'start': start, 'end': end}
+            for index, (start, end) in enumerate(zip([0, *ends[:-1]], ends))]
+
+
+def response_schema(lines):
+    schema = copy.deepcopy(SCHEMA)
+    ids = schema['properties']['events']['items']['properties']['evidenceLineIds']
+    ids['items']['enum'] = [line['id'] for line in lines]
+    ids['maxItems'] = min(MAX_EVIDENCE_LINES, len(lines))
+    return schema
+
+
+def selected_lines(lines, ids):
+    if (not isinstance(ids, list) or not 1 <= len(ids) <= MAX_EVIDENCE_LINES
+            or any(type(value) is not int or not 1 <= value <= len(lines) for value in ids)
+            or len(set(ids)) != len(ids)):
+        raise AnalysisFailure('azure_invalid_output')
+    selected = [lines[value - 1] for value in sorted(ids)]
+    if not any(line['text'].strip() for line in selected):
+        raise AnalysisFailure('azure_ungrounded')
+    return selected
+
+
+def numeric_references(text, lines):
+    spans = [(line['start'], line['end']) for line in lines]
 
     def quoted(match):
         return any(start <= match.start() and match.end() <= end for start, end in spans)
 
-    # Match in the source first, so a quote cannot crop 19:30 to 9:30 or 41 to 1.
+    # Check tokens in the original source, wholly inside one selected line.
+    # Never concatenate selected lines to manufacture a number or a quotation.
     horizontal = r'[^\S\r\n\v\f\u0085\u2028\u2029]*'
     stores, times = {}, set()
     for pattern in (r'(?<!\d)([1-4１-４])' + horizontal + '号店',
@@ -176,21 +212,23 @@ def numeric_references(text, evidence):
     return stores, times
 
 
-def public_excerpt(evidence, store, references):
+def public_excerpt(lines, store, references):
     # Data minimization only: these tokens never determine the event's meaning.
     if store is not None:
         return references[store]
     for anchor in PUBLIC_ANCHORS:
-        if anchor in evidence:
+        if any(anchor in line['text'] for line in lines):
             return anchor
-    date = re.search(r'\d{1,2}[月/]\d{1,2}日?', evidence)
-    if date:
-        return date[0]
+    for line in lines:
+        date = re.search(r'\d{1,2}[月/]\d{1,2}日?', line['text'])
+        if date:
+            return date[0]
     raise AnalysisFailure('azure_ungrounded')
 
 
-def grounded_events(result, text, date, shifts, personal):
-    """Check the contract and literal evidence, not Japanese sentence semantics."""
+def grounded_events(result, text, date, shifts, personal, lines=None):
+    """Resolve line IDs and check mechanical evidence, not sentence semantics."""
+    lines = source_lines(text) if lines is None else lines
     if (not isinstance(result, dict) or set(result) != {'decision', 'date', 'events'}
             or result['date'] != date.isoformat()
             or result['decision'] not in ('events', 'no_event', 'pending')
@@ -203,22 +241,19 @@ def grounded_events(result, text, date, shifts, personal):
     for proposed in result['events']:
         if not isinstance(proposed, dict) or set(proposed) != set(SCHEMA['properties']['events']['items']['required']):
             raise AnalysisFailure('azure_invalid_output')
-        shift, kind, store, when, evidence = (proposed[key] for key in
-                                             ('shift', 'kind', 'storeId', 'time', 'evidence'))
+        shift, kind, store, when = (proposed[key] for key in ('shift', 'kind', 'storeId', 'time'))
         if (not isinstance(shift, str) or shift not in shifts or shift in seen
                 or not isinstance(kind, str) or kind not in ('placement', 'absence', 'late', 'return')
                 or store not in (None, 's1', 's2', 's3', 's4')
-                or not isinstance(evidence, str) or not 1 <= len(evidence) <= 160
-                or evidence not in text or not evidence.strip()
-                or re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u2028\u2029]', evidence)
                 or kind == 'placement' and store is None
                 or kind == 'absence' and store is not None
                 or kind in ('placement', 'absence') and when is not None):
             raise AnalysisFailure('azure_ungrounded')
-        references, times = numeric_references(text, evidence)
+        selected = selected_lines(lines, proposed['evidenceLineIds'])
+        references, times = numeric_references(text, selected)
         if store is not None and store not in references:
             raise AnalysisFailure('azure_ungrounded')
-        event = {'shift': shift, 'kind': kind, 'excerpt': public_excerpt(evidence, store, references)}
+        event = {'shift': shift, 'kind': kind, 'excerpt': public_excerpt(selected, store, references)}
         if store is not None:
             event['storeId'] = store
         if when is not None:
@@ -253,7 +288,8 @@ class AzureAnalyzer:
         self.opener = opener or urllib.request.build_opener(NoRedirect())
         self.used = 0
         self.spacing_at = None
-        self.version = digest(json.dumps([VERSION, PROMPT, SCHEMA, endpoint, deployment], sort_keys=True))
+        self.version = digest(json.dumps([VERSION, PROMPT, SCHEMA, MAX_SOURCE_LINES,
+                                          endpoint, deployment], sort_keys=True))
         known = {entry['postId'] for entry in self.state['cache'].values()}
         for item in state['resolved']:
             if item['id'] not in known:
@@ -273,15 +309,17 @@ class AzureAnalyzer:
             raise AnalysisFailure(cached['reason'], cached.get('httpStatus'), cached.get('retryAt'))
         entry = {'postId': post_id, 'bodyHash': body_hash, 'versionHash': self.version,
                  'at': self.personal.stamp(self.clock()), 'reason': 'azure_interrupted', 'events': []}
-        if len(text.encode('utf-8')) > MAX_INPUT_BYTES:
+        try:
+            lines = source_lines(text)
+        except AnalysisFailure:
             entry['reason'] = 'azure_input_limit'
             self.state['cache'][key] = entry
             self.save()
             raise AnalysisFailure('azure_input_limit')
         self.reserve(key, entry)
         try:
-            result = self.request(text, created, date, shifts, name)
-            events, reason = grounded_events(result, text, date, shifts, self.personal)
+            result = self.request(lines, created, date, shifts, name)
+            events, reason = grounded_events(result, text, date, shifts, self.personal, lines)
         except AnalysisFailure as exc:
             entry.update(exc.facts())
             self.save()
@@ -337,17 +375,18 @@ class AzureAnalyzer:
             raise AnalysisFailure('azure_rate_limited', status, self.state['nextRequestAt'])
         raise AnalysisFailure('azure_http_error', status)
 
-    def request(self, text, created, date, shifts, name):
+    def request(self, lines, created, date, shifts, name):
         payload = {
             'model': self.deployment, 'reasoning_effort': 'none',
             'max_completion_tokens': MAX_OUTPUT_TOKENS,
             'messages': [{'role': 'system', 'content': PROMPT},
                          {'role': 'user', 'content': json.dumps(
-                             {'body': text, 'postedAt': self.personal.stamp(created),
+                             {'bodyLines': [{key: line[key] for key in ('id', 'text')} for line in lines],
+                              'postedAt': self.personal.stamp(created),
                               'date': date.isoformat(), 'author': name, 'allowedShifts': list(shifts)},
                              ensure_ascii=False)}],
             'response_format': {'type': 'json_schema', 'json_schema': {
-                'name': 'personal_announcements', 'strict': True, 'schema': SCHEMA}},
+                'name': 'personal_announcements', 'strict': True, 'schema': response_schema(lines)}},
         }
         request = urllib.request.Request(self.url, data=json.dumps(payload).encode('utf-8'),
                                          headers={'Content-Type': 'application/json', 'api-key': self._key})
