@@ -1074,6 +1074,18 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 
 初期pilotの固定回帰は `tools/tests/fixtures/personal-pilot.json` を使います。配信準備中の `data/personal-shifts.json` はstate branchから復元される可変のsnapshotなので、公開形式や初期2投稿に固定したテスト入力としては使いません。private形式・追加投稿を含む復元後にも、通常の検証と公開projectionが通ることを確認します。
 
+#### Azure nanoによる本人本文解析
+
+ローカルCLIは無設定なら従来の`--analysis-backend rules`です。`--analysis-backend azure`を明示すると、検証済みの新規本人本文**全体**をAzure OpenAI `gpt-5.4-nano`（2026-03-17）へ送り、Chat Completions v1・structured outputs・`reasoning_effort=none`で解析します。ルールが一部の時間帯を拾ってもAzureを省略せず、Azure失敗をルールで成功扱いにもしません。作者・投稿ID・日時は既存コードで照合し、対象日・原予定の昼夜・店舗・状態・本文内の短い根拠をさらに検証します。曖昧な取消は保留、明示的な出勤再開は`return`として扱います。矢印や時刻から夜を補う一般ルールは追加しません。
+
+Actionsでは手動`personal` / `both`時だけAzureを選択します。必要な設定はsecret `AZURE_OPENAI_API_KEY`とvariables `AZURE_OPENAI_ENDPOINT`（`https://<resource>.openai.azure.com/`）、`AZURE_OPENAI_DEPLOYMENT`（`gpt-5.4-nano`）です。collectステップの本人子プロセスだけに渡し、公式のみの収集・restore・build・frontendには不要です。設定不備は明示エラーになり、高価なモデルへの自動切替はありません。
+
+AIは最大3回/run・30回/JST日、本文UTF-8 6,000 bytes・出力1,200 tokens・応答24,000 bytes・timeout 30秒に制限します。要求は原則60秒以上離し、途中runをまたぐ待機は保留します。429は少なくとも5分と`Retry-After`の長い方を待ち、401/403はAIだけを永続停止します。Yahoo/Xの共有cooldown・予算とは別です。本文hash・モデル/プロンプト/schema版・検証contextを含むprivate cacheへ通信前に予約し、同じ入力の成功・拒否・失敗・中断を自動で再課金しません。障害後の再試行は運用者が該当cacheと停止状態を確認した上で行う明示的な復旧で、自動解除はありません。
+
+**既知の旧`no_event`や編集本文は自動で直りません。**本文全文を保存していないため、既知IDには`azure_saved_body_required`というprivateの確認理由を残し、AIのための追加GETは行いません。既に手元に保存されているpayloadがある場合だけ、同じCLIへ`--analysis-backend azure --analyze-saved <saved.json> --date YYYY-MM-DD`を渡せます。入力は`{"既知の投稿ID": {元の個別投稿payload}}`形式です。この経路はYahoo/X clientを作らず、既存のpendingまたは確認済みID・identity binding・対象日の元予定との照合を通します。未確認のIDを追加するインポート機能ではありません。AI失敗後のpendingも本文を再GETせず残します。
+
+編集・再解析の成功時には旧抽出結果をprivate履歴へ残し、同じIDの現行案内を更新します。並び順は**元の投稿日時とID**のままなので、古い投稿を再解析した時刻で新しい欠勤・復帰を上書きしません。privateの`azureAnalysis`（cache・AI予算・停止状態・確認理由・旧抽出履歴）は公開projectionから除外します。全文・健康理由・APIキーは新たに保存しません。本人案内を公式実績・CSV・統計学習へ混ぜる処理や、本人定期枠・新しい表示UIは追加しません。
+
 **有効化は段階的に行います。**先に互換コードと手動の本人/両方モードを公開し、既存stateを壊さない少量のmain実行と本番表示を確認してから定期枠を有効にします。この段階では公式の1日8回cronを維持し、本人の定期枠はまだ追加していません。
 
 ### GitHub Actionsから収集・公開する構成

@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -37,6 +38,9 @@ SPEC = importlib.util.spec_from_file_location('personal_official_helpers',
                                               ROOT / 'tools' / 'collect-shifts.py')
 official = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(official)
+AZURE_SPEC = importlib.util.spec_from_file_location('personal_azure', ROOT / 'tools' / 'personal-azure.py')
+azure = importlib.util.module_from_spec(AZURE_SPEC)
+AZURE_SPEC.loader.exec_module(azure)
 UTC, JST = official.UTC, official.JST
 Failure = official.FetchFailure
 
@@ -56,6 +60,7 @@ KINDS = {'placement', 'absence', 'late', 'return', 'uncertain'}
 PUBLIC_FIELDS = {'schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt', 'posts', 'lastRun'}
 PRIVATE_FIELDS = {'pending', 'resolved', 'budgets', 'paused', 'identityBindings',
                   'originalTargets', 'lastRequests'}
+OPTIONAL_PRIVATE_FIELDS = {'azureAnalysis'}
 DENIAL = re.compile(
     r'captcha|access denied|アクセス.{0,12}(?:拒否|制限)|ロボットではない|'
     r'unusual traffic|verify you are human|permission denied|forbidden|unauthorized|'
@@ -88,8 +93,14 @@ def empty_state():
 
 
 def public_state(state):
-    return {key: copy.deepcopy(state[key]) for key in (
+    result = {key: copy.deepcopy(state[key]) for key in (
         'schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt', 'posts', 'lastRun')}
+    if 'failures' in result['lastRun']:
+        result['lastRun']['failures'] = [
+            {'id': item['id'], 'reason': 'analysis_pending'}
+            if item['reason'].startswith('azure_') and 'id' in item else item
+            for item in result['lastRun']['failures']]
+    return result
 
 
 def empty_snapshot():
@@ -108,7 +119,7 @@ def load_snapshot(path):
         value = json.loads(path.read_text(encoding='utf-8-sig'))
         if not isinstance(value, dict):
             raise ValueError
-        private = bool(PRIVATE_FIELDS.intersection(value))
+        private = bool((PRIVATE_FIELDS | OPTIONAL_PRIVATE_FIELDS).intersection(value))
     except (ValueError, TypeError):
         raise ValueError('invalid_personal_state') from None
     return read_state(path, private=private)
@@ -192,7 +203,13 @@ def valid_post(post):
     if observed < created or abs((official.snowflake_time(tid) - created).total_seconds()) >= 2:
         raise ValueError('invalid_personal_post')
     for event in post['events']:
-        if (set(event) - {'shift', 'kind', 'storeId', 'time', 'excerpt'}
+        valid_event(event)
+
+
+def valid_event(event):
+    if (not isinstance(event, dict)
+                or not {'shift', 'kind', 'excerpt'} <= set(event)
+                or set(event) - {'shift', 'kind', 'storeId', 'time', 'excerpt'}
                 or event['shift'] not in ('昼', '夜') or event['kind'] not in KINDS
                 or not isinstance(event['excerpt'], str)
                 or not 1 <= len(event['excerpt']) <= 160
@@ -203,7 +220,14 @@ def valid_post(post):
                 or (event['kind'] == 'absence' and 'storeId' in event)
                 or ('time' in event and not re.fullmatch(
                     r'(?:[01]\d|2[0-3]):[0-5]\d', event['time']))):
-            raise ValueError('invalid_personal_event')
+        raise ValueError('invalid_personal_event')
+
+
+def azure_context():
+    return SimpleNamespace(
+        official=official, require_keys=require_keys, valid_event=valid_event,
+        valid_post=valid_post, validate_failure=validate_failure, stamp=stamp,
+        calendar_day=calendar_day, DATE_WORD=DATE_WORD, third_party_subject=third_party_subject)
 
 
 def read_state(path, private=True):
@@ -211,7 +235,8 @@ def read_state(path, private=True):
         return empty_state()
     try:
         value = json.loads(path.read_text(encoding='utf-8-sig'))
-        require_keys(value, PUBLIC_FIELDS | PRIVATE_FIELDS if private else PUBLIC_FIELDS)
+        require_keys(value, PUBLIC_FIELDS | PRIVATE_FIELDS if private else PUBLIC_FIELDS,
+                     OPTIONAL_PRIVATE_FIELDS if private else ())
         if (type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
                 or value['complete'] is not False or value['lastRun']['status'] not in STATUSES
                 or not isinstance(value['posts'], list)):
@@ -227,6 +252,8 @@ def read_state(path, private=True):
                 raise ValueError
             ids.add(post['id'])
         if private:
+            if 'azureAnalysis' in value:
+                azure.validate_state(value['azureAnalysis'], azure_context())
             for key in ('pending', 'resolved', 'budgets', 'paused', 'identityBindings',
                         'originalTargets', 'lastRequests'):
                 if key not in value:
@@ -321,7 +348,12 @@ def read_state(path, private=True):
 def merge_seed(state, seed):
     have = {post['id'] for post in state['posts']}
     resolved = {item['id'] for item in state['resolved']}
+    removed_by_analysis = (
+        {item['id'] for item in state['resolved'] if item['reason'] == 'no_event'}
+        & {post['id'] for post in state.get('azureAnalysis', {}).get('history', [])})
     for post in seed['posts']:
+        if post['id'] in removed_by_analysis:
+            continue
         binding = state['identityBindings'].get(post['name'])
         identity = {'authorId': post['authorId'],
                     'authorScreenName': post['authorScreenName']}
@@ -338,7 +370,8 @@ def merge_seed(state, seed):
                 'date': post['date'], 'reason': 'seed_confirmed',
                 'resolvedAt': post['observedAt']})
             resolved.add(post['id'])
-    state['pending'] = [item for item in state['pending'] if item['id'] not in resolved]
+    state['pending'] = [item for item in state['pending']
+                        if item['id'] not in resolved or item['reason'].startswith('azure_')]
     for day, floor in PILOT_BUDGETS.items():
         budget = state['budgets'].setdefault(day, {'searches': 0, 'posts': 0})
         for kind, count in floor.items():
@@ -377,7 +410,9 @@ process.stdout.write(vm.runInContext('JSON.stringify(window.'+input.key+')',
     try:
         result = subprocess.run(
             [executable, '-e', script], input=json.dumps({'key': key, 'text': text}),
-            capture_output=True, encoding='utf-8', timeout=8, check=True, **options)
+            capture_output=True, encoding='utf-8', timeout=8, check=True,
+            env={key: value for key, value in os.environ.items()
+                 if not key.upper().startswith('AZURE_OPENAI_')}, **options)
         return json.loads(result.stdout)
     except (OSError, ValueError, subprocess.SubprocessError):
         raise ValueError('unreadable_schedule_data') from None
@@ -732,7 +767,7 @@ def parse_events(text, created, date, shifts, name='', roster=()):
                     else 'no_event' if saw_scope else 'explicit_date_required')
 
 
-def validate_post(candidate, payload, target, now, binding=None, roster=()):
+def validate_post(candidate, payload, target, now, binding=None, roster=(), analyzer=None):
     tid, uid = candidate['id'], candidate['authorId']
     if not isinstance(payload, dict) or not official.matching_id(payload, tid):
         raise Failure('response_id_mismatch')
@@ -763,7 +798,12 @@ def validate_post(candidate, payload, target, now, binding=None, roster=()):
     text = payload.get('text')
     if not isinstance(text, str):
         raise Failure('missing_post_text')
-    events, reason = parse_events(text, created, date, target['shifts'], target['name'], roster)
+    if analyzer is None:
+        events, reason = parse_events(text, created, date, target['shifts'], target['name'], roster)
+    else:
+        events, reason = analyzer.parse(
+            text, created, date, target['shifts'], target['name'], roster,
+            post_id=tid, author_id=uid)
     if not events:
         return None, reason
     return {
@@ -953,16 +993,48 @@ class PersonalClient(official.PublicClient):
             raise Failure('invalid_post_json') from None
 
 
+def saved_candidates(state, payloads, date):
+    """Only explicit, already known IDs; payload metadata cannot create a target."""
+    known = {item['id']: item for item in state['resolved']}
+    known.update({item['id']: item for item in state['posts']})
+    known.update({item['id']: item for item in state['pending']})
+    candidates = []
+    for tid in payloads:
+        item = known.get(tid)
+        if item is None or item['date'] != date.isoformat():
+            raise ValueError('unknown_saved_post')
+        binding = state['identityBindings'].get(item['name'])
+        if 'searchCreatedAt' in item:
+            candidates.append(copy.deepcopy(item))
+        elif binding:
+            candidates.append({
+                'id': tid, 'url': item['url'], 'name': item['name'], 'date': item['date'],
+                'authorId': binding['authorId'], 'authorScreenName': binding['authorScreenName'],
+                'searchCreatedAt': item.get('createdAt') or stamp(official.snowflake_time(tid))})
+        else:
+            raise ValueError('saved_post_identity_required')
+    return candidates
+
+
 def collect(state, durable, client, targets, date, max_searches, max_posts,
-            clock=official.utc_now, roster=()):
+            clock=official.utc_now, roster=(), analyzer=None, saved_payloads=None):
     state['checkedAt'] = stamp(clock())
     sources, failures, new_posts = [], [], []
     resolved = {item['id'] for item in state['resolved']} | {post['id'] for post in state['posts']}
-    pending = {item['id']: item for item in state['pending'] if item['id'] not in resolved}
+    pending = {item['id']: item for item in state['pending']
+               if item['id'] not in resolved or item['reason'].startswith('azure_')}
     active = active_targets(targets, date, clock())
+    if saved_payloads is not None:
+        active = targets
+        for candidate in saved_candidates(state, saved_payloads, date):
+            if candidate['name'] not in targets:
+                raise ValueError('saved_post_target_required')
+            pending.setdefault(candidate['id'], {
+                **candidate, 'reason': 'azure_saved_body_required',
+                'firstSeenAt': stamp(clock()), 'lastAttemptAt': None, 'attempts': 0})
     skipped = 0
     early_status = 'paused' if state['paused'] else 'outside-window' if not active else None
-    for url in search_urls(date)[:max_searches] if not early_status else ():
+    for url in search_urls(date)[:max_searches] if not early_status and saved_payloads is None else ():
         try:
             candidates = client.search(url, active_targets(targets, date, clock()),
                                        date, clock(), state['identityBindings'])
@@ -987,11 +1059,19 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
     for item in sorted(pending.values(), key=lambda item: (item.get('lastAttemptAt') or '', -int(item['id']))):
         if item['date'] != date.isoformat():
             continue
-        target = active_targets(targets, date, clock()).get(item['name'])
+        if saved_payloads is not None and item['id'] not in saved_payloads:
+            continue
+        target = (targets if saved_payloads is not None else active_targets(targets, date, clock())).get(item['name'])
         if target is None or target['handle'] != item['authorScreenName']:
+            continue
+        if saved_payloads is None and item['reason'].startswith('azure_'):
+            failures.append({'id': item['id'], 'reason': item['reason']})
+            deferred += 1
             continue
         if attempted >= max_posts or state['paused']:
             item['reason'] = 'paused' if state['paused'] else 'post_limit'
+            if saved_payloads is not None:
+                item['reason'] = 'azure_saved_' + item['reason']
             deferred += 1
             continue
         attempted += 1
@@ -1001,26 +1081,44 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         durable.save()
         try:
             durable.post_target = item['name']
-            value = client.fetch_post(item['id'])
+            value = saved_payloads[item['id']] if saved_payloads is not None else client.fetch_post(item['id'])
+            if analyzer is not None:
+                item['reason'] = 'azure_saved_body_required'
+                state['pending'] = list(pending.values())
+                durable.save()
             post, reason = validate_post(
-                item, value, target, clock(), state['identityBindings'].get(item['name']), roster)
+                item, value, target, clock(), state['identityBindings'].get(item['name']), roster, analyzer)
+            if analyzer is not None and reason == 'quoted_or_reply':
+                raise azure.AnalysisFailure('azure_ungrounded')
             state['identityBindings'][item['name']] = {
                 'authorId': item['authorId'], 'authorScreenName': item['authorScreenName'],
                 'verifiedAt': stamp(clock())}
+            state['resolved'] = [entry for entry in state['resolved'] if entry['id'] != item['id']]
             state['resolved'].append({
                 'id': item['id'], 'url': item['url'], 'name': item['name'], 'date': item['date'],
                 'reason': reason, 'resolvedAt': stamp(clock())})
             pending.pop(item['id'])
+            previous = next((entry for entry in state['posts'] if entry['id'] == item['id']), None)
+            if analyzer is not None and previous:
+                if post and previous['events'] == post['events']:
+                    post = previous
+                else:
+                    analyzer.state['history'].append(copy.deepcopy(previous))
+                state['posts'] = [entry for entry in state['posts'] if entry['id'] != item['id']]
             if post:
                 state['posts'].append(post)
-                new_posts.append(post)
+                if previous != post:
+                    new_posts.append(post)
                 if any(event['kind'] == 'uncertain' for event in post['events']):
                     failures.append({'id': item['id'], 'reason': 'uncertain_guidance'})
             elif reason in ('unresolved_shift', 'explicit_date_required'):
                 failures.append({'id': item['id'], 'reason': reason})
-        except Failure as exc:
-            item.update(exc.facts())
-            failures.append({'id': item['id'], **exc.facts()})
+        except (Failure, azure.AnalysisFailure) as exc:
+            facts = exc.facts()
+            if saved_payloads is not None and not facts['reason'].startswith('azure_'):
+                facts['reason'] = 'azure_saved_' + facts['reason']
+            item.update(facts)
+            failures.append({'id': item['id'], **facts})
             if exc.reason in ('budget_exhausted', 'shared_host_cooldown', 'outside_window'):
                 deferred += 1
         finally:
@@ -1078,15 +1176,23 @@ def argument_parser():
     parser.add_argument('--max-searches', type=int, default=2, help='maximum 1..3 pages/run')
     parser.add_argument('--max-posts', type=int, default=3, help='maximum 1..3 new individual GETs/run')
     parser.add_argument('--dry-run', action='store_true', help='persist private safety/facts, do not publish')
+    parser.add_argument('--analysis-backend', choices=('rules', 'azure'), default='rules')
+    parser.add_argument('--analyze-saved', type=Path,
+                        help='Azure only: known ID -> saved payload JSON; no Yahoo/X requests')
     return parser
 
 
-def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalClient):
+def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalClient,
+        analyzer_factory=azure.AzureAnalyzer, environment=None):
     snapshot, http_state = args.snapshot.resolve(), args.http_state.resolve()
     publish = args.publish.resolve() if args.publish else None
     report_path = args.report.resolve() if args.report else None
     writes = [path for path in (snapshot, http_state, publish, report_path) if path]
     inputs = {path.resolve() for path in (args.schedule, args.insights, args.accounts)}
+    if args.analyze_saved:
+        if args.analysis_backend != 'azure':
+            raise ValueError('saved_analysis_requires_azure')
+        inputs.add(args.analyze_saved.resolve())
     if (len(set(writes)) != len(writes) or any(path.suffix != '.json' for path in writes)
             or any(path in inputs for path in writes)
             or snapshot == args.seed.resolve() or http_state == args.seed.resolve()
@@ -1116,9 +1222,25 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
         durable = DurableHttp(state, snapshot, http_state, date, targets,
                               args.max_searches, args.max_posts, clock, sleep)
         durable.preflight()
-        client = client_factory(durable)
+        analyzer = None
+        if args.analysis_backend == 'azure':
+            analyzer = analyzer_factory(state, durable.save, azure_context(),
+                                        os.environ if environment is None else environment,
+                                        clock=clock, sleep=sleep)
+            durable.save()
+        payloads = None
+        if args.analyze_saved:
+            if args.analyze_saved.stat().st_size > MAX_BODY:
+                raise ValueError('saved_posts_too_large')
+            payloads = azure.strict_json(args.analyze_saved.read_text(encoding='utf-8-sig'))
+            if (not isinstance(payloads, dict) or not payloads
+                    or any(not official.post_id(tid) or not isinstance(value, dict)
+                           for tid, value in payloads.items())):
+                raise ValueError('invalid_saved_posts')
+        client = client_factory(durable) if payloads is None else None
         report, code = collect(state, durable, client, targets, date,
-                               args.max_searches, args.max_posts, clock, schedule['roster'])
+                               args.max_searches, args.max_posts, clock, schedule['roster'],
+                               analyzer, payloads)
         report.update(dryRun=args.dry_run, published=False, exitCode=code)
         if publish and not args.dry_run:
             official.atomic_json(publish, public_state(state))
