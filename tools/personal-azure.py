@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 
 
-VERSION = 'personal-nano-v1-gpt-5.4-nano-2026-03-17'
+VERSION = 'personal-nano-v2-gpt-5.4-nano-2026-03-17'
 MAX_INPUT_BYTES = 6000
 MAX_OUTPUT_TOKENS = 1200
 MAX_RESPONSE_BYTES = 24000
@@ -36,10 +36,18 @@ allowed shifts only; daytime absence must not affect night. Breaks are neither
 absence nor return. Ignore third-party, quoted, hypothetical and past statements.
 Require today's explicit date or today wording. Never infer a shift from hours
 or an arrow between stores. Hiragana hiru/yoru and explicit 昼4/夜2 are allowed.
+Explicit shift labels take precedence over customary shift hours: an early
+start for an explicitly named night shift is still night, not late or absent.
+Read the author's store and explicit shift together across adjacent lines.
+Distinguish uncertain work claims from independent conversational asides.
+Uncertainty about an unrelated topic does not weaken an explicit work claim.
+Retain uncertainty and negation attached to a work claim, including a separate
+continuation line; do not shorten evidence to hide them.
 Unstated store/time must be null. time is only an explicit arrival time for
 late/return, never an inferred range boundary. For placement time must be null.
-Each evidence must be an exact short contiguous substring of the original body
-supporting that event's shift, status and store/time. Do not include health
+Each evidence must be an exact short contiguous substring of the original body,
+at most 160 characters; it may span adjacent lines when needed to support the
+event's explicit store and shift together. Do not include health
 reasons. Include only the claim, not explanations. If ambiguous, contradictory,
 retracted without a clear replacement, or unable to ground all events, return
 pending with no events. If there is no announcement return no_event with no
@@ -68,7 +76,19 @@ ABSENCE = r'お休み(?:します|です)?|おやすみ(?:します|です)?|欠
 LATE = r'遅刻(?:します|です)?|遅れ(?:ます|て|そう)|遅くなります'
 RETURN = r'復帰(?:します|しました|です)?|戻(?:ります|りました)|出勤再開|お給仕再開|出勤します|お給仕します'
 CORRECTION = r'訂正|撤回|取り消|取消|ではなく|じゃなく|でなく|間違い|勘違い'
-UNCLEAR = r'かもしれ|かも|未定|わからない|分からない|行けるか|なら|らしい|だそう|とのこと|によると'
+UNCLEAR = r'かもしれ|かも|未定|未確定|多分|たぶん|もしかしたら|わからない|分からない|行けるか|なら|らしい|だそう|とのこと|によると'
+NEGATED = (r'だった|でした|ではない|じゃない|ではありません|しません|いません|'
+           r'行きません|行かない|出ません|出ない|休みません|休まない|遅れません|'
+           r'戻りません|戻らない|(?:欠勤|お休み|遅刻|復帰|出勤|お給仕)しない')
+WORK_CUE = (r'[1-4]号店|(?:昼|夜)\s*[1-4]|出勤|お給仕|勤務|欠勤|遅刻|復帰|'
+            r'シフト|勤務先|配属|配置|ど(?:の|こ(?:の)?)店|'
+            r'(?:お)?店(?:舗)?(?:は|が|になる|か)|' + ABSENCE + '|' + LATE + '|' + RETURN)
+MODAL_CONTINUATION = (
+    r'(?:\s|今日|本日|当日|昼|夜|今夜|お昼|早め|まだ|多分|たぶん|でも|'
+    r'ですが|だけど|けれど|けど|予定|その|それ|そこ|そちら|こちら|これ|どちら|どっち|どこ|'
+    r'の|は|が|か|も|に|へ|を|で|と|です|でした|ます|ません|ない|する|した|し|'
+    r'なる|行く|行ける|行き|出る|出られる|いる|思う|思います|可能性|ある|あります|'
+    + UNCLEAR + '|' + NEGATED + r')+')
 HEX = re.compile(r'[0-9a-f]{64}\Z')
 
 
@@ -171,10 +191,56 @@ def precheck(text, date, name, roster, personal):
             or re.search(r'昨日|明日|明後日|あした|あす|きのう', body)
             or not (dates or re.search(r'今日|本日', body))
             or re.search(r'(^|\n)\s*(?:RT\s+@|@\w+|>|引用|転載)|[「」『』“”"]', body)
-            or personal.third_party_subject(subjects, name, roster)
-            or re.search(UNCLEAR, body)):
+            or personal.third_party_subject(subjects, name, roster)):
         raise AnalysisFailure('azure_ungrounded')
     return body
+
+
+def unsafe_proposition(body, start, end, shift, personal):
+    """Bind modality to work clauses, not unrelated prose elsewhere in the post."""
+    clauses = list(re.finditer(r'[^。\n\r、,;；！？!?→➡]+', body))
+
+    def continuation(fragment):
+        fragment = personal.DATE_WORD.sub('', fragment).strip()
+        fragment = ''.join(char for char in fragment
+                           if unicodedata.category(char)[0] in ('L', 'N') or char.isspace())
+        modal = re.search(UNCLEAR + '|' + NEGATED, fragment)
+        # Particles or decoration after a dangling hedge do not introduce a
+        # different topic. Require independent content before the modality.
+        return bool(re.fullmatch(MODAL_CONTINUATION, fragment) or modal and (
+            not fragment[:modal.start()].strip()
+            or re.fullmatch(MODAL_CONTINUATION, fragment[:modal.start()])))
+
+    def work_clause(fragment):
+        return bool(re.search(WORK_CUE, fragment) or
+                    (re.search(r'昼|夜', fragment) and continuation(fragment)))
+
+    def date_or_time(fragment):
+        fragment = personal.DATE_WORD.sub('', fragment)
+        return bool(re.fullmatch(r'[\s今日本日0-9:時分〜～~\-ー/()（）]*', fragment))
+
+    def relevant(clause):
+        mentioned = {value for value in ('昼', '夜') if value in clause[0]}
+        return (clause.start() < end and clause.end() > start
+                or work_clause(clause[0]) and (not mentioned or shift in mentioned))
+
+    for index, clause in enumerate(clauses):
+        if not re.search(UNCLEAR + '|' + NEGATED, clause[0]):
+            continue
+        if relevant(clause):
+            return True
+        if continuation(clause[0]):
+            # A dangling "maybe"/negation can qualify a claim across punctuation
+            # or newlines. Only a new independent clause ends that attachment.
+            for step in (-1, 1):
+                neighbor = index + step
+                while 0 <= neighbor < len(clauses) and (
+                        date_or_time(clauses[neighbor][0]) or
+                        continuation(clauses[neighbor][0]) and not work_clause(clauses[neighbor][0])):
+                    neighbor += step
+                if 0 <= neighbor < len(clauses) and relevant(clauses[neighbor]):
+                    return True
+    return False
 
 
 def grounded_events(result, text, date, shifts, name, roster, personal):
@@ -201,7 +267,7 @@ def grounded_events(result, text, date, shifts, name, roster, personal):
                 or store not in (None, 's1', 's2', 's3', 's4')
                 or not isinstance(evidence, str) or not 1 <= len(evidence) <= 160
                 or evidence not in text or not evidence.strip()
-                or re.search(r'[\r\n\u2028\u2029]', evidence)):
+                or re.search(r'[\u2028\u2029]', evidence)):
             raise AnalysisFailure('azure_ungrounded')
         support = normalized(evidence)
         position = normalized(text[:text.index(evidence)])
@@ -210,14 +276,15 @@ def grounded_events(result, text, date, shifts, name, roster, personal):
         mentioned = {s for s in ('昼', '夜') if s in support}
         all_day = (kind == 'absence' and not mentioned and not re.search(r'昼|夜', body)
                    and re.search(r'今日|本日|終日|全日|一日', support))
-        if (mentioned != {shift} and not all_day) or re.search(
-                r'だった|でした|ではない|じゃない|ではありません|しません|いません|'
-                r'行きません|行かない|出ません|出ない|休みません|休まない|遅れません|'
-                r'戻りません|戻らない|(?:欠勤|お休み|遅刻|復帰|出勤|お給仕)しない', predicate):
+        if (mentioned != {shift} and not all_day) or re.search(NEGATED, predicate):
             raise AnalysisFailure('azure_ungrounded')
         # A model cannot resurrect a withdrawn clause, even with a literal quote.
         corrections = list(re.finditer(CORRECTION, body))
         if corrections and (kind == 'absence' or len(position) < corrections[-1].end()):
+            raise AnalysisFailure('azure_ungrounded')
+        current_start = corrections[-1].end() if corrections else 0
+        if unsafe_proposition(body[current_start:], len(position) - current_start,
+                              len(position) + len(support) - current_start, shift, personal):
             raise AnalysisFailure('azure_ungrounded')
         if kind != 'placement' and re.search(r'休憩|昼休み|お昼休み', body):
             raise AnalysisFailure('azure_ungrounded')
@@ -245,7 +312,7 @@ def grounded_events(result, text, date, shifts, name, roster, personal):
             match = re.search(r'[1-4１-４]号店|(?:昼|夜|ひる|よる)\s*[1-4１-４]', evidence)
         else:
             match = re.search({'absence': ABSENCE, 'late': LATE, 'return': RETURN}[kind], evidence)
-        if match is None:
+        if match is None or re.search(r'[\r\n]', match[0]):
             raise AnalysisFailure('azure_ungrounded')
         event = {'shift': shift, 'kind': kind, 'excerpt': match[0]}
         if store is not None:

@@ -141,6 +141,103 @@ class AzureTests(base.Offline):
                 azure.grounded_events(result(event('夜', 'placement', evidence, 's2')),
                                       text, base.DATE, base.AMU['shifts'], 'あむ', (), personal.azure_context())
 
+    def test_independent_uncertain_asides_do_not_block_explicit_work_claims(self):
+        placements = result(event('昼', 'placement', '昼2号店', 's2'),
+                            event('夜', 'placement', '夜4号店', 's4'))
+        for aside in ('新刊を買うかも', '小物を変えるかもしれません', '夜に映画を見るかも'):
+            for separator in ('。', '\n', '、'):
+                for text in ('今日 昼2号店、夜4号店' + separator + aside,
+                             '今日 ' + aside + separator + '昼2号店、夜4号店'):
+                    with self.subTest(text=text):
+                        events, reason = azure.grounded_events(
+                            placements, text, base.DATE, base.AMU['shifts'], 'あむ', (),
+                            personal.azure_context())
+                        self.assertEqual(reason, 'events')
+                        self.assertEqual([e['storeId'] for e in events], ['s2', 's4'])
+        self.parse('今日 昼2号店、夜4号店。新刊を買うかも', placements)
+        sent = json.loads(self.opener.open.call_args.args[0].data)
+        self.assertIn('新刊を買うかも', json.loads(sent['messages'][1]['content'])['body'])
+
+    def test_work_uncertainty_cannot_be_trimmed_from_short_evidence(self):
+        for text in (
+                '今日 夜2号店かも', '今日 たぶん夜2号店', '今日 夜2号店は未定',
+                '今日 夜2号店になるかもしれません', '今日 多分、夜2号店',
+                '今日 夜2号店。まだ未定です', '今日 未定ですが、夜2号店',
+                '今日 夜2号店\nかもしれません', '今日 夜2号店\nまだ\n未定です',
+                '今日 夜2号店\nかもね', '今日 夜2号店\nかもです🥺',
+                '今日 夜2号店\n🤔まだ未定だよ', '今日 かもですね\n夜2号店',
+                '今日 もしかしたら\n夜2号店', '今日 夜2号店。そこに行くかも',
+                '今日 夜2号店。出勤は未定です', '今日 夜2号店。夜はどこになるか未定',
+                '今日 夜2号店。どの店になるか未定です'):
+            with self.subTest(text=text), self.assertRaises(azure.AnalysisFailure):
+                azure.grounded_events(result(event('夜', 'placement', '夜2号店', 's2')),
+                                      text, base.DATE, base.AMU['shifts'], 'あむ', (),
+                                      personal.azure_context())
+        for separator in ('', '\n', '、', '。'):
+            for hedge in ('かもしれません', 'かもです🥺', 'まだ未定だよ'):
+                text = '今日 昼はお休み' + separator + hedge
+                with self.subTest(text=text), self.assertRaises(azure.AnalysisFailure):
+                    azure.grounded_events(result(event('昼', 'absence', '昼はお休み')),
+                                          text, base.DATE, base.AMU['shifts'], 'あむ', (),
+                                          personal.azure_context())
+
+    def test_dangling_negation_and_prior_correction_are_still_rejected(self):
+        for text in ('今日 夜2号店\nには行きません', '今日 夜2号店。出ません',
+                     '今日 夜2号店、ではありません', '今日 夜2号店。そこには行かない'):
+            with self.subTest(text=text), self.assertRaises(azure.AnalysisFailure):
+                azure.grounded_events(result(event('夜', 'placement', '夜2号店', 's2')),
+                                      text, base.DATE, base.AMU['shifts'], 'あむ', (),
+                                      personal.azure_context())
+        for separator in ('\n', '。', '、'):
+            text = '今日 夜2号店かも' + separator + '訂正' + separator + '夜3号店です'
+            for store, evidence in (('s2', '夜2号店'), ('s3', '夜3号店です')):
+                with self.subTest(text=text, store=store):
+                    proposed = result(event('夜', 'placement', evidence, store))
+                    if store == 's2':
+                        with self.assertRaises(azure.AnalysisFailure):
+                            azure.grounded_events(proposed, text, base.DATE, base.AMU['shifts'],
+                                                  'あむ', (), personal.azure_context())
+                    else:
+                        events, _ = azure.grounded_events(proposed, text, base.DATE, base.AMU['shifts'],
+                                                          'あむ', (), personal.azure_context())
+                        self.assertEqual(events[0]['storeId'], 's3')
+
+    def test_adjacent_line_evidence_supports_explicit_early_night_not_inferred_hours(self):
+        evidence = '2号店\n15時〜21時\n早めの夜担当です'
+        text = '今日\n' + evidence + '\n新しい雑誌を読むかも'
+        post, _ = self.parse(text, result(event('夜', 'placement', evidence, 's2')))
+        self.assertEqual(post['events'], [{'shift': '夜', 'kind': 'placement',
+                                          'storeId': 's2', 'excerpt': '2号店'}])
+        for proposed in (event('昼', 'placement', evidence, 's2'),
+                         event('夜', 'late', evidence, 's2', '15:00'),
+                         event('夜', 'absence', evidence)):
+            with self.subTest(proposed=proposed), self.assertRaises(azure.AnalysisFailure):
+                azure.grounded_events(result(proposed), text, base.DATE, base.AMU['shifts'],
+                                      'あむ', (), personal.azure_context())
+        for text in ('今日\n2号店\n15時〜21時', '今日\n2号店\n早めの夜担当かもしれません'):
+            with self.subTest(text=text), self.assertRaises(azure.AnalysisFailure):
+                azure.grounded_events(result(event('夜', 'placement', text, 's2')),
+                                      text, base.DATE, base.AMU['shifts'], 'あむ', (),
+                                      personal.azure_context())
+
+    def test_v2_does_not_reuse_a_v1_negative_cache_but_retains_its_history(self):
+        text = '今日 夜2号店。新刊を買うかも'
+        with mock.patch.object(azure, 'VERSION', 'personal-nano-v1-gpt-5.4-nano-2026-03-17'):
+            old = self.make_analyzer()
+        with mock.patch.object(azure, 'precheck', side_effect=azure.AnalysisFailure('azure_ungrounded')):
+            with self.assertRaises(azure.AnalysisFailure):
+                self.parse(text, result(), analyzer=old)
+        self.opener.open.assert_not_called()
+        current = self.make_analyzer()
+        expected = result(event('夜', 'placement', '夜2号店', 's2'))
+        for _ in range(2):
+            post, _ = self.parse(text, expected, analyzer=current)
+            self.assertEqual(post['events'][0]['storeId'], 's2')
+        self.assertEqual(self.opener.open.call_count, 1)
+        self.assertEqual({entry['reason'] for entry in current.state['cache'].values()},
+                         {'azure_ungrounded', 'events'})
+        personal.read_state(self.snapshot)
+
     def test_all_day_absence_respects_original_shift_and_health_is_not_saved(self):
         post, _ = self.parse('今日は体調の事情で、今日は終日お休みします',
                             result(event('夜', 'absence', '今日は終日お休みします')),
