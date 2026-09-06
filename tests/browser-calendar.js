@@ -86,9 +86,50 @@ async function main() {
     let id = 0;
     const pending = new Map();
     const exceptions = [];
+    let widgetRequests = 0;
+    let widgetBlocked = false;
+    const mockWidget = `
+      window.__mockTweetCalls = {};
+      window.__mockTweetLoads = {};
+      window.twttr = {widgets: {createTweet: async (id, target, options) => {
+        window.__mockTweetCalls[id] = (window.__mockTweetCalls[id] || 0) + 1;
+        window.__mockTweetOptions = options;
+        const frame = document.createElement("iframe");
+        frame.dataset.postId = id;
+        frame.title = "Official post widget mock";
+        frame.style.minWidth = "550px";
+        frame.height = "170";
+        frame.srcdoc = "<p>Official widget fixture</p><button>Widget action</button>";
+        frame.addEventListener("load", () => {
+          window.__mockTweetLoads[id] = (window.__mockTweetLoads[id] || 0) + 1;
+          frame.contentDocument.querySelector("button").addEventListener("click", () => {
+            window.__mockWidgetClicks = (window.__mockWidgetClicks || 0) + 1;
+          });
+        });
+        target.append(frame);
+        return frame;
+      }}};
+      const widgets = window.twttr.widgets;
+      delete window.twttr.widgets;
+      window.twttr.ready = callback => setTimeout(() => {
+        window.twttr.widgets = widgets;
+        callback(window.twttr);
+      }, 0);
+    `;
     ws.onmessage = ({ data }) => {
       const message = JSON.parse(data);
       if (message.method === "Runtime.exceptionThrown") exceptions.push(message.params.exceptionDetails);
+      if (message.method === "Fetch.requestPaused") {
+        const { requestId, request } = message.params;
+        const widget = request.url === "https://platform.twitter.com/widgets.js";
+        if (widget) widgetRequests++;
+        const method = widget && !widgetBlocked ? "Fetch.fulfillRequest" : "Fetch.failRequest";
+        const params = widget && !widgetBlocked
+          ? { requestId, responseCode: 200, responseHeaders: [{ name: "Content-Type", value: "text/javascript" }],
+            body: Buffer.from(mockWidget).toString("base64") }
+          : { requestId, errorReason: "BlockedByClient" };
+        ws.send(JSON.stringify({ id: ++id, method, params }));
+      }
       if (!message.id) return;
       const request = pending.get(message.id);
       if (!request) return;
@@ -119,6 +160,13 @@ async function main() {
       assert.fail(`Browser condition timed out: ${expression}; exceptions=${JSON.stringify(exceptions)}; focus=${await evaluate('document.activeElement.outerHTML.slice(0, 400)')}`);
     };
     const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    const scrollShift = (shift) => evaluate(`(() => {
+      const section = document.querySelector("#dialog-" + ${JSON.stringify(shift)});
+      const content = document.querySelector("#day-dialog-content");
+      content.scrollTop = ${JSON.stringify(shift)} === "day" ? 0
+        : content.scrollTop + section.getBoundingClientRect().top - content.getBoundingClientRect().top;
+      section.focus({preventScroll:true});
+    })()`);
     const key = async (name, code, virtualKey, modifiers = 0) => {
       for (const type of ["keyDown", "keyUp"]) {
         await call("Input.dispatchKeyEvent", {
@@ -149,9 +197,10 @@ async function main() {
     await call("Page.enable");
     await call("Runtime.enable");
     await call("Network.enable");
-    await call("Network.setBlockedURLs", { urls: publicOrigin
-      ? ["https://x.com/*", "https://twitter.com/*", "https://cdn.syndication.twimg.com/*", "https://search.yahoo.co.jp/*"]
-      : ["https://*", "http://*.com/*", "http://*.jp/*"] });
+    await call("Fetch.enable", { patterns: publicOrigin
+      ? [{ urlPattern: "https://platform.twitter.com/*" }, { urlPattern: "https://x.com/*" },
+        { urlPattern: "https://*.twimg.com/*" }, { urlPattern: "https://twitter.com/*" }]
+      : [{ urlPattern: "https://*" }, { urlPattern: "http://*.com/*" }, { urlPattern: "http://*.jp/*" }] });
     await call("Emulation.setFocusEmulationEnabled", { enabled: true });
     await call("Emulation.setTimezoneOverride", { timezoneId: "America/Los_Angeles" });
     await call("Page.addScriptToEvaluateOnNewDocument", { source: `
@@ -167,6 +216,8 @@ async function main() {
     await wait('document.querySelectorAll(".day-button").length === 30');
     await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
     await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+    assert.equal(widgetRequests, 0, "no widget request before an explicit disclosure open");
+    assert.equal(await evaluate('document.querySelectorAll("script[src=\\"https://platform.twitter.com/widgets.js\\"]").length'), 0);
     await wait('[...document.querySelectorAll(".event-image")].every(img => img.complete && img.naturalWidth > 0)');
     const lightSelectors = ["html", "body", ".calendar-card", ".day-button", "#date-from", "#date-to"];
     const lightPalette = await palette(lightSelectors);
@@ -262,6 +313,10 @@ async function main() {
         const names = await evaluate(`(async () => {
           const date = ${JSON.stringify(date)};
           const snapshot = await (await fetch("data/observed-shifts.json")).json();
+          const byId = new Map(snapshot.posts.map(post => [post.id, post]));
+          const superseded = new Set(snapshot.posts.flatMap(post =>
+            (post.editTweetIds?.slice(0, -1) ?? []).filter(id => byId.get(id)?.date === post.date)));
+          const currentPosts = snapshot.posts.filter(post => !superseded.has(post.id));
           const insights = window.STORE_INSIGHTS;
           const aliases = new Map(Object.entries(insights.maidTendency)
             .filter(([, entry]) => entry?.alias).map(([name, entry]) => [entry.alias, name]));
@@ -275,16 +330,16 @@ async function main() {
             const record = insights.actualRoster[date]?.[shift];
             const expected = record
               ? Object.entries(record.stores).flatMap(([store, people]) => people.map(name => store+"|"+name))
-              : [...new Set(snapshot.posts.filter(post => post.date === date && post.shift === shift)
+              : [...new Set(currentPosts.filter(post => post.date === date && post.shift === shift)
                 .flatMap(post => post.names.map(name => post.storeId+"|"+displayName(post, name))))];
             const shown = [...section.querySelectorAll(".recorded-roster .maid-entry")]
-              .map(row => row.dataset.store+"|"+row.querySelector(".maid-name").textContent);
+              .map(row => row.dataset.store+"|"+row.dataset.name);
             const sourceLinks = [...section.querySelectorAll(".observation-details a")].map(a => a.href);
-            const expectedLinks = record ? [] : snapshot.posts
+            const expectedLinks = record ? [] : currentPosts
               .filter(post => post.date === date && post.shift === shift).map(post => post.url);
             const details = section.querySelector(".observation-details");
             const marked = [...section.querySelectorAll(".recorded-roster .maid-entry.is-trainee")]
-              .map(row => row.querySelector(".maid-name").textContent);
+              .map(row => row.dataset.name);
             const expectedMarked = shown.map(value => value.split("|")[1]).filter(name => record
               ? record.trainees?.includes(name)
               : insights.traineePeriods?.byName?.[name]?.from <= date && date <= insights.traineePeriods.byName[name].to);
@@ -299,14 +354,14 @@ async function main() {
             const category = name => kitchen.has(name) ? 3 : expectedMarked.includes(name) ? 1
               : rank.has(name) ? 0 : 2;
             const orders = [...section.querySelectorAll(".recorded-roster .maid-list")].map(list => {
-              const actual = [...list.querySelectorAll(".maid-name")].map(node => node.textContent);
+              const actual = [...list.querySelectorAll(".maid-name")].map(node => node.dataset.name);
               const expected = [...actual].sort((a, b) => category(a) - category(b) ||
                 ((category(a) === 0 || category(a) === 3) ? (rank.get(a) ?? rank.size) - (rank.get(b) ?? rank.size) : 0) ||
                 a.localeCompare(b, "ja"));
               return {actual, expected};
             });
             return { shown: shown.sort(), expected: expected.sort(), sources: sourceLinks.sort(),
-              expectedSources: expectedLinks.sort(), details: details.textContent,
+              expectedSources: expectedLinks.sort(), details: details?.textContent ?? "",
               marked: marked.sort(), expectedMarked: expectedMarked.sort(), orders };
           });
         })()`);
@@ -316,8 +371,7 @@ async function main() {
           assert.deepEqual(result.marked, result.expectedMarked, `${date} ${index}: trainees use only documented metadata`);
           for (const order of result.orders) assert.deepEqual(order.actual, order.expected,
             `${date} ${index}: store members use first-service rank, trainees and kitchen`);
-          if (curated) assert.ok(result.details.includes(`${date} ${index === 0 ? "昼" : "夜"}`) &&
-            result.details.includes("data/store-insights.js・actualRoster"));
+          if (curated) assert.equal(result.details, "", "no empty disclosure or technical curated-source prose");
         }
         if (date === "2026-09-05" && liveObserved > 0) {
           assert.equal(await evaluate('[...document.querySelectorAll("#dialog-day .recorded-roster .maid-entry")].filter(row => row.dataset.store === "s1" && row.querySelector(".maid-name").textContent === "つぼみ").length'), 1);
@@ -337,7 +391,7 @@ async function main() {
           await call("Emulation.setDeviceMetricsOverride", {
             width, height: width === 1280 ? 960 : 844, deviceScaleFactor: 1, mobile: width !== 1280
           });
-          await click("#jump-day");
+          await scrollShift("day");
           await evaluate('document.querySelector("#close-day-dialog").focus({preventScroll:true})');
           assert.ok(await noOverflow(), `${date} page fits ${width}px`);
           assert.ok(await evaluate('document.querySelector("#day-dialog-content").scrollWidth <= document.querySelector("#day-dialog-content").clientWidth'),
@@ -345,6 +399,14 @@ async function main() {
           assert.ok(await evaluate('[...document.querySelectorAll("#day-dialog .maid-entry")].every(row => row.getBoundingClientRect().right <= document.querySelector("#day-dialog-content").getBoundingClientRect().right)'));
           await capture(`popup-unified-${date}-${width === 1280 ? "desktop" : width === 390 ? "mobile" : "mobile-320"}`);
           await evaluate('document.querySelectorAll("#day-dialog .observation-details").forEach(details => { details.open = true; })');
+          if (!curated) {
+            await wait('[...document.querySelectorAll("#day-dialog .official-post")].every(node => node.dataset.embedState === "ready")');
+            assert.equal(widgetRequests, 1, "one widgets.js load for the document");
+            assert.equal(await evaluate('document.querySelectorAll("script[src=\\"https://platform.twitter.com/widgets.js\\"]").length'), 1);
+            assert.ok(await evaluate('Object.values(window.__mockTweetCalls).every(count => count === 1)'),
+              "one createTweet call per official post, including reopened details");
+            assert.ok(await evaluate('window.__mockTweetOptions.theme === "light" && window.__mockTweetOptions.dnt === true'));
+          }
           assert.ok(await evaluate('document.querySelector("#day-dialog-content").scrollWidth <= document.querySelector("#day-dialog-content").clientWidth'));
           if (width === 1280) await capture(`popup-unified-${date}-details`);
           await evaluate('document.querySelectorAll("#day-dialog .observation-details").forEach(details => { details.open = false; })');
@@ -389,15 +451,15 @@ async function main() {
       return;
     }
 
-    // Curated source details use the same stable disclosure/focus keys as observations.
+    // Curated records have no fabricated disclosure, and keep focused names on refresh.
     observationResponse = JSON.parse(fs.readFileSync(path.join(root, "data", "observed-shifts.json"), "utf8"));
     holdObservation = true;
     await click("#refresh-observations");
     await wait('document.querySelector("#observation-status").dataset.loaded === "false"');
     await click('[data-date="2026-09-03"]');
-    await click("#dialog-day .observation-details summary");
-    await evaluate('document.querySelector("#dialog-day .observation-details summary").focus({preventScroll:true})');
-    const curatedDetailsBefore = await evaluate('({open:document.querySelector("#dialog-day .observation-details").open,focus:document.activeElement.dataset.focusKey,scroll:document.querySelector("#day-dialog-content").scrollTop})');
+    assert.equal(await evaluate('document.querySelectorAll("#day-dialog .observation-details").length'), 0);
+    await evaluate('document.querySelector("#dialog-day .maid-name").focus({preventScroll:true})');
+    const curatedDetailsBefore = await evaluate('({focus:document.activeElement.dataset.focusKey,scroll:document.querySelector("#day-dialog-content").scrollTop})');
     observationResponse.checkedAt = "2026-09-05T15:00:01Z";
     holdObservation = false;
     assert.ok(heldObservationResponses.length > 0);
@@ -406,8 +468,8 @@ async function main() {
       res.end(JSON.stringify(observationResponse));
     }
     await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
-    assert.deepEqual(await evaluate('({open:document.querySelector("#dialog-day .observation-details").open,focus:document.activeElement.dataset.focusKey,scroll:document.querySelector("#day-dialog-content").scrollTop})'),
-      curatedDetailsBefore, "curated disclosures and summary focus survive async observation refresh");
+    assert.deepEqual(await evaluate('({focus:document.activeElement.dataset.focusKey,scroll:document.querySelector("#day-dialog-content").scrollTop})'),
+      curatedDetailsBefore, "curated name focus survives async observation refresh");
     await click("#close-day-dialog");
     await wait('!document.querySelector("#day-dialog").open');
 
@@ -417,7 +479,7 @@ async function main() {
     await evaluate(`delete window.STORE_INSIGHTS.actualRoster["2026-09-03"]["昼"];
       window.STORE_INSIGHTS.actualWithoutRoster["2026-09-03"] = {"昼": [...window.STORE_INSIGHTS.actual["2026-09-03"]["昼"]]};`);
     await click('[data-date="2026-09-03"]');
-    assert.ok(await evaluate('document.querySelector("#dialog-day .unmatched-roster").textContent.includes("店舗未定")'));
+    assert.ok(await evaluate('document.querySelector("#dialog-day .unmatched-roster").textContent.includes("未発表")'));
     assert.equal(await evaluate('document.querySelectorAll("#dialog-day .store-outlook, #dialog-day .maid-group-label").length'), 0);
     assert.equal(await evaluate('document.querySelectorAll("#day-dialog .shift-day [data-evidence=recorded]").length'), 0);
     assert.equal(await evaluate('[...document.querySelectorAll("#day-dialog .shift-day .maid-entry")].some(row => /にいた記録/.test(row.title))'), false);
@@ -442,14 +504,14 @@ async function main() {
       await wait('document.querySelector("#day-dialog").open');
       assert.ok(await noOverflow());
       assert.ok(await evaluate('document.querySelector("#day-dialog-content").scrollHeight > document.querySelector("#day-dialog-content").clientHeight'));
-      assert.ok(await evaluate('document.querySelector("#jump-night").getBoundingClientRect().bottom < innerHeight'));
-      await click("#jump-night");
+      assert.equal(await evaluate('document.querySelectorAll(".dialog-shift-nav, #jump-day, #jump-night").length'), 0);
+      await scrollShift("night");
       assert.equal(await evaluate('document.activeElement.id'), "dialog-night");
       assert.ok(await evaluate('document.querySelector("#day-dialog-content").scrollTop > 0'));
       assert.ok(await evaluate('document.querySelector("#close-day-dialog").getBoundingClientRect().top >= 0'));
       assert.ok(await evaluate('document.querySelector("#day-dialog .shift-night").getBoundingClientRect().bottom <= innerHeight'));
       await capture(`popup-night-mobile-${width}`);
-      await click("#jump-day");
+      await scrollShift("day");
       assert.equal(await evaluate('document.activeElement.id'), "dialog-day");
       assert.equal(await evaluate('document.querySelector("#day-dialog-content").scrollTop'), 0);
       await capture(`popup-mobile-${width}`);
@@ -516,8 +578,8 @@ async function main() {
     assert.ok(await evaluate('document.querySelector("#day-dialog .observation-details").open === false'));
     assert.ok(await evaluate('!document.querySelector("#day-dialog").textContent.includes("部分観測")'));
     assert.equal(await evaluate('document.querySelectorAll("#day-dialog .shift-night [data-evidence=observed]").length'), 0);
-    assert.ok(await evaluate('document.querySelector("#day-dialog .shift-day").textContent.includes("店舗未定")'));
-    assert.ok(await evaluate('document.querySelector("#dialog-night .unmatched-roster").textContent.includes("店舗未定")'));
+    assert.ok(await evaluate('document.querySelector("#day-dialog .shift-day").textContent.includes("未発表")'));
+    assert.ok(await evaluate('document.querySelector("#dialog-night .unmatched-roster").textContent.includes("未発表")'));
     assert.ok(await evaluate('document.querySelectorAll("#day-dialog .shift-day [data-evidence=scheduled]").length > 0'));
     assert.equal(await evaluate('document.querySelectorAll("#day-dialog .shift-day [data-evidence=recorded]").length'), 0);
     const assertDailyUnknown = async (observedByShift) => {
@@ -527,7 +589,7 @@ async function main() {
         const planned = window.SCHEDULE_DATA.schedule["2026-09-05"]?.[shift] ?? [];
         const expected = planned.map(entry => entry.name).filter(name => !confirmed.includes(name)).sort();
         const frames = [...section.querySelectorAll(".unmatched-roster")];
-        const names = frames.flatMap(frame => [...frame.querySelectorAll(".maid-name")].map(node => node.textContent));
+        const names = frames.flatMap(frame => [...frame.querySelectorAll(".maid-name")].map(node => node.dataset.name));
         const styles = frames.map(frame => {
           const style = getComputedStyle(frame);
           return {width:style.borderTopWidth,style:style.borderTopStyle,color:style.borderTopColor,
@@ -535,7 +597,7 @@ async function main() {
             padding:style.paddingTop};
         });
         return {expected, names:names.sort(), frames:frames.length, styles,
-          placed:[...section.querySelectorAll(".recorded-roster .maid-name")].map(node => node.textContent).sort(),
+          placed:[...section.querySelectorAll(".recorded-roster .maid-name")].map(node => node.dataset.name).sort(),
           guesses:section.querySelectorAll(".store-outlook, .store-status-badge, .maid-store-chip, .is-trainee-guess").length,
           unknownStores:frames.flatMap(frame => [...frame.querySelectorAll("[data-store]")]).length};
       })`);
@@ -561,7 +623,7 @@ async function main() {
         await call("Emulation.setDeviceMetricsOverride", {
           width, height: width === 1280 ? 960 : 844, deviceScaleFactor: 1, mobile: width !== 1280
         });
-        await click("#jump-day");
+        await scrollShift("day");
         await evaluate('document.querySelector("#close-day-dialog").focus({preventScroll:true})');
         assert.ok(await noOverflow());
         assert.ok(await evaluate('document.querySelector("#day-dialog-content").scrollWidth <= document.querySelector("#day-dialog-content").clientWidth'));
@@ -604,7 +666,7 @@ async function main() {
     await click("#refresh-observations");
     await wait('document.querySelector("#observation-status").dataset.loaded === "false"');
     await click('[data-date="2026-09-05"]');
-    await click("#jump-night");
+    await scrollShift("night");
     await evaluate('document.querySelector("#dialog-night .maid-name[href]").focus({preventScroll:true})');
     const activeBeforeRefresh = await evaluate('({focus:document.activeElement.dataset.focusKey,scroll:document.querySelector("#day-dialog-content").scrollTop,title:document.querySelector("#day-dialog-title").textContent})');
     observationResponse.checkedAt = "2026-09-05T15:01:00Z";
@@ -699,16 +761,22 @@ async function main() {
     const todayNames = await evaluate(`["#dialog-day","#dialog-night"].map(selector => {
       const section=document.querySelector(selector);
       return [...section.querySelectorAll(".maid-entry")].map(row => ({
-        name:row.querySelector(".maid-name").textContent,store:row.dataset.store || null,
-        evidence:row.dataset.evidence,title:row.title
+        name:row.dataset.name,store:row.dataset.store || null,
+        evidence:row.dataset.evidence,title:row.title,
+        href:row.querySelector(".maid-name").getAttribute("href"),
+        rel:row.querySelector(".maid-name").getAttribute("rel")
       }));
     })`);
     const amuNight = todayNames[1].filter(row => row.name === "あむ");
     assert.equal(amuNight.length, 1);
     assert.equal(amuNight[0].store, "s2");
     assert.equal(amuNight[0].evidence, "personal");
-    assert.match(amuNight[0].title, /本人.*勤務実績ではありません/);
-    assert.equal(todayNames[1].find(row => row.name === "ららこ").store, null);
+    assert.equal(amuNight[0].href, personalSeed.posts[0].url);
+    assert.equal(amuNight[0].rel, "noopener noreferrer");
+    assert.match(amuNight[0].title, /お給仕予定/);
+    assert.doesNotMatch(amuNight[0].title, /本人|実績/);
+    assert.equal(todayNames[1].find(row => row.name === "ららこ").store, "s2");
+    assert.equal(todayNames[1].find(row => row.name === "ららこ").href, personalSeed.posts[1].url);
     assert.ok(todayNames.every(rows => new Set(rows.map(row => row.name)).size === rows.length));
     if (observationResponse.posts.some(post => post.date === "2026-09-06" && post.shift === "昼")) {
       assert.equal(todayNames[0].filter(row => row.name === "あむ").length, 1);
@@ -716,10 +784,10 @@ async function main() {
     }
     assert.equal(await evaluate('document.querySelectorAll("#dialog-night .observation-details").length'), 0,
       "a personal-only placement must not acquire a collection-source heading");
-    assert.ok(await evaluate('[...document.querySelectorAll("#day-dialog .personal-details")].every(details => !details.open)'));
-    assert.ok(await evaluate('[...document.querySelectorAll("#day-dialog .personal-source-link")].every(link => !link.title.includes("公式") && link.title.includes("本人ポスト"))'));
+    assert.equal(await evaluate('document.querySelectorAll("#day-dialog .personal-details, #day-dialog .personal-source-link").length'), 0);
+    assert.doesNotMatch(await evaluate('document.querySelector("#day-dialog").textContent'), /本人ポスト|本人案内|本人の当日案内/);
     await captureDailyFrame("popup-personal-2026-09-06");
-    await click("#jump-night");
+    await scrollShift("night");
     await capture("popup-personal-night-mobile-320");
 
     holdPersonal = true;
@@ -729,10 +797,9 @@ async function main() {
     assert.equal(await evaluate('document.querySelector("#observation-status").dataset.loaded'), "true",
       "personal loading must not reset official readiness");
     await click('[data-date="2026-09-06"]');
-    await click("#jump-night");
-    await click("#dialog-night .personal-details summary");
-    await evaluate('document.querySelector("#dialog-night .personal-details summary").focus({preventScroll:true})');
-    const interactionBefore = await evaluate('({open:document.querySelector("#dialog-night .personal-details").open,key:document.activeElement.dataset.focusKey,scroll:document.querySelector("#day-dialog-content").scrollTop})');
+    await scrollShift("night");
+    await evaluate('document.querySelector("#dialog-night .maid-name[data-name=\\"あむ\\"]").focus({preventScroll:true})');
+    const interactionBefore = await evaluate('({key:document.activeElement.dataset.focusKey,scroll:document.querySelector("#day-dialog-content").scrollTop})');
     personalResponse.checkedAt = "2026-09-06T13:01:00+09:00";
     holdPersonal = false;
     assert.ok(heldPersonalResponses.length > 0);
@@ -741,8 +808,8 @@ async function main() {
       res.end(JSON.stringify(personalResponse));
     }
     await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
-    assert.deepEqual(await evaluate('({open:document.querySelector("#dialog-night .personal-details").open,key:document.activeElement.dataset.focusKey,scroll:document.querySelector("#day-dialog-content").scrollTop})'),
-      interactionBefore, "personal refresh must preserve its expanded summary, focus and scroll");
+    assert.deepEqual(await evaluate('({key:document.activeElement.dataset.focusKey,scroll:document.querySelector("#day-dialog-content").scrollTop})'),
+      interactionBefore, "personal refresh must preserve focused person and scroll");
     const originalOfficial = observationResponse;
     const collectionPost = (shift, storeId, names, id) => ({
       id, url: `https://x.com/akibazettai/status/${id}`, authorId: "822429861218131969",
@@ -759,24 +826,24 @@ async function main() {
     assert.equal(await evaluate('document.querySelectorAll("#dialog-day [data-evidence=observed]").length'), 2);
     assert.equal(await evaluate('document.querySelectorAll("#dialog-day [data-evidence=personal]").length'), 0,
       "matching personal and collection sources share one person row");
+    assert.equal(await evaluate('document.querySelector("#dialog-day .maid-name[data-name=\\"あむ\\"]").getAttribute("href")'), personalSeed.posts[0].url);
     assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=pending]").length'), 1);
-    assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=personal], #dialog-night [data-evidence=observed]").length'), 0,
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-night .maid-entry[data-name=\\"あむ\\"][data-evidence=personal], #dialog-night [data-evidence=observed]").length'), 0,
       "contradictory sources cannot settle the person's store");
-    assert.ok(await evaluate('document.querySelector("#dialog-night .personal-details").open'));
     assert.equal(await evaluate('document.activeElement.dataset.focusKey'), interactionBefore.key,
-      "official refresh also preserves the focused personal disclosure");
+      "official refresh also preserves the focused person");
     observationResponse = originalOfficial;
     await click("#refresh-observations");
     await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
-    assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=personal]").length'), 1);
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=personal]").length'), 2);
     await click("#close-day-dialog");
     for (const code of [404, 503]) {
       personalFailure = code;
       await click("#refresh-personal");
       await wait(`document.querySelector("#personal-status").textContent.includes("HTTP ${code}")`);
       await click('[data-date="2026-09-06"]');
-      assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=personal]").length'), 1);
-      assert.deepEqual(await evaluate('[...document.querySelectorAll("#dialog-day [data-evidence=observed] .maid-name")].map(row=>row.textContent).sort()'),
+      assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=personal]").length'), 2);
+      assert.deepEqual(await evaluate('[...document.querySelectorAll("#dialog-day [data-evidence=observed] .maid-name")].map(row=>row.dataset.name).sort()'),
         todayNames[0].filter(row => row.evidence === "observed").map(row => row.name).sort());
       await click("#close-day-dialog");
     }
@@ -785,7 +852,7 @@ async function main() {
     await click("#refresh-personal");
     await wait('document.querySelector("#personal-status").dataset.error === "true" && !document.querySelector("#personal-status").textContent.includes("HTTP")');
     await click('[data-date="2026-09-06"]');
-    assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=personal]").length'), 1);
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=personal]").length'), 2);
     await click("#close-day-dialog");
     personalResponse = JSON.parse(JSON.stringify(personalSeed));
     personalResponse.lastRun.status = "budget-exhausted";
@@ -793,8 +860,8 @@ async function main() {
     await wait('document.querySelector("#personal-status").textContent.includes("取得予算待ち")');
     await setMode("maid");
     const personalStops = await evaluate('[...document.querySelectorAll(".maid-plan-stop[data-date=\\"2026-09-06\\"][data-evidence=personal]")].map(row => ({text:row.textContent,title:row.title,rate:row.querySelector(".maid-plan-rate")?.textContent}))');
-    assert.ok(personalStops.some(row => row.text.includes("2号店") && row.text.includes("本人")));
-    assert.ok(personalStops.every(row => !row.rate && row.title.includes("勤務実績ではありません") && !row.title.includes("にいた記録")));
+    assert.ok(personalStops.some(row => row.text.includes("2号店") && row.text.includes("お給仕予定")));
+    assert.ok(personalStops.every(row => !row.rate && row.title.includes("お給仕予定") && !/本人|にいた記録|勤務実績/.test(row.title)));
     await evaluate(`document.querySelector("#date-from").value="2026-09-07";
       document.querySelector("#date-to").value="2026-09-08";
       document.querySelector("#date-from").dispatchEvent(new Event("change"));`);
@@ -813,7 +880,7 @@ async function main() {
     await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
     await click('[data-date="2026-09-06"]');
     assert.equal(await evaluate('[...document.querySelectorAll("#dialog-night .maid-name")].some(row => row.textContent === "あむ")'), false);
-    assert.ok(await evaluate('document.querySelector("#dialog-night .personal-details").textContent.includes("あむ：取消の案内")'));
+    assert.ok(await evaluate('[...document.querySelectorAll("#dialog-night .shift-change")].some(node => node.textContent.includes("あむ：取消"))'));
     assert.equal(await evaluate('document.querySelectorAll("#day-dialog .store-outlook, #day-dialog .is-trainee-guess").length'), 0);
     await click("#close-day-dialog");
     personalResponse.posts.push(personalChange("return", 2));
@@ -821,15 +888,280 @@ async function main() {
     await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
     await click('[data-date="2026-09-06"]');
     assert.ok(await evaluate('[...document.querySelectorAll("#dialog-night .unmatched-roster .maid-name")].some(row => row.textContent === "あむ")'));
-    assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=personal]").length'), 0);
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-night .maid-entry[data-name=\\"あむ\\"][data-evidence=personal]").length'), 0);
     await click("#close-day-dialog");
     personalResponse.posts.push(personalChange("return", 3, "s4"));
     await click("#refresh-personal");
     await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
     await click('[data-date="2026-09-06"]');
-    assert.equal(await evaluate('document.querySelector("#dialog-night [data-evidence=personal]").dataset.store'), "s4");
+    assert.equal(await evaluate('document.querySelector("#dialog-night .maid-entry[data-name=\\"あむ\\"][data-evidence=personal]").dataset.store'), "s4");
+    assert.equal(await evaluate('document.querySelector("#dialog-night .maid-name[data-name=\\"あむ\\"]").getAttribute("href")'),
+      personalChange("return", 3, "s4").url, "the latest explicit return owns the quiet name link");
     await click("#close-day-dialog");
     assert.equal(await evaluate('JSON.stringify([window.SCHEDULE_DATA.schedule,window.STORE_INSIGHTS.actual,window.STORE_INSIGHTS.actualRoster])'), sourceBaseline);
+
+    // Three-post runtime fixture; the committed offline seed can still contain two.
+    observationResponse = originalOfficial;
+    personalResponse = JSON.parse(JSON.stringify(personalSeed));
+    personalResponse.posts.push({
+      ...personalSeed.posts[0], id: "2096600000000000044",
+      url: "https://x.com/fixture_ameru/status/2096600000000000044",
+      name: "あめる", authorId: "1000000000000000044", authorScreenName: "fixture_ameru",
+      events: [{ shift: "夜", kind: "placement", storeId: "s4", excerpt: "夜は4号店" }]
+    });
+    await click("#refresh-observations");
+    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await click("#refresh-personal");
+    await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+    await click('[data-date="2026-09-06"]');
+    for (const [name, store] of [["あむ", "s2"], ["ららこ", "s2"], ["あめる", "s4"]]) {
+      assert.deepEqual(await evaluate(`(() => {
+        const rows = [...document.querySelectorAll("#dialog-night .maid-entry")]
+          .filter(row => row.dataset.name === ${JSON.stringify(name)});
+        return rows.map(row => [row.dataset.store, row.dataset.evidence]);
+      })()`), [[store, "personal"]]);
+    }
+    await captureDailyFrame("popup-three-posts-2026-09-06");
+    await click("#close-day-dialog");
+
+    // Optional official late notices use current facts, never the revision's roster.
+    const officialLate = {
+      ...collectionPost("昼", "s4", ["るるか", "ちぇる", "まこと"], "2096436633973526890"),
+      notices: [{ name: "みりあ", kind: "late", excerpt: "みりあちゃんもあとから来るにゃんね" }],
+      lastCheckedAt: "2026-09-06T04:15:00.123456Z",
+      revisions: [{ date: "2026-09-06", shift: "昼", storeId: "s4", names: ["るるか"],
+        notices: [], observedAt: "2026-09-06T03:15:00Z" }]
+    };
+    observationResponse = { ...originalOfficial, posts: [
+      ...originalOfficial.posts.filter(post => post.date !== "2026-09-06"), officialLate
+    ] };
+    personalResponse = JSON.parse(JSON.stringify(personalSeed));
+    await click("#refresh-observations");
+    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await click("#refresh-personal");
+    await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+    await click('[data-date="2026-09-06"]');
+    assert.ok(await evaluate(`(() => {
+      const row = document.querySelector('#dialog-day .maid-entry[data-name="みりあ"]');
+      return row.dataset.store === "s4" && row.dataset.evidence === "official-announced"
+        && row.textContent.includes("あとから") && !/実績|確認/.test(row.title);
+    })()`));
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-day .unmatched-roster [data-name=\\"みりあ\\"]").length'), 0);
+    assert.ok(await evaluate(`(() => {
+      const row = document.querySelector('#dialog-day .maid-entry[data-name="まこっちゃん"]');
+      return row.classList.contains("is-kitchen") && row.textContent.includes("まこと")
+        && !/まこっちゃん/.test(row.textContent + row.title + row.getAttribute("aria-label"));
+    })()`));
+    await captureDailyFrame("popup-refined-2026-09-06");
+    await click("#close-day-dialog");
+    await click("#clear-all");
+    await evaluate(`(() => {
+      const input = [...document.querySelectorAll("#maid-checkboxes input")].find(node => node.value === "みりあ");
+      input.checked = true; input.dispatchEvent(new Event("change"));
+    })()`);
+    await click('[data-date="2026-09-06"]');
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-day .maid-entry").length'), 1);
+    assert.equal(await evaluate('document.querySelector("#dialog-day .observation-source").href'), officialLate.url);
+    await click("#dialog-day .observation-details summary");
+    await wait('document.querySelector("#dialog-day .official-post").dataset.embedState === "ready"');
+    await wait('window.__mockTweetLoads["2096436633973526890"] > 0');
+    for (const width of [1280, 390, 320]) {
+      await call("Emulation.setDeviceMetricsOverride", {
+        width, height: width === 1280 ? 960 : 844, deviceScaleFactor: 1, mobile: width !== 1280
+      });
+      assert.ok(await noOverflow());
+      assert.ok(await evaluate('document.querySelector("#day-dialog-content").scrollWidth <= document.querySelector("#day-dialog-content").clientWidth'),
+        `official iframe fits ${width}px`);
+      assert.ok(await evaluate(`(() => {
+        const post = document.querySelector("#dialog-day .official-post");
+        const mount = post.querySelector(".official-embed");
+        const frame = post.querySelector("iframe");
+        const link = post.querySelector(".observation-source");
+        const bounds = post.getBoundingClientRect(), rect = frame.getBoundingClientRect();
+        return post.querySelectorAll("a").length === 1 && mount.inert &&
+          mount.getAttribute("aria-hidden") === "true" && frame.tabIndex === -1 &&
+          getComputedStyle(frame).pointerEvents === "none" &&
+          rect.left >= bounds.left && rect.right <= bounds.right &&
+          document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === link;
+      })()`), `the original link alone covers the inert widget within ${width}px bounds`);
+      await capture(`popup-official-late-widget-${width}`);
+    }
+    const sourceLabel = await evaluate('document.querySelector("#dialog-day .observation-source").getAttribute("aria-label")');
+    const accessible = await call("Accessibility.getFullAXTree");
+    assert.equal(accessible.nodes.filter(node => node.role?.value === "link" && node.name?.value === sourceLabel).length, 1,
+      "assistive technology gets one original-post link, not a second embedded control surface");
+    assert.ok(!accessible.nodes.some(node => !node.ignored && node.name?.value === "Widget action"));
+    const sourcePoint = await evaluate(`(() => {
+      const post = document.querySelector("#dialog-day .official-post");
+      const link = post.querySelector(".observation-source");
+      window.__sourceActivations = [];
+      link.addEventListener("click", event => {
+        event.preventDefault();
+        window.__sourceActivations.push({href:link.href, trusted:event.isTrusted});
+      });
+      const rect = post.querySelector("iframe").getBoundingClientRect();
+      return {x:rect.left + rect.width / 2, y:rect.top + rect.height / 2};
+    })()`);
+    for (const type of ["mousePressed", "mouseReleased"]) {
+      await call("Input.dispatchMouseEvent", { type, ...sourcePoint, button: "left", clickCount: 1 });
+    }
+    assert.equal(await evaluate('document.activeElement.classList.contains("observation-source")'), true);
+    await key("Enter", "Enter", 13);
+    assert.deepEqual(await evaluate('window.__sourceActivations'), [
+      { href: officialLate.url, trusted: true }, { href: officialLate.url, trusted: true }
+    ], "pointer and Enter activate the single original-post link without external HTTP in the test");
+    assert.equal(await evaluate('window.__mockWidgetClicks || 0'), 0);
+    await capture("popup-official-display-surface-320");
+    await evaluate('document.querySelector("#dialog-day .observation-details summary").focus({preventScroll:true})');
+    await key("Tab", "Tab", 9);
+    assert.equal(await evaluate('document.activeElement.classList.contains("observation-source")'), true);
+    await key("Tab", "Tab", 9);
+    assert.equal(await evaluate('document.activeElement.id'), "close-day-dialog",
+      "Tab skips the widget and wraps to the modal's close control");
+    await key("Tab", "Tab", 9, 8);
+    assert.equal(await evaluate('document.activeElement.classList.contains("observation-source")'), true,
+      "Shift+Tab wraps to the single source link, never the iframe");
+    await evaluate(`window.__retainedFrame = document.querySelector("#dialog-day iframe");
+      window.__retainedFrameWindow = window.__retainedFrame.contentWindow;
+      window.__retainedSection = document.querySelector("#dialog-day");
+      document.querySelector("#day-dialog-content").style.maxHeight = "300px";
+      document.querySelector("#dialog-day .observation-details summary").focus({preventScroll:true});
+      document.querySelector("#day-dialog-content").scrollTop = 70;`);
+    const widgetInteraction = await evaluate(`({
+      focus:document.activeElement.dataset.focusKey, scroll:document.querySelector("#day-dialog-content").scrollTop,
+      loads:window.__mockTweetLoads["2096436633973526890"]
+    })`);
+    assert.ok(widgetInteraction.scroll > 0);
+    officialLate.lastCheckedAt = "2026-09-06T04:30:00Z";
+    officialLate.revisions.push({ ...officialLate.revisions[0], observedAt: "2026-09-06T04:20:00Z" });
+    observationResponse.checkedAt = "2026-09-06T04:30:00Z";
+    await click("#refresh-observations");
+    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    assert.ok(await evaluate(`document.querySelector("#dialog-day") === window.__retainedSection &&
+      document.querySelector("#dialog-day iframe") === window.__retainedFrame &&
+      window.__retainedFrame.contentWindow === window.__retainedFrameWindow &&
+      document.querySelector("#dialog-day .observation-details").open`));
+    assert.deepEqual(await evaluate(`({
+      focus:document.activeElement.dataset.focusKey, scroll:document.querySelector("#day-dialog-content").scrollTop,
+      loads:window.__mockTweetLoads["2096436633973526890"]
+    })`), widgetInteraction, "metadata refresh retains iframe, browsing context, disclosure, focus and scroll");
+    assert.equal(await evaluate('window.__mockTweetCalls["2096436633973526890"]'), 1);
+    await evaluate('document.querySelector("#day-dialog-content").style.maxHeight = ""');
+    await evaluate('document.querySelector("#dialog-day .observation-source").focus({preventScroll:true})');
+    await evaluate('document.querySelector("#dialog-day iframe").focus()');
+    assert.equal(await evaluate('document.activeElement.classList.contains("observation-source")'), true,
+      "even a programmatic iframe focus request cannot leave the parent modal");
+    await key("Escape", "Escape", 27);
+    await wait('!document.querySelector("#day-dialog").open');
+    assert.equal(await evaluate('document.activeElement.dataset.date'), "2026-09-06");
+    await click('[data-date="2026-09-06"]');
+    assert.ok(await evaluate('document.querySelector("#dialog-day iframe") === window.__retainedFrame'));
+    await click("#close-day-dialog");
+    await setMode("forecast");
+    await evaluate(`window.__legacyFrame = document.querySelector("#calendar .official-post iframe");
+      window.__legacyWindow = window.__legacyFrame.contentWindow; true;`);
+    observationResponse.checkedAt = "2026-09-06T04:31:00Z";
+    await click("#refresh-observations");
+    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    assert.ok(await evaluate('document.querySelector("#calendar .official-post iframe") === window.__legacyFrame && window.__legacyFrame.contentWindow === window.__legacyWindow'),
+      "metadata refresh also preserves embedded browsing contexts in the store view");
+    await setMode("calendar");
+    await click('[data-date="2026-09-06"]');
+    assert.equal(await evaluate('document.querySelector("#dialog-day .observation-source").href'), officialLate.url,
+      "returning from the store view restores the cached source into the dialog");
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-day iframe").length'), 1);
+    assert.equal(await evaluate('window.__mockTweetCalls["2096436633973526890"]'), 1);
+    await click("#close-day-dialog");
+    await setMode("maid");
+    assert.equal(await evaluate('document.querySelector(".maid-plan-stop[data-date=\\"2026-09-06\\"]").dataset.evidence'), "official-announced");
+    assert.doesNotMatch(await evaluate('document.querySelector(".maid-plan-stop[data-date=\\"2026-09-06\\"]").title'), /実績|確認/);
+    await click("#reset-filters");
+    await setMode("calendar");
+    const oldVersion = { ...officialLate, editTweetIds: [officialLate.id] };
+    const middleVersion = {
+      ...officialLate, id: "2096436633973526891",
+      url: "https://x.com/akibazettai/status/2096436633973526891",
+      createdAt: "2026-09-06T04:30:00Z", observedAt: "2026-09-06T04:35:00Z",
+      lastCheckedAt: "2026-09-06T04:35:00Z",
+      names: ["ちぇる", "みりあ"], notices: [],
+      editTweetIds: [oldVersion.id, "2096436633973526891"]
+    };
+    const latestVersion = {
+      ...officialLate, id: "2096436633973526892",
+      url: "https://x.com/akibazettai/status/2096436633973526892",
+      createdAt: "2026-09-06T04:40:00Z", observedAt: "2026-09-06T04:45:00Z",
+      lastCheckedAt: "2026-09-06T04:45:00Z",
+      names: ["みりあ"], notices: [],
+      editTweetIds: [middleVersion.id, "2096436633973526892"]
+    };
+    observationResponse.posts = [...originalOfficial.posts.filter(post => post.date !== "2026-09-06"), oldVersion];
+    await click("#refresh-observations");
+    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await click('[data-date="2026-09-06"]');
+    await evaluate('document.querySelector("#dialog-day .observation-details").open = true');
+    await wait('document.querySelector("#dialog-day .official-post").dataset.embedState === "ready"');
+    assert.equal(await evaluate('document.querySelector("#dialog-day iframe").dataset.postId'), oldVersion.id);
+    observationResponse.posts.push(middleVersion);
+    await click("#refresh-observations");
+    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('document.querySelector("#dialog-day .official-post").dataset.embedState === "ready"');
+    assert.deepEqual(await evaluate('[...document.querySelectorAll("#dialog-day .official-post")].map(node => node.dataset.postId)'), [middleVersion.id]);
+    assert.deepEqual(await evaluate('[...document.querySelectorAll("#dialog-day iframe")].map(node => node.dataset.postId)'), [middleVersion.id]);
+    const versionSnapshot = { ...observationResponse, posts: [...observationResponse.posts, latestVersion] };
+    observationResponse = versionSnapshot;
+    await click("#refresh-observations");
+    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('document.querySelector("#dialog-day .official-post").dataset.embedState === "ready"');
+    assert.deepEqual(await evaluate('[...document.querySelectorAll("#dialog-day .official-post")].map(node => node.dataset.postId)'), [latestVersion.id]);
+    assert.deepEqual(await evaluate('[...document.querySelectorAll("#dialog-day iframe")].map(node => node.dataset.postId)'), [latestVersion.id],
+      "partial B-to-C metadata must not restore A or B's old widget");
+    assert.equal(await evaluate('document.querySelector("#dialog-day .observation-source").href'), latestVersion.url);
+    assert.equal(await evaluate('document.querySelector("#dialog-day .maid-entry[data-name=\\"みりあ\\"]").dataset.evidence'), "observed");
+    assert.deepEqual(await evaluate('[...document.querySelectorAll("#dialog-day .maid-entry[data-evidence=observed]")].map(node => node.dataset.name)'), ["みりあ"],
+      "old versions' people remain excluded from the active roster");
+    assert.doesNotMatch(await evaluate('document.querySelector("#dialog-day .maid-entry[data-name=\\"みりあ\\"]").textContent'), /あとから/);
+    assert.deepEqual(await evaluate('(async () => (await (await fetch("data/observed-shifts.json")).json()).posts.filter(post => post.date === "2026-09-06").map(post => post.id))()'),
+      [oldVersion.id, middleVersion.id, latestVersion.id], "the published raw history still contains all three versions");
+    observationResponse = { ...versionSnapshot, posts: [{ ...oldVersion, editTweetIds: latestVersion.editTweetIds }] };
+    await click("#refresh-observations");
+    await wait('document.querySelector("#observation-status").textContent.includes("読込に失敗")');
+    assert.equal(await evaluate('document.querySelector("#dialog-day .observation-source").href'), latestVersion.url,
+      "a stale current-ID chain cannot overwrite the last validated presentation");
+    observationResponse = versionSnapshot;
+    await click("#refresh-observations");
+    await wait('document.querySelector("#observation-status").dataset.loaded === "true" && !document.querySelector("#observation-status").textContent.includes("読込に失敗")');
+    await click("#close-day-dialog");
+    const unavailablePost = { ...officialLate, id: "2096436633973526893",
+      url: "https://x.com/akibazettai/status/2096436633973526893" };
+    observationResponse.posts = [...originalOfficial.posts.filter(post => post.date !== "2026-09-06"), unavailablePost];
+    await click("#refresh-observations");
+    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await evaluate('window.twttr.widgets.createTweet = async () => { throw new Error("mock factory unavailable"); }');
+    await click('[data-date="2026-09-06"]');
+    await click("#dialog-day .observation-details summary");
+    await wait('document.querySelector("#dialog-day .official-post").dataset.embedState === "unavailable"');
+    assert.equal(await evaluate('document.querySelector("#dialog-day .observation-source").href'), unavailablePost.url);
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-day iframe").length'), 0);
+    await click("#close-day-dialog");
+    observationResponse.posts = [...originalOfficial.posts.filter(post => post.date !== "2026-09-06"), officialLate];
+    const requestsBeforeBlocked = widgetRequests;
+    widgetBlocked = true;
+    await call("Page.navigate", { url: `${origin}/` });
+    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+    await click('[data-date="2026-09-06"]');
+    assert.equal(widgetRequests, requestsBeforeBlocked, "a fresh document still loads widgets lazily");
+    await click("#dialog-day .observation-details summary");
+    await wait('document.querySelector("#dialog-day .official-post").dataset.embedState === "unavailable"');
+    assert.equal(widgetRequests, requestsBeforeBlocked + 1);
+    assert.equal(await evaluate('document.querySelector("#dialog-day .observation-source").href'), officialLate.url);
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-day iframe").length'), 0);
+    assert.equal(await evaluate('document.querySelector("#dialog-day .maid-entry[data-name=\\"みりあ\\"]").dataset.evidence'), "official-announced");
+    await click("#dialog-day .observation-details summary");
+    await click("#dialog-day .observation-details summary");
+    await capture("popup-official-widget-blocked");
+    assert.equal(widgetRequests, requestsBeforeBlocked + 1, "blocked script does not start duplicate requests");
+    await click("#close-day-dialog");
 
     await call("Page.navigate", { url: `${origin}/unauthorized.html?scoutTheme=dark` });
     await wait('document.title.startsWith("閲覧権限")');

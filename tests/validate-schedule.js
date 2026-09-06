@@ -75,6 +75,33 @@ for (const name of unposted) {
   );
 }
 const storeIds = new Set(["s1", "s2", "s3", "s4"]);
+for (const [name, label] of Object.entries(data.displayNames ?? {})) {
+  assert.ok(roster.has(name), `display name key "${name}" must remain canonical`);
+  assert.equal(typeof label, "string");
+  assert.ok(label.trim());
+}
+assert.equal(data.displayNames["まこっちゃん"], "まこと");
+assert.equal(new Set(data.roster.map(name => data.displayNames?.[name] ?? name)).size, roster.size,
+  "display names must not collapse two current roster entries");
+for (const [id, review] of Object.entries(data.personalEventAdditions ?? {})) {
+  assert.match(id, /^\d{10,25}$/);
+  assert.ok(roster.has(review.name));
+  assert.match(review.authorId, /^[1-9]\d{0,24}$/);
+  assert.match(review.authorScreenName, /^[A-Za-z0-9_]{1,15}$/);
+  assert.match(review.date, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(new Date(`${review.date}T00:00:00Z`).toISOString().slice(0, 10), review.date);
+  assert.ok(typeof review.reason === "string" && review.reason.trim());
+  assert.ok(Array.isArray(review.events) && review.events.length);
+  assert.equal(new Set(review.events.map(event => event.shift)).size, review.events.length);
+  for (const event of review.events) {
+    assert.equal(event.kind, "placement");
+    assert.ok(validShifts.has(event.shift) && storeIds.has(event.storeId));
+    assert.ok(data.schedule[review.date]?.[event.shift]?.some(entry => entry.name === review.name),
+      "reviewed additions must use this person's original scheduled shift");
+    assert.ok(typeof event.excerpt === "string" && event.excerpt.trim() &&
+      event.excerpt.length <= 160 && !/[\r\n]/.test(event.excerpt));
+  }
+}
 for (const [name, store] of Object.entries(homeStore)) {
   assert.ok(storeIds.has(store), `${name} is posted to an unknown store "${store}"`);
 }

@@ -49,6 +49,24 @@ window.SCHEDULE_DATA = {
     }
   },
 
+  // Reviewed shift interpretation for this source only; raw events remain intact.
+  personalEventAdditions: {
+    "2096253883677044837": {
+      name: "ららこ",
+      authorId: "2065375500131028992",
+      authorScreenName: "rarako_zettai",
+      date: "2026-09-06",
+      events: [
+        { shift: "夜", kind: "placement", storeId: "s2", excerpt: "1号店➡️2号店 / お昼1号店" }
+      ],
+      reason: "User-reviewed 12:00-22:00, day at s1 and current s1-to-s2 announcement (2026-09-06)"
+    }
+  },
+
+  displayNames: {
+    "まこっちゃん": "まこと"
+  },
+
   // Keep the saved official first-service rank. Insert confirmed unpublished normals:
   // debuts.csv: yume 2026-04-17 < milestones.csv: cheru 2026-04-20;
   // debuts.csv: mochi 2026-06-04 < piano 2026-06-08. No observed-first-date inference.
