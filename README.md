@@ -1064,6 +1064,8 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 
 本文全文は保存せず、作者・投稿ID・日時・出典、時間帯ごとの抽出イベントと必要な短い引用だけを保持します。公開用JSONでは内部の予算、pending/resolved、pause詳細、HTTP制限を除外します。ブラウザーは同じサイトのJSONを読むだけで、本人検索を実行しません。
 
+初期pilotの固定回帰は `tools/tests/fixtures/personal-pilot.json` を使います。配信準備中の `data/personal-shifts.json` はstate branchから復元される可変のsnapshotなので、公開形式や初期2投稿に固定したテスト入力としては使いません。private形式・追加投稿を含む復元後にも、通常の検証と公開projectionが通ることを確認します。
+
 **有効化は段階的に行います。**先に互換コードと手動の本人/両方モードを公開し、既存stateを壊さない少量のmain実行と本番表示を確認してから定期枠を有効にします。この段階では公式の1日8回cronを維持し、本人の定期枠はまだ追加していません。
 
 ### GitHub Actionsから収集・公開する構成
