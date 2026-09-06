@@ -1,23 +1,23 @@
 {
-  "checkedAt": "2026-09-06T04:18:39Z",
+  "checkedAt": "2026-09-06T08:00:41Z",
   "complete": false,
   "cooldowns": {},
   "lastRun": {
-    "attemptedCount": 5,
+    "attemptedCount": 0,
     "complete": false,
     "dateBasis": "JST service day, 05:00 boundary",
     "dateFrom": "2026-09-05",
     "dateTo": "2026-09-06",
     "deferredCount": 0,
-    "discoveredCount": 39,
-    "eligibleCount": 5,
+    "discoveredCount": 37,
+    "eligibleCount": 0,
     "failures": [],
-    "fetchedCount": 5,
-    "finishedAt": "2026-09-06T04:18:52Z",
+    "fetchedCount": 0,
+    "finishedAt": "2026-09-06T08:00:45Z",
     "lastSuccessMeaning": "Both searches and every selected post handled without failure or deferral",
     "maxPosts": 20,
-    "newNameCount": 14,
-    "newPostCount": 3,
+    "newNameCount": 0,
+    "newPostCount": 0,
     "pendingCount": 0,
     "pendingOutsideRangeCount": 0,
     "rejected": [
@@ -51,14 +51,6 @@
       },
       {
         "id": "2095446715176485157",
-        "reason": "outside_date_range"
-      },
-      {
-        "id": "2095446387983008110",
-        "reason": "outside_date_range"
-      },
-      {
-        "id": "2095437839597253038",
         "reason": "outside_date_range"
       },
       {
@@ -128,24 +120,16 @@
       {
         "id": "2093535923158032480",
         "reason": "outside_date_range"
-      },
-      {
-        "id": "2096441771152810276",
-        "reason": "not_shift_post"
-      },
-      {
-        "id": "2096419904341840157",
-        "reason": "not_shift_post"
       }
     ],
     "skippedCuratedCount": 0,
-    "skippedObservedCount": 6,
-    "skippedResolvedCount": 1,
+    "skippedObservedCount": 9,
+    "skippedResolvedCount": 3,
     "sourceCount": 2,
     "sourcePageLimit": 2,
     "sources": [
       {
-        "candidateCount": 22,
+        "candidateCount": 20,
         "status": "ok",
         "url": "https://search.yahoo.co.jp/realtime/search?p=%E3%82%A2%E3%82%AD%E3%83%90%E7%B5%B6%E5%AF%BE%E9%A0%98%E5%9F%9F&ei=UTF-8"
       },
@@ -155,9 +139,9 @@
         "url": "https://search.yahoo.co.jp/realtime/search?p=%E3%81%B2%E3%82%8B%E3%81%AB%E3%82%83%E3%82%93%E3%81%93&ei=UTF-8"
       }
     ],
-    "status": "ok"
+    "status": "no-new"
   },
-  "lastSuccessAt": "2026-09-06T04:18:52Z",
+  "lastSuccessAt": "2026-09-06T08:00:45Z",
   "pending": [],
   "posts": [
     {
