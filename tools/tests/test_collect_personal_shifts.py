@@ -733,6 +733,26 @@ class StateTests(Offline):
         self.assertEqual(analyzer.state['history'], [previous])
         personal.read_state(self.snapshot)
 
+    def test_explicit_empty_links_keep_only_prior_legacy_scopes_not_new_event_links(self):
+        previous, _ = personal.validate_post(candidate(), post('9月6日 昼1号店'), AMU, NOW)
+        self.state['posts'] = [previous]
+        self.state['identityBindings'][AMU['name']] = {
+            'authorId': UID, 'authorScreenName': AMU['handle'], 'verifiedAt': personal.stamp(NOW)}
+        durable = self.durable()
+        durable.preflight()
+        analyzer = mock.Mock()
+        analyzer.state = {'history': []}
+        analyzer.parse.return_value = ([{'shift': '夜', 'kind': 'placement', 'storeId': 's2',
+                                         'excerpt': '2号店'}], [], 'events')
+        personal.collect(self.state, durable, None, self.targets, DATE, 2, 3,
+                         clock=durable.clock, analyzer=analyzer,
+                         saved_payloads={TID: post('9月6日 夜2号店')})
+        current = self.state['posts'][0]
+        self.assertEqual([event['shift'] for event in current['events']], ['昼', '夜'])
+        self.assertEqual(current['links'], [{'scope': '昼', 'status': 'work'}])
+        self.assertEqual(analyzer.state['history'], [previous])
+        personal.read_state(self.snapshot)
+
     def test_seed_facts_observed_times_and_spent_budget_floor(self):
         seed = personal.read_state(TOOLS / 'tests' / 'fixtures' / 'personal-pilot.json', private=False)
         personal.merge_seed(self.state, seed)

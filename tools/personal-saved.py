@@ -37,7 +37,8 @@ MAX_IMPORTS = 1000
 MODEL = 'gpt-5.6-luna'
 MODEL_VERSION = '2026-07-09'
 LEGACY_CONTRACT = 'personal-line-ids-v4'
-LINK_CONTRACT = 'personal-line-ids-v5'
+PREVIOUS_LINK_CONTRACT = 'personal-line-ids-v5'
+LINK_CONTRACT = 'personal-line-ids-v6'
 
 
 def _require(condition, reason='invalid_saved_personal_import'):
@@ -80,7 +81,7 @@ def _validate_entry(entry, personal):
         _hash(source[field])
     _require(source['model'] == source['deployment'] == MODEL
              and source['modelVersion'] == MODEL_VERSION)
-    _require(source['contractVersion'] in (LEGACY_CONTRACT, LINK_CONTRACT))
+    _require(source['contractVersion'] in (LEGACY_CONTRACT, PREVIOUS_LINK_CONTRACT, LINK_CONTRACT))
     _require(source['provenance'] in ('search', 'direct')
              and ('searchCreatedAt' in source) == (source['provenance'] == 'search'))
     official = personal.official

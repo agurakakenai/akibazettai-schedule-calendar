@@ -2632,15 +2632,17 @@ class PersonalSavedTests(unittest.TestCase):
             del entry['amendment']['links']
         self.assertTrue(all('links' not in post for post in self.apply(entries=entries)['posts']))
 
-    def test_synthetic_v5_link_only_attestation_makes_no_placement_or_attendance(self):
-        entries = copy.deepcopy(self.entries)
-        amendment = entries[0]['amendment']
-        amendment['source']['contractVersion'] = self.saved.LINK_CONTRACT
-        amendment.update(events=[], links=[{'scope': 'unspecified', 'status': 'work'}])
-        after = self.apply(entries=entries)
-        post = next(item for item in after['posts'] if item['id'] == amendment['id'])
-        self.assertEqual(post['events'], [])
-        self.assertEqual(post['links'], [{'scope': 'unspecified', 'status': 'work'}])
+    def test_synthetic_link_contract_attestations_make_no_placement_or_attendance(self):
+        for version in (self.saved.PREVIOUS_LINK_CONTRACT, self.saved.LINK_CONTRACT):
+            with self.subTest(version=version):
+                entries = copy.deepcopy(self.entries)
+                amendment = entries[0]['amendment']
+                amendment['source']['contractVersion'] = version
+                amendment.update(events=[], links=[{'scope': 'unspecified', 'status': 'work'}])
+                after = self.apply(entries=entries)
+                post = next(item for item in after['posts'] if item['id'] == amendment['id'])
+                self.assertEqual(post['events'], [])
+                self.assertEqual(post['links'], [{'scope': 'unspecified', 'status': 'work'}])
 
     def test_private_receipts_reject_raw_unknown_fields_forgery_and_unbounded_data(self):
         after = self.apply()

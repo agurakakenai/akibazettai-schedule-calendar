@@ -1426,13 +1426,11 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                     post['events'].extend(copy.deepcopy(event) for event in previous['events']
                                           if event['shift'] not in supplied_shifts)
                     post['events'].sort(key=lambda event: ('昼', '夜').index(event['shift']))
-                    if 'links' in previous or post.get('links'):
+                    if 'links' in previous or 'links' in post:
                         supplied_scopes = {link['scope'] for link in post.get('links', [])}
                         retained = previous.get('links', legacy_links(previous))
                         post.setdefault('links', []).extend(copy.deepcopy(link) for link in retained
                                                             if link['scope'] not in supplied_scopes)
-                    elif not post.get('links'):
-                        post.pop('links', None)
                 if (post and previous['events'] == post['events']
                         and previous.get('links') == post.get('links')):
                     post = previous

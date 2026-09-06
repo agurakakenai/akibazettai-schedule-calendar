@@ -1086,19 +1086,23 @@ privateの`coverage`と`searchHistory`は、対象の由来、確認済みaccoun
 
 #### 共通Luna設定と本人本文解析
 
-解析v5は **metadata照合 → 行ID付き原文と最小contextをLunaへ1回 → 選択ID・対象範囲・元行の数値を確認 → 既存履歴** に分けます。v4の行ID契約を拡張し、同じ1要求で勤務eventsと当日リンクを独立に判断します。勤務と余談、昼夜、訂正・否定・不確実さ、他人や引用の意味はAIの担当です。単に同日投稿された日常文・募集・半月表を当日お給仕リンクにしません。コードで意味を再解釈する大量regexは追加せず、投稿日時/JST対象日・本人名・対象shiftだけを添え、名簿全体や履歴はモデルへ送りません。
+解析v6は **metadata照合 → 行ID付き原文と最小contextをLunaへ1回 → 選択ID・対象範囲・元行の数値を確認 → 既存履歴** に分けます。v4の行ID契約を拡張し、同じ1要求で勤務eventsと当日リンクを独立に判断します。勤務と余談、昼夜、訂正・否定・不確実さ、他人や引用の意味はAIの担当です。単に同日投稿された日常文・募集・半月表を当日お給仕リンクにしません。コードで意味を再解釈する大量regexは追加せず、投稿日時/JST対象日・本人名・対象shiftだけを添え、名簿全体や履歴はモデルへ送りません。
+
+wireの必須フィールドは`date/events/links`です。各配列の非空は確認済みの事実、`[]`は今回の該当なし、`null`はそのchannelの保留を表します。配列と矛盾し得る別の`decision/linkDecision`タグはモデルに生成させず、コードは構造から結果種別を機械的に決めます。必須フィールド欠落を`null`へ補完しません。片側が保留でも他方の確認済み情報を保持し、`null`と`[]`はどちらも旧facts/linkの削除命令にはしません。
+
+private cacheの`channels`は確認・該当なし・保留を区別して保持します。公開時は確認済み配列だけを渡し、新しい解析でリンクが得られなければ`links: []`を明示します。legacyの`links`未導入へ戻して新しい勤務eventからリンクを推定しません。同じ投稿の部分再解析でも、既存確認済みscopeのリンクは保持し、今回の保留scopeへ新しいリンクを補完しません。
 
 原文はCRLFを1改行、単独CR/LFをそれぞれ改行として分割し、1始まりの整数IDを付けます。改行文字・空行・最後の改行後の空行・Unicode・絵文字・全角空白を保持し、文字を書き換えません。最大128行で、上限超過は切捨てず保留します。モデルは自由な引用文や文字offsetではなく`evidenceLineIds`（各event/linkにつき1〜16個、当該投稿に実在するID）を選びます。重複・空配列・不正ID・新版での空白行の参照は拒否し、複数行や昼夜での同じ行の共有は許容します。
 
 コードは選択IDから元行/元範囲を直接参照し、型・allowlist・対象日/shift・event重複・指定店舗/時刻の直接数値整合を確認します。選択行を連結して架空の引用や数値を作りません。元行・選択行は内部のみで、公開抜粋は従来の小さい原文アンカーだけです。**行ID参照で引用の転記ミスはなくなりますが、行の選択や意味の誤読は残り得ます。** 意味・参照ID・コード採否を分けて評価します。pending/refusal/不正schemaは保留し、`no_event`も既存案内の削除命令にはしません。
 
-旧nano/mini・v4や比較用deploymentのcache・履歴は保持し、本番Lunaのprovider/endpoint/deployment/model/versionとv5契約・入力contextを含む別のcache識別に分離します。旧応答を新版のモデル応答へ変換して再利用しません。v4の保存実応答はv4専用のoffline groundingで照合できますが、新版の実測成功とは数えません。既知投稿の自動再GET・一括再解析も追加せず、再確認には保存payloadによる明示操作が必要です。
+旧nano/mini・v4/v5や比較用deploymentのcache・履歴は保持し、本番Lunaのprovider/endpoint/deployment/model/versionとv6契約・入力contextを含む別のcache識別に分離します。旧応答を新版のモデル応答へ変換して再利用しません。v4/v5の保存実応答は専用のoffline groundingで照合でき、旧v5の状態タグと配列の不整合も拒否したままです。旧応答の再生を新版の実測成功とは数えません。既知投稿の自動再GET・一括再解析も追加せず、再確認には保存payloadによる明示操作が必要です。
 
 ローカルCLIは無設定なら従来の`--analysis-backend rules`です。`--analysis-backend azure`を明示すると、検証済みの新規本人本文**全体**をAzure OpenAI `gpt-5.6-luna`（2026-07-09）へ送り、Chat Completions v1・structured outputs・`reasoning_effort=none`で解析します。共通の設定/HTTP transportは`tools/azure-openai.py`、本人用prompt/schema・予算・履歴は`tools/personal-azure.py`に分離しています。本番安定名`gpt-5.6-luna`だけを受理し、providerの返却modelも照合します。ルールが一部を拾ってもAzureを省略せず、nano/mini・別model・rulesへの成功fallbackは行いません。
 
 Actionsでは手動`personal` / `both`と、有効化された当日案内の公式・本人解析でAzureを選択します。必要な設定はsecret `AZURE_OPENAI_API_KEY`とvariables `AZURE_OPENAI_ENDPOINT`（`https://<resource>.openai.azure.com/`）、`AZURE_OPENAI_DEPLOYMENT`（`gpt-5.6-luna`）です。必要なcollector子だけに渡し、Git・Node入力読取・restore・stage/build・保存根拠の適用・frontendへは渡しません。無効時の公式定期は既存rulesのままです。
 
-公式補足と本人本文v5は共通Luna transportを使い、用途別prompt/schemaを分けます。画像・半月予定表の自動取得/取込や10時からの巡回は含みません。取得・本人確認・型・出典・原投稿順の履歴はコードの責務です。公式の未発行補足だけは別のbounded queueへ残し、次枠のAI容量がある場合に既知IDをsource上限内で確認できます。全既知投稿の編集巡回ではなく、拒否・失敗済みの再推論や結果合わせの再取得はしません。
+公式補足と本人本文v6は共通Luna transportを使い、用途別prompt/schemaを分けます。画像・半月予定表の自動取得/取込や10時からの巡回は含みません。取得・本人確認・型・出典・原投稿順の履歴はコードの責務です。公式の未発行補足だけは別のbounded queueへ残し、次枠のAI容量がある場合に既知IDをsource上限内で確認できます。全既知投稿の編集巡回ではなく、拒否・失敗済みの再推論や結果合わせの再取得はしません。
 
 cloudのAI（手動`personal/both`を含む）は**公式＋本人合算3回/run・実発行日のJST暦日30回**です。data-onlyの`ai-usage.json`へ発行前予約を永続化し、同じrun ID/attemptを子間で共有します。旧モデル・外部/画像使用も承認済みreceiptで同じ日予算へ算入します。cache hitは追加発行ではなく、中断予約は保守的に消費済みです。公式source/rulesを先行しても、両用途に枠がある本人受付中は公式AIを1〜2枠に制限し、過去の追加枠配分・締切で3枠目を配分します。残り1枠を本人の締切へ優先する場合や共有予算が尽きた場合は公式AIを0枠にでき、公式名簿の収集を維持して未発行補足を保留します。本人は公式の実使用後の残枠を利用し、容量がなければ本文GETを始めません。本文UTF-8 6,000 bytes・出力1,200 tokens・応答24,000 bytes・timeout 30秒、retry0・原則60秒以上の間隔を維持します。待機後は実日と締切を再確認し、429は少なくとも5分と`Retry-After`の長い方、401/403はAIだけを永続停止します。Yahoo/Xの共有cooldown・予算とは別です。同じ入力の成功・拒否・失敗・中断は自動再課金せず、復旧には運用者の明示照合が必要です。
 
@@ -1155,7 +1159,7 @@ HTTPの前にleaseをremoteへ保存します。収集後、成功・部分失�
 
 本人差分の`bodyHash`は元の`payload.text`のUTF-8、`sourceHash`は保存payloadファイルの元bytesです。`sourceManifestHash/analysisResultHash/analysisReceiptHash/contractHash`の指す資料を承認前にofflineで照合し、適用経路では原文を再取得・再解析しません。`provenance=search`だけは正規pendingと一致する独立`searchCreatedAt`を持ち、`direct`はその字段を省略して既存bindingを必須にします。新しいbindingは正規pendingの本人metadataで確かめられる場合だけ作り、同じbatch内の異なる作者を同名へ混ぜません。
 
-v4保存受理はv4の明示eventsに限定し、link-only/unspecifiedを捏造しません。v5は独立リンク契約を持てますが、保存mockを実モデル結果として扱いません。本人適用は計上済みusageを参照するだけで再課金せず、今回の新しいlive解析がある場合は、その実発行日の使用量を別途一度だけ精算する必要があります。私的`savedPersonalImports`に内容hash付き適用receiptを残し、同一差分の再適用はno-op、不一致・未知ID・古い期待factsは停止します。無関係なpost・公式情報・予算・pause・後続訂正は置き換えません。
+v4保存受理はv4の明示eventsに限定し、link-only/unspecifiedを捏造しません。v5/v6は独立リンク契約を持てますが、保存mockを実モデル結果として扱いません。本人適用は計上済みusageを参照するだけで再課金せず、今回の新しいlive解析がある場合は、その実発行日の使用量を別途一度だけ精算する必要があります。私的`savedPersonalImports`に内容hash付き適用receiptを残し、同一差分の再適用はno-op、不一致・未知ID・古い期待factsは停止します。無関係なpost・公式情報・予算・pause・後続訂正は置き換えません。
 
 AI importの`sourceHash`は、deployment・model/version・用途の実績を保持した外部保存台帳の**元bytesのSHA256**へ結び付け、その台帳も別途保持します。集計の`modelBreakdown`だけからdeploymentを推定せず、比較deploymentの画像使用を本番stable使用へ、過去nano/miniをLunaへ付け替えません。import JSONは外部台帳そのものを任意コピーする入口ではありません。
 
