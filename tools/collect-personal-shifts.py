@@ -227,7 +227,7 @@ def azure_context():
     return SimpleNamespace(
         official=official, require_keys=require_keys, valid_event=valid_event,
         valid_post=valid_post, validate_failure=validate_failure, stamp=stamp,
-        calendar_day=calendar_day, DATE_WORD=DATE_WORD, third_party_subject=third_party_subject)
+        calendar_day=calendar_day)
 
 
 def read_state(path, private=True):
@@ -802,7 +802,7 @@ def validate_post(candidate, payload, target, now, binding=None, roster=(), anal
         events, reason = parse_events(text, created, date, target['shifts'], target['name'], roster)
     else:
         events, reason = analyzer.parse(
-            text, created, date, target['shifts'], target['name'], roster,
+            text, created, date, target['shifts'], target['name'],
             post_id=tid, author_id=uid)
     if not events:
         return None, reason
@@ -1090,6 +1090,9 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                 item, value, target, clock(), state['identityBindings'].get(item['name']), roster, analyzer)
             if analyzer is not None and reason == 'quoted_or_reply':
                 raise azure.AnalysisFailure('azure_ungrounded')
+            previous = next((entry for entry in state['posts'] if entry['id'] == item['id']), None)
+            if analyzer is not None and previous and reason == 'no_event':
+                raise azure.AnalysisFailure('azure_no_event_conflict')
             state['identityBindings'][item['name']] = {
                 'authorId': item['authorId'], 'authorScreenName': item['authorScreenName'],
                 'verifiedAt': stamp(clock())}
@@ -1098,7 +1101,6 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                 'id': item['id'], 'url': item['url'], 'name': item['name'], 'date': item['date'],
                 'reason': reason, 'resolvedAt': stamp(clock())})
             pending.pop(item['id'])
-            previous = next((entry for entry in state['posts'] if entry['id'] == item['id']), None)
             if analyzer is not None and previous:
                 if post and previous['events'] == post['events']:
                     post = previous

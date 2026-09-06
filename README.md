@@ -1076,11 +1076,13 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 
 #### Azure nanoによる本人本文解析
 
-解析v2では、独立した余談の「かも」だけで本文全体を除外せず、勤務の節と前後の継続句に掛かる曖昧さ・否定を検証します。モデルが短い根拠から「かもしれない」「出ません」等を切り落としても確定扱いにしません。隣接行に分かれた明示店舗・昼夜は最大160文字の原文根拠で照合でき、公開する抜粋は従来どおり短い1行だけです。明示された夜枠を開始時刻から昼へ変えたり、早め開始を遅刻にしたりはしません。
+解析v3は **metadata照合 → 原文と最小contextをnanoへ1回 → JSON・対象範囲・原文引用・数値の確認 → 既存履歴** に分けます。勤務と余談、昼夜、訂正・否定・不確実さ、他人や引用の意味はAIの担当です。コードで「かも」「明日」等を再解釈する前処理・節解析は行いません。投稿日時/JST対象日・本人名・対象shiftだけを本文に添え、名簿全体や履歴はモデルへ送りません。
 
-v1のcacheは保持したまま、v2は別の解析バージョンとして扱います。これだけで既知投稿を再GET・自動再解析することはなく、旧保留の再確認は保存payloadによる明示操作が必要です。
+出力側は型・allowlist・対象日/shift・重複・160文字以内の原文引用の存在と、指定店舗/時刻が引用にあるかを機械的に確認します。同じ引用に複数の昼夜・店舗があっても一意性だけでは拒否しません。公開抜粋は店舗番号・勤務状態語・日付等の短い原文アンカーに絞り、その選択から意味を再判定しません。**この検証だけでモデルの意味誤読を排除することはできません。** 意味の精度とコードの採否は別々に評価します。pending/refusal/不正JSONは保留し、`no_event`も既存案内の削除命令とはせず競合保留にします。
 
-ローカルCLIは無設定なら従来の`--analysis-backend rules`です。`--analysis-backend azure`を明示すると、検証済みの新規本人本文**全体**をAzure OpenAI `gpt-5.4-nano`（2026-03-17）へ送り、Chat Completions v1・structured outputs・`reasoning_effort=none`で解析します。ルールが一部の時間帯を拾ってもAzureを省略せず、Azure失敗をルールで成功扱いにもしません。作者・投稿ID・日時は既存コードで照合し、対象日・原予定の昼夜・店舗・状態・本文内の短い根拠をさらに検証します。曖昧な取消は保留、明示的な出勤再開は`return`として扱います。矢印や時刻から夜を補う一般ルールは追加しません。
+v1/v2のcache・履歴は保持し、v3の解析version/contextとは分離します。これだけで既知投稿を再GET・自動再解析することはなく、旧保留の再確認は保存payloadによる明示操作が必要です。
+
+ローカルCLIは無設定なら従来の`--analysis-backend rules`です。`--analysis-backend azure`を明示すると、検証済みの新規本人本文**全体**をAzure OpenAI `gpt-5.4-nano`（2026-03-17）へ送り、Chat Completions v1・structured outputs・`reasoning_effort=none`で解析します。ルールが一部の時間帯を拾ってもAzureを省略せず、Azure失敗をルールで成功扱いにもしません。作者・投稿ID・日時・実際のretweet等のmetadata制約は既存コードで照合します。公式rules parser、本人rules既定、取得・予算・cronは変更しません。
 
 Actionsでは手動`personal` / `both`時だけAzureを選択します。必要な設定はsecret `AZURE_OPENAI_API_KEY`とvariables `AZURE_OPENAI_ENDPOINT`（`https://<resource>.openai.azure.com/`）、`AZURE_OPENAI_DEPLOYMENT`（`gpt-5.4-nano`）です。collectステップの本人子プロセスだけに渡し、公式のみの収集・restore・build・frontendには不要です。設定不備は明示エラーになり、高価なモデルへの自動切替はありません。
 
