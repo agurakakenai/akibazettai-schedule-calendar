@@ -1046,7 +1046,7 @@ gh workflow run deploy-pages.yml --ref main -f mode=collect
 gh workflow run deploy-pages.yml --ref main -f mode=deploy
 ```
 
-probeと手動`collect`で実際の取得・保存・Pages配信を確認したうえで、**本番の定期更新はActionsへ移行しました**。ローカル定期taskは無効化し、併用しません。cronはUTCの毎時00分で、日本時間でも分は00分です。GitHub側の混雑などで開始が遅れる場合があり、厳密な時刻の保証はありません。**PCの起動・ログインに依存しません**。
+probeと手動`collect`で実際の取得・保存・Pages配信を確認したうえで、**本番の定期更新はActionsへ移行しました**。ローカル定期taskは無効化し、併用しません。毎日、日本時間の**12:30・13:30・14:30・15:30・17:30・18:30・19:30・20:30の計8回**に実行します。UTCのcronは `30 3-6,8-11 * * *` で、16:30や範囲外の時刻は含めません。GitHub側の混雑などで開始が遅れる場合があり、厳密な時刻の保証はありません。**PCの起動・ログインに依存しません**。
 
 コード公開と収集公開は同じPages concurrency groupで直列化します。production runは実行開始時の**最新main**をcheckoutし、コードpush時にもstate branchの最新観測を復元します。古いcollector runが古いUIやmain同梱の古い観測へ巻き戻すことを避けます。`GITHUB_TOKEN`のpushで別workflowが起動することには依存しません。
 
