@@ -218,6 +218,17 @@ assert.deepEqual(
   "ひかり's shifts do not match her published 9月前半 post"
 );
 
+for (const [postId, names] of Object.entries(data.observationNameCorrections ?? {})) {
+  assert.match(postId, /^[1-9][0-9]{9,24}$/, "corrections must be scoped to a precise post ID");
+  assert.ok(names && typeof names === "object" && !Array.isArray(names));
+  for (const [rawName, correction] of Object.entries(names)) {
+    assert.ok(rawName.trim() && correction && typeof correction.name === "string");
+    assert.ok(correction.name.trim() && correction.name !== rawName);
+    assert.ok(typeof correction.reason === "string" && correction.reason.trim(),
+      "an explicit correction needs a traceable confirmation reason");
+  }
+}
+
 // --- キャッシュ避け -----------------------------------------------------
 // GitHub Pages は max-age=600 を返すので、読み込みにハッシュが付いていないと、
 // データを更新してもブラウザーは古いファイルを使い続ける。実際に9月1日と2日の

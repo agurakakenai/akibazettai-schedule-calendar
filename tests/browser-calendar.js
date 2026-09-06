@@ -245,13 +245,18 @@ async function main() {
           const insights = window.STORE_INSIGHTS;
           const aliases = new Map(Object.entries(insights.maidTendency)
             .filter(([, entry]) => entry?.alias).map(([name, entry]) => [entry.alias, name]));
+          const displayName = (post, rawName) => {
+            const rules = window.SCHEDULE_DATA.observationNameCorrections?.[post.id];
+            const corrected = rules && Object.hasOwn(rules, rawName) ? rules[rawName].name : rawName;
+            return aliases.get(corrected) ?? corrected;
+          };
           return ["昼", "夜"].map((shift, index) => {
             const section = document.querySelector(index === 0 ? "#dialog-day" : "#dialog-night");
             const record = insights.actualRoster[date]?.[shift];
             const expected = record
               ? Object.entries(record.stores).flatMap(([store, people]) => people.map(name => store+"|"+name))
               : [...new Set(snapshot.posts.filter(post => post.date === date && post.shift === shift)
-                .flatMap(post => post.names.map(name => post.storeId+"|"+(aliases.get(name) ?? name))))];
+                .flatMap(post => post.names.map(name => post.storeId+"|"+displayName(post, name))))];
             const shown = [...section.querySelectorAll(".recorded-roster .maid-entry")]
               .map(row => row.dataset.store+"|"+row.querySelector(".maid-name").textContent);
             const sourceLinks = [...section.querySelectorAll(".observation-details a")].map(a => a.href);
@@ -274,6 +279,14 @@ async function main() {
           assert.deepEqual(result.marked, result.expectedMarked, `${date} ${index}: trainees use only documented metadata`);
           if (curated) assert.ok(result.details.includes(`${date} ${index === 0 ? "昼" : "夜"}`) &&
             result.details.includes("data/store-insights.js・actualRoster"));
+        }
+        if (date === "2026-09-05" && liveObserved > 0) {
+          assert.equal(await evaluate('[...document.querySelectorAll("#dialog-day .recorded-roster .maid-entry")].filter(row => row.dataset.store === "s1" && row.querySelector(".maid-name").textContent === "つぼみ").length'), 1);
+          assert.equal(await evaluate('[...document.querySelectorAll("#dialog-day .unmatched-roster .maid-name")].filter(node => node.textContent === "つぼみ").length'), 0);
+          assert.equal(await evaluate('[...document.querySelectorAll("#dialog-day .recorded-roster .maid-name")].filter(node => node.textContent === "つぽみ").length'), 0);
+          assert.ok(await evaluate('document.querySelector("#dialog-day .observation-details").textContent.includes("原表記「つぽみ」")'));
+          assert.ok(await evaluate('(async () => (await (await fetch("data/observed-shifts.json")).json()).posts.find(post => post.id === "2096074325120237794").names.includes("つぽみ"))()'),
+            "the displayed correction must not rewrite the published raw observations");
         }
         const headings = await evaluate('[...document.querySelectorAll("#day-dialog .maid-group-label")].map(heading => ({store:heading.dataset.store, color:getComputedStyle(heading).borderBottomColor}))');
         for (const heading of headings) {
@@ -304,6 +317,30 @@ async function main() {
 
     if (process.env.REQUIRE_OBSERVATIONS === "1") assert.deepEqual([...checkedColors].sort(), Object.keys(storeColors),
       "the curated/observed samples exercise all four original store colors");
+    await click("#clear-all");
+    await evaluate(`(() => { const selected = [...document.querySelectorAll("#maid-checkboxes input")].find(input => input.value === "つぼみ");
+      selected.checked = true; selected.dispatchEvent(new Event("change")); })()`);
+    await click('[data-date="2026-09-05"]');
+    assert.deepEqual(await evaluate('[...document.querySelectorAll("#dialog-day .recorded-roster .maid-name")].map(node => node.textContent)'), ["つぼみ"]);
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-day .unmatched-roster").length'), 0);
+    assert.ok(await evaluate('[...document.querySelectorAll("#dialog-day .observation-details a")].some(link => link.href.endsWith("/2096074325120237794"))'));
+    await capture("popup-tsubomi-confirmed-filter");
+    await click("#close-day-dialog");
+    await wait('!document.querySelector("#day-dialog").open');
+    await evaluate(`(() => { const mode = document.querySelector('input[name="view-mode"][value="maid"]');
+      mode.checked = true; mode.dispatchEvent(new Event("change")); })()`);
+    const correctedStop = await evaluate(`(() => {
+      const rows = [...document.querySelectorAll('.maid-plan-stop[data-date="2026-09-05"]')]
+        .filter(row => row.querySelector(".maid-plan-when").textContent.endsWith(" 昼"));
+      return rows.map(row => ({evidence:row.dataset.evidence, store:row.querySelector(".maid-plan-where").dataset.store,
+        source:[...row.querySelectorAll("a")].some(link => link.href.endsWith("/2096074325120237794")), title:row.title}));
+    })()`);
+    assert.equal(correctedStop.length, 1);
+    assert.equal(correctedStop[0].evidence, "observed");
+    assert.equal(correctedStop[0].store, "s1");
+    assert.equal(correctedStop[0].source, true);
+    assert.match(correctedStop[0].title, /原表記「つぽみ」/);
+    await click("#reset-filters");
     if (publicOrigin) {
       const stored = await evaluate('(async () => (await (await fetch("data/observed-shifts.json", {cache:"no-store"})).json()).posts.length)()');
       assert.ok(stored >= 10, "production must retain the ten verified observations");

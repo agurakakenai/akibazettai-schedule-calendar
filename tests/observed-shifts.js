@@ -100,4 +100,35 @@ curated.actualRoster["2026-09-05"] = { "昼": { stores: { s1: ["あむ"] }, trai
 assert.equal(api.observedShift(fixture, curated, "2026-09-05", "昼").posts.length, 0, "manual roster wins");
 assert.equal(JSON.stringify(insights), before, "observations must not train or mutate historical tables");
 assert.deepEqual(api.getStoreOutlook({ insights, dateKey: "2026-09-05", shift: "昼" }), baseOutlook);
+
+const correctionPost = makePost("2096074325120237794", "s1", ["つぽみ"]);
+const correctionFixture = { ...fixture, posts: [correctionPost] };
+const correctionRules = schedule.observationNameCorrections;
+assert.equal(correctionRules["2096074325120237794"]["つぽみ"].name, "つぼみ");
+const corrected = api.observedShift(correctionFixture, insights, "2026-09-05", "昼", correctionRules);
+assert.deepEqual([...corrected.byStore.get("s1").keys()], ["つぼみ"]);
+const reconciled = api.observationEntries([{ name: "つぼみ" }], corrected, schedule.roster);
+assert.equal(reconciled.length, 1);
+assert.equal(reconciled[0].observed, true, "the confirmed person must not remain in unmatched plans");
+assert.deepEqual(correctionPost.names, ["つぽみ"], "keep the original observed spelling");
+assert.equal(corrected.byMaid.get("つぼみ").sources[0].url, correctionPost.url);
+const correctedPlan = api.maidItinerary({
+  schedule: { "2026-09-05": { "昼": [{ name: "つぼみ" }] } }, name: "つぼみ",
+  dates: ["2026-09-05"], shifts: ["昼"],
+  resolve: () => ({ outlook: baseOutlook, assignment: null, observed: corrected })
+});
+assert.equal(correctedPlan.stops[0].recorded, true);
+assert.equal(correctedPlan.stops[0].storeId, "s1");
+assert.equal(correctedPlan.stops[0].sourcePosts[0].id, correctionPost.id);
+assert.equal(correctedPlan.stops[0].nameCorrections[0].rawName, "つぽみ");
+assert.match(correctedPlan.stops[0].nameCorrections[0].reason, /利用者確認/);
+const otherPost = { ...correctionPost, id: "2096074325120237795", url: "https://x.com/akibazettai/status/2096074325120237795" };
+const untouched = api.observedShift({ ...fixture, posts: [otherPost] }, insights, "2026-09-05", "昼", correctionRules);
+assert.deepEqual([...untouched.byMaid.keys()], ["つぽみ"], "the same spelling on a different post must stay unchanged");
+const otherDay = { ...otherPost, date: "2026-09-06" };
+assert.deepEqual([...api.observedShift({ ...fixture, posts: [otherDay] }, insights, otherDay.date, "昼", correctionRules).byMaid.keys()],
+  ["つぽみ"], "another date/post is not corrected");
+const otherNames = { ...correctionPost, names: ["みずれ", "みひん", "つぼみ", "constructor", "toString"] };
+assert.deepEqual([...api.observedShift({ ...fixture, posts: [otherNames] }, insights, "2026-09-05", "昼", correctionRules).byMaid.keys()],
+  ["みずれ", "みひん", "つぼみ", "constructor", "toString"], "only explicitly owned raw-name keys may be corrected");
 console.log("Observed shifts valid: partial coverage, source identity, per-person evidence, aliases, and curated precedence.");
