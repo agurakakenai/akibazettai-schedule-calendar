@@ -486,7 +486,7 @@ class StateTests(Offline):
             self.assertEqual(set(personal.active_targets(self.targets, DATE, now)), expected)
 
     def test_seed_facts_observed_times_and_spent_budget_floor(self):
-        seed = personal.read_state(personal.ROOT / 'data' / 'personal-shifts.json', private=False)
+        seed = personal.read_state(TOOLS / 'tests' / 'fixtures' / 'personal-pilot.json', private=False)
         personal.merge_seed(self.state, seed)
         self.assertEqual(len(self.state['posts']), 2)
         self.assertEqual(len(self.state['resolved']), 2)
@@ -498,6 +498,14 @@ class StateTests(Offline):
         personal.merge_seed(self.state, seed)
         self.assertEqual(self.state['budgets']['2026-09-06']['searches'], 8)
         self.assertEqual(len(self.state['posts']), 2)
+
+    def test_deployment_snapshot_is_valid_without_assuming_public_seed_shape_or_count(self):
+        state = personal.load_snapshot(personal.ROOT / 'data' / 'personal-shifts.json')
+        self.assertIs(state['complete'], False)
+        self.assertIsInstance(state['posts'], list)
+        published = personal.public_state(state)
+        self.assertEqual(set(published), {
+            'schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt', 'posts', 'lastRun'})
 
     def test_budget_reservation_is_saved_before_actual_request(self):
         durable = self.durable()

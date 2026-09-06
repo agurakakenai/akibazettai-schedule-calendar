@@ -254,7 +254,8 @@ class CloudTests(unittest.TestCase):
 
     def personal_seed(self):
         module = cloud.load_personal_collector()
-        seed, _ = cloud.validate_personal(ROOT / 'data' / cloud.PERSONAL, module, private=False)
+        seed, _ = cloud.validate_personal(
+            ROOT / 'tools' / 'tests' / 'fixtures' / 'personal-pilot.json', module, private=False)
         collector.atomic_json(self.output.parent / cloud.PERSONAL, seed)
         return module, seed
 
