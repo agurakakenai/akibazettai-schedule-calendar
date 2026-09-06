@@ -134,7 +134,7 @@ CACHE_REASONS = {
     'events', 'no_event', 'azure_pending', 'azure_invalid_output', 'azure_refused',
     'azure_timeout', 'azure_network_error', 'azure_http_error', 'azure_rate_limited',
     'azure_auth_stopped', 'azure_interrupted', 'azure_input_limit', 'azure_ungrounded',
-    'azure_model_mismatch',
+    'azure_model_mismatch', 'azure_deadline', 'azure_budget_exhausted', 'azure_backoff',
 }
 
 
@@ -247,11 +247,13 @@ def grounded_events(result, text, date, shifts, personal, lines=None):
 
 
 class AzureAnalyzer:
-    def __init__(self, state, save, personal, environment, *, clock, sleep=time.sleep, opener=None):
+    def __init__(self, state, save, personal, environment, *, clock, sleep=time.sleep, opener=None,
+                 usage=None):
         self.client = transport.AzureOpenAI(environment, on_http_failure=self.http_failure, opener=opener)
         self.state = state.setdefault('azureAnalysis', empty_state())
         self.save, self.personal, self.clock, self.sleep = save, personal, clock, sleep
-        self.used = 0
+        self.usage = usage
+        self.used = usage.used if usage is not None else 0
         self.spacing_at = None
         self.version = digest(json.dumps([VERSION, PROMPT, SCHEMA, MAX_SOURCE_LINES,
                                           self.client.identity], sort_keys=True))
@@ -283,21 +285,76 @@ class AzureAnalyzer:
             raise AnalysisFailure('azure_input_limit')
         self.reserve(key, entry)
         try:
+            if self.usage is not None:
+                self.usage_call('issued', key)
             result = self.request(lines, created, date, shifts, name)
             events, reason = grounded_events(result, text, date, shifts, self.personal, lines)
         except AnalysisFailure as exc:
             entry.update(exc.facts())
+            if self.usage is not None:
+                self.usage_call('finish', key, exc.reason)
             self.save()
             raise
         entry.update(reason=reason, events=copy.deepcopy(events))
         self.state['review'].pop(post_id, None)
+        if self.usage is not None:
+            self.usage_call('finish', key, reason)
         self.save()
         return events, reason
 
-    def reserve(self, key, entry):
+    def usage_call(self, method, *args):
+        try:
+            return getattr(self.usage, method)(*args)
+        except self.usage.failure_type as exc:
+            reason = exc.reason
+            if (not isinstance(reason, str)
+                    or reason not in CACHE_REASONS | {'azure_usage_locked', 'azure_already_analyzed'}):
+                raise
+            status, retry = exc.status, exc.retry_at
+            if status is not None and (type(status) is not int or not 100 <= status <= 599):
+                raise
+            if retry is not None:
+                self.personal.official.timestamp(retry)
+            raise AnalysisFailure(reason, status, retry) from None
+
+    def check(self):
+        if self.usage is not None:
+            if self.state['paused']:
+                raise AnalysisFailure('azure_auth_stopped', self.state['paused']['httpStatus'])
+            until = self.state['nextRequestAt']
+            if until and self.personal.official.timestamp(until) > self.clock():
+                raise AnalysisFailure('azure_backoff', retry_at=until)
+            try:
+                self.usage_call('check')
+            except AnalysisFailure as exc:
+                if exc.reason == 'azure_deadline':
+                    raise AnalysisFailure('outside_window') from None
+                raise
+
+    def check_capacity(self):
+        if self.usage is not None:
+            return self.check()
         if self.state['paused']:
             raise AnalysisFailure('azure_auth_stopped', self.state['paused']['httpStatus'])
+        day = self.personal.calendar_day(self.clock()).isoformat()
+        if self.used >= RUN_LIMIT or self.state['budgets'].get(day, 0) >= DAY_LIMIT:
+            raise AnalysisFailure('azure_budget_exhausted')
+
+    def reserve(self, key, entry):
+        if self.state['paused']:
+            if self.usage is not None:
+                self.usage_call('http_failure', self.state['paused']['httpStatus'], None)
+            raise AnalysisFailure('azure_auth_stopped', self.state['paused']['httpStatus'])
         now = self.clock()
+        if self.usage is not None:
+            until = self.state['nextRequestAt']
+            if until and self.personal.official.timestamp(until) > now:
+                raise AnalysisFailure('azure_backoff', retry_at=until)
+            self.usage_call('reserve', key, self.client.identity)
+            self.used = self.usage.used
+            self.state['cache'][key] = entry
+            self.save()
+            return
         if (self.used >= RUN_LIMIT
                 or self.state['budgets'].get(self.personal.calendar_day(now).isoformat(), 0) >= DAY_LIMIT):
             raise AnalysisFailure('azure_budget_exhausted')
@@ -319,6 +376,8 @@ class AzureAnalyzer:
         self.used += 1
 
     def http_failure(self, status, retry_after):
+        if self.usage is not None:
+            return self.usage_call('http_failure', status, retry_after)
         if status in (401, 403):
             self.state['paused'] = {'reason': 'azure_auth_stopped', 'httpStatus': status,
                                     'at': self.personal.stamp(self.clock())}

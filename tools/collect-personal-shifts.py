@@ -458,10 +458,12 @@ def select_targets(schedule, insights, accounts, date, state):
             if eligible.get(name) == target['handle']}
 
 
-def active_targets(targets, date, now):
+def active_targets(targets, date, now, *, scheduled=False):
     if calendar_day(now) != date:
         return {}
     local = now.astimezone(JST).timetz().replace(tzinfo=None)
+    if scheduled and local > dt.time(18):
+        return {}
     return {name: target for name, target in targets.items()
             if local <= dt.time(19 if '夜' in target['shifts'] else 13, 30)}
 
@@ -815,7 +817,7 @@ def validate_post(candidate, payload, target, now, binding=None, roster=(), anal
 
 class DurableHttp:
     def __init__(self, state, snapshot, http_state, date, targets, max_searches, max_posts,
-                 clock=official.utc_now, sleep=time.sleep):
+                 clock=official.utc_now, sleep=time.sleep, *, scheduled=False):
         self.state, self.snapshot, self.http_state = state, snapshot, http_state
         self.date, self.targets = date, targets
         self.clock, self.sleep = clock, sleep
@@ -824,6 +826,7 @@ class DurableHttp:
         self.used = {'searches': 0, 'posts': 0}
         self.cooldowns = official.load_transport(http_state)
         self.post_target = None
+        self.scheduled = scheduled
 
     def save(self):
         official.atomic_json(self.snapshot, self.state)
@@ -840,9 +843,13 @@ class DurableHttp:
         self.save_http()
 
     def check_window(self, target_name=None):
-        active = active_targets(self.targets, self.date, self.clock())
+        active = active_targets(self.targets, self.date, self.clock(), scheduled=self.scheduled)
         if not active or (target_name is not None and target_name not in active):
             raise Failure('outside_window')
+
+    def analysis_allowed(self):
+        active = active_targets(self.targets, self.date, self.clock(), scheduled=self.scheduled)
+        return bool(active) and (self.post_target is None or self.post_target in active)
 
     def reserve(self, host, kind, target_name=None):
         if self.state['paused']:
@@ -1023,7 +1030,7 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
     resolved = {item['id'] for item in state['resolved']} | {post['id'] for post in state['posts']}
     pending = {item['id']: item for item in state['pending']
                if item['id'] not in resolved or item['reason'].startswith('azure_')}
-    active = active_targets(targets, date, clock())
+    active = active_targets(targets, date, clock(), scheduled=durable.scheduled)
     if saved_payloads is not None:
         active = targets
         for candidate in saved_candidates(state, saved_payloads, date):
@@ -1036,7 +1043,7 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
     early_status = 'paused' if state['paused'] else 'outside-window' if not active else None
     for url in search_urls(date)[:max_searches] if not early_status and saved_payloads is None else ():
         try:
-            candidates = client.search(url, active_targets(targets, date, clock()),
+            candidates = client.search(url, active_targets(targets, date, clock(), scheduled=durable.scheduled),
                                        date, clock(), state['identityBindings'])
             sources.append({'url': url, 'status': 'ok', 'candidateCount': len(candidates)})
             for candidate in candidates:
@@ -1056,12 +1063,18 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
             if exc.reason in ('budget_exhausted', 'outside_window', 'shared_host_cooldown') or state['paused']:
                 break
     attempted = deferred = 0
-    for item in sorted(pending.values(), key=lambda item: (item.get('lastAttemptAt') or '', -int(item['id']))):
+    def priority(item):
+        shifts = targets.get(item['name'], {}).get('shifts', [])
+        deadline = (18 * 60 if durable.scheduled else 19 * 60 + 30) if '夜' in shifts else 13 * 60 + 30
+        return deadline, item.get('lastAttemptAt') or item['firstSeenAt'], -int(item['id'])
+
+    for item in sorted(pending.values(), key=priority):
         if item['date'] != date.isoformat():
             continue
         if saved_payloads is not None and item['id'] not in saved_payloads:
             continue
-        target = (targets if saved_payloads is not None else active_targets(targets, date, clock())).get(item['name'])
+        target = (targets if saved_payloads is not None else active_targets(
+            targets, date, clock(), scheduled=durable.scheduled)).get(item['name'])
         if target is None or target['handle'] != item['authorScreenName']:
             continue
         if saved_payloads is None and item['reason'].startswith('azure_'):
@@ -1074,6 +1087,18 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                 item['reason'] = 'azure_saved_' + item['reason']
             deferred += 1
             continue
+        if (saved_payloads is None and analyzer is not None
+                and callable(getattr(analyzer, 'check_capacity', None))):
+            durable.post_target = item['name']
+            try:
+                analyzer.check_capacity()
+            except azure.AnalysisFailure as exc:
+                item['reason'] = 'analysis_capacity_deferred'
+                failures.append({'id': item['id'], **exc.facts()})
+                deferred += 1
+                continue
+            finally:
+                durable.post_target = None
         attempted += 1
         item['lastAttemptAt'] = stamp(clock())
         item['attempts'] += 1
@@ -1083,6 +1108,8 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
             durable.post_target = item['name']
             value = saved_payloads[item['id']] if saved_payloads is not None else client.fetch_post(item['id'])
             if analyzer is not None:
+                if saved_payloads is None:
+                    durable.check_window(item['name'])
                 item['reason'] = 'azure_saved_body_required'
                 state['pending'] = list(pending.values())
                 durable.save()
@@ -1102,6 +1129,11 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                 'reason': reason, 'resolvedAt': stamp(clock())})
             pending.pop(item['id'])
             if analyzer is not None and previous:
+                if post:
+                    supplied_shifts = {event['shift'] for event in post['events']}
+                    post['events'].extend(copy.deepcopy(event) for event in previous['events']
+                                          if event['shift'] not in supplied_shifts)
+                    post['events'].sort(key=lambda event: ('昼', '夜').index(event['shift']))
                 if post and previous['events'] == post['events']:
                     post = previous
                 else:
@@ -1132,7 +1164,7 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         status = 'paused'
     elif early_status:
         status = early_status
-    elif 'budget_exhausted' in codes:
+    elif codes & {'budget_exhausted', 'azure_budget_exhausted'}:
         status = 'budget-exhausted'
     elif failures:
         status = 'partial' if any(source['status'] == 'ok' for source in sources) or new_posts else 'unavailable'
@@ -1176,9 +1208,13 @@ def argument_parser():
     parser.add_argument('--node', type=Path, help='existing Node executable for the local schedule JS')
     parser.add_argument('--date', help='JST calendar date; only today may make requests')
     parser.add_argument('--max-searches', type=int, default=2, help='maximum 1..3 pages/run')
-    parser.add_argument('--max-posts', type=int, default=3, help='maximum 1..3 new individual GETs/run')
+    parser.add_argument('--max-posts', type=int, default=3, help='maximum 0..3 new individual GETs/run')
     parser.add_argument('--dry-run', action='store_true', help='persist private safety/facts, do not publish')
     parser.add_argument('--analysis-backend', choices=('rules', 'azure'), default='rules')
+    parser.add_argument('--ai-state', type=Path, help='existing shared AI usage ledger')
+    parser.add_argument('--analysis-run-id', help='shared official/personal run identity')
+    parser.add_argument('--analysis-limit', type=int, default=3, help='personal AI allocation, 1..3')
+    parser.add_argument('--scheduled', action='store_true', help='also stop personal requests after 18:00 JST')
     parser.add_argument('--analyze-saved', type=Path,
                         help='Azure only: known ID -> saved payload JSON; no Yahoo/X requests')
     return parser
@@ -1190,6 +1226,14 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
     publish = args.publish.resolve() if args.publish else None
     report_path = args.report.resolve() if args.report else None
     writes = [path for path in (snapshot, http_state, publish, report_path) if path]
+    if args.ai_state:
+        writes.append(args.ai_state.resolve())
+        if args.analysis_backend != 'azure' or not args.analysis_run_id:
+            raise ValueError('shared_analysis_configuration_required')
+    elif args.analysis_run_id:
+        raise ValueError('shared_analysis_state_required')
+    if args.scheduled and (args.analyze_saved or (args.analysis_backend == 'azure' and not args.ai_state)):
+        raise ValueError('invalid_scheduled_analysis_configuration')
     inputs = {path.resolve() for path in (args.schedule, args.insights, args.accounts)}
     if args.analyze_saved:
         if args.analysis_backend != 'azure':
@@ -1222,13 +1266,26 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
             accounts = list(csv.DictReader(source))
         targets = select_targets(schedule, insights, accounts, date, state)
         durable = DurableHttp(state, snapshot, http_state, date, targets,
-                              args.max_searches, args.max_posts, clock, sleep)
+                              args.max_searches, args.max_posts, clock, sleep, scheduled=args.scheduled)
         durable.preflight()
         analyzer = None
         if args.analysis_backend == 'azure':
+            options = {}
+            if args.ai_state:
+                spec = importlib.util.spec_from_file_location(
+                    'personal_shared_usage', ROOT / 'tools' / 'analysis-state.py')
+                usage_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(usage_module)
+                try:
+                    options['usage'] = locks.enter_context(usage_module.SharedUsage(
+                        args.ai_state, run_id=args.analysis_run_id, component='personal',
+                        clock=clock, sleep=sleep, request_limit=args.analysis_limit,
+                        deadline=None if args.analyze_saved else durable.analysis_allowed))
+                except usage_module.UsageFailure as exc:
+                    raise InfrastructureFailure(exc.reason) from None
             analyzer = analyzer_factory(state, durable.save, azure_context(),
                                         os.environ if environment is None else environment,
-                                        clock=clock, sleep=sleep)
+                                        clock=clock, sleep=sleep, **options)
             durable.save()
         payloads = None
         if args.analyze_saved:
@@ -1255,8 +1312,9 @@ def main(argv=None):
     parser = argument_parser()
     try:
         args = parser.parse_args(argv)
-        if not 1 <= args.max_searches <= 3 or not 1 <= args.max_posts <= 3:
-            parser.error('--max-searches and --max-posts must be 1..3')
+        if (not 1 <= args.max_searches <= 3 or not 0 <= args.max_posts <= 3
+                or not 1 <= args.analysis_limit <= 3):
+            parser.error('--max-searches/--analysis-limit must be 1..3; --max-posts must be 0..3')
     except SystemExit as exc:
         if exc.code != 2:
             raise

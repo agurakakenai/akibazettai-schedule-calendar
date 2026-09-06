@@ -169,6 +169,13 @@ def public_projection(state, *, collector=None):
             item['createdAt'] = collector.iso(created)
             item['observedAt'] = collector.iso(observed)
             item['names'] = list(names)
+            if 'notices' in post:
+                notice_fields = ('name', 'kind', 'excerpt', 'time', 'observedAt')
+                notices = [{key: notice[key] for key in notice_fields if key in notice}
+                           for notice in post['notices']]
+                collector.analysis_module().validate_notices(
+                    notices, collector.analysis_context(), created)
+                item['notices'] = notices
             ids.add(tid)
             result['posts'].append(item)
         run = state['lastRun']

@@ -485,6 +485,70 @@ class StateTests(Offline):
             now = dt.datetime(2026, 9, 6, hour, minute, tzinfo=personal.JST)
             self.assertEqual(set(personal.active_targets(self.targets, DATE, now)), expected)
 
+    def test_scheduled_window_is_stricter_without_changing_manual(self):
+        for hour, minute, expected in ((12, 30, {'あむ', 'ららこ'}), (13, 30, {'あむ', 'ららこ'}),
+                                       (14, 30, {'あむ'}), (15, 30, {'あむ'}),
+                                       (17, 30, {'あむ'}), (18, 0, {'あむ'}),
+                                       (18, 30, set()), (19, 30, set()), (20, 30, set())):
+            now = dt.datetime(2026, 9, 6, hour, minute, tzinfo=personal.JST)
+            self.assertEqual(set(personal.active_targets(self.targets, DATE, now, scheduled=True)), expected)
+        now = dt.datetime(2026, 9, 6, 18, 30, tzinfo=personal.JST)
+        self.assertEqual(set(personal.active_targets(self.targets, DATE, now)), {'あむ'})
+
+    def test_scheduled_closed_window_does_not_search_or_fetch(self):
+        durable = self.durable(now=dt.datetime(2026, 9, 6, 18, 30, tzinfo=personal.JST))
+        durable.scheduled = True
+        client = self.fake_client(durable)
+        report, code = self.collect(client, durable)
+        self.assertEqual((code, report['status']), (0, 'outside-window'))
+        self.assertEqual(report['requests'], {'searches': 0, 'posts': 0})
+        client.search.assert_not_called()
+        client.fetch_post.assert_not_called()
+
+    def test_ai_capacity_deferral_keeps_candidate_without_fetch_or_failure_cache(self):
+        durable = self.durable()
+        durable.preflight()
+        client = self.fake_client(durable)
+        analyzer = mock.Mock()
+        analyzer.check_capacity.side_effect = personal.azure.AnalysisFailure('azure_budget_exhausted')
+        report, code = personal.collect(
+            self.state, durable, client, self.targets, DATE, 2, 3,
+            clock=durable.clock, roster=self.schedule['roster'], analyzer=analyzer)
+        self.assertEqual((code, report['status']), (2, 'budget-exhausted'))
+        self.assertEqual(self.state['pending'][0]['reason'], 'analysis_capacity_deferred')
+        self.assertEqual(self.state['pending'][0]['attempts'], 0)
+        client.fetch_post.assert_not_called()
+        analyzer.parse.assert_not_called()
+        analyzer.check_capacity.side_effect = None
+        analyzer.parse.return_value = ([{'shift': '昼', 'kind': 'placement',
+                                         'storeId': 's1', 'excerpt': '昼1号店'}], 'events')
+        next_durable = self.durable()
+        next_durable.preflight()
+        next_client = self.fake_client(next_durable, entries=[])
+        personal.collect(self.state, next_durable, next_client, self.targets, DATE, 2, 3,
+                         clock=next_durable.clock, roster=self.schedule['roster'], analyzer=analyzer)
+        self.assertEqual(len(self.state['posts']), 1)
+        self.assertEqual(self.state['pending'], [])
+        next_client.fetch_post.assert_called_once_with(TID)
+
+    def test_saved_partial_analysis_keeps_unmentioned_shift_and_prior_history(self):
+        previous, _ = personal.validate_post(candidate(), post(), AMU, NOW)
+        self.state['posts'] = [previous]
+        self.state['identityBindings'][AMU['name']] = {
+            'authorId': UID, 'authorScreenName': AMU['handle'], 'verifiedAt': personal.stamp(NOW)}
+        durable = self.durable()
+        durable.preflight()
+        analyzer = mock.Mock()
+        analyzer.state = {'history': []}
+        analyzer.parse.return_value = ([{'shift': '夜', 'kind': 'placement',
+                                         'storeId': 's4', 'excerpt': '夜4号店'}], 'events')
+        personal.collect(self.state, durable, None, self.targets, DATE, 2, 3,
+                         clock=durable.clock, roster=self.schedule['roster'], analyzer=analyzer,
+                         saved_payloads={TID: post('9月6日 夜4号店')})
+        self.assertEqual([(event['shift'], event['storeId']) for event in self.state['posts'][0]['events']],
+                         [('昼', 's1'), ('夜', 's4')])
+        self.assertEqual(analyzer.state['history'], [previous])
+
     def test_seed_facts_observed_times_and_spent_budget_floor(self):
         seed = personal.read_state(TOOLS / 'tests' / 'fixtures' / 'personal-pilot.json', private=False)
         personal.merge_seed(self.state, seed)
@@ -679,6 +743,19 @@ class StateTests(Offline):
                 with self.assertRaisesRegex(ValueError, 'collector_locked'):
                     personal.run(args, clock=lambda: NOW, sleep=self.sleeps.append,
                                  client_factory=lambda durable: self.fail('must not construct client'))
+
+    def test_shared_ai_lock_collision_is_infrastructure_before_client_creation(self):
+        usage = personal.official.analysis_module().ledger
+        ledger_path = self.folder / 'ai-usage.json'
+        usage.atomic_json(ledger_path, usage.empty_state())
+        args = self.args(['--analysis-backend', 'azure', '--ai-state', str(ledger_path),
+                          '--analysis-run-id', 'personal-collision'])
+        with usage.SharedUsage(ledger_path, run_id='official-holder', component='official',
+                               clock=lambda: NOW, sleep=self.sleeps.append):
+            with self.assertRaisesRegex(personal.InfrastructureFailure, 'azure_usage_locked'):
+                personal.run(args, clock=lambda: NOW, sleep=self.sleeps.append, environment={},
+                             client_factory=lambda durable: self.fail('must not construct client'))
+        self.assertEqual(usage.load_state(ledger_path)['receipts'], {})
 
     def test_invalid_budget_state_never_resets_to_zero(self):
         personal.official.atomic_json(self.snapshot, {'schemaVersion': 1})
@@ -950,6 +1027,51 @@ class TransportTests(StateTests):
             client.fetch_post(TID)
         self.assertEqual(opener.call_count, 1)
         self.assertEqual(self.state['budgets'][DATE.isoformat()]['posts'], 1)
+
+    def test_scheduled_evening_cutoff_is_rechecked_after_spacing(self):
+        clock = [dt.datetime(2026, 9, 6, 17, 59, 55, tzinfo=personal.JST)]
+
+        def wait(seconds):
+            clock[0] += dt.timedelta(seconds=seconds)
+        durable = personal.DurableHttp(
+            self.state, self.snapshot, self.http, DATE, self.targets, 2, 3,
+            clock=lambda: clock[0], sleep=wait, scheduled=True)
+        durable.post_target = AMU['name']
+        durable.preflight()
+        client = personal.PersonalClient(durable)
+        with mock.patch.object(client.opener, 'open') as opener:
+            with self.assertRaisesRegex(personal.Failure, 'outside_window'):
+                client.fetch_post(TID)
+        opener.assert_not_called()
+        self.assertFalse(durable.analysis_allowed())
+        self.assertEqual(self.state['budgets'][DATE.isoformat()]['posts'], 0)
+
+    def test_source_returning_after_scheduled_deadline_cannot_start_analysis(self):
+        clock = [dt.datetime(2026, 9, 6, 17, 59, 45, tzinfo=personal.JST)]
+
+        def wait(seconds):
+            clock[0] += dt.timedelta(seconds=seconds)
+
+        def response_after_deadline(*args, **kwargs):
+            clock[0] = dt.datetime(2026, 9, 6, 18, 0, 1, tzinfo=personal.JST)
+            return self.response(json.dumps(post()).encode())
+        self.state['pending'] = [{
+            **candidate(), 'reason': 'discovered', 'firstSeenAt': personal.stamp(NOW),
+            'lastAttemptAt': None, 'attempts': 0}]
+        durable = personal.DurableHttp(
+            self.state, self.snapshot, self.http, DATE, self.targets, 2, 3,
+            clock=lambda: clock[0], sleep=wait, scheduled=True)
+        durable.preflight()
+        client = personal.PersonalClient(durable)
+        analyzer = mock.Mock()
+        with (mock.patch.object(client, 'search', return_value=[]),
+              mock.patch.object(client.opener, 'open', side_effect=response_after_deadline)):
+            report, code = personal.collect(
+                self.state, durable, client, self.targets, DATE, 2, 3,
+                clock=durable.clock, roster=self.schedule['roster'], analyzer=analyzer)
+        analyzer.parse.assert_not_called()
+        self.assertEqual((code, report['deferredCount']), (2, 1))
+        self.assertEqual(self.state['pending'][0]['reason'], 'outside_window')
 
     def test_deadline_is_rechecked_after_durable_reservation_save(self):
         clock = [dt.datetime(2026, 9, 6, 13, 29, 59, tzinfo=personal.JST)]

@@ -1756,9 +1756,42 @@ assert.ok(
       plans: { "昼": entries(["まこっちゃん"]), "夜": entries(["まこっちゃん"]) },
       mode: true, linkPost: 1, linkedName: "まこっちゃん",
       confirmed: [[], ["まこっちゃん"]], unknown: [["まこっちゃん"], []] },
-    { name: "conflicting personal and collection", posts: [post("夜", ["あむ"])],
+    { name: "later collection supersedes old personal placement", posts: [post("夜", ["あむ"])],
       personal: [personalPost("placement", "s2")], mode: true,
-      confirmed: [[], []], unknown: ["昼", "夜"].map(shift => plansByShift[shift].map(entry => entry.name)), pending: true },
+      confirmed: [[], ["あむ"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]] },
+    { name: "later personal correction supersedes collected placement", posts: [post("夜", ["あむ"])],
+      personal: [personalPost("placement", "s2", 2)], mode: true, own: true, linkPost: 2,
+      confirmed: [[], ["あむ"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]] },
+    { name: "same-store official late time replaces old personal time",
+      posts: [{ ...post("夜", ["かなた"]), storeId: "s4",
+        notices: [{ name: "あむ", kind: "late", time: "15:00", excerpt: "あむ" }] }],
+      personal: [{ ...personalPost("late", "s4"),
+        events: [{ shift: "夜", kind: "late", storeId: "s4", time: "14:30", excerpt: "夜4号店" }] }],
+      mode: true, arrivalLabel: "15:00", obsoleteArrival: "14:30",
+      confirmed: [[], ["あむ", "かなた"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["あらた"]] },
+    { name: "later storeless personal time keeps official shop and one current arrival",
+      posts: [{ ...post("夜", ["かなた"]), storeId: "s4",
+        notices: [{ name: "あむ", kind: "late", time: "15:00", excerpt: "あむ" }] }],
+      personal: [{ ...personalPost("late", null, 2),
+        events: [{ shift: "夜", kind: "late", time: "16:00", excerpt: "夜" }] }],
+      mode: true, arrivalLabel: "16:00", obsoleteArrival: "15:00", linkPost: 2,
+      confirmed: [[], ["あむ", "かなた"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["あらた"]] },
+    { name: "uncertainty does not revive an obsolete arrival time",
+      posts: [{ ...post("夜", ["かなた"]), storeId: "s4",
+        notices: [{ name: "あむ", kind: "late", time: "15:00", excerpt: "あむ" }] }],
+      personal: [{ ...personalPost("late", "s4"),
+        events: [{ shift: "夜", kind: "late", storeId: "s4", time: "14:30", excerpt: "夜4号店" }] },
+      personalPost("uncertain", null, 2)],
+      mode: true, arrivalLabel: "15:00到着予定・保留", obsoleteArrival: "14:30",
+      confirmed: [[], ["あむ", "かなた"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["あらた"]] },
+    { name: "definite placement after both late notices has no stale arrival",
+      posts: [{ ...post("夜", ["かなた"]), storeId: "s4",
+        notices: [{ name: "あむ", kind: "late", time: "15:00", excerpt: "あむ" }] }],
+      personal: [{ ...personalPost("late", "s4"),
+        events: [{ shift: "夜", kind: "late", storeId: "s4", time: "14:30", excerpt: "夜4号店" }] },
+      personalPost("placement", "s4", 2)],
+      mode: true, noArrival: true, own: true, linkPost: 2,
+      confirmed: [[], ["あむ", "かなた"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["あらた"]] },
     { name: "cancelled personal placement retains day gate", posts: [],
       personal: [personalPost("placement", "s2"), personalPost("absence", null, 2)], mode: true, cancelled: true,
       confirmed: [[], []], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]] },
@@ -1839,6 +1872,19 @@ assert.ok(
         assert.equal(new Set(names).size, names.length, `${fixture.name}: no confirmed/unknown duplicates`);
       }
       if (fixture.personal) {
+        if (fixture.noArrival) {
+          const amu = withClass(sections[1], "maid-entry").find(row => row.dataset.name === "あむ");
+          assert.equal(withClass(amu, "entry-update").length, 0);
+          assert.ok(!amu.textContent.includes("14:30") && !amu.textContent.includes("15:00"));
+        }
+        if (fixture.arrivalLabel) {
+          const amu = withClass(sections[1], "maid-entry").find(row => row.dataset.name === "あむ");
+          const updates = withClass(amu, "entry-update");
+          assert.equal(updates.length, 1, "one current arrival label across both sources");
+          assert.ok(updates[0].textContent.includes(fixture.arrivalLabel));
+          assert.ok(!amu.textContent.includes(fixture.obsoleteArrival));
+          assert.equal(amu.dataset.store, "s4");
+        }
         assert.equal(withClass(sections[1], "personal-details").length, 0);
         assert.equal(withClass(sections[1], "personal-source-link").length, 0);
         assert.doesNotMatch(sections[1].textContent, /本人ポスト|本人案内|本人の当日案内/);

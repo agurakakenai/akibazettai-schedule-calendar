@@ -314,6 +314,7 @@ class HttpTests(unittest.TestCase):
             client.fetch_post(TID)
         self.assertIs(urllib.request.urlopen, original_urlopen)
         self.assertEqual(opener.call_count, 2)
+        self.assertEqual(client.requests, {'searches': 0, 'posts': 2})
         client.sleep.assert_called_once_with(2.0)
         self.assertIn('tweet-result?id=' + TID, opener.call_args.args[0].full_url)
 
@@ -419,10 +420,12 @@ class CollectionTests(unittest.TestCase):
                 first, report, code = collect(client)
                 self.assertEqual(client.source_calls, [collector.SEARCH_URLS[0]])
                 self.assertEqual((code, report['status']), (3, 'unavailable'))
+                self.assertEqual(report['requests'], {'searches': 1, 'posts': 0})
                 self.assertEqual(first['cooldowns']['search.yahoo.co.jp'], collector.iso(until))
                 restarted = FakeClient()
-                second, _, _ = collect(restarted, first)
+                second, report, _ = collect(restarted, first)
                 self.assertEqual(restarted.source_calls, [])
+                self.assertEqual(report['requests'], {'searches': 0, 'posts': 0})
                 self.assertEqual(second['cooldowns'], first['cooldowns'])
                 after, _, code = collector.collect(
                     second, set(), restarted, START, END, 20,
@@ -831,6 +834,15 @@ class PersistenceTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_default_backend_stays_rules_and_saved_input_is_explicit(self):
+        args = collector.argument_parser().parse_args([])
+        self.assertEqual(args.analysis_backend, 'rules')
+        self.assertEqual(args.analysis_limit, 3)
+        self.assertIsNone(args.analyze_saved)
+        self.assertIsNone(args.ai_state)
+        self.assertEqual(collector.argument_parser().parse_args(
+            ['--analysis-limit', '0']).analysis_limit, 0)
+
     def test_default_jst_service_days_before_and_after_five(self):
         args = collector.argument_parser().parse_args([])
         self.assertEqual(collector.date_range(args, NOW), (START, END))
@@ -849,10 +861,53 @@ class CliTests(unittest.TestCase):
 
     def test_cli_enforces_bounded_requests_and_interval(self):
         for argv in (['--max-posts', '21'], ['--max-posts', '0'],
-                     ['--interval', '1'], ['--days', '0'], ['--once', '--watch']):
+                     ['--interval', '1'], ['--days', '0'], ['--once', '--watch'],
+                     ['--analysis-limit', '-1'], ['--analysis-limit', '4']):
             with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
                     collector.main(argv)
+
+
+class NoticeCompatibilityTests(unittest.TestCase):
+    def test_legacy_notice_merges_with_explicit_equal_acquisition(self):
+        state, _, _ = collect()
+        state['posts'][0]['notices'] = [{'name': 'みりあ', 'kind': 'late', 'excerpt': 'みりあ'}]
+        mirror = copy.deepcopy(state)
+        mirror['posts'][0]['notices'][0]['observedAt'] = state['posts'][0]['observedAt']
+        self.assertEqual(collector.merge_snapshots(state, mirror)['posts'], mirror['posts'])
+
+    def test_completion_report_distinguishes_attempt_from_unissued_host_denial(self):
+        client = FakeClient(posts={TID: collector.FetchFailure('host_rate_limited')})
+        state, report, code = collect(client)
+        self.assertEqual(report['attemptedCount'], 1)
+        self.assertEqual(report['requests'], {'searches': 2, 'posts': 0})
+        self.assertEqual(state['lastRun']['requests'], report['requests'])
+        self.assertEqual((report['component'], report['exitCode']), ('official', code))
+
+    def test_analysis_pending_survives_rules_runs_and_mirror_merge(self):
+        state, _, _ = collect()
+        item = pending(reason='azure_pending')
+        state['pending'] = [item]
+        client = FakeClient()
+        updated, report, code = collect(client, state)
+        self.assertEqual(code, 2)
+        self.assertEqual(updated['pending'], [item])
+        self.assertEqual(client.calls, [])
+        self.assertEqual(report['newNameCount'], 0)
+        self.assertEqual(collector.merge_snapshots(updated, state)['pending'], [item])
+
+    def test_newer_notice_mirror_does_not_replace_names_or_original_observation(self):
+        state, _, _ = collect()
+        old = copy.deepcopy(state)
+        old['posts'][0]['notices'] = [{
+            'name': 'みりあ', 'kind': 'late', 'excerpt': 'みりあ',
+            'observedAt': '2026-09-05T17:00:00Z'}]
+        current = copy.deepcopy(old)
+        current['posts'][0]['notices'][0].update(time='19:00', observedAt='2026-09-05T18:00:00Z')
+        merged = collector.merge_snapshots(current, old)
+        self.assertEqual(merged['posts'], current['posts'])
+        self.assertEqual(merged['posts'][0]['names'], state['posts'][0]['names'])
+        self.assertEqual(merged['posts'][0]['observedAt'], state['posts'][0]['observedAt'])
 
 
 if __name__ == '__main__':

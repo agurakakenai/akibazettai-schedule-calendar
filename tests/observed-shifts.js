@@ -427,6 +427,12 @@ assert.equal(miriaPlan.stops[0].state, "announced");
 assert.equal(miriaPlan.stops[0].openRate, null);
 assert.equal(miriaPlan.stops[0].sourcePosts[0], lateOfficial);
 assert.equal(miriaPlan.guesses, 0);
+const samePostLate = { ...lateOfficial, names: [...lateOfficial.names, "みりあ"] };
+const specificallyLate = resolveOfficialLate([samePostLate]);
+assert.equal(specificallyLate.entries.find(entry => entry.name === "みりあ").officialPlacement, true);
+assert.equal(specificallyLate.observed.byMaid.has("みりあ"), false,
+  "an explicit late notice is not presence even when the same post also lists the name");
+assert.equal(samePostLate.names.length, 4, "the original roster is not rewritten");
 const arrival = { ...lateOfficial, id: "2096500000000000088", createdAt: "2026-09-06T05:00:00Z",
   names: ["みりあ"], notices: [] };
 const arrived = resolveOfficialLate([arrival, lateOfficial]);
@@ -442,6 +448,8 @@ for (const mutate of [
   x => { x.notices[0].excerpt = "x".repeat(161); },
   x => { x.notices[0].time = "25:00"; },
   x => { x.notices[0].time = null; },
+  x => { x.notices[0].observedAt = null; },
+  x => { x.notices[0].observedAt = "2026-09-05T03:00:00Z"; },
   x => { x.lastCheckedAt = "now"; },
   x => { x.revisions[0].observedAt = null; }
 ]) {
@@ -566,12 +574,88 @@ assert.equal(api.dayHasPersonStoreEvidence(insights, null, options.dateKey, { ..
 const contradiction = resolveNight(personalFixture, {
   ...officialNight, posts: [{ ...officialNight.posts[0], storeId: "s4" }]
 });
-assert.equal(contradiction.personal.byMaid.get("あむ").conflict, true);
-assert.equal(contradiction.observed.byMaid.has("あむ"), false);
+assert.equal(contradiction.personal.byMaid.get("あむ").conflict, false);
+assert.equal(contradiction.personal.byMaid.get("あむ").superseded, true);
+assert.equal(contradiction.observed.byMaid.has("あむ"), true);
 assert.equal(contradiction.entries.filter(entry => entry.name === "あむ").length, 1);
-assert.equal(planOf("あむ", contradiction).stops[0].storeId, null);
-assert.equal(planOf("あむ", contradiction).stops[0].recorded, false);
+assert.equal(planOf("あむ", contradiction).stops[0].storeId, "s4");
+assert.equal(planOf("あむ", contradiction).stops[0].recorded, true);
 assert.equal(contradiction.observed.posts.length, 1, "conflicting original collection source remains intact");
+{
+  const correction = personalPost("2096500000000000077", "あむ",
+    [announcement("placement", "s4")], "2026-09-06T14:00:00+09:00");
+  const updated = resolveNight(withEvents(correction));
+  assert.equal(updated.personal.byMaid.get("あむ").conflict, false);
+  assert.equal(updated.observed.byMaid.has("あむ"), false, "a new placement is guidance, not a new observation");
+  assert.equal(planOf("あむ", updated).stops[0].storeId, "s4");
+  assert.equal(planOf("あむ", updated).stops[0].observed, false);
+  assert.equal(updated.entries.filter(entry => entry.name === "あむ").length, 1);
+  assert.equal(updated.personal.byMaid.get("あむ").placementSource, correction);
+  assert.equal(api.resolveShiftRoster({ ...options, personal: withEvents(correction), shift: "昼" })
+    .observed.byMaid.get("あむ").storeIds[0], "s1", "night-only correction never clears lunch");
+  const miriaMove = personalPost("2096500000000000078", "みりあ",
+    [announcement("placement", "s2", { shift: "昼" })], "2026-09-06T14:00:00+09:00");
+  const movedNotice = api.resolveShiftRoster({
+    ...options, observations: officialNotices, personal: { ...personalFixture, posts: [miriaMove] }, shift: "昼"
+  });
+  assert.equal(movedNotice.entries.find(entry => entry.name === "みりあ").officialNotice, undefined);
+  assert.equal(movedNotice.entries.find(entry => entry.name === "みりあ").personalNotice.storeId, "s2");
+  const observedLater = { ...lateOfficial,
+    notices: [{ ...lateOfficial.notices[0], observedAt: "2026-09-06T05:54:14.290Z" }] };
+  assert.equal(api.validateObservations({ ...officialNotices, posts: [observedLater] }).posts[0].observedAt,
+    lateOfficial.observedAt, "notice acquisition does not rewrite roster observation");
+  const timedOfficial = { ...lateOfficial, createdAt: "2026-09-06T04:00:00Z",
+    notices: [{ ...lateOfficial.notices[0], time: "15:00" }] };
+  const timedPersonal = personalPost("2096400000000000098", "みりあ",
+    [announcement("late", "s4", { shift: "昼", time: "14:30" })], "2026-09-06T03:00:00Z");
+  const sameStore = api.resolveShiftRoster({
+    ...options, observations: { ...officialNotices, posts: [timedOfficial] },
+    personal: { ...personalFixture, posts: [timedPersonal] }, shift: "昼"
+  });
+  assert.equal(sameStore.entries.find(entry => entry.name === "みりあ").officialNotice.time, "15:00");
+  assert.equal(sameStore.personal.byMaid.get("みりあ").late, null,
+    "a later official time supersedes an old personal time even when the shop is unchanged");
+  const laterStoreless = personalPost("2096500000000000098", "みりあ",
+    [announcement("late", null, { shift: "昼", time: "16:00" })], "2026-09-06T05:00:00Z");
+  const laterTime = api.resolveShiftRoster({
+    ...options, observations: { ...officialNotices, posts: [timedOfficial] },
+    personal: { ...personalFixture, posts: [timedPersonal, laterStoreless] }, shift: "昼"
+  });
+  const latestNotice = laterTime.entries.find(entry => entry.name === "みりあ").officialNotice;
+  assert.equal(latestNotice.storeId, "s4", "storeless time correction preserves explicit earlier shop evidence");
+  assert.equal(latestNotice.time, "16:00");
+  assert.equal(latestNotice.arrivalSource, laterStoreless);
+  assert.equal(timedPersonal.events[0].time, "14:30");
+  assert.equal(timedOfficial.notices[0].time, "15:00", "source history retains both original announcements");
+  const unclearAfter = personalPost("2096500000000000099", "みりあ",
+    [announcement("uncertain", null, { shift: "昼" })], "2026-09-06T05:30:00Z");
+  const retainedTime = api.resolveShiftRoster({
+    ...options, observations: { ...officialNotices, posts: [timedOfficial] },
+    personal: { ...personalFixture, posts: [timedPersonal, unclearAfter] }, shift: "昼"
+  });
+  assert.equal(retainedTime.personal.byMaid.get("みりあ").late, null,
+    "later uncertainty cannot resurrect a superseded personal arrival time");
+  assert.equal(retainedTime.entries.find(entry => entry.name === "みりあ").officialNotice.time, "15:00");
+  assert.equal(retainedTime.entries.find(entry => entry.name === "みりあ").officialNotice.uncertain, true);
+  const definiteAfter = { ...laterStoreless, id: "2096500000000000100",
+    url: "https://x.com/amu_zettai/status/2096500000000000100", createdAt: "2026-09-06T05:45:00Z" };
+  const resolvedAgain = api.resolveShiftRoster({
+    ...options, observations: { ...officialNotices, posts: [timedOfficial] },
+    personal: { ...personalFixture, posts: [timedPersonal, unclearAfter, definiteAfter] }, shift: "昼"
+  });
+  assert.equal(resolvedAgain.entries.find(entry => entry.name === "みりあ").officialNotice.uncertain, false);
+  assert.equal(resolvedAgain.entries.find(entry => entry.name === "みりあ").officialNotice.time, "16:00");
+  const placedAfter = { ...definiteAfter, events: [announcement("placement", "s4", { shift: "昼" })] };
+  for (const observations of [{ ...officialNotices, posts: [timedOfficial] }, null]) {
+    const placed = api.resolveShiftRoster({
+      ...options, observations, personal: { ...personalFixture, posts: [timedPersonal, placedAfter] }, shift: "昼"
+    });
+    assert.equal(placed.personal.byMaid.get("みりあ").late, null,
+      "a later definite placement replaces old lateness instead of reviving its time");
+    assert.equal(placed.personal.byMaid.get("みりあ").storeId, "s4");
+    assert.equal(placed.personal.byMaid.get("みりあ").history[0].event.time, "14:30");
+  }
+}
 const laterCollection = resolveNight(withEvents(cancellation), {
   ...officialNight, posts: [{ ...officialNight.posts[0], createdAt: "2026-09-06T15:00:00+09:00" }]
 });

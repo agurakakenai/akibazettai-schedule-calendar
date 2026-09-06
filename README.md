@@ -1008,7 +1008,7 @@ Node.jsがPATHにない場合は `--node` に実行ファイルを指定でき�
 
 ## 公開HTTPからの自動収集
 
-`tools\collect-shifts.py` は、Yahoo!リアルタイム検索の**「アキバ絶対領域」「ひるにゃんこ」各1ページ**から公式status URLを発見し、既存の公開個別表示エンドポイントで作者ID・screen_name・投稿ID・日時・お給仕の書式を確認します。APIキー、課金、ログインCookie、ブラウザー、追加パッケージは不要です。本文全文は保存せず、出典と抽出した事実だけを残します。
+`tools\collect-shifts.py` は、Yahoo!リアルタイム検索の**「アキバ絶対領域」「ひるにゃんこ」各1ページ**から公式status URLを発見し、既存の公開個別表示エンドポイントで作者ID・screen_name・投稿ID・日時・お給仕の書式を確認します。既定rulesでの取得はAPIキー、課金、ログインCookie、ブラウザー、追加パッケージが不要です（有効化後の補足AI解析は下記Azure設定・予算が必要です）。本文全文は恒久保存せず、出典と抽出した事実だけを残します。
 
 ```powershell
 # 1回だけ。朝5時区切りのJST営業日で直近2日、個別取得は最大20件。
@@ -1030,6 +1030,10 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 作者・日時を検証したうえで非給仕と判定したIDは、`resolved` に記録します。公開用コピーへの反映に失敗しても、古いコピーに残った保留が再び未処理として戻らないようにするためです。投稿本文はこの解決記録にも入れません。
 
 このsnapshotは **`shifts.csv` / `STORE_INSIGHTS` / 翌日ローテーションの学習に入力しません**。検索にまだ出ていない店を、統計上の休業・0人という正解にしないためです。手動で確認・補正した人物名簿があるシフトはそちらを優先します。自動化から新しい名前の同一視や手動補正の上書きはしません。
+
+公式の定型名簿は従来のrulesで確認し、有効化後のLunaは同じ集合ポストの明確な後着補足を別の`notices`へ抽出します。短い元文・名前・必要な時刻だけを公開し、時刻がない「あとから」に時刻を作りません。noticeは`names`・人数・勤務実績には加えません。名簿を観測した`observedAt`と補足本文を確認したnoticeの`observedAt`、非公開の解析時刻を分けます。公式・本人の最新案内は元の投稿日時とID順で対象の昼夜ごとに解決し、古い本文の再解析時刻で後の訂正を上書きしません。
+
+同じ投稿で名前の列と明確な後着補足が両方ある場合も、表示は後着案内として扱い、名簿原本は保持します。同じ店舗でも後の到着時刻を優先し、古い時刻を二重表示しません。後の明示配置では古い後着状態を引き継がず、保留の投稿だけで過去の時刻を復活させません。
 
 日付の詳細は**店舗名と名前のチップ**を中心に表示し、確認できた顔ぶれと**「未発表」枠**を分けます。「投稿あり」「投稿実績」「本人案内」などの見出しを繰り返しません。公式の元投稿・投稿時刻は、閉じた**「集合ポスト」**へまとめています。時刻は日本時間のまま、画面上のJST suffixを省略します。自動観測がない店は未確認であり、休業ではありません。予定表だけの人物を、不在や勤務実績の証拠として扱いません。同じ人物の別店舗の投稿も保持します。人物別一覧でも、その人物の実績がある行だけが記録になります。
 
@@ -1064,7 +1068,7 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 
 取得は日付と店舗語等の**バッチ検索**を使い、本人ごとの無制限検索はしません。本人枠の上限は1回につきYahoo検索3ページ・新規個別確認3投稿、日本時間の1日につき検索60・個別確認30です。確認済みIDは再取得せず、予算に入らない候補は保留します。この上限は安全性や網羅性が実測で保証された値ではなく、制限を受けたら停止するための上限です。初期seedは上記pilotの確認済み2投稿を再利用し、既知の使用量（pilot検索6＋追加の小規模確認1、個別確認2）も当日予算に含めます。これを本番CLIで新規取得した成果とは数えません。
 
-採用クエリは「`M月D日 号店`」「`今日 お休み 絶対領域`」「`M/D 号店`」の各1ページです。欠勤語クエリは1回/runだけで、そこに出たこと自体を欠勤の証拠にはしません。原予定の昼だけの人は13:30まで、夜の予定がある人は19:30までを取得対象にし、待機後・HTTP直前にも人物ごとの締切を確認します。取得処理が遅れて締切を過ぎた対象は追跡を延長しません。
+採用クエリは「`M月D日 号店`」「`今日 お休み 絶対領域`」「`M/D 号店`」の各1ページです。欠勤語クエリは1回/runだけで、そこに出たこと自体を欠勤の証拠にはしません。原予定の昼だけの人は13:30まで、夜の予定がある人は手動時19:30まで、**有効化後の定期時は18:00まで**を取得対象にし、待機後・source/AI要求直前にも人物ごとの締切を確認します。取得処理が遅れて締切を過ぎた対象は追跡を延長しません。
 
 ローカルの単発CLIは既存のPythonとNodeを使い、`--snapshot` に非公開の永続JSON、`--http-state` に公式と共用するsidecarを明示します。`--publish` は公開用JSONの追加出力です。本人CLIの`--dry-run`は**公開mirror更新だけを抑止**し、通信予算・停止状態と検証済みの本人factsはprivate snapshotへ保存します（公式CLIのdry-runとは保存範囲が異なります）。取得を試すだけでも通信と永続stateの変更があるため、稼働中のcloudと同時には実行しません。
 
@@ -1076,7 +1080,7 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 
 #### 共通Luna設定と本人本文解析
 
-解析v4は **metadata照合 → 行ID付き原文と最小contextをnanoへ1回 → 選択ID・対象範囲・元行の数値を確認 → 既存履歴** に分けます。勤務と余談、昼夜、訂正・否定・不確実さ、他人や引用の意味はAIの担当です。コードで「かも」「明日」等を再解釈する前処理・節解析は行いません。投稿日時/JST対象日・本人名・対象shiftだけを本文に添え、名簿全体や履歴はモデルへ送りません。
+解析v4は **metadata照合 → 行ID付き原文と最小contextをLunaへ1回 → 選択ID・対象範囲・元行の数値を確認 → 既存履歴** に分けます。勤務と余談、昼夜、訂正・否定・不確実さ、他人や引用の意味はAIの担当です。コードで「かも」「明日」等を再解釈する前処理・節解析は行いません。投稿日時/JST対象日・本人名・対象shiftだけを本文に添え、名簿全体や履歴はモデルへ送りません。
 
 原文はCRLFを1改行、単独CR/LFをそれぞれ改行として分割し、1始まりの整数IDを付けます。改行文字・空行・最後の改行後の空行・Unicode・絵文字・全角空白を保持し、文字を書き換えません。最大128行で、上限超過は切捨てず保留します。モデルは自由な引用文や文字offsetではなく`evidenceLineIds`（各eventにつき1〜16個、当該投稿に実在するID）を選びます。重複・空配列・不正IDは拒否し、複数行や昼夜での同じ行の共有は許容します。
 
@@ -1086,17 +1090,23 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 
 ローカルCLIは無設定なら従来の`--analysis-backend rules`です。`--analysis-backend azure`を明示すると、検証済みの新規本人本文**全体**をAzure OpenAI `gpt-5.6-luna`（2026-07-09）へ送り、Chat Completions v1・structured outputs・`reasoning_effort=none`で解析します。共通の設定/HTTP transportは`tools/azure-openai.py`、本人用prompt/schema・予算・履歴は`tools/personal-azure.py`に分離しています。本番安定名`gpt-5.6-luna`だけを受理し、providerの返却modelも照合します。ルールが一部を拾ってもAzureを省略せず、nano/mini・別model・rulesへの成功fallbackは行いません。
 
-Actionsでは手動`personal` / `both`時だけAzureを選択します。必要な設定はsecret `AZURE_OPENAI_API_KEY`とvariables `AZURE_OPENAI_ENDPOINT`（`https://<resource>.openai.azure.com/`）、`AZURE_OPENAI_DEPLOYMENT`（`gpt-5.6-luna`）です。collectステップの本人子プロセスだけに渡し、公式のみの収集・restore・build・frontendには不要です。設定不備は明示エラーになります。ローカルでdeployment変数自体を省略した場合も、既定値は同じ本番Lunaです。
+Actionsでは手動`personal` / `both`と、有効化された当日案内の公式・本人解析でAzureを選択します。必要な設定はsecret `AZURE_OPENAI_API_KEY`とvariables `AZURE_OPENAI_ENDPOINT`（`https://<resource>.openai.azure.com/`）、`AZURE_OPENAI_DEPLOYMENT`（`gpt-5.6-luna`）です。必要なcollector子だけに渡し、Git・Node入力読取・restore・stage/build・保存根拠の適用・frontendへは渡しません。無効時の公式定期は既存rulesのままです。
 
-今後のX関連AIは共通Luna設定を使い、用途ごとのprompt/schemaを渡す方針です。**現在接続済みなのは本人本文v4経路**で、公式定型取得/解析は既存rulesのままです。画像はprivateな読取試験のみで、半月予定表の自動取得/取込、追加の公式AI解析、10〜18時訂正巡回、本人定期枠はこの変更では実装・有効化しません。取得・本人確認・型・出典・原投稿順の履歴はコードの責務として維持します。
+公式補足と本人本文v4は共通Luna transportを使い、用途別prompt/schemaを分けます。画像・半月予定表の自動取得/取込や10時からの巡回は含みません。取得・本人確認・型・出典・原投稿順の履歴はコードの責務です。公式の未発行補足だけは別のbounded queueへ残し、次枠のAI容量がある場合に既知IDをsource上限内で確認できます。全既知投稿の編集巡回ではなく、拒否・失敗済みの再推論や結果合わせの再取得はしません。
 
-AIは最大3回/run・30回/JST日、本文UTF-8 6,000 bytes・出力1,200 tokens・応答24,000 bytes・timeout 30秒に制限します。要求は原則60秒以上離し、途中runをまたぐ待機は保留します。429は少なくとも5分と`Retry-After`の長い方を待ち、401/403はAIだけを永続停止します。Yahoo/Xの共有cooldown・予算とは別です。本文hash・モデル/プロンプト/schema版・検証contextを含むprivate cacheへ通信前に予約し、同じ入力の成功・拒否・失敗・中断を自動で再課金しません。障害後の再試行は運用者が該当cacheと停止状態を確認した上で行う明示的な復旧で、自動解除はありません。
+cloudのAI（手動`personal/both`を含む）は**公式＋本人合算3回/run・実発行日のJST暦日30回**です。data-onlyの`ai-usage.json`へ発行前予約を永続化し、同じrun ID/attemptを子間で共有します。旧モデル・外部/画像使用も承認済みreceiptで同じ日予算へ算入します。cache hitは追加発行ではなく、中断予約は保守的に消費済みです。公式source/rulesを先行しても、両用途に枠がある本人受付中は公式AIを1〜2枠に制限し、過去の追加枠配分・締切で3枠目を配分します。残り1枠を本人の締切へ優先する場合や共有予算が尽きた場合は公式AIを0枠にでき、公式名簿の収集を維持して未発行補足を保留します。本人は公式の実使用後の残枠を利用し、容量がなければ本文GETを始めません。本文UTF-8 6,000 bytes・出力1,200 tokens・応答24,000 bytes・timeout 30秒、retry0・原則60秒以上の間隔を維持します。待機後は実日と締切を再確認し、429は少なくとも5分と`Retry-After`の長い方、401/403はAIだけを永続停止します。Yahoo/Xの共有cooldown・予算とは別です。同じ入力の成功・拒否・失敗・中断は自動再課金せず、復旧には運用者の明示照合が必要です。
+
+本人後にAI残枠があれば、初回の公式childが保持した**同runの未発行raw最大3件**を`.cc-work`内のtransient bufferから1回だけ再開します。公式の上限は同run公式既使用数＋共有残枠（最大3）で、追加のsource GETは行いません。本人候補0でも公式へ未使用枠を返せます。初回の検索・個別取得件数、名簿追加件数、source失敗は再開結果で消さず集約します。bufferはrun ID・入力/状態hash・取得metadataを検証し、成功・失敗とも削除してcanonical state・recovery・Pagesには含めません。
+
+新規名簿の取得を優先したうえで、既知の未解析queueも共有の未消費AI枠内・最大3件までAI発行前に先行取得できます。これは本人のAI枠を予約する操作ではありません。本人がその枠を使えば余分なrawはcloud run終了時に破棄し、未処理metadataだけを残します。使われなかったrawのGETもsource件数へ計上し、合算run上限・host制限を維持します。枠が尽きてから既知投稿を追加GETすることはありません。
 
 **既知の旧`no_event`や編集本文は自動で直りません。**本文全文を保存していないため、既知IDには`azure_saved_body_required`というprivateの確認理由を残し、AIのための追加GETは行いません。既に手元に保存されているpayloadがある場合だけ、同じCLIへ`--analysis-backend azure --analyze-saved <saved.json> --date YYYY-MM-DD`を渡せます。入力は`{"既知の投稿ID": {元の個別投稿payload}}`形式です。この経路はYahoo/X clientを作らず、既存のpendingまたは確認済みID・identity binding・対象日の元予定との照合を通します。未確認のIDを追加するインポート機能ではありません。AI失敗後のpendingも本文を再GETせず残します。
 
-編集・再解析の成功時には旧抽出結果をprivate履歴へ残し、同じIDの現行案内を更新します。並び順は**元の投稿日時とID**のままなので、古い投稿を再解析した時刻で新しい欠勤・復帰を上書きしません。privateの`azureAnalysis`（cache・AI予算・停止状態・確認理由・旧抽出履歴）は公開projectionから除外します。全文・健康理由・APIキーは新たに保存しません。本人案内を公式実績・CSV・統計学習へ混ぜる処理や、本人定期枠・新しい表示UIは追加しません。
+編集・再解析の成功時には旧抽出結果をprivate履歴へ残し、同じIDの現行案内を更新します。並び順は**元の投稿日時とID**のままなので、古い投稿を再解析した時刻で新しい欠勤・復帰を上書きしません。privateの`azureAnalysis` / `officialAnalysis`（cache・確認理由・旧抽出履歴）と共有AI台帳は公開projectionから除外します。pending/refusal/no_event・締切や予算の不足は既存factsの削除命令ではありません。本文の恒久保存や健康理由・APIキーの保存はせず、本人/後着案内を公式実績・CSV・統計学習へ混ぜません。
 
-**有効化は段階的に行います。**先に互換コードと手動の本人/両方モードを公開し、既存stateを壊さない少量のmain実行と本番表示を確認してから定期枠を有効にします。この段階では公式の1日8回cronを維持し、本人の定期枠はまだ追加していません。
+**有効化は別の承認ゲートです。**`DAILY_GUIDANCE_ENABLED`は未設定/既定`false`で、公式の従来定期を維持します。先に互換コードを公開し、承認済みの使用量receiptを適用・本番表示を確認した後だけ`true`にします。有効化時に共有台帳が欠けていればrestore/収集を停止し、ゼロ台帳を生成して進みません。
+
+手動`personal/both`のAzure経路にも、flagの値にかかわらず照合済みの共有台帳が必要です。台帳欠落・初回importなし・旧AI予算や停止状態が未移行の場合はlease/収集前に停止し、本人専用のゼロ予算へfallbackしません。手動19:30は受付締切の互換性であり、合算日予算の例外ではありません。従来rules CLIの既定値と、flag無効時のlegacy stateの読取・restoreは維持します。
 
 ### GitHub Actionsから収集・公開する構成
 
@@ -1117,23 +1127,41 @@ gh workflow run deploy-pages.yml --ref main -f mode=deploy
 
 probeと手動`collect`で実際の取得・保存・Pages配信を確認したうえで、**本番の定期更新はActionsへ移行しました**。ローカル定期taskは無効化し、併用しません。毎日、日本時間の**12:30・13:30・14:30・15:30・17:30・18:30・19:30・20:30の計8回**に実行します。UTCのcronは `30 3-6,8-11 * * *` で、16:30や範囲外の時刻は含めません。GitHub側の混雑などで開始が遅れる場合があり、厳密な時刻の保証はありません。**PCの起動・ログインに依存しません**。
 
+有効化後もcronは増やさず、event.scheduleの完全一致で当日案内へ進みます。12:30・13:30は昼のみ/夜予定あり、14:30・15:30・17:30は夜予定ありの本人が対象ですが、実時刻で昼13:30・全員18:00の上限を再確認します。18:30・19:30・20:30は本人source/AI要求ゼロです。最後の予定枠は17:30であり、18:00正時の最終確認は保証しません。昼は最大2枠・合計最大6推論で、13:30枠の遅延や候補数によって未捕捉が残ります。
+
+source上限は公式2検索・20個別/run、本人3検索・3個別/runと60検索・30個別/JST日を維持します。両方のrunは**合算5検索以下・20個別以下**で、本人個別は公式の実試行後の残枠以内です。これはglobal source日上限60/30ではありません。本人自動化で実通信量は増え得ます。
+
 コード公開と収集公開は同じPages concurrency groupで直列化します。production runは実行開始時の**最新main**をcheckoutし、コードpush時にもstate branchの最新観測を復元します。古いcollector runが古いUIやmain同梱の古い観測へ巻き戻すことを避けます。`GITHUB_TOKEN`のpushで別workflowが起動することには依存しません。
 
-`collector-state` branchは**data専用**です。公式観測・本人イベントのsnapshot、pending、resolved、本人の予算・pause、共有通信制限sidecar、恒久の`state-owner.json`、収集中の`lease.json`だけを保存し、そのbranchのコードを実行しません。本人snapshotがない既存stateは互換コードで読み、コード公開前にstateだけを移行しません。main/default/code branchの誤指定、所有marker欠落、予期しないファイル、non-fast-forwardを拒否します。force pushはしません。
+`collector-state` branchは**data専用**です。公式観測・本人イベントのsnapshot、pending、resolved、本人の予算・pause、共有通信制限sidecar、共有`ai-usage.json`、恒久の`state-owner.json`、収集中の`lease.json`だけを保存し、そのbranchのコードを実行しません。本人snapshotがない既存stateは互換コードで読み、コード公開前にstateだけを移行しません。main/default/code branchの誤指定、所有marker欠落、予期しないファイル、non-fast-forwardを拒否します。force pushはしません。
 
 HTTPの前にleaseをremoteへ保存します。収集後、成功・部分失敗・取得不能のどれでも保存できた事実と通信制限を永続化し、同じcommitでleaseを消します。remote保存が失敗した場合はleaseを残し、次runはHTTPを始めず停止します。部分失敗でも有効な保存済み観測を配信できますが、**Pages構築成功と収集完全成功は別**です。`collectionStatus` / `collectionCode`とUIの更新状態で区別します。
+
+#### 承認済み保存根拠の適用
+
+`mode=apply-saved`はtrusted mainの明示`workflow_dispatch`専用です。`saved_manifest`入力を環境変数で渡し、cloudが32KiB以下のdata-only JSONを検査します。トップレベルは`schemaVersion:1`、`expectedMainSHA`、`expectedStateSHA`、`officialAmendments`（最大3件）、`usageImports`、`sourceReceipts`（各最大10件）だけです。公式差分は既知投稿のmetadata・期待facts hash・短いnotices・分析根拠のhashに限定し、任意stateコピー、全文/元行/cache/秘密/コード/URL取得指示は拒否します。
+
+公式差分の1件は`{expectedPostHash, amendment:{schemaVersion:1,id,source,notices}}`です。期待hashは保存済みpost全体をUTF-8・`ensure_ascii=False`・キー順・余白なしJSONにしたSHA256です。`source`は既存の`url/authorId/authorScreenName/createdAt`と、`fetchedAt/bodyHash/analyzedAt/analysisReceiptHash`だけを持ちます。noticeの`observedAt`は`fetchedAt`と一致させ、解析時刻は公開しません。AI receiptは`{receiptId,date,counts:{requests},modelBreakdown:[{model,kind,count}],sourceHash}`、source receiptは`{receiptId,date,searches,posts,sourceHash}`です。いずれもID/hashはSHA256、日付は加算先のJST暦日で、source receiptの加算前後カウンタも非公開台帳へ保持します。
+
+保存適用の`source.bodyHash`は、無改変で凍結した保存raw JSON文字列のUTF-8 SHA256を参照するprovenanceです。一方、producerの`officialAnalysis.cache.bodyHash`は`payload.text`そのもののUTF-8 SHA256で、別の値・用途です。保存適用はrawを再計算できないため承認時に照合し、このprovenanceを本文cacheのhashへ付け替えたり、既存cacheを書き換えたりしません。
+
+AI importの`sourceHash`は、deployment・model/version・用途の実績を保持した外部保存台帳の**元bytesのSHA256**へ結び付け、その台帳も別途保持します。集計の`modelBreakdown`だけからdeploymentを推定せず、比較deploymentの画像使用を本番stable使用へ、過去nano/miniをLunaへ付け替えません。import JSONは外部台帳そのものを任意コピーする入口ではありません。
+
+`modelBreakdown`の各行には任意の`deployment/modelVersion/component`も保持できます。`component`は`official/personal/external`のいずれかです。根拠で確認できる区別をそのまま記録し、省略されたidentityを本番stable等で補完しません。
+
+全差分を最新main/state SHA・owner・元factsと照合した後、通常のlease/CASで保存します。usage receiptは日付・モデル別実績・保存資料hash付きで一度だけ加算し、source receiptも本人日予算へ一度だけ加算します。初回台帳は承認済みimportが必須で、古いstate・予算・cooldown・履歴を置き換えません。この経路はsource/Azure clientを作らず、Azure設定も不要です。競合・不一致は停止し、forceや無断再適用はしません。コード公開、保存根拠適用の承認、activationはそれぞれ別です。
 
 #### 保存失敗時の回復
 
 1. `gh workflow disable deploy-pages.yml` で繰り返し起動を止め、失敗runのログと`collector-recovery-<run-id>` artifactを確認します。このrecovery artifactはPagesには入りません。
-2. そのrunの公式snapshot・共有HTTP-stateと、移行後は本人snapshotも取得し、JSONの形式・作者/日時・pending/resolved・本人予算とpause・`Retry-After`を確認します。失敗後に別のrunを空stateで始めて制限を無視しないでください。
+2. そのrunの公式snapshot・共有HTTP-stateと、移行後は本人snapshot・共有`ai-usage.json`も取得し、JSONの形式・作者/日時・pending/resolved・本人予算とpause・AI予約/receipt・`Retry-After`を確認します。失敗後に別のrunを空stateで始めて制限を無視しないでください。
 3. `collector-state`だけの作業コピーで最新remoteを取得し、`state-owner.json`が同じ管理情報であること、leaseが失敗runのものであることを照合します。data branchのスクリプトは実行しません。
 4. 検査した一式のstate JSONを復元し、所有markerを維持したまま該当leaseだけを削除して、通常のcommit/pushを行います。本人snapshotだけを古いseedへ戻して予算・pauseを消さないでください。競合したら取り直して照合し、forceしません。
 5. `gh workflow enable deploy-pages.yml` 後に`mode=collect`で再開します。保存されたcooldownは維持され、期限前はHTTPを保留します。
 
 ### Pagesへ載せるファイル
 
-`tools\pages.py stage` は新しい`_site`に、index/app/styles、公開用data、イベントSVGと`version.json`だけを構築します。公式の`observed-shifts.json`と本人の`personal-shifts.json`は別々にwhitelist projectionし、内部pending/resolved/cooldown/budget/pause詳細・ローカルpath・SID・PID・config・log・lock・全文postをfrontendへ持ち込みません。backend、tests、`.git`、README等もPages artifactから除外します。
+`tools\pages.py stage` は新しい`_site`に、index/app/styles、公開用data、イベントSVGと`version.json`だけを構築します。公式の`observed-shifts.json`と本人の`personal-shifts.json`は別々にwhitelist projectionし、内部pending/resolved/cooldown/budget/pause詳細・AI台帳/receipt/cache/history・ローカルpath・SID・PID・config・log・lock・全文postをfrontendへ持ち込みません。backend、tests、`.git`、README等もPages artifactから除外します。
 
 `version.json`は公開コードのSHA、観測の確認時刻、各公開資産のraw SHA256を持ちます。`index.html`の改行正規化済みcache刻印とは用途が違い、配信物そのものの照合に使います。GitHub Pagesのリポジトリsubpathで動くよう、JSON・画像・scriptは相対参照のままです。
 
