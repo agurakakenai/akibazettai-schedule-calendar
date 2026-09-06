@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const api = require("../app.js");
+const { test } = require("node:test");
 const context = { window: {} };
 vm.createContext(context);
 for (const file of ["schedule.js", "store-insights.js"]) {
@@ -685,3 +686,227 @@ if (fs.existsSync(personalFile)) {
   api.validatePersonalShifts(JSON.parse(fs.readFileSync(personalFile, "utf8")));
   console.log("Published personal snapshot conforms to the shared schema.");
 }
+
+const linkDay = "2026-09-06";
+const linkInsights = { ...insights, actualRoster: {}, maidTendency: {
+  ...insights.maidTendency, "あお": { x: "ao_example" }, "しろ": { x: "shiro_example" },
+  "すみ": { x: "sumi_example" }
+} };
+const linkPost = (number, name, links, events = [], hour = 9) => {
+  const author = linkInsights.maidTendency[name]?.x ?? `${name === "みらい" ? "mirai" : "other"}_example`;
+  const id = `${2096900000000000000n + BigInt(number)}`;
+  return { id, name, authorId: "123456789", authorScreenName: author,
+    url: `https://x.com/${author}/status/${id}`, date: linkDay,
+    createdAt: `${linkDay}T${String(hour).padStart(2, "0")}:00:00+09:00`,
+    observedAt: "2026-09-07T02:00:00+09:00", events,
+    ...(links !== undefined ? { links } : {}) };
+};
+const work = (scope = "unspecified") => [{ scope, status: "work" }];
+const linkSnapshot = (posts) => ({ ...personalFixture, posts });
+const findLink = (posts, name = "あお", shift = "昼", extra = {}) => api.personalPostLink({
+  personal: linkSnapshot(posts), insights: linkInsights, dateKey: linkDay, name, shift, ...extra
+});
+
+test("personal links validate the optional bounded contract without changing legacy events", () => {
+  const valid = linkPost(1, "あお", work());
+  assert.equal(api.validatePersonalShifts(linkSnapshot([valid])).posts[0], valid);
+  for (const links of [[], null, {}, "work", [null], [{ scope: "昼" }],
+    [{ scope: "昼", status: "work", url: valid.url }],
+    [{ scope: "unknown", status: "work" }], [{ scope: "昼", status: "pending" }],
+    [{ scope: "unspecified", status: "withdrawn" }], [{ scope: "unspecified", status: "conflict" }],
+    [...work("昼"), ...work("昼")], [...work("昼"), ...work("夜"), ...work(), ...work("昼")]]) {
+    assert.throws(() => api.validatePersonalShifts(linkSnapshot([{ ...valid, links }])), JSON.stringify(links));
+  }
+  const authoritativeEmpty = { ...valid, links: [], events: [announcement("placement", "s1", { shift: "昼" })] };
+  assert.equal(api.validatePersonalShifts(linkSnapshot([authoritativeEmpty])).posts[0], authoritativeEmpty);
+  assert.equal(findLink([authoritativeEmpty]), null, "present empty links never derive work from events");
+  assert.equal(findLink([{ ...valid, links: undefined }]), null, "present undefined links are not legacy");
+  const legacy = linkPost(2, "あお", undefined, [announcement("placement", "s1", { shift: "昼" })]);
+  assert.equal(findLink([legacy]), legacy);
+  assert.equal(findLink([legacy], "あお", "夜"), null, "legacy never infers unspecified scope");
+  for (const kind of ["late", "return"]) {
+    const post = linkPost(3, "しろ", undefined, [announcement(kind, null, { shift: "夜" })]);
+    assert.equal(findLink([post], "しろ", "夜"), post);
+    assert.equal(findLink([post], "しろ", "昼"), null);
+  }
+  assert.equal(findLink([linkPost(4, "あお", undefined, [announcement("uncertain", null, { shift: "昼" })])]), null);
+});
+
+test("links alone cannot create people, stores, attendance or the confirmed-only gate", () => {
+  const posts = ["あお", "しろ", "すみ"].map((name, index) => linkPost(index + 10, name, work()));
+  const personal = linkSnapshot(posts);
+  const official = { ...fixture, posts: ["昼", "夜"].map((shift, index) => ({
+    ...makePost(`209690000000000002${index}`, "s2", ["あお"]),
+    date: linkDay, shift, createdAt: `${linkDay}T12:00:00+09:00`,
+    notices: [{ name: "しろ", kind: "late", excerpt: "あとから" }]
+  })) };
+  const base = { insights: linkInsights, dateKey: linkDay, schedule: {}, roster: [], personal };
+  const raw = JSON.stringify([personal, official, linkInsights]);
+  for (const shift of ["昼", "夜"]) {
+    const empty = api.resolveShiftRoster({ ...base, shift });
+    assert.equal(empty.entries.length, 0);
+    assert.equal(empty.personal.posts.length, 0);
+    assert.equal(empty.personal.byMaid.size, 0);
+    const displayed = api.resolveShiftRoster({ ...base, shift, observations: official });
+    assert.deepEqual(displayed.entries.map(entry => entry.name).sort(), ["あお", "しろ"]);
+    assert.deepEqual(displayed, api.resolveShiftRoster({ ...base, shift, observations: official, personal: null }),
+      "adding link-only posts cannot alter independent roster evidence");
+    for (const name of ["あお", "しろ"]) {
+      assert.equal(findLink(posts, name, shift, { observations: official }), posts.find(post => post.name === name));
+      const plan = api.maidItinerary({ name, dates: [linkDay], shifts: [shift], schedule: {},
+        resolve: () => ({ ...displayed, confirmedOnly: true }) });
+      assert.equal(plan.stops.length, 1, "official names and notices include people absent from the schedule");
+      assert.ok(plan.stops[0].sourcePosts.every(post => post.authorScreenName === "akibazettai"));
+      assert.equal(plan.stops[0].personal, false);
+    }
+  }
+  assert.equal(api.dayHasPersonStoreEvidence(linkInsights, null, linkDay, personal), false);
+  const scheduled = { ...base, shift: "夜", schedule: { [linkDay]: { "夜": [{ name: "すみ" }] } } };
+  assert.deepEqual(api.resolveShiftRoster(scheduled),
+    api.resolveShiftRoster({ ...scheduled, personal: null }), "a link does not turn a scheduled person into confirmed attendance");
+  assert.equal(JSON.stringify([personal, official, linkInsights]), raw);
+});
+
+test("scope-specific withdrawals and conflicts retain the other shift and original chronology", () => {
+  for (const name of ["あお", "しろ", "すみ"]) {
+    const first = linkPost(30, name, work(), [], 8);
+    const night = linkPost(31, name, work("夜"), [], 10);
+    const withdrawal = linkPost(32, name, [{ scope: "昼", status: "withdrawn" }], [], 12);
+    const pending = linkPost(33, name, [], [announcement("uncertain", null, { shift: "夜" })], 14);
+    const posts = [withdrawal, night, pending, { ...first, observedAt: "2026-09-09T10:00:00+09:00" }];
+    assert.equal(findLink(posts, name, "昼"), null);
+    assert.equal(findLink(posts, name, "夜"), night);
+    const newerUnspecified = linkPost(34, name, work(), [], 15);
+    assert.equal(findLink([...posts, newerUnspecified], name, "昼"), null,
+      "unknown scope is not an explicit reversal of a day cancellation");
+    assert.equal(findLink([...posts, newerUnspecified], name, "夜"), newerUnspecified);
+    const conflict = linkPost(35, name, [{ scope: "夜", status: "conflict" }], [], 16);
+    assert.equal(findLink([...posts, conflict], name, "夜"), null);
+    const restored = linkPost(36, name, work("昼"), [], 17);
+    assert.equal(findLink([...posts, conflict, restored], name, "昼"), restored);
+    assert.equal(findLink([...posts, conflict, restored], name, "夜"), null);
+    const tie = linkPost(37, name, work("昼"), [], 17);
+    assert.equal(findLink([tie, restored], name, "昼"), tie, "same timestamp uses original numeric ID order");
+    const absence = linkPost(38, name, [], [announcement("absence", null, { shift: "夜" })], 18);
+    const late = linkPost(39, name, undefined, [announcement("late")], 19);
+    assert.equal(findLink([night, absence, late], name, "夜"), null,
+      "absence events remain cancellation facts even with authoritative empty links");
+    const returned = linkPost(40, name, undefined, [announcement("return")], 20);
+    assert.equal(findLink([night, absence, returned], name, "夜"), returned);
+    const unlinkedReturn = { ...returned, links: [] };
+    const laterWork = linkPost(41, name, work(), [], 21);
+    assert.equal(findLink([night, conflict, unlinkedReturn], name, "夜"), null,
+      "an authoritative empty return does not derive its own link");
+    assert.equal(findLink([night, conflict, unlinkedReturn, laterWork], name, "夜"), laterWork,
+      "an explicit return resolves that scope before a later verified unknown-scope post");
+  }
+});
+
+test("storeless work selects its own post while keeping placement and contradiction safety separate", () => {
+  const old = linkPost(50, "あお", undefined, [announcement("placement", "s1", { shift: "昼" })], 8);
+  const newer = linkPost(51, "あお", work("昼"), [], 13);
+  const late = linkPost(52, "あお", undefined, [announcement("late", null, { shift: "昼", time: "16:00" })], 14);
+  const pending = linkPost(53, "あお", [], [announcement("uncertain", null, { shift: "昼" })], 15);
+  const personal = linkSnapshot([pending, late, newer, old]);
+  const resolved = api.resolveShiftRoster({ insights: linkInsights, personal, dateKey: linkDay, shift: "昼",
+    schedule: {}, roster: [] });
+  assert.equal(resolved.personal.byMaid.get("あお").placementSource, old);
+  assert.equal(findLink(personal.posts), late);
+  for (const status of ["partial", "paused", "budget-exhausted", "no-results"]) {
+    assert.equal(findLink([], "あお", "昼", { personal: { ...personal, lastRun: { status },
+      pending: [{ status: "pending" }], resolved: [{ status: "refusal" }, { status: "no_event" }] } }), late);
+  }
+  const officialPost = { ...makePost("2096900000000000054", "s2", ["あお"]),
+    date: linkDay, createdAt: `${linkDay}T12:00:00+09:00` };
+  const observations = { ...fixture, posts: [officialPost] };
+  assert.equal(findLink([old], "あお", "昼", { observations }), null, "a superseded wrong-store post is not current");
+  assert.equal(findLink([old, newer], "あお", "昼", { observations }), newer, "later storeless work is not wrong-store evidence");
+  assert.equal(findLink([old, pending], "あお", "昼", { observations }), null, "pending cannot restore a stale link");
+  const correction = linkPost(55, "あお", [], [announcement("placement", "s3", { shift: "昼" })], 13);
+  assert.equal(findLink([old, correction]), null, "a confirmed correction without a verified new link clears contradictory old content");
+  const impossible = linkPost(56, "あお", work("昼"), [
+    announcement("placement", "s1", { shift: "昼" }), announcement("placement", "s2", { shift: "昼" })
+  ], 14);
+  assert.equal(findLink([old, impossible]), null, "same-post explicit conflicting stores hold only that side");
+});
+
+test("own-day identity, aliases and the reviewed post-specific addition are display-only", () => {
+  const post = linkPost(60, "あお", work());
+  for (const extra of [{ date: "2026-09-07" }, { createdAt: "2026-09-05T14:59:59Z" },
+    { createdAt: "2026-09-06T15:00:00Z" }, { authorScreenName: "wrong" }, { authorId: "" },
+    { url: "https://example.com/post" }, { authorScreenName: "wrong", url: `https://x.com/wrong/status/${post.id}` }]) {
+    assert.equal(findLink([{ ...post, ...extra }]), null, JSON.stringify(extra));
+  }
+  const midnight = { ...post, createdAt: "2026-09-05T15:00:00Z" };
+  assert.equal(findLink([midnight]), midnight, "same day means JST, not UTC");
+  const alias = { ...linkPost(61, "まこっちゃん", work()), name: "まこと" };
+  const raw = JSON.stringify([alias, personalFixture, additions, insights]);
+  assert.equal(findLink([alias], "まこっちゃん"), alias);
+  assert.equal(findLink([alias], "まこと"), alias);
+  const miria = linkPost(62, "みりあ", work());
+  assert.equal(findLink([miria], "みらい"), null);
+  assert.equal(findLink([miria], "みりあ"), miria);
+  const reviewed = { personal: personalFixture, insights, personalEventAdditions: additions };
+  assert.equal(findLink([], "ららこ", "夜", reviewed).url, personalFixture.posts[1].url);
+  assert.equal(findLink([], "ららこ", "夜", { ...reviewed, personalEventAdditions: {} }), null);
+  const other = structuredClone(personalFixture);
+  other.posts[1].id = "2096253883677044838";
+  other.posts[1].url = `https://x.com/rarako_zettai/status/${other.posts[1].id}`;
+  assert.equal(findLink([], "ららこ", "夜", { ...reviewed, personal: other }), null);
+  assert.equal(JSON.stringify([alias, personalFixture, additions, insights]), raw);
+});
+
+test("reviewed night link survives partial v5 links without changing raw data or overriding withdrawals", () => {
+  const post = { ...structuredClone(personalFixture.posts[1]), links: work("昼") };
+  const personal = linkSnapshot([post]);
+  const raw = JSON.stringify([personal, additions]);
+  const view = () => api.personalPostsForView(personal, additions)[0];
+  const resolve = (snapshot = personal, rules = additions) => findLink([], "ららこ", "夜", {
+    personal: snapshot, insights, personalEventAdditions: rules
+  });
+  assert.equal(post.events.some(event => event.shift === "夜"), false);
+  assert.deepEqual(view().links, [...work("昼"), ...work("夜")]);
+  assert.equal(resolve()?.url, post.url, "new day-only analysis must retain the user-reviewed night link");
+  assert.equal(view().events.filter(event => event.shift === "夜").length, 1);
+  const projected = view();
+  assert.equal(api.personalPostsForView(linkSnapshot([projected]), additions)[0], projected,
+    "view-only projection is idempotent");
+  const emptyLinks = linkSnapshot([{ ...post, links: [] }]);
+  assert.deepEqual(api.personalPostsForView(emptyLinks, additions)[0].links, work("夜"),
+    "only the independently reviewed scope is restored, never unreviewed raw-event work links");
+  for (const status of ["withdrawn", "conflict"]) {
+    const explicit = { ...post, links: [...work("昼"), { scope: "夜", status }] };
+    const snapshot = linkSnapshot([explicit]);
+    assert.deepEqual(api.personalPostsForView(snapshot, additions)[0].links, explicit.links);
+    assert.equal(resolve(snapshot), null, `explicit night ${status} wins over the reviewed addition`);
+    const later = { ...post, id: "2097500000000000001",
+      url: "https://x.com/rarako_zettai/status/2097500000000000001",
+      createdAt: "2026-09-06T18:00:00+09:00", events: [], links: [{ scope: "夜", status }] };
+    assert.equal(resolve(linkSnapshot([later, { ...post, observedAt: "2026-09-08T01:00:00+09:00" }])), null,
+      "later confirmed scope facts win over an older post re-analysis");
+  }
+  const absence = { ...post, id: "2097500000000000002",
+    url: "https://x.com/rarako_zettai/status/2097500000000000002",
+    createdAt: "2026-09-06T19:00:00+09:00", events: [announcement("absence")], links: [] };
+  assert.equal(resolve(linkSnapshot([post, absence])), null, "later legacy cancellation facts still win");
+  const dayWithdrawal = linkSnapshot([{ ...post, links: [{ scope: "昼", status: "withdrawn" }] }]);
+  assert.equal(resolve(dayWithdrawal)?.url, post.url, "day withdrawal cannot remove the reviewed night scope");
+  for (const field of ["name", "authorId", "authorScreenName", "date"]) {
+    const mismatched = structuredClone(additions);
+    mismatched[post.id][field] += "wrong";
+    assert.equal(api.personalPostsForView(personal, mismatched)[0], post);
+    assert.equal(resolve(personal, mismatched), null, `the reviewed ${field} binding must match exactly`);
+  }
+  const other = { ...post, id: "2096253883677044838",
+    url: "https://x.com/rarako_zettai/status/2096253883677044838" };
+  assert.equal(resolve(linkSnapshot([other])), null, "the correction is never generalized to another post");
+  assert.equal(resolve(personal, Object.create(additions)), null, "inherited rules are not approved bindings");
+  const uncertainRule = structuredClone(additions);
+  uncertainRule[post.id].events = [announcement("uncertain")];
+  assert.deepEqual(api.personalPostsForView(personal, uncertainRule)[0].links, work("昼"));
+  assert.equal(resolve(personal, uncertainRule), null, "an uncertain addition is never a verified work link");
+  const existingNight = linkSnapshot([{ ...post, events: [...post.events, announcement("absence")] }]);
+  assert.equal(api.personalPostsForView(existingNight, additions)[0], existingNight.posts[0]);
+  assert.equal(resolve(existingNight), null, "a raw night event prevents inserting the reviewed night addition");
+  assert.equal(JSON.stringify([personal, additions]), raw, "neither source events/links nor the approved rule are rewritten");
+});

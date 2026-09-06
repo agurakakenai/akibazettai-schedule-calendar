@@ -1051,9 +1051,13 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 
 ### 本人投稿の当日案内
 
-`data/personal-shifts.json` は、店舗公式の集合ポストとは別に保存する**本人の当日案内**です。そこで実際に勤務した実績とは扱わず、原予定、`actualRoster`、公式観測、統計モデルは書き換えません。本人の配置案内がある名前chipから、その時間帯の根拠投稿を直接開けます。別の「本人ポスト」欄や「本人案内」ラベルは置かず、公式の集合ポストへ混ぜません。遅れ・取消・保留など必要な状態は残し、未照合の残りは未発表枠へ残します。
+`data/personal-shifts.json` は、店舗公式の集合ポストとは別に保存する**本人の当日案内と当日投稿リンク**です。勤務・店舗の根拠である`events`と、本人の対象当日のお給仕投稿であることを確認した`links`を分離します。そこで勤務した実績とは扱わず、原予定、`actualRoster`、公式観測、統計モデルは書き換えません。確認済みの当日投稿は、特定人物に限らず名前chipから直接開けます。別の「本人ポスト」欄や「本人案内」ラベルは置かず、公式の集合ポストへ混ぜません。
 
-対象は**元の当日公開予定にいる現役者**のうち、`accounts.csv` の公式サイト・本人確認済みアカウントと既存の `maidTendency[name].x` が一致する人です。場所が判明したり欠勤の案内が出たりしても、元予定から作った追跡対象は消さず、後の明示的な訂正・復帰を確認できるようにします。新しい在籍者・卒業・初日の自動判定や、未提出者の推定追加は行いません。
+対象は**元の当日公開予定・現在の予定・公式集合names・公式補足・確認済み本人案内で判明した人物**です。元予定の追跡履歴を保持しつつ毎run再計算し、同じrunの公式snapshotを`--observations`で本人collectorへ渡します。取得できるのは`accounts.csv`の公式サイト・本人確認済みaccount、既存`maidTendency[name].x`、保存author bindingが矛盾しない人物だけです。既存aliasとpost限定補正を再利用しますが、似た名前や不明handleを推測しません。新しい在籍者・卒業・初日の自動判定や、未提出者の推定追加は行いません。
+
+`links`はoptionalな最大3件の`{scope,status}`です。scopeは`昼`・`夜`・`unspecified`、statusは確認済みの`work`・明示取消`withdrawn`・根拠間の`conflict`を区別します。店舗・昼夜がなくても、対象日の本人お給仕投稿だと独立に確認できれば`unspecified/work`にできます。**リンクだけでは人物表示、勤務event、店舗、昼夜勤務、実績を作りません。**すでに別根拠で表示されている同日のchipにだけ付け、明示昼/夜は反対側へ流用しません。`unspecified`で取消や両shift勤務を推定せず、明示取消後の復帰根拠にも使いません。legacyの`links`がない投稿は、既存の確認済みtyped eventsの範囲だけを互換表示します。
+
+日別・店舗別・popupのchipは、当日post未確認ならprofileや検索URLで代替しません。人物別の複数日に共通する名前見出しは従来のprofileリンクを維持し、各日/shift行の日付文字から同じ当日postを開けます。title/読み上げは本人の当日投稿であることを明示し、chip本文や未確認ラベルを増やしません。
 
 本人投稿の日付は**本文の明示月日、または「今日」と投稿metadataの日本時間0時区切り**を照合します。店舗公式の朝5時区切りは流用しません。昨日・明日・他人の話・引用・返信だけの内容や、時刻からの昼夜推測は採用しません。初期の確認例は次のとおりです。
 
@@ -1066,33 +1070,43 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 
 明確な当日の全休・片方の時間帯だけの休み・遅刻・復帰・訂正は分け、対象範囲だけを扱います。「人間の姿になれませんでした」「魔法がうまくかかりませんでした」等も、それだけで日付や時間帯を埋めません。**曖昧な変更や解決できない根拠の矛盾は保留**し、検索に出ないことを欠勤・不在にはしません。健康状態・病名は推測しません。明確な取消は通常の出勤一覧から外しても、元予定と本人イベント・出典の履歴は残します。
 
-取得は日付と店舗語等の**バッチ検索**を使い、本人ごとの無制限検索はしません。本人枠の上限は1回につきYahoo検索3ページ・新規個別確認3投稿、日本時間の1日につき検索60・個別確認30です。確認済みIDは再取得せず、予算に入らない候補は保留します。この上限は安全性や網羅性が実測で保証された値ではなく、制限を受けたら停止するための上限です。初期seedは上記pilotの確認済み2投稿を再利用し、既知の使用量（pilot検索6＋追加の小規模確認1、個別確認2）も当日予算に含めます。これを本番CLIで新規取得した成果とは数えません。
+取得はverified accountの`id:handle`検索を**締切・前回検索状況に応じた待ち行列**で交代させ、本文の店舗語を必須にしません。無制限の全員巡回ではなく、本人枠の上限は1回につきYahoo検索3ページ・新規個別確認3投稿、日本時間の1日につき検索60・個別確認30です。確認済みIDは再取得せず、予算に入らない候補は保留します。この上限は安全性や網羅性が実測で保証された値ではなく、制限を受けたら停止するための上限です。初期seedのpilot確認済み2投稿と既知の使用量も継続保持し、再利用を新規取得とは数えません。
 
-採用クエリは「`M月D日 号店`」「`今日 お休み 絶対領域`」「`M/D 号店`」の各1ページです。欠勤語クエリは1回/runだけで、そこに出たこと自体を欠勤の証拠にはしません。原予定の昼だけの人は13:30まで、夜の予定がある人は手動時19:30まで、**有効化後の定期時は18:00まで**を取得対象にし、待機後・source/AI要求直前にも人物ごとの締切を確認します。取得処理が遅れて締切を過ぎた対象は追跡を延長しません。
+検索の元`__NEXT_DATA__`から`bestTweet`と`timeline.entry`を両方候補化し、ID重複排除・作者/日時/URL照合後に個別本文を確認します。bestTweetは「常に最新」ではなく、引用先・返信先のmetadataを本人へ取り違えません。旧3種の検索URLは保存履歴の読取互換だけを維持します。昼だけの人は13:30まで、夜の根拠がある人は手動時19:30まで、**有効化後の定期時は18:00まで**を取得対象にし、待機後・source/AI要求直前にも人物ごとの締切を確認します。取得処理が遅れて締切を過ぎた対象は追跡を延長しません。
+
+privateの`coverage`と`searchHistory`は、対象の由来、確認済みaccount、候補/投稿ID、検索状況、account不明・検索未実施・調べたページに候補なし・原文不足・解析保留・予算/締切等の理由を区別します。`verified_post_available`は確認資料があることを表し、公式との後続訂正を解決した実際の表示リンクcoverageとは区別します。**全員を扱う汎用ロジックと、全員分の投稿を発見済みであることは別です。**元予定、現在の表示母集団、保存原文の調査対象は分母を分けます。これらの内部情報はPagesへ出しません。
 
 ローカルの単発CLIは既存のPythonとNodeを使い、`--snapshot` に非公開の永続JSON、`--http-state` に公式と共用するsidecarを明示します。`--publish` は公開用JSONの追加出力です。本人CLIの`--dry-run`は**公開mirror更新だけを抑止**し、通信予算・停止状態と検証済みの本人factsはprivate snapshotへ保存します（公式CLIのdry-runとは保存範囲が異なります）。取得を試すだけでも通信と永続stateの変更があるため、稼働中のcloudと同時には実行しません。
 
 本人用の取得が403・429・アクセス拒否等を受けた場合は、残りの同host要求を止め、共有の`Retry-After`と本人機能のpauseを永続化します。**時間が過ぎただけで本人機能を勝手に再開しません。**別クエリ・UA・proxyで迂回せず、公式更新を優先します。本人側の候補不足・意味不明・予算待ち・取得不能は本人componentの状態として表示し、正常な公式観測を空にしません。保存・leaseの障害は従来どおりfail-closedです。
 
-本文全文は保存せず、作者・投稿ID・日時・出典、時間帯ごとの抽出イベントと必要な短い引用だけを保持します。公開用JSONでは内部の予算、pending/resolved、pause詳細、HTTP制限を除外します。ブラウザーは同じサイトのJSONを読むだけで、本人検索を実行しません。
+本文全文は恒久保存せず、作者・投稿ID・日時・出典、時間帯ごとの抽出イベントと必要な短い引用、最小のscope付きリンク判定だけを保持します。公開用JSONでは内部の予算、pending/resolved、pause詳細、HTTP制限、coverage、適用receiptを除外します。ブラウザーは同じサイトのJSONを読むだけで、本人検索を実行しません。
 
 初期pilotの固定回帰は `tools/tests/fixtures/personal-pilot.json` を使います。配信準備中の `data/personal-shifts.json` はstate branchから復元される可変のsnapshotなので、公開形式や初期2投稿に固定したテスト入力としては使いません。private形式・追加投稿を含む復元後にも、通常の検証と公開projectionが通ることを確認します。
 
 #### 共通Luna設定と本人本文解析
 
-解析v4は **metadata照合 → 行ID付き原文と最小contextをLunaへ1回 → 選択ID・対象範囲・元行の数値を確認 → 既存履歴** に分けます。勤務と余談、昼夜、訂正・否定・不確実さ、他人や引用の意味はAIの担当です。コードで「かも」「明日」等を再解釈する前処理・節解析は行いません。投稿日時/JST対象日・本人名・対象shiftだけを本文に添え、名簿全体や履歴はモデルへ送りません。
+解析v7は **metadata照合 → 行ID付き原文と最小contextをLunaへ1回 → 選択ID・対象範囲・元行の数値を確認 → 既存履歴** に分けます。v4の行ID契約を拡張し、同じ1要求で勤務eventsと当日リンクを独立に判断します。勤務と余談、昼夜、訂正・否定・不確実さ、他人や引用の意味はAIの担当です。単に同日投稿された日常文・募集・半月表を当日お給仕リンクにしません。コードで意味を再解釈する大量regexは追加せず、検証済み投稿のJST日時/暦日・相対日対応・本人名・日付付き既知shiftだけを添え、名簿全体や履歴はモデルへ送りません。
 
-原文はCRLFを1改行、単独CR/LFをそれぞれ改行として分割し、1始まりの整数IDを付けます。改行文字・空行・最後の改行後の空行・Unicode・絵文字・全角空白を保持し、文字を書き換えません。最大128行で、上限超過は切捨てず保留します。モデルは自由な引用文や文字offsetではなく`evidenceLineIds`（各eventにつき1〜16個、当該投稿に実在するID）を選びます。重複・空配列・不正IDは拒否し、複数行や昼夜での同じ行の共有は許容します。
+wireの必須フィールドは`events/links`です。各itemの`serviceDate`は**その勤務・変更が対象とする日付**で、投稿日時やカレンダーの選択日を写す欄ではありません。モデルには元投稿のJST日時・暦日と、そこからcodeで計算した昨日/今日/明日/明後日の対応を渡します。実行日やUTC暦日、公式の05時区切りを本人の相対日の基準にしません。モデルは各勤務述語に結び付く日付を抽出し、日常文の「今日」を別の翌日勤務へ流用しません。
+
+全itemの日付・型・行根拠・数値を検証してから、codeが`serviceDate`の一致する対象日だけを選びます。翌日のみなら当日リンクは0、同じ本文に当日と翌日があれば当日分だけを採用します。他日付の正しい抽出があること自体は失敗ではなく、当日へ混入したかを別に評価します。wire上限は複数日を表せるevents4件/links6件、対象日へ絞った公開値は従来のevents2件/links3件です。日付不明・欠落を対象日へ補完しません。
+
+各配列の非空は確認済みの事実、`[]`は今回の該当なし、`null`はそのchannelの保留を表します。配列と矛盾し得る別の状態タグは生成させず、対象日に絞った構造から結果種別を機械的に決めます。必須フィールド欠落を`null`へ補完しません。片側が保留でも他方の確認済み情報を保持し、対象日外だけの結果・`null`・`[]`は旧facts/linkの削除命令にはしません。
+
+private cacheの`channels`は対象日の確認・該当なし・保留を区別し、`serviceDates`には検証済みの抽出日付一覧を保持します。公開時は対象日に絞った確認済み配列だけを渡し、新しい解析でリンクが得られなければ`links: []`を明示します。legacyの`links`未導入へ戻して新しい勤務eventからリンクを推定しません。同じ投稿の部分再解析でも、既存確認済みscopeのリンクは保持し、今回の保留scopeへ新しいリンクを補完しません。
+
+原文はCRLFを1改行、単独CR/LFをそれぞれ改行として分割し、1始まりの整数IDを付けます。改行文字・空行・最後の改行後の空行・Unicode・絵文字・全角空白を保持し、文字を書き換えません。最大128行で、上限超過は切捨てず保留します。モデルは自由な引用文や文字offsetではなく`evidenceLineIds`（各event/linkにつき1〜16個、当該投稿に実在するID）を選びます。重複・空配列・不正ID・新版での空白行の参照は拒否し、複数行や昼夜での同じ行の共有は許容します。
 
 コードは選択IDから元行/元範囲を直接参照し、型・allowlist・対象日/shift・event重複・指定店舗/時刻の直接数値整合を確認します。選択行を連結して架空の引用や数値を作りません。元行・選択行は内部のみで、公開抜粋は従来の小さい原文アンカーだけです。**行ID参照で引用の転記ミスはなくなりますが、行の選択や意味の誤読は残り得ます。** 意味・参照ID・コード採否を分けて評価します。pending/refusal/不正schemaは保留し、`no_event`も既存案内の削除命令にはしません。
 
-旧nano/miniや比較用deploymentのcache・履歴は保持し、本番Lunaのprovider/endpoint/deployment/model/versionとv4契約・入力contextを含む別のcache識別に分離します。旧応答を新版のモデル応答へ変換して再利用しません。既知投稿の自動再GET・一括再解析も追加せず、再確認には保存payloadによる明示操作が必要です。
+旧nano/mini・v4/v5/v6や比較用deploymentのcache・履歴は保持し、本番Lunaのprovider/endpoint/deployment/model/versionとv7契約・入力contextを含む別のcache識別に分離します。旧応答を新版のモデル応答へ変換して再利用しません。v4/v5/v6の保存実応答は専用のoffline groundingで照合できます。旧v5のタグ不整合は拒否のまま、旧v6の型適合でも意味が誤っていた負例も失敗記録のまま保持します。旧応答の再生を新版の実測成功とは数えません。既知投稿の自動再GET・一括再解析も追加せず、再確認には保存payloadによる明示操作が必要です。
 
 ローカルCLIは無設定なら従来の`--analysis-backend rules`です。`--analysis-backend azure`を明示すると、検証済みの新規本人本文**全体**をAzure OpenAI `gpt-5.6-luna`（2026-07-09）へ送り、Chat Completions v1・structured outputs・`reasoning_effort=none`で解析します。共通の設定/HTTP transportは`tools/azure-openai.py`、本人用prompt/schema・予算・履歴は`tools/personal-azure.py`に分離しています。本番安定名`gpt-5.6-luna`だけを受理し、providerの返却modelも照合します。ルールが一部を拾ってもAzureを省略せず、nano/mini・別model・rulesへの成功fallbackは行いません。
 
 Actionsでは手動`personal` / `both`と、有効化された当日案内の公式・本人解析でAzureを選択します。必要な設定はsecret `AZURE_OPENAI_API_KEY`とvariables `AZURE_OPENAI_ENDPOINT`（`https://<resource>.openai.azure.com/`）、`AZURE_OPENAI_DEPLOYMENT`（`gpt-5.6-luna`）です。必要なcollector子だけに渡し、Git・Node入力読取・restore・stage/build・保存根拠の適用・frontendへは渡しません。無効時の公式定期は既存rulesのままです。
 
-公式補足と本人本文v4は共通Luna transportを使い、用途別prompt/schemaを分けます。画像・半月予定表の自動取得/取込や10時からの巡回は含みません。取得・本人確認・型・出典・原投稿順の履歴はコードの責務です。公式の未発行補足だけは別のbounded queueへ残し、次枠のAI容量がある場合に既知IDをsource上限内で確認できます。全既知投稿の編集巡回ではなく、拒否・失敗済みの再推論や結果合わせの再取得はしません。
+公式補足と本人本文v7は共通Luna transportを使い、用途別prompt/schemaを分けます。画像・半月予定表の自動取得/取込や10時からの巡回は含みません。取得・本人確認・型・出典・原投稿順の履歴はコードの責務です。公式の未発行補足だけは別のbounded queueへ残し、次枠のAI容量がある場合に既知IDをsource上限内で確認できます。全既知投稿の編集巡回ではなく、拒否・失敗済みの再推論や結果合わせの再取得はしません。
 
 cloudのAI（手動`personal/both`を含む）は**公式＋本人合算3回/run・実発行日のJST暦日30回**です。data-onlyの`ai-usage.json`へ発行前予約を永続化し、同じrun ID/attemptを子間で共有します。旧モデル・外部/画像使用も承認済みreceiptで同じ日予算へ算入します。cache hitは追加発行ではなく、中断予約は保守的に消費済みです。公式source/rulesを先行しても、両用途に枠がある本人受付中は公式AIを1〜2枠に制限し、過去の追加枠配分・締切で3枠目を配分します。残り1枠を本人の締切へ優先する場合や共有予算が尽きた場合は公式AIを0枠にでき、公式名簿の収集を維持して未発行補足を保留します。本人は公式の実使用後の残枠を利用し、容量がなければ本文GETを始めません。本文UTF-8 6,000 bytes・出力1,200 tokens・応答24,000 bytes・timeout 30秒、retry0・原則60秒以上の間隔を維持します。待機後は実日と締切を再確認し、429は少なくとも5分と`Retry-After`の長い方、401/403はAIだけを永続停止します。Yahoo/Xの共有cooldown・予算とは別です。同じ入力の成功・拒否・失敗・中断は自動再課金せず、復旧には運用者の明示照合が必要です。
 
@@ -1100,7 +1114,7 @@ cloudのAI（手動`personal/both`を含む）は**公式＋本人合算3回/run
 
 新規名簿の取得を優先したうえで、既知の未解析queueも共有の未消費AI枠内・最大3件までAI発行前に先行取得できます。これは本人のAI枠を予約する操作ではありません。本人がその枠を使えば余分なrawはcloud run終了時に破棄し、未処理metadataだけを残します。使われなかったrawのGETもsource件数へ計上し、合算run上限・host制限を維持します。枠が尽きてから既知投稿を追加GETすることはありません。
 
-**既知の旧`no_event`や編集本文は自動で直りません。**本文全文を保存していないため、既知IDには`azure_saved_body_required`というprivateの確認理由を残し、AIのための追加GETは行いません。既に手元に保存されているpayloadがある場合だけ、同じCLIへ`--analysis-backend azure --analyze-saved <saved.json> --date YYYY-MM-DD`を渡せます。入力は`{"既知の投稿ID": {元の個別投稿payload}}`形式です。この経路はYahoo/X clientを作らず、既存のpendingまたは確認済みID・identity binding・対象日の元予定との照合を通します。未確認のIDを追加するインポート機能ではありません。AI失敗後のpendingも本文を再GETせず残します。
+**既知の旧`no_event`や編集本文は自動で直りません。**本文全文を保存していないため、既知IDには`azure_saved_body_required`というprivateの確認理由を残し、AIのための追加GETは行いません。既に手元に保存されているpayloadがある場合だけ、同じCLIへ`--analysis-backend azure --analyze-saved <saved.json> --date YYYY-MM-DD`を渡せます。入力は`{"既知の投稿ID": {元の個別投稿payload}}`形式です。この経路はYahoo/X clientを作らず、既存のpendingまたは確認済みID・identity binding・対象日の追跡対象との照合を通します。検索日時が保存されていない場合は`metadataSource=saved_post/saved_binding`と`searchCreatedAt=null`で区別し、正規の既知ID/binding、保存元の投稿日とsnowflakeを照合します。投稿IDから検索時刻を作ったことにはしません。未確認IDを追加するインポート機能ではなく、AI失敗後のpendingも本文を再GETせず残します。
 
 編集・再解析の成功時には旧抽出結果をprivate履歴へ残し、同じIDの現行案内を更新します。並び順は**元の投稿日時とID**のままなので、古い投稿を再解析した時刻で新しい欠勤・復帰を上書きしません。privateの`azureAnalysis` / `officialAnalysis`（cache・確認理由・旧抽出履歴）と共有AI台帳は公開projectionから除外します。pending/refusal/no_event・締切や予算の不足は既存factsの削除命令ではありません。本文の恒久保存や健康理由・APIキーの保存はせず、本人/後着案内を公式実績・CSV・統計学習へ混ぜません。
 
@@ -1139,11 +1153,17 @@ HTTPの前にleaseをremoteへ保存します。収集後、成功・部分失�
 
 #### 承認済み保存根拠の適用
 
-`mode=apply-saved`はtrusted mainの明示`workflow_dispatch`専用です。`saved_manifest`入力を環境変数で渡し、cloudが32KiB以下のdata-only JSONを検査します。トップレベルは`schemaVersion:1`、`expectedMainSHA`、`expectedStateSHA`、`officialAmendments`（最大3件）、`usageImports`、`sourceReceipts`（各最大10件）だけです。公式差分は既知投稿のmetadata・期待facts hash・短いnotices・分析根拠のhashに限定し、任意stateコピー、全文/元行/cache/秘密/コード/URL取得指示は拒否します。
+`mode=apply-saved`はtrusted mainの明示`workflow_dispatch`専用です。`saved_manifest`入力を環境変数で渡し、cloudが32KiB以下のdata-only JSONを検査します。トップレベルは`schemaVersion:1`、`expectedMainSHA`、`expectedStateSHA`、`officialAmendments`（最大3件）、`usageImports`、`sourceReceipts`（各最大10件）と、optionalな`personalAmendments`（最大3件）です。公式差分は既知投稿のmetadata・期待facts hash・短いnotices・分析根拠のhashに限定し、任意stateコピー、全文/元行/cache/秘密/コード/URL取得指示は拒否します。
 
 公式差分の1件は`{expectedPostHash, amendment:{schemaVersion:1,id,source,notices}}`です。期待hashは保存済みpost全体をUTF-8・`ensure_ascii=False`・キー順・余白なしJSONにしたSHA256です。`source`は既存の`url/authorId/authorScreenName/createdAt`と、`fetchedAt/bodyHash/analyzedAt/analysisReceiptHash`だけを持ちます。noticeの`observedAt`は`fetchedAt`と一致させ、解析時刻は公開しません。AI receiptは`{receiptId,date,counts:{requests},modelBreakdown:[{model,kind,count}],sourceHash}`、source receiptは`{receiptId,date,searches,posts,sourceHash}`です。いずれもID/hashはSHA256、日付は加算先のJST暦日で、source receiptの加算前後カウンタも非公開台帳へ保持します。
 
 保存適用の`source.bodyHash`は、無改変で凍結した保存raw JSON文字列のUTF-8 SHA256を参照するprovenanceです。一方、producerの`officialAnalysis.cache.bodyHash`は`payload.text`そのもののUTF-8 SHA256で、別の値・用途です。保存適用はrawを再計算できないため承認時に照合し、このprovenanceを本文cacheのhashへ付け替えたり、既存cacheを書き換えたりしません。
+
+本人差分は`{expectedSubjectHash, amendment:{schemaVersion:1,id,source,events,links?}}`です。`expectedSubjectHash`はその既知IDのposts/pending/resolvedと関連bindingをまとめたcanonical JSONのSHA256。`source`は本人metadata、`fetchedAt/analyzedAt/provenance`、原文・保存payload・入力manifest・保存解析結果・個別解析記録・当時の契約のhashと、**既存の計上済みusage import**の`usageReceiptId/usageSourceHash`、`contractVersion/model/deployment/modelVersion`を持ちます。正確なallowlistは`tools\personal-saved.py`の`SOURCE_FIELDS`です。
+
+本人差分の`bodyHash`は元の`payload.text`のUTF-8、`sourceHash`は保存payloadファイルの元bytesです。`sourceManifestHash/analysisResultHash/analysisReceiptHash/contractHash`の指す資料を承認前にofflineで照合し、適用経路では原文を再取得・再解析しません。`provenance=search`だけは正規pendingと一致する独立`searchCreatedAt`を持ち、`direct`はその字段を省略して既存bindingを必須にします。新しいbindingは正規pendingの本人metadataで確かめられる場合だけ作り、同じbatch内の異なる作者を同名へ混ぜません。
+
+v4保存受理はv4の明示eventsに限定し、link-only/unspecifiedを捏造しません。v5/v6/v7は独立リンク契約を持てますが、保存mockを実モデル結果として扱いません。v7の保存適用も対象日に絞った公開factsだけを渡し、他日付のraw抽出を当日に混ぜません。本人適用は計上済みusageを参照するだけで再課金せず、今回の新しいlive解析がある場合は、その実発行日の使用量を別途一度だけ精算する必要があります。私的`savedPersonalImports`に内容hash付き適用receiptを残し、同一差分の再適用はno-op、不一致・未知ID・古い期待factsは停止します。無関係なpost・公式情報・予算・pause・後続訂正は置き換えません。
 
 AI importの`sourceHash`は、deployment・model/version・用途の実績を保持した外部保存台帳の**元bytesのSHA256**へ結び付け、その台帳も別途保持します。集計の`modelBreakdown`だけからdeploymentを推定せず、比較deploymentの画像使用を本番stable使用へ、過去nano/miniをLunaへ付け替えません。import JSONは外部台帳そのものを任意コピーする入口ではありません。
 

@@ -8,6 +8,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const { test } = require("node:test");
 
 const repo = process.argv[2] || path.join(__dirname, "..");
 const { orderRosterEntries } = require(path.join(repo, "app.js"));
@@ -215,7 +216,7 @@ function dispatch(id, type) {
   const target = elementById(id);
   const matched = listeners.filter((entry) => entry.element === target && entry.type === type);
   assert.ok(matched.length > 0, `#${id} has no "${type}" listener`);
-  matched.forEach((entry) => entry.fn({ type, target }));
+  return Promise.all(matched.map((entry) => entry.fn({ type, target })));
 }
 
 function selectViewMode(mode) {
@@ -498,11 +499,7 @@ for (const entry of maidEntries) {
 }
 
 const linkedNames = withClass(calendar, "maid-name").filter((node) => node.tagName === "A");
-assert.ok(linkedNames.length > 0, "maids with a known X account must link to it");
-for (const link of linkedNames) {
-  assert.match(link.href, /^https:\/\/x\.com\/[A-Za-z0-9_]{1,15}$/, "malformed X link");
-  assert.equal(link.rel, "noopener noreferrer", "external links must not leak the opener");
-}
+assert.equal(linkedNames.length, 0, "daily names without a verified own day post have no profile fallback");
 
 // 1人ずつ独立に決めると全員が1号店になるので、複数店に割れることを確かめる。
 // ただし少人数のシフトは1店で収まるのが正しいので、標準人数を超えた場合だけ2店以上を要求する。
@@ -1748,11 +1745,13 @@ assert.ok(
     { name: "latest corrected placement is the name link", posts: [],
       personal: [personalPost("placement", "s2"), personalPost("placement", "s4", 2)], mode: true, own: true, linkPost: 2,
       confirmed: [[], ["あむ"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]] },
-    { name: "storeless update keeps the supporting post link", posts: [],
-      personal: [personalPost("placement", "s2"), personalPost("late", null, 2)], mode: true, own: true, linkPost: 1,
+    { name: "storeless update links the newer post without changing placement evidence", posts: [],
+      personal: [personalPost("placement", "s2"), personalPost("late", null, 2)], mode: true, own: true, linkPost: 2,
       confirmed: [[], ["あむ"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]] },
     { name: "canonical name selects post before display conversion", posts: [],
-      personal: [{ ...personalPost("placement", "s4"), name: "まこっちゃん" }],
+      personal: [{ ...personalPost("placement", "s4"), name: "まこっちゃん",
+        authorScreenName: insights.maidTendency["まこっちゃん"].x,
+        url: `https://x.com/${insights.maidTendency["まこっちゃん"].x}/status/2096500000000000001` }],
       plans: { "昼": entries(["まこっちゃん"]), "夜": entries(["まこっちゃん"]) },
       mode: true, linkPost: 1, linkedName: "まこっちゃん",
       confirmed: [[], ["まこっちゃん"]], unknown: [["まこっちゃん"], []] },
@@ -1799,10 +1798,10 @@ assert.ok(
       personal: [personalPost("placement", "s1"), personalPost("absence", null, 2)], mode: true, cancelled: true,
       confirmed: [[], []], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]] },
     { name: "return without restoring old store", posts: [post("夜", ["あむ"])],
-      personal: [personalPost("placement", "s1"), personalPost("absence", null, 2), personalPost("return", null, 3)], mode: true,
+      personal: [personalPost("placement", "s1"), personalPost("absence", null, 2), personalPost("return", null, 3)], mode: true, linkPost: 3,
       confirmed: [[], []], unknown: ["昼", "夜"].map(shift => plansByShift[shift].map(entry => entry.name)) },
     { name: "late is not absence", posts: [post("夜", ["あむ"])],
-      personal: [personalPost("late", null, 2)], mode: true,
+      personal: [personalPost("late", null, 2)], mode: true, linkPost: 2,
       confirmed: [[], ["あむ"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]] },
     { name: "late with explicit shop gates both shifts", posts: [], plans: latePlans,
       personal: [explicitStoreLate], mode: true, own: true, lateStore: true, linkPost: 2,
@@ -1811,7 +1810,7 @@ assert.ok(
       personal: [personalPost("absence", null), explicitStoreLate], mode: true, cancelled: true,
       confirmed: [[], []], unknown: [["あむ"], []] },
     { name: "late without shop does not invent placement", posts: [], plans: latePlans,
-      personal: [personalPost("late", null)], shiftModes: [false, true], unplaced: true,
+      personal: [personalPost("late", null)], shiftModes: [false, true], unplaced: true, linkPost: 1,
       confirmed: [[], []], unknown: [[], ["あむ"]] },
     { name: "curated suppresses personal and old plans", posts: [],
       personal: [personalPost("placement", "s1")], mode: true, curated: true,
@@ -1892,18 +1891,19 @@ assert.ok(
           const canonical = fixture.linkedName ?? "あむ";
           const link = withClass(sections[1], "maid-name").find(node => node.dataset.name === canonical);
           assert.equal(link.tagName, "A");
-          assert.equal(link.href, `https://x.com/amu_zettai/status/209650000000000000${fixture.linkPost}`);
+          assert.equal(link.href, fixture.personal.find(post => post.id === `209650000000000000${fixture.linkPost}`).url);
           assert.equal(link.rel, "noopener noreferrer");
           assert.equal(link.target, "_blank");
           assert.equal(link.dataset.focusKey, `${key}|夜|${canonical}`);
           assert.equal(link.textContent, schedule.displayNames?.[canonical] ?? canonical);
-          assert.doesNotMatch(link.title, /本人ポスト|本人案内/);
+          assert.match(link.title, /本人の当日投稿を開く/);
+          assert.equal(link.getAttribute("aria-label"), link.title);
           link.focus();
           assert.equal(documentShim.activeElement, link);
-        } else if (fixture.pending || fixture.unplaced || fixture.name === "return without restoring old store") {
-          const link = withClass(sections[1], "maid-name").find(node => node.dataset.name === "あむ");
-          assert.equal(link.href, `https://x.com/${insights.maidTendency["あむ"].x}`,
-            "unresolved placement retains the old profile behavior rather than a stale placement link");
+        } else {
+          for (const link of withClass(sections[1], "maid-name")) {
+            assert.equal(link.href, undefined, "no profile fallback or superseded personal post");
+          }
         }
         if (fixture.cancelled) assert.ok(withClass(sections[1], "shift-change").some(node => node.textContent.includes("あむ：取消")));
         if (fixture.lateStore) {
@@ -1978,6 +1978,246 @@ assert.ok(
     personalSnapshot.posts = [];
   }
 }
+
+test("same-day links agree across daily, store, popup, unannounced, curated and per-person views", () => {
+  const key = "2026-09-06";
+  const originalPlans = schedule.schedule[key];
+  const originalRecords = insights.actualRoster[key];
+  const official = windowShim.OBSERVED_SHIFTS;
+  const personal = windowShim.PERSONAL_SHIFTS;
+  const makePost = (number, name, scope) => {
+    const author = insights.maidTendency[name]?.x ?? "link_only";
+    const id = `${2097100000000000000n + BigInt(number)}`;
+    return { id, url: `https://x.com/${author}/status/${id}`, name,
+      authorId: "12345678", authorScreenName: author, date: key,
+      createdAt: `${key}T10:00:00+09:00`, observedAt: "2026-09-07T01:00:00+09:00",
+      events: [], links: [{ scope, status: "work" }] };
+  };
+  const posts = [makePost(1, "つぼみ", "unspecified"), makePost(2, "かなた", "昼"),
+    makePost(3, "みりあ", "夜"), makePost(4, "リンクだけの人", "unspecified")];
+  const officialPosts = ["昼", "夜"].map((shift, index) => {
+    const id = `209710000000000001${index}`;
+    return { id, url: `https://x.com/akibazettai/status/${id}`,
+      authorId: "822429861218131969", authorScreenName: "akibazettai",
+      date: key, shift, storeId: "s2", names: ["つぼみ"],
+      createdAt: `${key}T12:00:00+09:00`, observedAt: `${key}T13:00:00+09:00`,
+      notices: [{ name: "かなた", kind: "late", excerpt: "あとから" }] };
+  });
+  const expectedHref = (name, shift) => posts.find(post =>
+    post.name === name && post.links.some(link => link.scope === shift || link.scope === "unspecified"))?.url;
+  const checkLink = (link, name, shift) => {
+    const href = expectedHref(name, shift);
+    assert.equal(link.href, href, `${name} ${shift}`);
+    assert.equal(link.tagName, href ? "A" : "SPAN");
+    if (href) {
+      assert.equal(link.target, "_blank");
+      assert.equal(link.rel, "noopener noreferrer");
+      assert.match(link.title, /本人の当日投稿を開く$/);
+      assert.match(link.getAttribute("aria-label"), /本人の当日投稿を開く$/);
+      assert.doesNotMatch(link.title, /勤務実績|お給仕予定|号店/);
+    }
+  };
+  const checkRows = (root) => {
+    const found = [];
+    withClass(root, "shift-section").forEach((section, index) => {
+      for (const row of withClass(section, "maid-entry")) {
+        const link = withClass(row, "maid-name")[0];
+        checkLink(link, row.dataset.name, ["昼", "夜"][index]);
+        found.push(`${["昼", "夜"][index]}|${row.dataset.name}`);
+      }
+    });
+    assert.ok(!found.some(value => value.endsWith("|リンクだけの人")));
+    assert.ok(withClass(root, "observation-source").every(link => link.href.startsWith("https://x.com/akibazettai/status/")));
+    assert.equal(withClass(root, "personal-details").length, 0);
+    return found.sort();
+  };
+  try {
+    for (const scenario of ["official-with-unannounced", "no-schedule", "curated", "scheduled-only"]) {
+      schedule.schedule[key] = scenario === "no-schedule" ? {} : {
+        "昼": [{ name: "みりあ" }], "夜": [{ name: "みりあ" }]
+      };
+      insights.actualRoster[key] = scenario === "curated" ? {
+        "昼": { stores: { s2: ["つぼみ", "かなた"] }, trainees: [] },
+        "夜": { stores: { s4: ["つぼみ", "かなた"] }, trainees: [] }
+      } : {};
+      official.posts = scenario === "scheduled-only" ? [] : officialPosts;
+      personal.posts = posts;
+      const raw = JSON.stringify([schedule.schedule[key], insights.actualRoster[key], official, personal]);
+      dispatch("reset-filters", "click");
+      elementById("date-from").value = key;
+      elementById("date-to").value = key;
+      dispatch("date-from", "change");
+      const byView = [];
+      for (const mode of ["roster", "forecast", "calendar"]) {
+        selectViewMode(mode);
+        if (mode === "calendar") {
+          const button = withClass(calendar, "day-button").find(node => node.dataset.date === key);
+          listeners.find(entry => entry.element === button && entry.type === "click").fn({ target: button });
+          byView.push(checkRows(elementById("day-dialog-content")));
+          dispatch("close-day-dialog", "click");
+        } else {
+          byView.push(checkRows(calendar));
+        }
+      }
+      assert.deepEqual(byView[0], byView[1], scenario);
+      assert.deepEqual(byView[0], byView[2], scenario);
+      selectViewMode("maid");
+      const found = [];
+      for (const plan of withClass(calendar, "maid-plan")) {
+        const name = plan.dataset.name;
+        assert.notEqual(name, "リンクだけの人");
+        const heading = withClass(plan, "maid-name")[0];
+        const account = insights.maidTendency[name]?.x;
+        assert.equal(heading.href, account ? `https://x.com/${account}` : undefined,
+          "only the multi-date person's heading retains a profile link");
+        for (const stop of withClass(plan, "maid-plan-stop")) {
+          const when = withClass(stop, "maid-plan-when")[0];
+          const shift = when.textContent.endsWith("昼") ? "昼" : "夜";
+          checkLink(when, name, shift);
+          found.push(`${shift}|${name}`);
+          assert.ok(withClass(stop, "observation-source").every(link =>
+            link.href.startsWith("https://x.com/akibazettai/status/")));
+        }
+      }
+      assert.deepEqual(found.sort(), byView[0], `${scenario}: each-date stop parity`);
+      assert.equal(JSON.stringify([schedule.schedule[key], insights.actualRoster[key], official, personal]), raw);
+    }
+  } finally {
+    schedule.schedule[key] = originalPlans;
+    if (originalRecords) insights.actualRoster[key] = originalRecords;
+    else delete insights.actualRoster[key];
+    official.posts = [];
+    personal.posts = [];
+  }
+});
+
+test("link-only refresh updates scoped popup links and preserves filters, focus, scroll and embeds", async () => {
+  const key = "2026-09-06";
+  const originalPlans = schedule.schedule[key];
+  const originalRecords = insights.actualRoster[key];
+  const official = windowShim.OBSERVED_SHIFTS;
+  const content = elementById("day-dialog-content");
+  const dialog = elementById("day-dialog");
+  const previousQuery = content.querySelectorAll;
+  const previousContains = dialog.contains;
+  const originalFetch = windowShim.fetch;
+  let payload = { schemaVersion: 1, complete: false, checkedAt: `${key}T14:00:00+09:00`,
+    lastSuccessAt: null, lastRun: { status: "partial" }, posts: [] };
+  const requests = [];
+  windowShim.fetch = async (url) => {
+    requests.push(url);
+    assert.equal(url, "data/personal-shifts.json", "all refresh responses are offline fixtures");
+    return { ok: true, json: async () => JSON.parse(JSON.stringify(payload)) };
+  };
+  content.querySelectorAll = (selector) => {
+    if (selector === "[data-focus-key]") return walk(content).filter(node => node.dataset.focusKey);
+    assert.equal(selector, "details[data-state-key]");
+    return walk(content).filter(node => node.tagName === "DETAILS" && node.dataset.stateKey);
+  };
+  dialog.contains = node => walk(content).includes(node);
+  const sections = () => withClass(content, "shift-section");
+  const names = (index) => withClass(sections()[index], "maid-name");
+  const source = () => withClass(content, "official-post");
+  const evidence = () => withClass(content, "maid-entry").map(row =>
+    [row.dataset.name, row.dataset.store, row.dataset.evidence, row.textContent, row.title]);
+  const filters = () => JSON.stringify([
+    elementById("date-from").value, elementById("date-to").value,
+    viewModeInputs.map(input => [input.value, input.checked]),
+    walk(elementById("maid-checkboxes")).filter(node => node.tagName === "INPUT").map(input => [input.value, input.checked])
+  ]);
+  try {
+    schedule.schedule[key] = { "昼": [{ name: "つぼみ" }, { name: "かなた" }],
+      "夜": [{ name: "つぼみ" }, { name: "かなた" }] };
+    insights.actualRoster[key] = {};
+    official.posts = ["昼", "夜"].map((shift, index) => {
+      const id = `209720000000000000${index}`;
+      return { id, url: `https://x.com/akibazettai/status/${id}`,
+        authorId: "822429861218131969", authorScreenName: "akibazettai",
+        date: key, shift, storeId: "s1", names: ["つぼみ", "かなた"],
+        createdAt: `${key}T12:00:00+09:00`, observedAt: `${key}T13:00:00+09:00` };
+    });
+    dispatch("reset-filters", "click");
+    elementById("date-from").value = key;
+    elementById("date-to").value = key;
+    dispatch("date-from", "change");
+    dispatch("clear-all", "click");
+    const selected = walk(elementById("maid-checkboxes")).find(node => node.tagName === "INPUT" && node.value === "つぼみ");
+    selected.checked = true;
+    listeners.find(entry => entry.element === selected && entry.type === "change").fn({ target: selected });
+    selectViewMode("calendar");
+    await dispatch("refresh-personal", "click");
+    const button = withClass(calendar, "day-button").find(node => node.dataset.date === key);
+    listeners.find(entry => entry.element === button && entry.type === "click").fn({ target: button });
+    assert.deepEqual(withClass(content, "maid-name").map(node => node.dataset.name), ["つぼみ", "つぼみ"]);
+    const beforeEvidence = evidence();
+    const beforeFilters = filters();
+    const beforeSources = source();
+    const frames = beforeSources.map(node => {
+      const frame = makeElement("iframe");
+      withClass(node, "official-embed")[0].append(frame);
+      return frame;
+    });
+    const firstDay = sections()[0];
+    names(0)[0].focus();
+    content.scrollTop = 77;
+    const author = insights.maidTendency["つぼみ"].x;
+    const id = "2097200000000000010";
+    payload.posts.push({ id, url: `https://x.com/${author}/status/${id}`, name: "つぼみ",
+      authorId: "123456789", authorScreenName: author, date: key, events: [],
+      createdAt: `${key}T13:30:00+09:00`, observedAt: `${key}T14:00:00+09:00`,
+      links: [{ scope: "夜", status: "work" }] });
+    await dispatch("refresh-personal", "click");
+    assert.equal(elementById("personal-status").dataset.error, "false");
+    assert.equal(sections()[0], firstDay, "night-only addition does not replace the day section");
+    assert.equal(names(0)[0].href, undefined);
+    assert.equal(names(1)[0].href, payload.posts[0].url);
+    assert.equal(content.scrollTop, 77);
+    assert.equal(documentShim.activeElement, names(0)[0]);
+    payload.posts[0].links = [{ scope: "unspecified", status: "work" }];
+    await dispatch("refresh-personal", "click");
+    assert.equal(names(0)[0].href, payload.posts[0].url, "link-only scope change refreshes both independent shifts");
+    assert.equal(names(1)[0].href, payload.posts[0].url);
+    names(1)[0].focus();
+    const focused = documentShim.activeElement;
+    const metadataSections = [...sections()];
+    payload.checkedAt = "2026-09-07T01:00:00+09:00";
+    payload.posts[0].observedAt = "2026-09-07T01:00:00+09:00";
+    payload.lastRun.status = "budget-exhausted";
+    await dispatch("refresh-personal", "click");
+    sections().forEach((section, index) => assert.equal(section, metadataSections[index],
+      "metadata-only refresh must not replace existing DOM"));
+    assert.equal(documentShim.activeElement, focused);
+    payload.posts[0].links.push({ scope: "昼", status: "withdrawn" });
+    await dispatch("refresh-personal", "click");
+    assert.equal(names(0)[0].href, undefined, "link withdrawal changes only the link, not the roster");
+    assert.equal(names(1)[0], focused, "day-only cancellation preserves the night node and focus");
+    assert.equal(documentShim.activeElement, focused);
+    assert.equal(names(1)[0].href, payload.posts[0].url);
+    assert.deepEqual(evidence(), beforeEvidence);
+    assert.equal(filters(), beforeFilters);
+    assert.equal(content.scrollTop, 77);
+    source().forEach((node, index) => {
+      assert.equal(node, beforeSources[index], "link changes retain the existing official embed node");
+      assert.equal(withClass(node, "official-embed")[0].children[0], frames[index]);
+    });
+    assert.equal(dialog.open, true);
+    assert.equal(requests.length, 5);
+    payload.posts = [];
+    await dispatch("refresh-personal", "click");
+    assert.ok(withClass(content, "maid-name").every(node => node.href === undefined),
+      "removing the last verified post never restores profile links");
+    assert.deepEqual(evidence(), beforeEvidence);
+  } finally {
+    dispatch("close-day-dialog", "click");
+    content.querySelectorAll = previousQuery;
+    dialog.contains = previousContains;
+    windowShim.fetch = originalFetch;
+    schedule.schedule[key] = originalPlans;
+    if (originalRecords) insights.actualRoster[key] = originalRecords;
+    else delete insights.actualRoster[key];
+    official.posts = [];
+  }
+});
 
 console.log(
   `Headless render valid: ${dayCells.length} day cells, ${shiftSections.length} shift sections, ` +

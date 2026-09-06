@@ -667,7 +667,7 @@ async function main() {
     await wait('document.querySelector("#observation-status").dataset.loaded === "false"');
     await click('[data-date="2026-09-05"]');
     await scrollShift("night");
-    await evaluate('document.querySelector("#dialog-night .maid-name[href]").focus({preventScroll:true})');
+    await evaluate('document.querySelector("#dialog-night .maid-name").focus({preventScroll:true})');
     const activeBeforeRefresh = await evaluate('({focus:document.activeElement.dataset.focusKey,scroll:document.querySelector("#day-dialog-content").scrollTop,title:document.querySelector("#day-dialog-title").textContent})');
     observationResponse.checkedAt = "2026-09-05T15:01:00Z";
     holdObservation = false;

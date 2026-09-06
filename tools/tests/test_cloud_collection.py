@@ -54,6 +54,101 @@ def pending(tid=TID):
             'firstSeenAt': CREATED, 'lastAttemptAt': CREATED, 'attempts': 1}
 
 
+def saved_personal_fixture(module):
+    """Synthetic source attestations, not new observations or model acceptances."""
+    saved = cloud.load_personal_saved()
+    state = module.empty_state()
+    fetched = '2026-09-06T04:00:00Z'
+    state.update(checkedAt=fetched, lastSuccessAt=fetched,
+                 lastRun={'status': 'partial', 'date': '2026-09-06'})
+    state['budgets'] = {'2026-09-06': {'searches': 11, 'posts': 5}}
+    state['lastRequests'] = {module.POST_HOST: fetched}
+    ledger = cloud.load_analysis_state()
+    usage = ledger.empty_state()
+    ledger.apply_import(usage, {
+        'receiptId': 'a' * 64, 'sourceHash': 'b' * 64, 'date': '2026-09-07',
+        'counts': {'requests': 3},
+        'modelBreakdown': [{
+            'model': 'gpt-5.6-luna', 'deployment': 'gpt-5.6-luna',
+            'modelVersion': '2026-07-09', 'kind': 'text', 'component': 'personal', 'count': 3,
+        }],
+    })
+    amendments = []
+    for index, (name, handle, author) in enumerate((
+            ('あむ', 'amu_zettai', '1180156105181159424'),
+            ('ららこ', 'rarako_zettai', '2065375500131028992'),
+            ('あめる', 'ameru_zettai', '1822822097141575680'))):
+        created = f'2026-09-05T15:0{index + 1}:00Z'
+        tid = make_id(created)
+        metadata = {
+            'name': name, 'authorId': author, 'authorScreenName': handle,
+            'date': '2026-09-06', 'url': module.public_url(handle, tid),
+        }
+        source = {
+            **metadata, 'createdAt': created, 'fetchedAt': fetched,
+            'analyzedAt': f'2026-09-06T16:0{index}:00Z',
+            'provenance': 'search' if index == 0 else 'direct',
+            'bodyHash': saved.data_hash(['body', tid]),
+            'sourceHash': saved.data_hash(['source', tid]),
+            'sourceManifestHash': 'c' * 64, 'analysisResultHash': 'd' * 64,
+            'analysisReceiptHash': saved.data_hash(['analysis', tid]), 'contractHash': 'e' * 64,
+            'contractVersion': saved.LEGACY_CONTRACT, 'model': saved.MODEL,
+            'deployment': saved.MODEL, 'modelVersion': saved.MODEL_VERSION,
+            'usageReceiptId': 'a' * 64, 'usageSourceHash': 'b' * 64,
+        }
+        events = [{'shift': '昼', 'kind': 'placement', 'storeId': 's1', 'excerpt': '1号店昼'}]
+        if index == 0:
+            source['searchCreatedAt'] = created
+            state['pending'].append({
+                'id': tid, **metadata, 'searchCreatedAt': created,
+                'reason': 'network_error', 'firstSeenAt': fetched,
+                'lastAttemptAt': fetched, 'attempts': 1,
+            })
+        else:
+            state['identityBindings'][name] = {
+                'authorId': author, 'authorScreenName': handle, 'verifiedAt': fetched,
+            }
+            if index == 1:
+                state['resolved'].append({
+                    'id': tid, **{key: metadata[key] for key in ('name', 'url', 'date')},
+                    'reason': 'no_event', 'resolvedAt': fetched,
+                })
+            else:
+                state['posts'].append({
+                    'id': tid, **metadata, 'createdAt': created,
+                    'observedAt': fetched, 'events': copy.deepcopy(events),
+                })
+        amendments.append({
+            'schemaVersion': 1, 'id': tid, 'source': source, 'events': events,
+            'links': [{'scope': '昼', 'status': 'work'}],
+        })
+    entries = [{'expectedSubjectHash': saved.subject_hash(state, item['id']), 'amendment': item}
+               for item in amendments]
+    return state, usage, entries
+
+
+def saved_personal_pending_pair(module, second_identity):
+    state, usage, entries = saved_personal_fixture(module)
+    entries = entries[:2]
+    second = entries[1]['amendment']
+    source = second['source']
+    del state['identityBindings'][source['name']]
+    state['resolved'] = []
+    source.update(second_identity)
+    source.update(provenance='search', searchCreatedAt=source['createdAt'],
+                  url=module.public_url(source['authorScreenName'], second['id']))
+    state['pending'].append({
+        'id': second['id'], **{field: source[field] for field in (
+            'url', 'name', 'authorId', 'authorScreenName', 'date', 'searchCreatedAt')},
+        'reason': 'network_error', 'firstSeenAt': source['fetchedAt'],
+        'lastAttemptAt': source['fetchedAt'], 'attempts': 1,
+    })
+    saved = cloud.load_personal_saved()
+    for entry in entries:
+        entry['expectedSubjectHash'] = saved.subject_hash(state, entry['amendment']['id'])
+    return state, usage, entries
+
+
 class OfflineClient:
     def __init__(self, ids=(TID,), posts=None, search_failure=None, on_http=None):
         self.ids = list(ids)
@@ -1185,11 +1280,126 @@ class CloudTests(unittest.TestCase):
         args = module.argument_parser().parse_args(argv[4:])
         self.assertEqual(args.http_state.name, cloud.HTTP_STATE)
         self.assertEqual(args.snapshot.name, cloud.PERSONAL)
+        self.assertEqual(args.observations, self.root / 'collected' / cloud.SNAPSHOT)
         self.assertEqual((args.max_searches, args.max_posts), (3, 3))
         self.assertIsNone(args.publish)
         self.assertNotIn('GH_TOKEN', child.call_args.kwargs['environment'])
         self.assertNotIn('GITHUB_TOKEN', child.call_args.kwargs['environment'])
         self.assertEqual(logged.getvalue(), '')
+
+    def test_both_personal_child_observes_same_run_validated_official_facts(self):
+        module, _ = self.personal_seed()
+        self.seed_branch()
+        self.personal_mode('both')
+        observations = []
+
+        def personal_child(root, state, report, environment):
+            current, _ = cloud.validate_snapshot(state / cloud.SNAPSHOT, collector)
+            observations.extend(current['posts'])
+            self.assertEqual(current['posts'], [fact()])
+            self.assertEqual(json.loads(self.output.read_bytes())['posts'], [])
+            private = module.read_state(state / cloud.PERSONAL)
+            private['lastRun'] = {'status': 'no-new'}
+            collector.atomic_json(state / cloud.PERSONAL, private)
+            collector.atomic_json(report, {'component': 'personal', 'status': 'no-new', 'exitCode': 0})
+            return 0
+
+        with mock.patch.object(cloud, 'invoke_personal_collector', side_effect=personal_child):
+            self.run_cloud()
+        self.assertEqual(observations, [fact()])
+
+    def test_personal_link_only_cloud_contract_and_private_field_boundaries(self):
+        module, seed = self.personal_seed()
+        private = module.empty_state()
+        module.merge_seed(private, seed)
+        private['posts'][0].update(events=[], links=[{'scope': 'unspecified', 'status': 'work'}])
+        private.update(coverage={}, searchHistory={}, savedPersonalImports={})
+        path = self.root / 'links.json'
+        collector.atomic_json(path, private)
+        cloud.validate_personal(path, module)
+        public = module.public_state(private)
+        collector.atomic_json(path, public)
+        cloud.validate_personal(path, module, private=False)
+        self.assertEqual(public['posts'][0]['events'], [])
+        self.assertEqual(public['posts'][0]['links'], [{'scope': 'unspecified', 'status': 'work'}])
+        for field in ('coverage', 'searchHistory', 'savedPersonalImports'):
+            rejected = copy.deepcopy(public)
+            rejected[field] = {}
+            collector.atomic_json(path, rejected)
+            with self.assertRaises((cloud.CloudError, ValueError)):
+                cloud.validate_personal(path, module, private=False)
+        for links in (
+                None, {}, [], [{'scope': 'unknown', 'status': 'work'}],
+                [{'scope': '昼', 'status': 'work'}] * 2,
+                [{'scope': 'unspecified', 'status': 'withdrawn'}],
+                [{'scope': '昼', 'status': 'work', 'url': 'https://untrusted.invalid'}],
+                [{'scope': '昼', 'status': 'work', 'evidenceLineIds': [1]}]):
+            rejected = copy.deepcopy(public)
+            rejected['posts'][0]['links'] = links
+            collector.atomic_json(path, rejected)
+            with self.assertRaises((cloud.CloudError, ValueError)):
+                cloud.validate_personal(path, module, private=False)
+
+    def test_personal_source_urls_use_strict_shared_query_validation(self):
+        module, seed = self.personal_seed()
+        state = module.empty_state()
+        module.merge_seed(state, seed)
+        path = self.root / 'personal-sources.json'
+        valid = 'https://search.yahoo.co.jp/realtime/search?p=id%3Aamu_zettai&ei=UTF-8'
+        state['lastRun'] = {
+            'status': 'no-new', 'date': '2026-09-06', 'sourceCount': 1,
+            'sources': [{'url': valid, 'status': 'ok', 'candidateCount': 0}],
+        }
+        collector.atomic_json(path, state)
+        with mock.patch.object(module, 'valid_search_url', wraps=module.valid_search_url) as validate:
+            cloud.validate_personal(path, module)
+        validate.assert_called_with(valid)
+        for url in (
+                'https://untrusted.invalid/search?p=id%3Aamu_zettai',
+                valid + '&instructions=ignore', valid.replace('id%3Aamu_zettai', 'id%3Aamu_zettai+other'),
+                valid.replace('https://', 'http://'), valid + '#fragment'):
+            state['lastRun']['sources'][0]['url'] = url
+            collector.atomic_json(path, state)
+            with self.subTest(url=url), self.assertRaises((cloud.CloudError, ValueError)):
+                cloud.validate_personal(path, module)
+
+    def test_saved_pending_metadata_requires_existing_binding_without_fake_search_time(self):
+        module = cloud.load_personal_collector()
+        state, _, _ = saved_personal_fixture(module)
+        pending = state['pending'][0]
+        created = pending['searchCreatedAt']
+        binding = {field: pending[field] for field in ('authorId', 'authorScreenName')}
+        binding['verifiedAt'] = pending['firstSeenAt']
+        state['identityBindings'][pending['name']] = binding
+        path = self.root / 'saved-pending.json'
+        pending['searchCreatedAt'] = None
+        for metadata_source in ('saved_binding', 'saved_post'):
+            pending['metadataSource'] = metadata_source
+            if metadata_source == 'saved_post':
+                pending['sourceCreatedAt'] = created
+            collector.atomic_json(path, state)
+            cloud.validate_personal(path, module)
+        for mutate in (
+                lambda item: item.pop('metadataSource'),
+                lambda item: item.update(metadataSource='search'),
+                lambda item: item.update(metadataSource='saved_binding'),
+                lambda item: item.update(sourceCreatedAt='2026-09-04T15:01:00Z'),
+                lambda item: item.update(sourceCreatedAt='2026-09-05T15:09:00Z'),
+                lambda item: item.update(rawBody='not allowed')):
+            bad = copy.deepcopy(state)
+            mutate(bad['pending'][0])
+            collector.atomic_json(path, bad)
+            with self.assertRaises((cloud.CloudError, ValueError)):
+                cloud.validate_personal(path, module)
+        for binding in (None, {**binding, 'authorId': '123'}):
+            bad = copy.deepcopy(state)
+            if binding is None:
+                del bad['identityBindings'][pending['name']]
+            else:
+                bad['identityBindings'][pending['name']] = binding
+            collector.atomic_json(path, bad)
+            with self.assertRaises((cloud.CloudError, ValueError)):
+                cloud.validate_personal(path, module)
 
     def test_azure_credentials_only_reach_explicit_personal_backend(self):
         environment = {**self.environment, 'PERSONAL_ANALYSIS_BACKEND': 'azure',
@@ -1469,6 +1679,129 @@ class CloudTests(unittest.TestCase):
         cloud.orchestrate(self.args, root=self.root, environment=self.environment,
                           collector=collector, personal=module)
         self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0], saved)
+
+    def test_saved_personal_delta_is_leased_accounted_once_and_publicly_minimized(self):
+        module = cloud.load_personal_collector()
+        private, usage, entries = saved_personal_fixture(module)
+        snapshot = collector.empty_snapshot()
+        snapshot['posts'] = [fact()]
+        self.seed_branch(snapshot)
+        self.bare_commit({cloud.PERSONAL: private, cloud.AI_USAGE: usage})
+        manifest = self.saved_manifest()
+        manifest.update(usageImports=[], personalAmendments=entries)
+        self.saved_mode(manifest)
+        with mock.patch.object(cloud, 'invoke_collector', side_effect=AssertionError('No source')), \
+                mock.patch.object(cloud, 'invoke_personal_collector', side_effect=AssertionError('No AI')):
+            result = cloud.orchestrate(
+                self.args, root=self.root, environment=self.environment, collector=collector, personal=module)
+        self.assertEqual(result['collectionStatus'], 'applied-saved')
+        self.assertNotIn(cloud.LEASE, self.remote_names())
+        after = self.remote_json(cloud.PERSONAL)[0]
+        self.assertEqual(len(after['posts']), 3)
+        self.assertEqual(len(after['savedPersonalImports']), 3)
+        self.assertEqual(after['pending'], [])
+        self.assertEqual(after['resolved'], [])
+        self.assertEqual(after['budgets'], private['budgets'])
+        self.assertEqual(self.remote_json(cloud.AI_USAGE)[0], usage)
+        self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0], snapshot)
+        pages_spec = importlib.util.spec_from_file_location('personal_saved_pages', ROOT / 'tools' / 'pages.py')
+        pages = importlib.util.module_from_spec(pages_spec)
+        pages_spec.loader.exec_module(pages)
+        public = pages.load_public_personal_snapshot(self.output.parent / cloud.PERSONAL)
+        self.assertEqual(public['posts'], after['posts'])
+        for field in ('savedPersonalImports', 'coverage', 'sourceHash', 'analysisReceiptHash',
+                      'usageReceiptId', 'bodyHash', 'contractVersion', 'identityBindings'):
+            self.assertNotIn(field, json.dumps(public))
+        manifest['expectedStateSHA'] = result['stateCommit']
+        self.saved_mode(manifest)
+        cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                          collector=collector, personal=module)
+        self.assertEqual(self.remote_json(cloud.PERSONAL)[0], after)
+        self.assertEqual(self.remote_json(cloud.AI_USAGE)[0], usage)
+
+    def test_saved_personal_rejections_happen_before_lease(self):
+        module = cloud.load_personal_collector()
+        private, usage, entries = saved_personal_fixture(module)
+        self.seed_branch()
+        self.bare_commit({cloud.PERSONAL: private, cloud.AI_USAGE: usage})
+        manifest = self.saved_manifest()
+        manifest.update(usageImports=[], personalAmendments=entries)
+        mutations = (
+            lambda items: items[0].update(expectedSubjectHash='f' * 64),
+            lambda items: items[0]['amendment'].update(id=THIRD),
+            lambda items: items[0]['amendment'].update(rawBody='not allowed'),
+            lambda items: items[0]['amendment']['source'].update(bodyLines=[]),
+            lambda items: items[0]['amendment']['events'][0].update(evidenceLineIds=[1]),
+            lambda items: items[0]['amendment']['source'].update(url='https://untrusted.invalid/input'),
+            lambda items: items[1]['amendment']['source'].update(authorId='123'),
+            lambda items: items[0]['amendment']['source'].update(usageSourceHash='f' * 64),
+            lambda items: items[0]['amendment']['source'].update(analyzedAt='2026-09-06T05:00:00Z'),
+        )
+        for change in mutations:
+            rejected = copy.deepcopy(manifest)
+            change(rejected['personalAmendments'])
+            self.saved_mode(rejected)
+            self.assert_read_only_failure('saved_manifest_rejected')
+        for field in ('expectedMainSHA', 'expectedStateSHA'):
+            rejected = copy.deepcopy(manifest)
+            rejected[field] = 'f' * 40
+            self.saved_mode(rejected)
+            self.assert_read_only_failure('saved_manifest_stale')
+        rejected = copy.deepcopy(manifest)
+        rejected['personalAmendments'] *= 2
+        self.saved_mode(rejected)
+        self.assert_read_only_failure('unsafe_state')
+        bad_binding = copy.deepcopy(private)
+        del bad_binding['identityBindings']['ららこ']
+        self.bare_commit({cloud.PERSONAL: bad_binding})
+        manifest['expectedStateSHA'] = self.git(self.remote, 'rev-parse', cloud.REF).decode().strip()
+        manifest['personalAmendments'][1]['expectedSubjectHash'] = cloud.load_personal_saved().subject_hash(
+            bad_binding, entries[1]['amendment']['id'])
+        self.saved_mode(manifest)
+        self.assert_read_only_failure('saved_manifest_rejected')
+
+    def test_saved_personal_batch_binding_conflict_is_rejected_before_lease(self):
+        module = cloud.load_personal_collector()
+        private, usage, entries = saved_personal_pending_pair(module, {'name': 'あむ'})
+        self.seed_branch()
+        self.bare_commit({cloud.PERSONAL: private, cloud.AI_USAGE: usage})
+        manifest = self.saved_manifest()
+        manifest.update(usageImports=[], personalAmendments=entries)
+        self.saved_mode(manifest)
+        self.assert_read_only_failure('saved_manifest_rejected')
+        self.assertEqual(self.remote_json(cloud.PERSONAL)[0], private)
+        self.assertEqual(self.remote_json(cloud.AI_USAGE)[0], usage)
+        self.assertNotIn(cloud.LEASE, self.remote_names())
+
+    def test_saved_personal_cas_conflict_never_overwrites_other_writer(self):
+        module = cloud.load_personal_collector()
+        private, usage, entries = saved_personal_fixture(module)
+        self.seed_branch()
+        self.bare_commit({cloud.PERSONAL: private, cloud.AI_USAGE: usage})
+        manifest = self.saved_manifest()
+        manifest.update(usageImports=[], personalAmendments=entries)
+        self.saved_mode(manifest)
+        original = cloud.child_process
+        pushes = []
+
+        def race(argv, **kwargs):
+            if 'push' in argv:
+                pushes.append(argv)
+                if len(pushes) == 2:
+                    concurrent = copy.deepcopy(private)
+                    concurrent['budgets']['2026-09-06']['posts'] += 1
+                    self.bare_commit({cloud.PERSONAL: concurrent})
+            return original(argv, **kwargs)
+
+        with mock.patch.object(cloud, 'child_process', side_effect=race), \
+                self.assertRaisesRegex(cloud.CloudError, 'state_push_failed'):
+            cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                              collector=collector, personal=module)
+        remote = self.remote_json(cloud.PERSONAL)[0]
+        self.assertNotIn('savedPersonalImports', remote)
+        self.assertEqual(remote['budgets']['2026-09-06']['posts'], 6)
+        self.assertIn(cloud.LEASE, self.remote_names())
+        self.assertTrue(all('--force' not in argument for argv in pushes for argument in argv))
 
     def test_daily_children_share_three_ai_requests_and_official_source_remainder(self):
         module, seed = self.personal_seed()
@@ -2085,6 +2418,257 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertNotIn(TOKEN, stream.getvalue() + output.read_text())
         self.assertEqual(json.loads(stream.getvalue())['reason'], 'local_or_validation_failure')
+
+
+class PersonalSavedTests(unittest.TestCase):
+    def setUp(self):
+        self.personal = cloud.load_personal_collector()
+        self.saved = cloud.load_personal_saved()
+        self.state, self.usage, self.entries = saved_personal_fixture(self.personal)
+
+    def apply(self, state=None, entries=None, usage=None):
+        return self.saved.apply_amendments(
+            self.state if state is None else state,
+            self.entries if entries is None else entries,
+            self.usage if usage is None else usage, self.personal)
+
+    def test_batch_proposed_bindings_reject_name_author_and_handle_conflicts(self):
+        first = self.entries[0]['amendment']['source']
+        variants = (
+            ({'name': first['name']}, 'saved_personal_identity_mismatch'),
+            ({'name': first['name'], 'authorId': first['authorId']},
+             'saved_personal_identity_mismatch'),
+            ({'name': first['name'], 'authorScreenName': first['authorScreenName']},
+             'saved_personal_identity_mismatch'),
+            ({'authorId': first['authorId']}, 'saved_personal_binding_collision'),
+            ({'authorScreenName': first['authorScreenName'].upper()}, 'saved_personal_binding_collision'),
+        )
+        for identity, reason in variants:
+            with self.subTest(identity=identity):
+                state, usage, entries = saved_personal_pending_pair(self.personal, identity)
+                before, before_usage = copy.deepcopy(state), copy.deepcopy(usage)
+                first_result = self.apply(state=state, entries=[entries[0]], usage=usage)
+                self.apply(state=state, entries=[entries[1]], usage=usage)
+                for ordered in (entries, list(reversed(entries))):
+                    with self.assertRaisesRegex(ValueError, reason):
+                        self.apply(state=state, entries=ordered, usage=usage)
+                next_entry = copy.deepcopy(entries[1])
+                next_entry['expectedSubjectHash'] = self.saved.subject_hash(
+                    first_result, next_entry['amendment']['id'])
+                with self.assertRaisesRegex(ValueError, reason):
+                    self.apply(state=first_result, entries=[next_entry], usage=usage)
+                self.assertEqual(state, before)
+                self.assertEqual(usage, before_usage)
+
+    def test_batch_same_identity_can_add_two_known_posts_and_merge_as_seed(self):
+        first = self.entries[0]['amendment']['source']
+        identity = {field: first[field] for field in ('name', 'authorId', 'authorScreenName')}
+        state, usage, entries = saved_personal_pending_pair(self.personal, identity)
+        after = self.apply(state=state, entries=entries, usage=usage)
+        self.assertEqual(len(after['posts']), len(state['posts']) + 2)
+        self.assertEqual(after['identityBindings'][first['name']], {
+            'authorId': first['authorId'], 'authorScreenName': first['authorScreenName'],
+            'verifiedAt': first['fetchedAt'],
+        })
+        self.assertEqual(self.apply(state=after, entries=entries, usage=usage), after)
+        seeded = self.personal.empty_state()
+        self.personal.merge_seed(seeded, self.personal.public_state(after))
+        self.assertEqual(seeded['posts'], after['posts'])
+        self.assertEqual(seeded['identityBindings'][first['name']]['authorId'], first['authorId'])
+
+    def test_exact_bounded_delta_preserves_unrelated_facts_history_and_budgets(self):
+        original = copy.deepcopy(self.state)
+        kept = copy.deepcopy(self.state['posts'][0])
+        kept['id'] = make_id('2026-09-05T15:04:00Z')
+        kept['url'] = self.personal.public_url(kept['authorScreenName'], kept['id'])
+        kept['createdAt'] = '2026-09-05T15:04:00Z'
+        kept['events'] = [{'shift': '夜', 'kind': 'absence', 'excerpt': 'お休みします'}]
+        self.state['posts'].append(kept)
+        unrelated = copy.deepcopy(self.state['pending'][0])
+        unrelated['id'] = make_id('2026-09-05T15:05:00Z')
+        unrelated['url'] = self.personal.public_url(unrelated['authorScreenName'], unrelated['id'])
+        unrelated['searchCreatedAt'] = '2026-09-05T15:05:00Z'
+        self.state['pending'].append(unrelated)
+        self.state.update(coverage={}, searchHistory={})
+        self.state['paused'] = {
+            'reason': 'http_error', 'host': self.personal.POST_HOST,
+            'at': '2026-09-07T04:00:00Z', 'retryAt': '2026-09-08T04:00:00Z', 'httpStatus': 429,
+        }
+        before, usage = copy.deepcopy(self.state), copy.deepcopy(self.usage)
+        after = self.apply()
+        self.assertEqual(after['posts'][1], kept)
+        self.assertEqual(after['pending'], [unrelated])
+        for field in ('budgets', 'paused', 'lastRequests', 'lastRun', 'checkedAt', 'lastSuccessAt',
+                      'originalTargets', 'coverage', 'searchHistory'):
+            self.assertEqual(after[field], before[field])
+        for name, binding in original['identityBindings'].items():
+            self.assertEqual(after['identityBindings'][name], binding)
+        self.assertEqual(after['identityBindings']['あむ'], {
+            'authorId': self.entries[0]['amendment']['source']['authorId'],
+            'authorScreenName': 'amu_zettai', 'verifiedAt': '2026-09-06T04:00:00Z',
+        })
+        self.assertEqual(self.usage, usage)
+        self.assertEqual(self.state, before)
+
+    def test_replay_is_noop_even_if_a_newer_post_or_current_facts_changed(self):
+        after = self.apply()
+        after['posts'][0]['events'] = [{'shift': '昼', 'kind': 'absence', 'excerpt': 'お休み'}]
+        before = copy.deepcopy(after)
+        self.assertEqual(self.apply(state=after), before)
+        refreshed = copy.deepcopy(self.entries)
+        for entry in refreshed:
+            entry['expectedSubjectHash'] = self.saved.subject_hash(after, entry['amendment']['id'])
+        self.assertEqual(self.apply(state=after, entries=refreshed), before)
+        refreshed[0]['expectedSubjectHash'] = 'f' * 64
+        with self.assertRaisesRegex(ValueError, 'saved_personal_receipt_conflict'):
+            self.apply(state=after, entries=refreshed)
+        altered = copy.deepcopy(self.entries)
+        altered[0]['amendment']['events'][0]['storeId'] = 's4'
+        with self.assertRaisesRegex(ValueError, 'saved_personal_receipt_conflict'):
+            self.apply(state=after, entries=altered)
+
+    def test_known_resolved_requires_binding_and_never_invents_search_metadata(self):
+        for change in (
+                lambda: self.state['identityBindings'].pop('ららこ'),
+                lambda: self.entries[1]['amendment']['source'].update(
+                    provenance='search', searchCreatedAt=self.entries[1]['amendment']['source']['createdAt']),
+                lambda: self.entries[0]['amendment']['source'].update(provenance='direct'),
+                lambda: self.state['identityBindings'].update({
+                    '別人': {'authorId': '1180156105181159424', 'authorScreenName': 'other',
+                             'verifiedAt': '2026-09-06T04:00:00Z'}})):
+            with self.subTest(change=change):
+                self.state, self.usage, self.entries = saved_personal_fixture(self.personal)
+                change()
+                for entry in self.entries:
+                    entry['expectedSubjectHash'] = self.saved.subject_hash(
+                        self.state, entry['amendment']['id'])
+                with self.assertRaises(ValueError):
+                    self.apply()
+
+    def test_pending_source_identity_and_subject_hash_are_not_optional(self):
+        for field, value in (('name', '別人'), ('authorId', '123'), ('authorScreenName', 'other'),
+                             ('date', '2026-09-05'), ('createdAt', '2026-09-05T15:08:00Z'),
+                             ('searchCreatedAt', '2026-09-05T15:01:00.100Z'),
+                             ('fetchedAt', '2026-09-05T15:00:00Z')):
+            with self.subTest(field=field):
+                bad = copy.deepcopy(self.entries)
+                bad[0]['amendment']['source'][field] = value
+                with self.assertRaises(ValueError):
+                    self.apply(entries=bad)
+        self.state['pending'][0]['attempts'] += 1
+        with self.assertRaisesRegex(ValueError, 'saved_personal_subject_mismatch'):
+            self.apply()
+
+    def test_saved_pending_uses_direct_provenance_and_never_creates_a_binding(self):
+        for metadata_source in ('saved_binding', 'saved_post'):
+            with self.subTest(metadata_source=metadata_source):
+                state, usage, entries = saved_personal_fixture(self.personal)
+                pending = state['pending'][0]
+                source = entries[0]['amendment']['source']
+                if metadata_source == 'saved_post':
+                    pending['sourceCreatedAt'] = source['createdAt']
+                pending.update(searchCreatedAt=None, metadataSource=metadata_source)
+                binding = {field: source[field] for field in ('authorId', 'authorScreenName')}
+                binding['verifiedAt'] = '2026-09-06T05:00:00Z'
+                state['identityBindings'][source['name']] = binding
+                entries[0]['expectedSubjectHash'] = self.saved.subject_hash(state, pending['id'])
+                with self.assertRaisesRegex(ValueError, 'saved_personal_search_mismatch'):
+                    self.apply(state=state, entries=entries, usage=usage)
+                source['provenance'] = 'direct'
+                del source['searchCreatedAt']
+                after = self.apply(state=state, entries=entries, usage=usage)
+                self.assertEqual(after['identityBindings'][source['name']], binding)
+                del state['identityBindings'][source['name']]
+                entries[0]['expectedSubjectHash'] = self.saved.subject_hash(state, pending['id'])
+                with self.assertRaisesRegex(ValueError, 'missing_saved_personal_binding'):
+                    self.apply(state=state, entries=entries, usage=usage)
+
+    def test_all_proof_hashes_contract_and_accounted_model_identity_are_required(self):
+        for field in self.saved.SOURCE_FIELDS:
+            bad = copy.deepcopy(self.entries)
+            del bad[0]['amendment']['source'][field]
+            with self.subTest(missing=field), self.assertRaises(ValueError):
+                self.apply(entries=bad)
+        for field, value in (('model', 'gpt-5.4-mini'), ('deployment', 'other'),
+                             ('modelVersion', 'latest'), ('contractVersion', 'unrecorded-contract'),
+                             ('analysisReceiptHash', 'not-a-hash'), ('usageReceiptId', 'f' * 64),
+                             ('usageSourceHash', 'f' * 64), ('sourceHash', None)):
+            bad = copy.deepcopy(self.entries)
+            bad[0]['amendment']['source'][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.apply(entries=bad)
+
+    def test_aggregate_usage_is_not_recreated_or_overallocated(self):
+        for field, value in (('kind', 'image'), ('component', 'official'),
+                             ('modelVersion', 'other'), ('deployment', 'other'),
+                             ('count', 2)):
+            usage = copy.deepcopy(self.usage)
+            usage['imports']['a' * 64]['modelBreakdown'][0][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.apply(usage=usage)
+        manifest = {'usageImports': [self.usage['imports']['a' * 64]],
+                    'sourceReceipts': [], 'officialAmendments': [], 'personalAmendments': self.entries}
+        with self.assertRaises(ValueError):
+            cloud.prepare_saved(manifest, collector.empty_snapshot(), self.state,
+                                cloud.load_analysis_state().empty_state(), collector, self.personal)
+        self.assertEqual(self.usage['receipts'], {})
+
+    def test_v4_optional_links_can_only_restate_accepted_explicit_event_scopes(self):
+        for links in (
+                [{'scope': 'unspecified', 'status': 'work'}],
+                [{'scope': '夜', 'status': 'work'}],
+                [{'scope': '昼', 'status': 'withdrawn'}],
+                [{'scope': '昼', 'status': 'conflict'}]):
+            entries = copy.deepcopy(self.entries)
+            entries[0]['amendment']['links'] = links
+            with self.subTest(links=links), self.assertRaises(ValueError):
+                self.apply(entries=entries)
+        entries = copy.deepcopy(self.entries)
+        entries[0]['amendment']['events'] = []
+        with self.assertRaises(ValueError):
+            self.apply(entries=entries)
+        entries = copy.deepcopy(self.entries)
+        for entry in entries:
+            del entry['amendment']['links']
+        self.assertTrue(all('links' not in post for post in self.apply(entries=entries)['posts']))
+
+    def test_synthetic_link_contract_attestations_make_no_placement_or_attendance(self):
+        for version in (self.saved.PREVIOUS_LINK_CONTRACT, self.saved.NULLABLE_LINK_CONTRACT,
+                        self.saved.LINK_CONTRACT):
+            with self.subTest(version=version):
+                entries = copy.deepcopy(self.entries)
+                amendment = entries[0]['amendment']
+                amendment['source']['contractVersion'] = version
+                amendment.update(events=[], links=[{'scope': 'unspecified', 'status': 'work'}])
+                after = self.apply(entries=entries)
+                post = next(item for item in after['posts'] if item['id'] == amendment['id'])
+                self.assertEqual(post['events'], [])
+                self.assertEqual(post['links'], [{'scope': 'unspecified', 'status': 'work'}])
+
+    def test_private_receipts_reject_raw_unknown_fields_forgery_and_unbounded_data(self):
+        after = self.apply()
+        self.saved.validate_imports(after['savedPersonalImports'], self.personal.azure_context())
+        receipt_id = next(iter(after['savedPersonalImports']))
+        for level, field in (('entry', 'raw'), ('amendment', 'text'), ('source', 'bodyLines'),
+                             ('source', 'cache'), ('source', 'endpoint'), ('event', 'evidenceLineIds')):
+            receipts = copy.deepcopy(after['savedPersonalImports'])
+            entry = receipts[receipt_id]
+            target = (entry if level == 'entry' else entry['amendment'] if level == 'amendment'
+                      else entry['amendment']['source'] if level == 'source'
+                      else entry['amendment']['events'][0])
+            target[field] = 'not allowed'
+            with self.subTest(level=level, field=field), self.assertRaises(ValueError):
+                self.saved.validate_imports(receipts, self.personal)
+        receipts = copy.deepcopy(after['savedPersonalImports'])
+        receipts['f' * 64] = receipts.pop(receipt_id)
+        with self.assertRaises(ValueError):
+            self.saved.validate_imports(receipts, self.personal)
+        with self.assertRaises(ValueError):
+            self.apply(entries=self.entries * 2)
+        with self.assertRaises(ValueError):
+            self.apply(entries=[self.entries[0], self.entries[0]])
+        with self.assertRaises(ValueError):
+            self.saved.validate_imports({str(index): {} for index in range(1001)}, self.personal)
 
 
 if __name__ == '__main__':

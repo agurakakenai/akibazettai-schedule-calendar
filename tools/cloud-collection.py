@@ -107,6 +107,14 @@ def load_analysis_state():
     return module
 
 
+def load_personal_saved():
+    spec = importlib.util.spec_from_file_location(
+        'cloud_personal_saved', ROOT / 'tools' / 'personal-saved.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def safe_environment(environment, *, credentials=False, azure=False):
     result = {
         key: value for key, value in environment.items()
@@ -293,8 +301,11 @@ def validate_ai_usage(path):
     return state, raw
 
 
-def validate_usage_links(usage, personal):
-    for record in usage.get('sourceImports', {}).values():
+def validate_usage_links(usage, personal, personal_collector=None):
+    if personal and personal.get('savedPersonalImports'):
+        load_personal_saved().validate_accounting(
+            personal['savedPersonalImports'], usage, personal_collector or load_personal_collector())
+    for record in (usage or {}).get('sourceImports', {}).values():
         require(personal is not None, 'source_usage_budget_mismatch')
         budget = personal['budgets'].get(record['receipt']['date'], {'searches': 0, 'posts': 0})
         require(all(budget[kind] >= record['budgetAfter'][kind] for kind in ('searches', 'posts')),
@@ -332,7 +343,8 @@ def validate_personal(path, personal=None, *, private=True):
     private_fields = ('pending', 'resolved', 'budgets', 'paused', 'identityBindings',
                       'originalTargets', 'lastRequests')
     fields = (*public_fields, *private_fields) if private else public_fields
-    keys(state, (*fields, 'azureAnalysis') if private else fields, fields)
+    keys(state, (*fields, 'azureAnalysis', 'coverage', 'searchHistory', 'savedPersonalImports')
+         if private else fields, fields)
     official = personal.official
 
     def name(value):
@@ -350,7 +362,7 @@ def validate_personal(path, personal=None, *, private=True):
     for post in state['posts']:
         fields = ('id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt',
                   'observedAt', 'date', 'events')
-        keys(post, fields, fields)
+        keys(post, (*fields, 'links'), fields)
         identity(post)
         for event in post['events']:
             require(event['kind'] != 'absence' or 'storeId' not in event,
@@ -384,7 +396,7 @@ def validate_personal(path, personal=None, *, private=True):
         keys(source, ('url', 'status', 'candidateCount', 'reason', 'httpStatus', 'retryAt'),
              ('url', 'status'))
         require(source['status'] in ('ok', 'failed')
-                and source['url'] in personal.search_urls(dt.date.fromisoformat(run['date'])))
+                and personal.valid_search_url(source['url']))
         if 'candidateCount' in source:
             integer(source['candidateCount'])
         validate_failure(source, official)
@@ -394,15 +406,29 @@ def validate_personal(path, personal=None, *, private=True):
             require(isinstance(failure['id'], str) and official.post_id(failure['id']))
         validate_failure(failure, official)
     if private:
+        if 'savedPersonalImports' in state:
+            load_personal_saved().validate_imports(state['savedPersonalImports'], personal)
         for item in state['pending']:
             fields = ('id', 'url', 'name', 'authorId', 'authorScreenName', 'date',
                       'searchCreatedAt', 'reason', 'firstSeenAt', 'lastAttemptAt', 'attempts')
-            keys(item, (*fields, 'httpStatus', 'retryAt'), fields)
+            keys(item, (*fields, 'httpStatus', 'retryAt', 'metadataSource', 'sourceCreatedAt'), fields)
             identity(item)
-            require(personal.calendar_day(official.timestamp(item['searchCreatedAt'])).isoformat()
-                    == item['date'])
-            require(abs((official.snowflake_time(item['id'])
-                         - official.timestamp(item['searchCreatedAt'])).total_seconds()) < 2)
+            metadata_source = item.get('metadataSource', 'search')
+            require(metadata_source in ('search', 'saved_post', 'saved_binding'))
+            if item['searchCreatedAt'] is None:
+                require(metadata_source in ('saved_post', 'saved_binding'))
+                binding = state['identityBindings'].get(item['name'])
+                require(binding is not None and all(binding[field] == item[field]
+                        for field in ('authorId', 'authorScreenName')))
+            else:
+                searched = official.timestamp(item['searchCreatedAt'])
+                require(personal.calendar_day(searched).isoformat() == item['date'])
+                require(abs((official.snowflake_time(item['id']) - searched).total_seconds()) < 2)
+            if 'sourceCreatedAt' in item:
+                require(metadata_source == 'saved_post')
+                created = official.timestamp(item['sourceCreatedAt'])
+                require(personal.calendar_day(created).isoformat() == item['date'])
+                require(abs((official.snowflake_time(item['id']) - created).total_seconds()) < 2)
             official.timestamp(item['firstSeenAt'])
             if item['lastAttemptAt'] is not None:
                 official.timestamp(item['lastAttemptAt'])
@@ -627,9 +653,10 @@ class StateRepository:
         if has_personal:
             personal_state, _ = validate_personal(self.path / PERSONAL, personal)
         has_ai = (self.path / AI_USAGE).exists()
+        usage = None
         if has_ai:
             usage, _ = validate_ai_usage(self.path / AI_USAGE)
-            validate_usage_links(usage, personal_state)
+        validate_usage_links(usage, personal_state, personal)
         if leased:
             validate_lease(self.path / LEASE, collector)
         else:
@@ -685,8 +712,7 @@ def copy_pair(source, destination, collector, *, include_personal=False, persona
     _, transport = validate_transport(source / HTTP_STATE, collector)
     personal_state, extra = validate_personal(source / PERSONAL, personal) if include_personal else (None, None)
     usage, ai = validate_ai_usage(source / AI_USAGE) if include_ai else (None, None)
-    if usage is not None:
-        validate_usage_links(usage, personal_state)
+    validate_usage_links(usage, personal_state, personal)
     atomic_bytes(destination / SNAPSHOT, canonical)
     atomic_bytes(destination / HTTP_STATE, transport)
     if extra is not None:
@@ -752,6 +778,7 @@ def invoke_personal_collector(root, state, report, environment):
     require(max_posts in ('0', '1', '2', '3'), 'invalid_source_limit')
     argv = [sys.executable, '-I', '-B', str(root / 'tools' / 'collect-personal-shifts.py'),
             '--once', '--snapshot', str(state / PERSONAL),
+            '--observations', str(state / SNAPSHOT),
             '--http-state', str(state / HTTP_STATE),
             '--seed', str(state.parent / 'personal-seed.json'),
             '--analysis-backend', backend,
@@ -903,13 +930,16 @@ def read_saved_manifest(environment):
         scan_private(value)
         fields = ('schemaVersion', 'expectedMainSHA', 'expectedStateSHA',
                   'officialAmendments', 'usageImports', 'sourceReceipts')
-        keys(value, fields, fields)
+        keys(value, (*fields, 'personalAmendments'), fields)
         require(type(value['schemaVersion']) is int and value['schemaVersion'] == 1)
         for field in ('expectedMainSHA', 'expectedStateSHA'):
             require(isinstance(value[field], str) and SHA_RE.fullmatch(value[field]))
         for field, maximum in (('officialAmendments', 3), ('usageImports', 10), ('sourceReceipts', 10)):
             require(isinstance(value[field], list) and len(value[field]) <= maximum)
-        require(any(value[field] for field in ('officialAmendments', 'usageImports', 'sourceReceipts')))
+        require(isinstance(value.get('personalAmendments', []), list)
+                and len(value.get('personalAmendments', [])) <= 3)
+        require(any(value.get(field) for field in (
+            'officialAmendments', 'usageImports', 'sourceReceipts', 'personalAmendments')))
         for entry in value['officialAmendments']:
             keys(entry, ('expectedPostHash', 'amendment'), ('expectedPostHash', 'amendment'))
             require(isinstance(entry['expectedPostHash'], str)
@@ -955,6 +985,10 @@ def prepare_saved(manifest, canonical, personal_state, usage, collector, persona
         usage_result['paused'] = copy.deepcopy(legacy['paused'])
     for receipt in manifest['sourceReceipts']:
         ledger.apply_source_import(usage_result, receipt, personal_result)
+    # Only the already-accounted canonical ledger can authorize saved analyses.
+    # Any independently authorized source-budget delta above remains untouched.
+    personal_result = load_personal_saved().apply_amendments(
+        personal_result, manifest.get('personalAmendments', []), usage, personal)
     ids = set()
     for entry in manifest['officialAmendments']:
         amendment = entry['amendment']
@@ -979,7 +1013,6 @@ def prepare_saved(manifest, canonical, personal_state, usage, collector, persona
     for before, after in zip(canonical['posts'], official_result['posts']):
         require({key: value for key, value in before.items() if key != 'notices'}
                 == {key: value for key, value in after.items() if key != 'notices'}, 'saved_facts_changed')
-    require(personal_result['posts'] == personal_state['posts'], 'saved_facts_changed')
     return official_result, personal_result, usage_result
 
 

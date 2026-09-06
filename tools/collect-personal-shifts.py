@@ -14,7 +14,6 @@ import csv
 import datetime as dt
 import email.utils
 import html
-from html.parser import HTMLParser
 import http.client
 import importlib.util
 import io
@@ -41,6 +40,9 @@ SPEC.loader.exec_module(official)
 AZURE_SPEC = importlib.util.spec_from_file_location('personal_azure', ROOT / 'tools' / 'personal-azure.py')
 azure = importlib.util.module_from_spec(AZURE_SPEC)
 AZURE_SPEC.loader.exec_module(azure)
+SEARCH_SPEC = importlib.util.spec_from_file_location('personal_yahoo', ROOT / 'tools' / 'yahoo-search.py')
+yahoo = importlib.util.module_from_spec(SEARCH_SPEC)
+SEARCH_SPEC.loader.exec_module(yahoo)
 UTC, JST = official.UTC, official.JST
 Failure = official.FetchFailure
 
@@ -60,7 +62,10 @@ KINDS = {'placement', 'absence', 'late', 'return', 'uncertain'}
 PUBLIC_FIELDS = {'schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt', 'posts', 'lastRun'}
 PRIVATE_FIELDS = {'pending', 'resolved', 'budgets', 'paused', 'identityBindings',
                   'originalTargets', 'lastRequests'}
-OPTIONAL_PRIVATE_FIELDS = {'azureAnalysis'}
+OPTIONAL_PRIVATE_FIELDS = {'azureAnalysis', 'coverage', 'searchHistory', 'savedPersonalImports'}
+SCOPES = ('昼', '夜', 'unspecified')
+LINK_STATUSES = ('work', 'withdrawn', 'conflict')
+TARGET_ORIGINS = {'original', 'scheduled', 'official_names', 'official_notice', 'personal', 'curated'}
 DENIAL = re.compile(
     r'captcha|access denied|アクセス.{0,12}(?:拒否|制限)|ロボットではない|'
     r'unusual traffic|verify you are human|permission denied|forbidden|unauthorized|'
@@ -170,7 +175,7 @@ def validate_last_run(value):
     for source in value.get('sources', []):
         require_keys(source, ('url', 'status'), ('candidateCount', 'reason', 'httpStatus', 'retryAt'))
         if (source['status'] not in ('ok', 'failed')
-                or source['url'] not in search_urls(dt.date.fromisoformat(value['date']))
+                or not valid_search_url(source['url'])
                 or ('candidateCount' in source and
                     (type(source['candidateCount']) is not int or source['candidateCount'] < 0))):
             raise ValueError
@@ -185,7 +190,7 @@ def validate_last_run(value):
 
 def valid_post(post):
     require_keys(post, ('id', 'url', 'name', 'authorId', 'authorScreenName',
-                       'createdAt', 'observedAt', 'date', 'events'))
+                       'createdAt', 'observedAt', 'date', 'events'), ('links',))
     tid = official.post_id(post['id'])
     handle = post['authorScreenName']
     if (not isinstance(post['id'], str) or not tid
@@ -197,13 +202,49 @@ def valid_post(post):
             or post['authorId'] == official.AUTHOR_ID
             or post['url'] != public_url(handle, tid)
             or calendar_day(official.timestamp(post['createdAt'])).isoformat() != post['date']
-            or not isinstance(post['events'], list) or not post['events']):
+            or not isinstance(post['events'], list)
+            or not post['events'] and not post.get('links')):
         raise ValueError('invalid_personal_post')
     created, observed = official.timestamp(post['createdAt']), official.timestamp(post['observedAt'])
     if observed < created or abs((official.snowflake_time(tid) - created).total_seconds()) >= 2:
         raise ValueError('invalid_personal_post')
     for event in post['events']:
         valid_event(event)
+    if 'links' in post:
+        valid_links(post['links'])
+
+
+def valid_link(link):
+    require_keys(link, ('scope', 'status'))
+    if (link['scope'] not in SCOPES or link['status'] not in LINK_STATUSES
+            or link['scope'] == 'unspecified' and link['status'] != 'work'):
+        raise ValueError('invalid_personal_link')
+
+
+def valid_links(links):
+    if not isinstance(links, list) or len(links) > 3:
+        raise ValueError('invalid_personal_link')
+    seen = set()
+    for link in links:
+        valid_link(link)
+        if link['scope'] in seen:
+            raise ValueError('invalid_personal_link')
+        seen.add(link['scope'])
+
+
+def legacy_links(post):
+    links = []
+    for scope in ('昼', '夜'):
+        events = [event for event in post['events']
+                  if event['shift'] == scope and event['kind'] != 'uncertain']
+        if not events:
+            continue
+        kinds = {event['kind'] for event in events}
+        stores = {event['storeId'] for event in events if 'storeId' in event}
+        conflict = len(stores) > 1 or 'absence' in kinds and len(kinds) > 1
+        links.append({'scope': scope, 'status':
+                      'conflict' if conflict else 'withdrawn' if 'absence' in kinds else 'work'})
+    return links
 
 
 def valid_event(event):
@@ -226,7 +267,8 @@ def valid_event(event):
 def azure_context():
     return SimpleNamespace(
         official=official, require_keys=require_keys, valid_event=valid_event,
-        valid_post=valid_post, validate_failure=validate_failure, stamp=stamp,
+        valid_post=valid_post, valid_link=valid_link, valid_links=valid_links,
+        validate_failure=validate_failure, stamp=stamp,
         calendar_day=calendar_day)
 
 
@@ -254,6 +296,13 @@ def read_state(path, private=True):
         if private:
             if 'azureAnalysis' in value:
                 azure.validate_state(value['azureAnalysis'], azure_context())
+            validate_collection_coverage(value)
+            if 'savedPersonalImports' in value:
+                spec = importlib.util.spec_from_file_location(
+                    'personal_saved_validation', ROOT / 'tools' / 'personal-saved.py')
+                saved = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(saved)
+                saved.validate_imports(value['savedPersonalImports'], azure_context())
             for key in ('pending', 'resolved', 'budgets', 'paused', 'identityBindings',
                         'originalTargets', 'lastRequests'):
                 if key not in value:
@@ -276,7 +325,7 @@ def read_state(path, private=True):
                         require_keys(item, (
                             'id', 'url', 'name', 'authorId', 'authorScreenName', 'date',
                             'searchCreatedAt', 'reason', 'firstSeenAt', 'lastAttemptAt', 'attempts'),
-                            ('httpStatus', 'retryAt'))
+                            ('httpStatus', 'retryAt', 'metadataSource', 'sourceCreatedAt'))
                     else:
                         require_keys(item, ('id', 'url', 'name', 'date', 'reason', 'resolvedAt'))
                     if (not isinstance(item['id'], str) or not official.post_id(item['id'])
@@ -292,9 +341,20 @@ def read_state(path, private=True):
                                 or not official.post_id(item['authorId'])
                                 or item['authorId'] == official.AUTHOR_ID
                                 or item['url'] != public_url(handle, item['id'])
-                                or type(item['attempts']) is not int or item['attempts'] < 0
-                                or calendar_day(official.timestamp(item['searchCreatedAt'])).isoformat() != item['date']):
+                                or type(item['attempts']) is not int or item['attempts'] < 0):
                             raise ValueError
+                        source = item.get('metadataSource', 'search')
+                        if source not in ('search', 'saved_post', 'saved_binding'):
+                            raise ValueError
+                        if item['searchCreatedAt'] is None:
+                            if source == 'search':
+                                raise ValueError
+                        elif calendar_day(official.timestamp(item['searchCreatedAt'])).isoformat() != item['date']:
+                            raise ValueError
+                        if 'sourceCreatedAt' in item:
+                            if (source != 'saved_post' or calendar_day(official.timestamp(
+                                    item['sourceCreatedAt'])).isoformat() != item['date']):
+                                raise ValueError
                         official.timestamp(item['firstSeenAt'])
                         if item['lastAttemptAt'] is not None:
                             official.timestamp(item['lastAttemptAt'])
@@ -418,44 +478,156 @@ process.stdout.write(vm.runInContext('JSON.stringify(window.'+input.key+')',
         raise ValueError('unreadable_schedule_data') from None
 
 
-def select_targets(schedule, insights, accounts, date, state):
-    roster = set(schedule['roster'])
+def validate_collection_coverage(state):
+    for field in ('coverage', 'searchHistory'):
+        days = state.get(field, {})
+        if not isinstance(days, dict):
+            raise ValueError('invalid_personal_coverage')
+        for day, rows in days.items():
+            if dt.date.fromisoformat(day).isoformat() != day or not isinstance(rows, dict):
+                raise ValueError('invalid_personal_coverage')
+            for name, row in rows.items():
+                if not isinstance(name, str) or not re.fullmatch(
+                        r'[ぁ-んァ-ヶ一-龠ーａ-ｚA-Za-z0-9]{1,12}', name):
+                    raise ValueError('invalid_personal_coverage')
+                if field == 'searchHistory':
+                    require_keys(row, ('handle', 'attemptedAt'))
+                    if not re.fullmatch(r'[A-Za-z0-9_]{1,15}', row['handle']):
+                        raise ValueError('invalid_personal_coverage')
+                    if calendar_day(official.timestamp(row['attemptedAt'])).isoformat() != day:
+                        raise ValueError('invalid_personal_coverage')
+                    continue
+                require_keys(row, ('name', 'handle', 'shifts', 'origins', 'reason',
+                                   'postIds', 'linkScopes', 'searchedAt'))
+                if (row['name'] != name
+                        or row['handle'] is not None and (
+                            not isinstance(row['handle'], str)
+                            or not re.fullmatch(r'[A-Za-z0-9_]{1,15}', row['handle']))
+                        or not isinstance(row['shifts'], list)
+                        or any(shift not in ('昼', '夜') for shift in row['shifts'])
+                        or len(set(row['shifts'])) != len(row['shifts'])
+                        or not isinstance(row['origins'], list)
+                        or any(origin not in TARGET_ORIGINS for origin in row['origins'])
+                        or len(set(row['origins'])) != len(row['origins'])
+                        or not isinstance(row['reason'], str)
+                        or not re.fullmatch(r'[a-z_]+', row['reason'])
+                        or not isinstance(row['postIds'], list)
+                        or any(not isinstance(tid, str) or not official.post_id(tid)
+                               for tid in row['postIds'])
+                        or len(set(row['postIds'])) != len(row['postIds'])
+                        or not isinstance(row['linkScopes'], list)
+                        or len(row['linkScopes']) > 2):
+                    raise ValueError('invalid_personal_coverage')
+                seen = set()
+                for link in row['linkScopes']:
+                    require_keys(link, ('scope', 'id'))
+                    if (link['scope'] not in row['shifts'] or link['scope'] in seen
+                            or link['id'] not in row['postIds']):
+                        raise ValueError('invalid_personal_coverage')
+                    seen.add(link['scope'])
+                if row['searchedAt'] is not None:
+                    if calendar_day(official.timestamp(row['searchedAt'])).isoformat() != day:
+                        raise ValueError('invalid_personal_coverage')
+
+
+def name_aliases(insights):
+    return {entry['alias']: name for name, entry in insights.get('maidTendency', {}).items()
+            if entry.get('alias')}
+
+
+def select_targets(schedule, insights, accounts, date, state, observations=None):
+    aliases = name_aliases(insights)
+    canonical = lambda name: aliases.get(name, name)
     by_name, by_handle = {}, {}
     for row in accounts:
-        by_name.setdefault(row['name'], []).append(row)
-        by_handle.setdefault(row['handle'], set()).add(row['name'])
-    eligible = {}
-    for name in roster:
-        rows = by_name.get(name, [])
-        if len(rows) != 1:
-            continue
-        row = rows[0]
-        handle = row['handle']
-        if (row['source'] not in ('公式サイト', '本人確認済み')
-                or not re.fullmatch(r'[A-Za-z0-9_]{1,15}', handle)
-                or len(by_handle[handle]) != 1
-                or insights.get('maidTendency', {}).get(name, {}).get('x') != handle):
-            continue
-        bound = state['identityBindings'].get(name)
-        if bound and bound['authorScreenName'] != handle:
-            continue
-        eligible[name] = handle
+        name = canonical(row['name'])
+        by_name.setdefault(name, []).append(row)
+        by_handle.setdefault(row['handle'].casefold(), set()).add(name)
     day = date.isoformat()
+    population = {}
+
+    def include(name, shift, origin):
+        name = canonical(name)
+        person = population.setdefault(name, {'shifts': set(), 'origins': set()})
+        if shift in ('昼', '夜'):
+            person['shifts'].add(shift)
+        person['origins'].add(origin)
+
+    for name, target in state['originalTargets'].get(day, {}).items():
+        for shift in target['shifts']:
+            include(name, shift, 'original')
+    for shift in ('昼', '夜'):
+        for person in schedule.get('schedule', {}).get(day, {}).get(shift, []):
+            include(person['name'], shift, 'scheduled')
+        recorded = insights.get('actualRoster', {}).get(day, {}).get(shift, {})
+        for names in recorded.get('stores', {}).values():
+            for name in names:
+                include(name, shift, 'curated')
+    official_posts = (observations or {}).get('posts', [])
+    official_days = {post['id']: post['date'] for post in official_posts}
+    superseded = {tid for post in official_posts
+                  for tid in post.get('editTweetIds', [])[:-1]
+                  if official_days.get(tid) == post['date']}
+    for post in official_posts:
+        if post['date'] != day or post['id'] in superseded:
+            continue
+        corrections = schedule.get('observationNameCorrections', {}).get(post['id'], {})
+        for name in post['names']:
+            include(corrections.get(name, {}).get('name', name), post['shift'], 'official_names')
+        for notice in post.get('notices', []):
+            name = notice['name']
+            include(corrections.get(name, {}).get('name', name), post['shift'], 'official_notice')
+    for post in state['posts']:
+        if post['date'] != day:
+            continue
+        # Link-only evidence never introduces a person or an unstated shift.
+        for event in post['events']:
+            include(post['name'], event['shift'], 'personal')
+        rule = schedule.get('personalEventAdditions', {}).get(post['id'], {})
+        if rule and all(rule.get(key) == post[key] for key in (
+                'name', 'authorId', 'authorScreenName', 'date')):
+            for event in rule.get('events', []):
+                include(post['name'], event['shift'], 'personal')
+
+    eligible, coverage = {}, {}
+    for name in sorted(population):
+        rows = by_name.get(name, [])
+        handle, reason = None, 'account_unknown'
+        if len(rows) > 1:
+            reason = 'account_ambiguous'
+        elif rows:
+            row = rows[0]
+            candidate = row['handle']
+            if (row['source'] in ('公式サイト', '本人確認済み')
+                    and re.fullmatch(r'[A-Za-z0-9_]{1,15}', candidate)):
+                if len(by_handle[candidate.casefold()]) != 1:
+                    reason = 'account_ambiguous'
+                elif insights.get('maidTendency', {}).get(name, {}).get('x') != candidate:
+                    reason = 'account_identity_mismatch'
+                else:
+                    bound = state['identityBindings'].get(name)
+                    if bound and bound['authorScreenName'] != candidate:
+                        reason = 'account_identity_mismatch'
+                    else:
+                        handle, reason = candidate, 'not_searched'
+        shifts = [shift for shift in ('昼', '夜') if shift in population[name]['shifts']]
+        if handle and not shifts:
+            reason = 'shift_unknown'
+        elif handle:
+            eligible[name] = {'name': name, 'handle': handle, 'shifts': shifts}
+        coverage[name] = {
+            'name': name, 'handle': handle, 'shifts': shifts,
+            'origins': sorted(population[name]['origins']), 'reason': reason,
+            'postIds': [], 'linkScopes': [], 'searchedAt': None}
     if day not in state['originalTargets']:
-        shifts = schedule.get('schedule', {}).get(day, {})
-        targets = {}
-        for shift in ('昼', '夜'):
-            for person in shifts.get(shift, []):
-                name = person['name']
-                if name in eligible:
-                    target = targets.setdefault(name, {
-                        'name': name, 'handle': eligible[name], 'shifts': []})
-                    if shift not in target['shifts']:
-                        target['shifts'].append(shift)
-        state['originalTargets'][day] = targets
-    targets = state['originalTargets'][day]
-    return {name: copy.deepcopy(target) for name, target in targets.items()
-            if eligible.get(name) == target['handle']}
+        state['originalTargets'][day] = {
+            name: {**copy.deepcopy(target), 'shifts': [
+                shift for shift in target['shifts']
+                if any(canonical(person['name']) == name for person in
+                       schedule.get('schedule', {}).get(day, {}).get(shift, []))]}
+            for name, target in eligible.items() if 'scheduled' in population[name]['origins']}
+    state.setdefault('coverage', {})[day] = coverage
+    return eligible
 
 
 def active_targets(targets, date, now, *, scheduled=False):
@@ -475,41 +647,51 @@ def search_urls(date):
                  + urllib.parse.urlencode({'p': query, 'ei': 'UTF-8'}) for query in queries)
 
 
-class NextData(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.capture = False
-        self.parts = []
+def account_search_url(handle):
+    if not isinstance(handle, str) or not re.fullmatch(r'[A-Za-z0-9_]{1,15}', handle):
+        raise ValueError('invalid_search_account')
+    return 'https://' + SEARCH_HOST + '/realtime/search?' + urllib.parse.urlencode(
+        {'p': 'id:' + handle, 'ei': 'UTF-8'})
 
-    def handle_starttag(self, tag, attrs):
-        if tag == 'script' and dict(attrs).get('id') == '__NEXT_DATA__':
-            self.capture = True
 
-    def handle_endtag(self, tag):
-        if tag == 'script':
-            self.capture = False
+def valid_search_url(url):
+    if not isinstance(url, str):
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        query = urllib.parse.parse_qs(parsed.query, strict_parsing=True)
+        if set(query) != {'p', 'ei'} or query['ei'] != ['UTF-8'] or len(query['p']) != 1:
+            return False
+        text = query['p'][0]
+        if re.fullmatch(r'id:[A-Za-z0-9_]{1,15}', text):
+            return url == account_search_url(text[3:])
+        if not (text == '今日 お休み 絶対領域' or re.fullmatch(
+                r'(?:[1-9]|1[0-2])(?:月(?:[1-9]|[12]\d|3[01])日|/(?:[1-9]|[12]\d|3[01])) 号店', text)):
+            return False
+        return url == 'https://' + SEARCH_HOST + '/realtime/search?' + urllib.parse.urlencode(
+            {'p': text, 'ei': 'UTF-8'})
+    except ValueError:
+        return False
 
-    def handle_data(self, data):
-        if self.capture:
-            self.parts.append(data)
+
+def target_searches(targets, date, state, now, maximum, *, scheduled=False):
+    history = state.get('searchHistory', {}).get(date.isoformat(), {})
+    active = active_targets(targets, date, now, scheduled=scheduled)
+
+    def priority(target):
+        previous = history.get(target['name'], {})
+        at = previous.get('attemptedAt', '') if previous.get('handle') == target['handle'] else ''
+        return '夜' in target['shifts'], at, target['name']
+
+    return [(target['name'], account_search_url(target['handle']))
+            for target in sorted(active.values(), key=priority)[:maximum]]
 
 
 def search_page(document):
-    if not isinstance(document, str):
-        raise Failure('invalid_search_response')
-    parser = NextData()
-    parser.feed(document)
     try:
-        value = json.loads(''.join(parser.parts))
-    except (ValueError, RecursionError):
+        return yahoo.search_page(document)
+    except ValueError:
         raise Failure('invalid_search_response') from None
-    for key in ('props', 'pageProps', 'pageData'):
-        if not isinstance(value, dict):
-            raise Failure('invalid_search_response')
-        value = value.get(key)
-    if not isinstance(value, dict):
-        raise Failure('invalid_search_response')
-    return value
 
 
 def discover(document, targets, date, now, bindings):
@@ -523,12 +705,12 @@ def discover(document, targets, date, now, bindings):
         raise Failure('invalid_search_response')
     if error.get('errorType') not in (None, '', 'zeromatch'):
         raise Failure('search_error')
-    timeline = page.get('timeline')
-    if not isinstance(timeline, dict) or not isinstance(timeline.get('entry'), list):
-        raise Failure('invalid_search_response')
-    entries = timeline['entry']
+    try:
+        entries = yahoo.candidate_entries(page)
+    except ValueError:
+        raise Failure('invalid_search_response') from None
     handles = {target['handle']: target for target in targets.values()}
-    candidates = {}
+    candidates, conflicts = {}, set()
     for entry in entries:
         if not isinstance(entry, dict):
             raise Failure('invalid_search_response')
@@ -556,11 +738,14 @@ def discover(document, targets, date, now, bindings):
         bound = bindings.get(target['name'])
         if bound and bound['authorId'] != uid:
             continue
-        candidates[tid] = {
+        candidate = {
             'id': tid, 'url': public_url(handle, tid), 'name': target['name'],
             'authorId': uid, 'authorScreenName': handle, 'date': date.isoformat(),
             'searchCreatedAt': stamp(when)}
-    return list(candidates.values())
+        if tid in candidates and candidates[tid] != candidate:
+            conflicts.add(tid)
+        candidates[tid] = candidate
+    return [item for tid, item in candidates.items() if tid not in conflicts]
 
 
 def date_context(fragment):
@@ -779,15 +964,23 @@ def validate_post(candidate, payload, target, now, binding=None, roster=(), anal
             or uid == official.AUTHOR_ID
             or candidate['name'] != target['name']
             or candidate['authorScreenName'] != target['handle']
+            or candidate['url'] != public_url(target['handle'], tid)
             or (binding and (binding['authorId'] != uid
                              or binding['authorScreenName'] != target['handle']))):
         raise Failure('author_mismatch')
     try:
         created = official.timestamp(payload.get('created_at'))
-        searched = official.timestamp(candidate['searchCreatedAt'])
+        metadata_source = candidate.get('metadataSource', 'search')
+        if metadata_source not in ('search', 'saved_post', 'saved_binding'):
+            raise Failure('invalid_saved_metadata')
+        searched = (official.timestamp(candidate['searchCreatedAt'])
+                    if candidate.get('searchCreatedAt') is not None else None)
+        if searched is None and (metadata_source == 'search' or binding is None):
+            raise Failure('saved_post_identity_required')
         date = dt.date.fromisoformat(candidate['date'])
         if (created > now or calendar_day(created) != date
-                or abs((created - searched).total_seconds()) >= 1
+                or searched is not None and abs((created - searched).total_seconds()) >= 1
+                or 'sourceCreatedAt' in candidate and created != official.timestamp(candidate['sourceCreatedAt'])
                 or abs((official.snowflake_time(tid) - created).total_seconds()) >= 2):
             raise Failure('timestamp_mismatch')
     except (ValueError, TypeError, OverflowError, OSError):
@@ -802,17 +995,22 @@ def validate_post(candidate, payload, target, now, binding=None, roster=(), anal
         raise Failure('missing_post_text')
     if analyzer is None:
         events, reason = parse_events(text, created, date, target['shifts'], target['name'], roster)
+        links = None
     else:
-        events, reason = analyzer.parse(
+        events, links, reason = analyzer.parse(
             text, created, date, target['shifts'], target['name'],
             post_id=tid, author_id=uid)
-    if not events:
+    if not events and not links:
         return None, reason
-    return {
+    post = {
         'id': tid, 'url': public_url(target['handle'], tid), 'name': target['name'],
         'authorId': uid, 'authorScreenName': target['handle'], 'createdAt': stamp(created),
         'observedAt': stamp(now), 'date': date.isoformat(), 'events': events,
-    }, reason
+    }
+    if links is not None:
+        post['links'] = links
+    valid_post(post)
+    return post, reason
 
 
 class DurableHttp:
@@ -911,7 +1109,8 @@ class PersonalClient(official.PublicClient):
     def __init__(self, durable):
         super().__init__(clock=durable.clock, sleep=durable.sleep)
         self.durable = durable
-        self.urls = search_urls(durable.date)
+        self.urls = {*search_urls(durable.date),
+                     *(account_search_url(target['handle']) for target in durable.targets.values())}
 
     def open(self, request, timeout=35):
         url = request.full_url
@@ -927,7 +1126,10 @@ class PersonalClient(official.PublicClient):
             raise Failure('route_refused')
         host = parsed.hostname
         target_name = None
-        if kind == 'posts':
+        if kind == 'searches':
+            target_name = next((name for name, target in self.durable.targets.items()
+                                if account_search_url(target['handle']) == url), None)
+        else:
             target_name = self.durable.post_target
             if target_name is None:
                 tid = urllib.parse.parse_qs(parsed.query)['id'][0]
@@ -1011,16 +1213,77 @@ def saved_candidates(state, payloads, date):
         if item is None or item['date'] != date.isoformat():
             raise ValueError('unknown_saved_post')
         binding = state['identityBindings'].get(item['name'])
-        if 'searchCreatedAt' in item:
+        if item.get('searchCreatedAt') is not None:
             candidates.append(copy.deepcopy(item))
         elif binding:
-            candidates.append({
+            candidate = {
                 'id': tid, 'url': item['url'], 'name': item['name'], 'date': item['date'],
                 'authorId': binding['authorId'], 'authorScreenName': binding['authorScreenName'],
-                'searchCreatedAt': item.get('createdAt') or stamp(official.snowflake_time(tid))})
+                'searchCreatedAt': None,
+                'metadataSource': 'saved_post' if 'createdAt' in item else 'saved_binding'}
+            if 'createdAt' in item:
+                candidate['sourceCreatedAt'] = item['createdAt']
+            candidates.append(candidate)
         else:
             raise ValueError('saved_post_identity_required')
     return candidates
+
+
+def update_coverage(state, targets, date, now, *, scheduled=False):
+    day = date.isoformat()
+    rows = state.get('coverage', {}).get(day, {})
+    history = state.get('searchHistory', {}).get(day, {})
+    active = active_targets(targets, date, now, scheduled=scheduled)
+    for name, row in rows.items():
+        if name not in targets:
+            continue
+        target = targets[name]
+        prior_search = history.get(name, {})
+        row['searchedAt'] = (prior_search.get('attemptedAt')
+                             if prior_search.get('handle') == target['handle'] else None)
+        posts = sorted((post for post in state['posts'] if post['date'] == day
+                        and post['authorScreenName'] == target['handle']),
+                       key=lambda post: (official.timestamp(post['createdAt']), int(post['id'])))
+        row['postIds'] = [post['id'] for post in posts]
+        scopes = {}
+        for post in posts:
+            links = post.get('links')
+            if links is None:
+                links = legacy_links(post)
+            for link in links:
+                affected = target['shifts'] if link['scope'] == 'unspecified' else [link['scope']]
+                for scope in affected:
+                    if scope not in target['shifts']:
+                        continue
+                    previous = scopes.get(scope)
+                    # Unscoped work cannot establish a return from an explicit cancellation.
+                    if link['scope'] == 'unspecified' and previous and previous['status'] != 'work':
+                        continue
+                    scopes[scope] = {'id': post['id'], 'status': link['status']}
+            for event in post['events']:
+                if event['kind'] == 'absence':
+                    scopes[event['shift']] = {'id': post['id'], 'status': 'withdrawn'}
+        row['linkScopes'] = [{'scope': scope, 'id': value['id']}
+                             for scope, value in sorted(scopes.items()) if value['status'] == 'work']
+        pending = [item for item in state['pending'] if item['name'] == name and item['date'] == day]
+        resolved = [item for item in state['resolved'] if item['name'] == name and item['date'] == day]
+        if row['linkScopes']:
+            row['reason'] = 'verified_post_available'
+        elif any(value['status'] == 'conflict' for value in scopes.values()):
+            row['reason'] = 'conflicting_guidance'
+        elif any(value['status'] == 'withdrawn' for value in scopes.values()):
+            row['reason'] = 'withdrawn'
+        elif pending:
+            row['reason'] = pending[-1]['reason']
+        elif state['paused']:
+            row['reason'] = 'paused'
+        elif name not in active:
+            row['reason'] = 'outside_window'
+        elif resolved:
+            row['reason'] = 'analyzed_no_link'
+        else:
+            row['reason'] = 'no_candidate_in_checked_pages' if row['searchedAt'] else 'not_searched'
+    return copy.deepcopy(rows)
 
 
 def collect(state, durable, client, targets, date, max_searches, max_posts,
@@ -1041,12 +1304,20 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                 'firstSeenAt': stamp(clock()), 'lastAttemptAt': None, 'attempts': 0})
     skipped = 0
     early_status = 'paused' if state['paused'] else 'outside-window' if not active else None
-    for url in search_urls(date)[:max_searches] if not early_status and saved_payloads is None else ():
+    searches = (target_searches(targets, date, state, clock(), max_searches, scheduled=durable.scheduled)
+                if not early_status and saved_payloads is None else ())
+    for name, url in searches:
+        before = durable.used['searches']
         try:
-            candidates = client.search(url, active_targets(targets, date, clock(), scheduled=durable.scheduled),
+            active_now = active_targets(targets, date, clock(), scheduled=durable.scheduled)
+            if name not in active_now:
+                continue
+            candidates = client.search(url, {name: active_now[name]},
                                        date, clock(), state['identityBindings'])
             sources.append({'url': url, 'status': 'ok', 'candidateCount': len(candidates)})
             for candidate in candidates:
+                if candidate['name'] != name or candidate['authorScreenName'] != targets[name]['handle']:
+                    continue
                 tid = candidate['id']
                 if tid in resolved:
                     skipped += 1
@@ -1062,11 +1333,27 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
             failures.append(exc.facts())
             if exc.reason in ('budget_exhausted', 'outside_window', 'shared_host_cooldown') or state['paused']:
                 break
+        finally:
+            if durable.used['searches'] > before:
+                state.setdefault('searchHistory', {}).setdefault(date.isoformat(), {})[name] = {
+                    'handle': targets[name]['handle'], 'attemptedAt': state['lastRequests'][SEARCH_HOST]}
+                durable.save()
     attempted = deferred = 0
+    grouped, positions, previous_attempt = {}, {}, {}
+    for item in pending.values():
+        grouped.setdefault(item['name'], []).append(item)
+    for name, items in grouped.items():
+        for index, item in enumerate(sorted(items, key=lambda item: -int(item['id']))):
+            positions[item['id']] = index
+        previous_attempt[name] = max(
+            [item['lastAttemptAt'] for item in items if item.get('lastAttemptAt')]
+            + [item['resolvedAt'] for item in state['resolved']
+               if item['name'] == name and item['date'] == date.isoformat()] + [''])
+
     def priority(item):
         shifts = targets.get(item['name'], {}).get('shifts', [])
         deadline = (18 * 60 if durable.scheduled else 19 * 60 + 30) if '夜' in shifts else 13 * 60 + 30
-        return deadline, item.get('lastAttemptAt') or item['firstSeenAt'], -int(item['id'])
+        return deadline, positions[item['id']], previous_attempt[item['name']], -int(item['id'])
 
     for item in sorted(pending.values(), key=priority):
         if item['date'] != date.isoformat():
@@ -1076,6 +1363,11 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         target = (targets if saved_payloads is not None else active_targets(
             targets, date, clock(), scheduled=durable.scheduled)).get(item['name'])
         if target is None or target['handle'] != item['authorScreenName']:
+            continue
+        binding = state['identityBindings'].get(item['name'])
+        if binding and any(binding[field] != item[field] for field in ('authorId', 'authorScreenName')):
+            item['reason'] = 'author_mismatch'
+            failures.append({'id': item['id'], 'reason': item['reason']})
             continue
         if saved_payloads is None and item['reason'].startswith('azure_'):
             failures.append({'id': item['id'], 'reason': item['reason']})
@@ -1134,7 +1426,13 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                     post['events'].extend(copy.deepcopy(event) for event in previous['events']
                                           if event['shift'] not in supplied_shifts)
                     post['events'].sort(key=lambda event: ('昼', '夜').index(event['shift']))
-                if post and previous['events'] == post['events']:
+                    if 'links' in previous or 'links' in post:
+                        supplied_scopes = {link['scope'] for link in post.get('links', [])}
+                        retained = previous.get('links', legacy_links(previous))
+                        post.setdefault('links', []).extend(copy.deepcopy(link) for link in retained
+                                                            if link['scope'] not in supplied_scopes)
+                if (post and previous['events'] == post['events']
+                        and previous.get('links') == post.get('links')):
                     post = previous
                 else:
                     analyzer.state['history'].append(copy.deepcopy(previous))
@@ -1188,9 +1486,10 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         'newPostCount': len(new_posts), 'newEventCount': sum(len(post['events']) for post in new_posts),
         'skippedResolvedCount': skipped, 'pendingCount': len(pending), 'deferredCount': deferred,
         'failures': failures, 'finishedAt': stamp(clock()), 'complete': False}
+    coverage = update_coverage(state, targets, date, clock(), scheduled=durable.scheduled)
     durable.save()
     return {'component': 'personal', **state['lastRun'], 'budgets': state['budgets'],
-            'paused': state['paused']}, (3 if status in ('paused', 'unavailable')
+            'paused': state['paused'], 'coverage': coverage}, (3 if status in ('paused', 'unavailable')
                                       else 2 if status in ('partial', 'budget-exhausted') else 0)
 
 
@@ -1205,6 +1504,8 @@ def argument_parser():
     parser.add_argument('--schedule', type=Path, default=ROOT / 'data' / 'schedule.js')
     parser.add_argument('--insights', type=Path, default=ROOT / 'data' / 'store-insights.js')
     parser.add_argument('--accounts', type=Path, default=ROOT / 'tools' / 'data' / 'accounts.csv')
+    parser.add_argument('--observations', type=Path, default=ROOT / 'data' / 'observed-shifts.json',
+                        help='validated official names/notices for the same-run target population')
     parser.add_argument('--node', type=Path, help='existing Node executable for the local schedule JS')
     parser.add_argument('--date', help='JST calendar date; only today may make requests')
     parser.add_argument('--max-searches', type=int, default=2, help='maximum 1..3 pages/run')
@@ -1234,7 +1535,7 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
         raise ValueError('shared_analysis_state_required')
     if args.scheduled and (args.analyze_saved or (args.analysis_backend == 'azure' and not args.ai_state)):
         raise ValueError('invalid_scheduled_analysis_configuration')
-    inputs = {path.resolve() for path in (args.schedule, args.insights, args.accounts)}
+    inputs = {path.resolve() for path in (args.schedule, args.insights, args.accounts, args.observations)}
     if args.analyze_saved:
         if args.analysis_backend != 'azure':
             raise ValueError('saved_analysis_requires_azure')
@@ -1264,7 +1565,8 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
         insights = read_js(args.insights, 'STORE_INSIGHTS', args.node)
         with args.accounts.open(encoding='utf-8-sig', newline='') as source:
             accounts = list(csv.DictReader(source))
-        targets = select_targets(schedule, insights, accounts, date, state)
+        observations = official.load_snapshot(args.observations)
+        targets = select_targets(schedule, insights, accounts, date, state, observations)
         durable = DurableHttp(state, snapshot, http_state, date, targets,
                               args.max_searches, args.max_posts, clock, sleep, scheduled=args.scheduled)
         durable.preflight()

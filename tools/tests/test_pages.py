@@ -237,13 +237,61 @@ class ProjectionTests(WorkspaceTests):
     def test_personal_private_state_and_raw_text_never_cross_public_boundary(self):
         state = personal_snapshot()
         state.update(pending=[{'text': SECRET}], budgets={'private': SECRET},
-                     paused={'internalPath': SECRET}, rawText=SECRET, lease=SECRET)
+                     paused={'internalPath': SECRET}, rawText=SECRET, lease=SECRET,
+                     coverage={'private': SECRET}, searchHistory={'private': SECRET},
+                     savedPersonalImports={'private': SECRET})
         state['posts'][0]['text'] = SECRET
         state['posts'][0]['events'][0]['rawText'] = SECRET
         state['lastRun'].update(failures=[SECRET], budgetState=SECRET)
         encoded = json.dumps(pages.personal_projection(state), ensure_ascii=False)
-        for value in (SECRET, 'pending', 'budgets', 'rawText', 'lease', 'internalPath', 'failures'):
+        for value in (SECRET, 'pending', 'budgets', 'rawText', 'lease', 'internalPath', 'failures',
+                      'coverage', 'searchHistory', 'savedPersonalImports'):
             self.assertNotIn(value, encoded)
+
+    def test_personal_link_only_projection_is_minimal_and_does_not_make_events(self):
+        state = personal_snapshot()
+        links = [{'scope': '昼', 'status': 'withdrawn'}, {'scope': '夜', 'status': 'conflict'},
+                 {'scope': 'unspecified', 'status': 'work'}]
+        state['posts'][0].update(events=[], links=copy.deepcopy(links))
+        public = pages.personal_projection(state)
+        self.assertEqual(public['schemaVersion'], 1)
+        self.assertEqual(public['posts'][0]['events'], [])
+        self.assertEqual(public['posts'][0]['links'], links)
+        public['posts'][0]['links'][0]['status'] = 'work'
+        self.assertEqual(state['posts'][0]['links'], links)
+        for scope in ('昼', '夜', 'unspecified'):
+            state['posts'][0]['links'] = [{'scope': scope, 'status': 'work'}]
+            self.assertEqual(pages.personal_projection(state)['posts'][0]['events'], [])
+        legacy = personal_snapshot()
+        self.assertNotIn('links', pages.personal_projection(legacy)['posts'][0])
+        legacy['posts'][0]['links'] = []
+        self.assertEqual(pages.personal_projection(legacy)['posts'][0]['links'], [])
+
+    def test_personal_projection_independently_rejects_invalid_links_and_empty_posts(self):
+        invalid = [
+            None, {}, 'work', [None], [{'scope': '昼'}], [{'status': 'work'}],
+            [{'scope': 'other', 'status': 'work'}], [{'scope': [], 'status': 'work'}],
+            [{'scope': '昼', 'status': []}], [{'scope': '昼', 'status': 'pending'}],
+            [{'scope': 'unspecified', 'status': 'withdrawn'}],
+            [{'scope': 'unspecified', 'status': 'conflict'}],
+            [{'scope': '昼', 'status': 'work'}] * 2,
+            [{'scope': '昼', 'status': 'work'}] * 4,
+        ]
+        for field in ('url', 'rawBody', 'bodyLines', 'evidenceLineIds', 'cache', 'receipt'):
+            invalid.append([{'scope': '昼', 'status': 'work', field: 'must not escape'}])
+        for links in invalid:
+            with self.subTest(links=links):
+                state = personal_snapshot()
+                state['posts'][0]['links'] = links
+                with self.assertRaisesRegex(pages.PagesError, 'invalid_personal_snapshot'):
+                    pages.personal_projection(state)
+        for links in (None, []):
+            state = personal_snapshot()
+            state['posts'][0]['events'] = []
+            if links is not None:
+                state['posts'][0]['links'] = links
+            with self.assertRaisesRegex(pages.PagesError, 'invalid_personal_snapshot'):
+                pages.personal_projection(state)
 
     def test_personal_fact_validation_rejects_forged_or_malformed_fields(self):
         for field, value in (

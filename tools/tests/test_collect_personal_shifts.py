@@ -51,10 +51,11 @@ def entry(item=None):
             'createdAt': int(personal.official.timestamp(item['searchCreatedAt']).timestamp())}
 
 
-def page(entries=(), error=''):
+def page(entries=(), error='', best=None):
     return '<script id="__NEXT_DATA__">' + json.dumps({
         'props': {'pageProps': {'pageData': {
             'searchError': {'errorType': error},
+            'bestTweet': best,
             'timeline': {'entry': list(entries), 'head': {'totalResultsReturned': len(entries)}},
         }}},
     }) + '</script>'
@@ -285,6 +286,57 @@ class ParsingTests(Offline):
 
 
 class MetadataTests(Offline):
+    def test_best_tweet_and_timeline_are_peer_candidates_not_nested_quotes(self):
+        item = entry()
+        self.assertEqual(personal.discover(page(best=item), {'あむ': AMU}, DATE, NOW, {}),
+                         [candidate()])
+        self.assertEqual(personal.discover(page([item], best=item), {'あむ': AMU}, DATE, NOW, {}),
+                         [candidate()])
+        unrelated = dict(item, screenName='unrelated', bestTweetReply=item, quotedTweet=item)
+        self.assertEqual(personal.discover(page(best=unrelated), {'あむ': AMU}, DATE, NOW, {}), [])
+
+    def test_conflicting_peer_metadata_does_not_choose_a_convenient_author(self):
+        conflicting = dict(entry(), userId='999999999999999999')
+        self.assertEqual(personal.discover(page([conflicting], best=entry()),
+                                          {'あむ': AMU}, DATE, NOW, {}), [])
+
+    def test_search_urls_allow_only_canonical_verified_account_or_legacy_query_shapes(self):
+        for url in (*personal.search_urls(DATE), personal.account_search_url(AMU['handle'])):
+            self.assertTrue(personal.valid_search_url(url))
+        for url in ('https://x.com/amu_zettai', personal.account_search_url(AMU['handle']) + '&extra=1',
+                    personal.account_search_url(AMU['handle']) + '#fragment',
+                    personal.account_search_url(AMU['handle']).replace('id%3A', 'from%3A'),
+                    personal.account_search_url(AMU['handle']).replace('https:', 'http:')):
+            self.assertFalse(personal.valid_search_url(url))
+
+    def test_independent_link_does_not_require_a_store_or_generate_events(self):
+        analyzer = mock.Mock()
+        analyzer.parse.return_value = ([], [{'scope': 'unspecified', 'status': 'work'}], 'links')
+        value, reason = personal.validate_post(candidate(), post('今日お給仕します'), AMU, NOW,
+                                               analyzer=analyzer)
+        self.assertEqual(reason, 'links')
+        self.assertEqual(value['events'], [])
+        self.assertEqual(value['links'], [{'scope': 'unspecified', 'status': 'work'}])
+        personal.valid_post(value)
+        for links in ([], [{'scope': 'unspecified', 'status': 'withdrawn'}],
+                      [{'scope': '昼', 'status': 'work'}] * 2,
+                      [{'scope': '夜', 'status': 'work', 'evidenceLineIds': [1]}]):
+            with self.subTest(links=links), self.assertRaises(ValueError):
+                personal.valid_post({**value, 'links': links})
+
+    def test_saved_binding_metadata_is_not_a_fabricated_search_timestamp(self):
+        state = personal.empty_state()
+        state['resolved'] = [{'id': TID, 'url': candidate()['url'], 'name': 'あむ',
+                              'date': DATE.isoformat(), 'reason': 'no_event', 'resolvedAt': CREATED}]
+        binding = {'authorId': UID, 'authorScreenName': AMU['handle'], 'verifiedAt': CREATED}
+        state['identityBindings']['あむ'] = binding
+        saved = personal.saved_candidates(state, {TID: post()}, DATE)[0]
+        self.assertIsNone(saved['searchCreatedAt'])
+        self.assertEqual(saved['metadataSource'], 'saved_binding')
+        self.assertIsNotNone(personal.validate_post(saved, post(), AMU, NOW, binding)[0])
+        with self.assertRaisesRegex(personal.Failure, 'saved_post_identity_required'):
+            personal.validate_post(saved, post(), AMU, NOW)
+
     def test_valid_metadata_and_exact_post_contract(self):
         value, reason = personal.validate_post(candidate(), post(), AMU, NOW)
         self.assertEqual(reason, 'events')
@@ -460,6 +512,118 @@ class StateTests(Offline):
         self.assertEqual(personal.select_targets(
             self.schedule, self.insights, self.accounts, DATE, self.state), {})
 
+    def test_population_includes_new_official_notice_and_personal_members_without_roster_gate(self):
+        for name, handle in (('追加集合', 'added_group'), ('追加補足', 'added_notice'),
+                             ('追加本人', 'added_personal')):
+            self.accounts.append({'name': name, 'handle': handle, 'source': '公式サイト'})
+            self.insights['maidTendency'][name] = {'x': handle}
+        first = personal.select_targets(self.schedule, self.insights, self.accounts, DATE, self.state)
+        original = copy.deepcopy(self.state['originalTargets'])
+        observed = {'posts': [{'id': TID, 'date': DATE.isoformat(), 'shift': '夜',
+                               'names': ['追加集合', 'みらい'],
+                               'notices': [{'name': '追加補足'}]}]}
+        self.state['posts'] = [{'id': '2096252018260062488', 'date': DATE.isoformat(),
+                               'name': '追加本人', 'events': [{'shift': '昼'}]}]
+        targets = personal.select_targets(self.schedule, self.insights, self.accounts, DATE,
+                                          self.state, observed)
+        self.assertEqual(set(targets) - set(first), {'追加集合', '追加補足', '追加本人'})
+        self.assertEqual(targets['追加補足']['shifts'], ['夜'])
+        self.assertEqual(self.state['originalTargets'], original)
+        self.assertEqual(self.state['coverage'][DATE.isoformat()]['みらい']['reason'], 'account_unknown')
+        self.assertNotIn('みらい', targets)
+
+    def test_new_shift_and_schedule_member_refresh_without_mutating_original_targets(self):
+        personal.select_targets(self.schedule, self.insights, self.accounts, DATE, self.state)
+        original = copy.deepcopy(self.state['originalTargets'])
+        self.schedule['schedule'][DATE.isoformat()]['夜'].append({'name': 'ららこ'})
+        targets = personal.select_targets(self.schedule, self.insights, self.accounts, DATE, self.state)
+        self.assertEqual(targets['ららこ']['shifts'], ['昼', '夜'])
+        self.assertEqual(self.state['originalTargets'], original)
+
+    def test_alias_and_post_specific_correction_do_not_rewrite_evidence_or_similar_names(self):
+        for name, handle, alias in (('まこっちゃん', 'makoto2_zettai', 'まこと'),
+                                     ('つぼみ', 'tsubomi_zettai', None),
+                                     ('みりあ', 'miria_zettai', None)):
+            self.accounts.append({'name': name, 'handle': handle, 'source': '公式サイト'})
+            self.insights['maidTendency'][name] = {'x': handle, 'alias': alias}
+        self.schedule['observationNameCorrections'] = {TID: {'つぽみ': {'name': 'つぼみ'}}}
+        observed = {'posts': [{'id': TID, 'date': DATE.isoformat(), 'shift': '昼',
+                               'names': ['まこと', 'みりあ', 'みらい'],
+                               'notices': [{'name': 'つぽみ'}]},
+                              {'id': '2096252018260062488', 'date': DATE.isoformat(), 'shift': '夜',
+                               'names': ['つぽみ']}]}
+        unchanged = copy.deepcopy(observed)
+        targets = personal.select_targets(self.schedule, self.insights, self.accounts, DATE,
+                                          self.state, observed)
+        self.assertEqual(targets['まこっちゃん']['handle'], 'makoto2_zettai')
+        self.assertEqual(targets['つぼみ']['shifts'], ['昼'])
+        self.assertNotIn('みらい', targets)
+        self.assertEqual(observed, unchanged)
+        self.assertEqual(self.state['coverage'][DATE.isoformat()]['つぽみ']['shifts'], ['夜'])
+
+    def test_link_only_post_never_creates_a_target_or_infers_a_shift(self):
+        self.accounts.append({'name': '追加', 'handle': 'added', 'source': '公式サイト'})
+        self.insights['maidTendency']['追加'] = {'x': 'added'}
+        self.state['posts'] = [{'id': TID, 'date': DATE.isoformat(), 'name': '追加',
+                               'events': [], 'links': [{'scope': 'unspecified', 'status': 'work'}]}]
+        targets = personal.select_targets(self.schedule, self.insights, self.accounts, DATE, self.state)
+        self.assertNotIn('追加', targets)
+        self.assertNotIn('追加', self.state['coverage'][DATE.isoformat()])
+
+    def test_target_search_queue_rotates_unsearched_people_with_the_same_deadline(self):
+        targets = {f'人{index}': {'name': f'人{index}', 'handle': f'person{index}', 'shifts': ['昼']}
+                   for index in range(5)}
+        first = personal.target_searches(targets, DATE, self.state, NOW, 3)
+        self.state['searchHistory'] = {DATE.isoformat(): {
+            name: {'handle': targets[name]['handle'], 'attemptedAt': CREATED} for name, _ in first}}
+        second = personal.target_searches(targets, DATE, self.state, NOW, 3)
+        self.assertEqual([name for name, _ in second[:2]], ['人3', '人4'])
+        self.assertTrue(all('id%3A' in url for _, url in first + second))
+        closed = dt.datetime(2026, 9, 6, 13, 31, tzinfo=personal.JST)
+        self.assertEqual(personal.target_searches(targets, DATE, self.state, closed, 3), [])
+
+    def test_private_coverage_separates_unknown_account_no_candidate_and_unsearched(self):
+        self.schedule['schedule'][DATE.isoformat()]['昼'].append({'name': 'みらい'})
+        self.targets = personal.select_targets(self.schedule, self.insights, self.accounts, DATE, self.state)
+        durable = self.durable(searches=1)
+        client = self.fake_client(durable, entries=[])
+        report, _ = self.collect(client, durable)
+        rows = report['coverage']
+        self.assertEqual(rows['みらい']['reason'], 'account_unknown')
+        self.assertEqual(rows['ららこ']['reason'], 'no_candidate_in_checked_pages')
+        self.assertEqual(rows['あむ']['reason'], 'not_searched')
+        self.assertNotIn('coverage', personal.public_state(self.state))
+        self.assertNotIn('searchHistory', personal.public_state(self.state))
+        personal.read_state(self.snapshot)
+
+    def test_same_deadline_post_queue_serves_distinct_people_before_second_post(self):
+        targets = {name: dict(target, shifts=['夜']) for name, target in self.targets.items()}
+        newer = snowflake('2026-09-06T01:00:00Z')
+        rarako_id = snowflake('2026-09-06T00:30:00Z')
+        candidates = [candidate(), candidate(newer, '2026-09-06T01:00:00Z'),
+                      candidate(rarako_id, '2026-09-06T00:30:00Z', RARAKO, '2065375500131028992')]
+        self.state['pending'] = [{**item, 'reason': 'discovered', 'firstSeenAt': CREATED,
+                                  'lastAttemptAt': None, 'attempts': 0} for item in candidates]
+        durable = self.durable(posts=2)
+        durable.targets = targets
+        client = self.fake_client(durable, entries=[], payloads={
+            newer: post('今日は晴れ', newer, '2026-09-06T01:00:00Z'),
+            rarako_id: post('今日は晴れ', rarako_id, '2026-09-06T00:30:00Z', RARAKO, '2065375500131028992')})
+        personal.collect(self.state, durable, client, targets, DATE, 0, 2, clock=durable.clock)
+        self.assertEqual(client.fetch_post.call_args_list, [mock.call(newer), mock.call(rarako_id)])
+
+    def test_bound_author_mismatch_in_pending_does_not_spend_a_post_get(self):
+        self.state['identityBindings']['あむ'] = {
+            'authorId': UID, 'authorScreenName': AMU['handle'], 'verifiedAt': CREATED}
+        self.state['pending'] = [{**candidate(uid='2065375500131028992'), 'reason': 'discovered',
+                                  'firstSeenAt': CREATED, 'lastAttemptAt': None, 'attempts': 0}]
+        durable = self.durable()
+        client = self.fake_client(durable, entries=[])
+        report, _ = self.collect(client, durable)
+        client.fetch_post.assert_not_called()
+        self.assertEqual(report['requests']['posts'], 0)
+        self.assertEqual(self.state['pending'][0]['reason'], 'author_mismatch')
+
     def test_no_roster_weekday_or_unscheduled_names_added(self):
         self.accounts.append({'name': 'まこと', 'handle': 'makoto', 'source': '公式サイト'})
         self.insights['maidTendency']['まこと'] = {'x': 'makoto'}
@@ -521,7 +685,7 @@ class StateTests(Offline):
         analyzer.parse.assert_not_called()
         analyzer.check_capacity.side_effect = None
         analyzer.parse.return_value = ([{'shift': '昼', 'kind': 'placement',
-                                         'storeId': 's1', 'excerpt': '昼1号店'}], 'events')
+                                         'storeId': 's1', 'excerpt': '昼1号店'}], [], 'events')
         next_durable = self.durable()
         next_durable.preflight()
         next_client = self.fake_client(next_durable, entries=[])
@@ -541,13 +705,53 @@ class StateTests(Offline):
         analyzer = mock.Mock()
         analyzer.state = {'history': []}
         analyzer.parse.return_value = ([{'shift': '夜', 'kind': 'placement',
-                                         'storeId': 's4', 'excerpt': '夜4号店'}], 'events')
+                                         'storeId': 's4', 'excerpt': '夜4号店'}], [], 'events')
         personal.collect(self.state, durable, None, self.targets, DATE, 2, 3,
                          clock=durable.clock, roster=self.schedule['roster'], analyzer=analyzer,
                          saved_payloads={TID: post('9月6日 夜4号店')})
         self.assertEqual([(event['shift'], event['storeId']) for event in self.state['posts'][0]['events']],
                          [('昼', 's1'), ('夜', 's4')])
         self.assertEqual(analyzer.state['history'], [previous])
+
+    def test_first_partial_v5_reanalysis_retains_legacy_links_for_unsupplied_scopes(self):
+        previous, _ = personal.validate_post(candidate(), post(), AMU, NOW)
+        self.state['posts'] = [previous]
+        self.state['identityBindings'][AMU['name']] = {
+            'authorId': UID, 'authorScreenName': AMU['handle'], 'verifiedAt': personal.stamp(NOW)}
+        durable = self.durable()
+        durable.preflight()
+        analyzer = mock.Mock()
+        analyzer.state = {'history': []}
+        analyzer.parse.return_value = ([], [{'scope': '昼', 'status': 'work'}], 'links')
+        personal.collect(self.state, durable, None, self.targets, DATE, 2, 3,
+                         clock=durable.clock, analyzer=analyzer,
+                         saved_payloads={TID: post('9月6日 昼のお給仕')})
+        current = self.state['posts'][0]
+        self.assertEqual(current['events'], previous['events'])
+        self.assertEqual(current['links'], [
+            {'scope': '昼', 'status': 'work'}, {'scope': '夜', 'status': 'work'}])
+        self.assertEqual(analyzer.state['history'], [previous])
+        personal.read_state(self.snapshot)
+
+    def test_explicit_empty_links_keep_only_prior_legacy_scopes_not_new_event_links(self):
+        previous, _ = personal.validate_post(candidate(), post('9月6日 昼1号店'), AMU, NOW)
+        self.state['posts'] = [previous]
+        self.state['identityBindings'][AMU['name']] = {
+            'authorId': UID, 'authorScreenName': AMU['handle'], 'verifiedAt': personal.stamp(NOW)}
+        durable = self.durable()
+        durable.preflight()
+        analyzer = mock.Mock()
+        analyzer.state = {'history': []}
+        analyzer.parse.return_value = ([{'shift': '夜', 'kind': 'placement', 'storeId': 's2',
+                                         'excerpt': '2号店'}], [], 'events')
+        personal.collect(self.state, durable, None, self.targets, DATE, 2, 3,
+                         clock=durable.clock, analyzer=analyzer,
+                         saved_payloads={TID: post('9月6日 夜2号店')})
+        current = self.state['posts'][0]
+        self.assertEqual([event['shift'] for event in current['events']], ['昼', '夜'])
+        self.assertEqual(current['links'], [{'scope': '昼', 'status': 'work'}])
+        self.assertEqual(analyzer.state['history'], [previous])
+        personal.read_state(self.snapshot)
 
     def test_seed_facts_observed_times_and_spent_budget_floor(self):
         seed = personal.read_state(TOOLS / 'tests' / 'fixtures' / 'personal-pilot.json', private=False)

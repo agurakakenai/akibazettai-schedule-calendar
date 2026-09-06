@@ -27,9 +27,32 @@ def event(shift, kind, line_ids, store=None, time=None):
     return {'shift': shift, 'kind': kind, 'evidenceLineIds': line_ids, 'storeId': store, 'time': time}
 
 
-def result(*events, decision=None):
+def legacy_result(*events, decision=None):
     return {'date': base.DATE.isoformat(), 'decision': decision or ('events' if events else 'no_event'),
             'events': list(events)}
+
+
+def link(scope, status='work', line_ids=None):
+    return {'scope': scope, 'status': status, 'evidenceLineIds': [1] if line_ids is None else line_ids}
+
+
+def result_v5(*events, decision=None, links=(), link_decision=None):
+    return {**legacy_result(*events, decision=decision), 'links': list(links),
+            'linkDecision': link_decision or ('links' if links else 'no_link')}
+
+
+def result_v6(*events, links=(), pending_events=False):
+    return {'date': base.DATE.isoformat(), 'events': None if pending_events else list(events),
+            'links': None if links is None else list(links)}
+
+
+def dated(value, day=base.DATE.isoformat()):
+    return {'serviceDate': day, **value} if isinstance(value, dict) else value
+
+
+def result(*events, links=(), pending_events=False):
+    return {'events': None if pending_events else [dated(value) for value in events],
+            'links': None if links is None else [dated(value) for value in links]}
 
 
 def response(value=None, *, content=None, refusal=None, finish='stop'):
@@ -374,6 +397,12 @@ class AzureTests(base.Offline):
     def validate(self, text, value, shifts=('昼', '夜')):
         return azure.grounded_events(value, text, base.DATE, shifts, personal.azure_context())
 
+    def assess(self, text, value, shifts=('昼', '夜')):
+        return azure.grounded_assessment(value, text, base.DATE, shifts, personal.azure_context())
+
+    def assess_v5(self, text, value, shifts=('昼', '夜')):
+        return azure.grounded_assessment_v5(value, text, base.DATE, shifts, personal.azure_context())
+
     def collect(self, *, payloads=None, entries=None, analyzer=None):
         durable = personal.DurableHttp(self.state, self.snapshot, self.http, base.DATE, self.targets,
                                        3, 3, clock=lambda: self.clock, sleep=self.sleep)
@@ -411,13 +440,556 @@ class AzureTests(base.Offline):
         self.opener.open.assert_called_once()
         sent = json.loads(self.opener.open.call_args.args[0].data)
         self.assertEqual(json.loads(sent['messages'][1]['content']), {
-            'bodyLines': [{'id': 1, 'text': text}], 'postedAt': base.CREATED, 'date': '2026-09-06',
-            'author': 'あむ', 'allowedShifts': ['昼', '夜']})
+            'bodyLines': [{'id': 1, 'text': text}], 'postedAtJST': '2026-09-06T00:00:02+09:00',
+            'postedDateJST': '2026-09-06', 'relativeDatesJST': {
+                'yesterday': '2026-09-05', 'today': '2026-09-06',
+                'tomorrow': '2026-09-07', 'dayAfterTomorrow': '2026-09-08'},
+            'author': 'あむ', 'knownShiftsByDate': {'2026-09-06': ['昼', '夜']}})
         self.assertEqual(sent['reasoning_effort'], 'none')
         self.assertEqual(sent['model'], 'gpt-5.6-luna')
         self.assertEqual(sent['max_completion_tokens'], 1200)
         self.assertNotIn('tools', sent)
         self.assertNotIn(ENV['AZURE_OPENAI_API_KEY'], json.dumps(sent))
+
+    def test_storeless_unspecified_link_uses_one_shared_inference_and_minimal_cache(self):
+        text = '本日お給仕します\nPRIVATE_BODY_SENTINEL'
+        expected = result(links=[link('unspecified')])
+        with self.shared_usage() as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+            with mock.patch.object(personal, 'parse_events', side_effect=AssertionError('no rules fallback')):
+                post, reason = self.parse(text, expected, analyzer=analyzer)
+                first = copy.deepcopy(post)
+                post['links'][0]['status'] = 'conflict'
+                cached, cached_reason = self.parse(text, expected, analyzer=analyzer)
+            self.assertEqual((reason, cached_reason), ('links', 'links'))
+            self.assertEqual(cached, first)
+            self.assertEqual(cached['events'], [])
+            self.assertEqual(cached['links'], [{'scope': 'unspecified', 'status': 'work'}])
+            self.assertEqual(ledger.used, 1)
+            receipt = next(iter(ledger.state['receipts'].values()))
+            self.assertEqual(receipt['reason'], 'links')
+            self.assertIsNotNone(receipt['issuedAt'])
+            self.assertIsNotNone(receipt['completedAt'])
+        self.opener.open.assert_called_once()
+        self.assertEqual(self.state['posts'], [])
+        self.state['posts'] = [cached]
+        public = personal.public_state(self.state)
+        self.assertEqual(public['posts'][0]['events'], [])
+        for encoded in (json.dumps(public), self.snapshot.read_text(encoding='utf-8')):
+            for private in ('PRIVATE_BODY_SENTINEL', 'bodyLines', 'evidenceLineIds', text,
+                            ENV['AZURE_OPENAI_API_KEY']):
+                self.assertNotIn(private, encoded)
+        personal.read_state(self.snapshot)
+
+    def test_independent_pending_decisions_preserve_confirmed_counterpart(self):
+        cases = (
+            (result(pending_events=True, links=[link('夜')]),
+             ([], [{'scope': '夜', 'status': 'work'}], 'links')),
+            (result(event('昼', 'placement', [1], 's1'), links=None),
+             ([{'shift': '昼', 'kind': 'placement', 'storeId': 's1', 'excerpt': '1号店'}], [], 'events')),
+            (result(event('昼', 'placement', [1], 's1'), links=[link('昼')]),
+             ([{'shift': '昼', 'kind': 'placement', 'storeId': 's1', 'excerpt': '1号店'}],
+              [{'scope': '昼', 'status': 'work'}], 'events')),
+        )
+        for proposed, expected in cases:
+            with self.subTest(proposed=proposed):
+                self.assertEqual(self.assess('今日 昼1号店、夜もお給仕します', proposed), expected)
+        self.assertEqual(self.assess('今日お給仕します', result(links=[link('unspecified')]), shifts=()),
+                         ([], [{'scope': 'unspecified', 'status': 'work'}], 'links'))
+        for events, links in ((None, []), ([], None), (None, None)):
+            with self.subTest(events=events, links=links):
+                with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_pending'):
+                    self.assess('判断保留', {**result(), 'events': events, 'links': links})
+        self.assertEqual(self.assess('今日晴れ', result()), ([], [], 'no_event'))
+        self.opener.open.assert_not_called()
+
+    def test_v7_nullable_combinations_derive_status_and_cache_arrays_without_extra_calls(self):
+        proposed_event = dated(event('昼', 'placement', [1], 's1'))
+        proposed_link = dated(link('unspecified'))
+        for events in (None, [], [proposed_event]):
+            for links in (None, [], [proposed_link]):
+                with self.subTest(events=events, links=links):
+                    self.state = personal.empty_state()
+                    self.opener.reset_mock()
+                    analyzer = self.make_analyzer()
+                    value = {**result(), 'events': events, 'links': links}
+                    expected_events = ([{'shift': '昼', 'kind': 'placement',
+                                         'storeId': 's1', 'excerpt': '1号店'}] if events else [])
+                    expected_links = [{'scope': 'unspecified', 'status': 'work'}] if links else []
+                    expected_reason = ('events' if events else 'links' if links else
+                                       'azure_pending' if events is None or links is None else 'no_event')
+                    for _ in range(2):
+                        if expected_reason == 'azure_pending':
+                            with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_pending'):
+                                self.parse('本日昼1号店でお給仕します', value, analyzer=analyzer)
+                        else:
+                            post, reason = self.parse('本日昼1号店でお給仕します', value, analyzer=analyzer)
+                            self.assertEqual(reason, expected_reason)
+                            if expected_events or expected_links:
+                                self.assertEqual(post['events'], expected_events)
+                                self.assertEqual(post['links'], expected_links)
+                            else:
+                                self.assertIsNone(post)
+                    entry = next(iter(analyzer.state['cache'].values()))
+                    self.assertEqual(entry['reason'], expected_reason)
+                    self.assertEqual(entry['events'], expected_events)
+                    self.assertEqual(entry['links'], expected_links)
+                    self.assertEqual(entry['channels'], {
+                        field: 'pending' if value is None else 'confirmed' if value else 'none'
+                        for field, value in (('events', events), ('links', links))})
+                    self.assertEqual(entry['serviceDates'], {
+                        field: [base.DATE.isoformat()] if value else []
+                        for field, value in (('events', events), ('links', links))})
+                    self.assertEqual(set(entry), {
+                        'postId', 'bodyHash', 'versionHash', 'at', 'reason', 'events', 'links',
+                        'channels', 'serviceDates'})
+                    self.opener.open.assert_called_once()
+                    self.assertEqual(analyzer.used, 1)
+                    personal.read_state(self.snapshot)
+
+    def test_link_only_successes_consume_the_same_shared_request_capacity(self):
+        with self.shared_usage() as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+            for index in range(azure.RUN_LIMIT):
+                post, reason = self.parse(f'本日お給仕します {index}',
+                                          result(links=[link('unspecified')]), analyzer=analyzer)
+                self.assertEqual((post['events'], reason), ([], 'links'))
+            with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_budget_exhausted'):
+                self.parse('本日お給仕します 追加', result(links=[link('unspecified')]), analyzer=analyzer)
+            self.assertEqual(ledger.used, 3)
+            self.assertEqual(len(ledger.state['receipts']), 3)
+            self.assertEqual({item['reason'] for item in ledger.state['receipts'].values()}, {'links'})
+            self.assertEqual(analyzer.state['budgets'], {})
+            self.assertGreaterEqual(sum(self.sleeps), 120)
+        self.assertEqual(self.opener.open.call_count, 3)
+        self.assertEqual((azure.RUN_LIMIT, azure.DAY_LIMIT, azure.SPACING_SECONDS), (3, 30, 60))
+        personal.read_state(self.snapshot)
+
+    def test_explicit_negative_links_are_scoped_and_all_day_requires_known_shifts(self):
+        for status in ('withdrawn', 'conflict'):
+            with self.subTest(status=status):
+                proposed = result(links=[link('昼', status), link('夜')])
+                self.assertEqual(self.assess('本日昼の案内を訂正、夜お給仕します', proposed)[1],
+                                 [{'scope': '昼', 'status': status}, {'scope': '夜', 'status': 'work'}])
+                self.assertEqual(self.assess('本日終日お休み', result(links=[link('昼', status)]),
+                                             shifts=('昼',))[1],
+                                 [{'scope': '昼', 'status': status}])
+                for shifts in ((), ('昼',)):
+                    with self.assertRaises(azure.AnalysisFailure):
+                        self.assess('本日終日お休み', result(links=[link('夜', status)]), shifts=shifts)
+                with self.assertRaises(azure.AnalysisFailure):
+                    self.assess('本日終日お休み', result(links=[link('unspecified', status)]))
+
+    def test_v7_links_reject_bad_scope_status_fields_and_evidence_ids(self):
+        text = '本日お給仕します\n\n夜もお給仕します\n'
+        valid = link('夜', line_ids=[1, 3])
+        bad_links = [
+            {**valid, 'scope': '朝'}, {**valid, 'scope': []}, {**valid, 'scope': None},
+            {**valid, 'status': 'pending'}, {**valid, 'status': []}, {**valid, 'status': True},
+            {**valid, 'scope': 'unspecified', 'status': 'withdrawn'},
+            {**valid, 'scope': 'unspecified', 'status': 'conflict'},
+            {**valid, 'url': base.candidate()['url']}, {'scope': '夜', 'status': 'work'},
+            None, [],
+        ]
+        for ids in (None, '1', 1, [], [0], [-1], [5], [True], [1.0], ['1'], [[1]], [1, 1],
+                    [2], [1, 2], [4], list(range(1, azure.MAX_EVIDENCE_LINES + 2))):
+            bad_links.append({**valid, 'evidenceLineIds': ids})
+        for proposed in bad_links:
+            with self.subTest(proposed=proposed), self.assertRaises(azure.AnalysisFailure):
+                self.assess(text, result(links=[proposed]))
+        for links in ([valid, valid], [valid] * 4):
+            with self.subTest(links=links), self.assertRaises(azure.AnalysisFailure):
+                self.assess(text, result(links=links))
+        self.assertEqual(self.assess(text, result(links=[valid]))[1], [{'scope': '夜', 'status': 'work'}])
+        boundary = '\n'.join(['今日お給仕'] * azure.MAX_SOURCE_LINES)
+        self.assertEqual(self.assess(boundary, result(links=[link(
+            'unspecified', line_ids=list(range(113, 129)))]))[2], 'links')
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_input_limit'):
+            self.assess(boundary + '\n', result(links=[valid]))
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_input_limit'):
+            self.assess('a' * (azure.MAX_INPUT_BYTES + 1), result(links=[valid]))
+
+    def test_v5_requires_complete_contract_and_retains_event_grounding_checks(self):
+        valid = result_v5(event('昼', 'placement', [1], 's1'), links=[link('昼')])
+        cases = [
+            {key: value for key, value in valid.items() if key != 'links'},
+            {key: value for key, value in valid.items() if key != 'linkDecision'},
+            {**valid, 'linkDecision': 'no_link'}, {**valid, 'linkDecision': 'pending'},
+            {**valid, 'linkDecision': None}, {**valid, 'links': None},
+            {**valid, 'links': []}, {**valid, 'date': '2026-09-07'},
+            {**valid, 'decision': 'no_event'}, {**valid, 'decision': 'pending'},
+            {**valid, 'decision': []}, {**valid, 'events': None},
+            {**valid, 'author': 'other'}, {**valid, 'events': valid['events'] * 2},
+            result_v5(links=[], link_decision='links'),
+            result_v5(event('昼', 'placement', [1], 's2'), links=[link('昼')]),
+            result_v5(event('昼', 'placement', [1, 2], 's1'), links=[link('昼')]),
+        ]
+        for proposed in cases:
+            with self.subTest(proposed=proposed), self.assertRaises(azure.AnalysisFailure):
+                self.assess_v5('本日昼1号店\n', proposed)
+
+    def test_v7_requires_exact_nullable_array_contract_and_bounded_grounded_facts(self):
+        valid = result(event('昼', 'placement', [1], 's1'), links=[link('昼')])
+        cases = [None, False, [], '', {}, {**valid, 'date': '2026-09-07'},
+                 {**valid, 'decision': 'events'}, {**valid, 'linkDecision': 'links'},
+                 {**valid, 'author': 'other'},
+                 result_v5(event('昼', 'placement', [1], 's1'), links=[link('昼')]),
+                 result(event('昼', 'placement', [1], 's2'), links=None),
+                 result(event('昼', 'placement', [1, 2], 's1'), links=[link('昼')])]
+        for field in ('events', 'links'):
+            cases.append({key: value for key, value in valid.items() if key != field})
+        for field in ('events', 'links'):
+            for invalid in (False, True, 0, 1, 1.5, '', 'pending', {}, (), [None], [True]):
+                cases.append({**valid, field: invalid})
+        cases.extend([
+            {**valid, 'events': valid['events'] * 2},
+            {**valid, 'events': valid['events'] * 3},
+            {**valid, 'links': valid['links'] * 4},
+            result(pending_events=True, links=[{'scope': 'unspecified', 'status': 'work'}]),
+        ])
+        for value in cases:
+            with self.subTest(value=value), self.assertRaises(azure.AnalysisFailure):
+                self.assess('本日昼1号店\n', value)
+        bounded = result(event('昼', 'placement', [1], 's1'),
+                         event('夜', 'placement', [1], 's2'),
+                         links=[link('昼'), link('夜'), link('unspecified')])
+        events, links, reason = self.assess('本日昼1号店、夜2号店でお給仕します', bounded)
+        self.assertEqual((len(events), len(links), reason), (2, 3, 'events'))
+
+    def test_explicit_v5_replay_retains_confirmed_and_pending_semantics_without_v7_relabeling(self):
+        text = '本日昼1号店、夜2号店でお給仕します'
+        old = result_v5(event('昼', 'placement', [1], 's1'),
+                        event('夜', 'placement', [1], 's2'), links=[link('昼'), link('夜')])
+        events, links, reason = self.assess_v5(text, old)
+        self.assertEqual(([item['storeId'] for item in events], links, reason),
+                         (['s1', 's2'], [{'scope': '昼', 'status': 'work'},
+                                        {'scope': '夜', 'status': 'work'}], 'events'))
+        self.assertEqual(self.assess_v5(text, result_v5(decision='pending', links=[link('夜')])),
+                         ([], [{'scope': '夜', 'status': 'work'}], 'links'))
+        self.assertEqual(self.assess_v5(text, result_v5(
+            event('昼', 'placement', [1], 's1'), link_decision='pending'))[2], 'events')
+        self.assertEqual(self.assess_v5(text, result_v5()), ([], [], 'no_event'))
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_pending'):
+            self.assess_v5(text, result_v5(decision='pending', link_decision='pending'))
+        for value in (old, legacy_result()):
+            with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_invalid_output'):
+                self.assess(text, value)
+        for value in (result(), legacy_result()):
+            with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_invalid_output'):
+                self.assess_v5(text, value)
+        self.opener.open.assert_not_called()
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_invalid_output'):
+            self.parse(text, old)
+        self.opener.open.assert_called_once()
+
+    def test_malformed_v5_empty_events_success_stays_rejected_and_negative_cached(self):
+        text = '本日お給仕します'
+        malformed = result_v5(decision='events', links=[link('unspecified')])
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_invalid_output'):
+            self.assess_v5(text, malformed)
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_invalid_output'):
+            self.assess(text, malformed)
+        for proposed in (malformed, result(links=[link('unspecified')])):
+            with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_invalid_output'):
+                self.parse(text, proposed)
+        entry = next(iter(self.analyzer.state['cache'].values()))
+        self.assertEqual((entry['reason'], entry['events'], entry['links']),
+                         ('azure_invalid_output', [], []))
+        self.assertNotIn('channels', entry)
+        self.assertEqual(self.state['posts'], [])
+        self.opener.open.assert_called_once()
+        personal.read_state(self.snapshot)
+
+    def test_normal_v7_path_rejects_v4_while_explicit_saved_v4_replay_remains_available(self):
+        text = '今日昼1号店\n'
+        old = legacy_result(event('昼', 'placement', [1, 2], 's1'))
+        self.assertEqual(self.validate(text, old),
+                         ([{'shift': '昼', 'kind': 'placement', 'storeId': 's1', 'excerpt': '1号店'}],
+                          'events'))
+        for _ in range(2):
+            with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_invalid_output'):
+                self.parse(text, old)
+        self.opener.open.assert_called_once()
+        self.assertEqual(next(iter(self.analyzer.state['cache'].values()))['reason'], 'azure_invalid_output')
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_invalid_output'):
+            self.validate(text, result(event('昼', 'placement', [1], 's1'), links=[link('昼')]))
+        self.assertEqual(azure.VERSION, 'personal-line-ids-v7')
+        for version in ('personal-line-ids-v4', 'personal-line-ids-v5', 'personal-line-ids-v6'):
+            with mock.patch.object(azure, 'VERSION', version):
+                old_namespace = self.make_analyzer().version
+            self.assertNotEqual(self.analyzer.version, old_namespace)
+
+    def test_v7_prompt_keeps_semantic_decisions_in_one_model_request(self):
+        text = '同じ日に投稿しただけ\n9/7の募集について話しています'
+        self.parse(text, result())
+        sent = json.loads(self.opener.open.call_args.args[0].data)
+        context = json.loads(sent['messages'][1]['content'])
+        self.assertEqual(context['postedAtJST'], '2026-09-06T00:00:02+09:00')
+        self.assertNotIn('postedAt', context)
+        self.assertNotIn('date', context)
+        self.assertEqual(len(sent['messages']), 2)
+        for boundary in ('Publication', 'half-month schedules', 'third-party', 'recruitment',
+                         'unspecified', 'already-displayed', 'independently', 'knownShiftsByDate'):
+            self.assertIn(boundary, sent['messages'][0]['content'])
+        self.assertEqual(sent['model'], 'gpt-5.6-luna')
+        self.assertEqual(sent['max_completion_tokens'], 1200)
+        self.assertEqual(self.analyzer.client.identity['modelVersion'], '2026-07-09')
+        schema = sent['response_format']['json_schema']['schema']
+        self.assertEqual(set(schema['required']), {'events', 'links'})
+        self.assertEqual(set(schema['properties']), {'events', 'links'})
+        self.assertIs(schema['additionalProperties'], False)
+        self.assertNotIn('linkDecision', sent['messages'][0]['content'])
+        self.assertIn('events=[]', sent['messages'][0]['content'])
+        self.assertIn('events=null', sent['messages'][0]['content'])
+        self.assertIn('links=[]', sent['messages'][0]['content'])
+        self.assertIn('links=null', sent['messages'][0]['content'])
+        self.assertEqual(schema['properties']['events']['maxItems'], 4)
+        self.assertEqual(schema['properties']['links']['maxItems'], 6)
+        for field in ('events', 'links'):
+            self.assertEqual(schema['properties'][field]['type'], ['array', 'null'])
+            self.assertIn('serviceDate', schema['properties'][field]['items']['required'])
+            self.assertEqual(schema['properties'][field]['items']['properties']['serviceDate'],
+                             {'type': 'string', 'pattern': r'^[0-9]{4}-[0-9]{2}-[0-9]{2}$'})
+            ids = schema['properties'][field]['items']['properties']['evidenceLineIds']
+            self.assertEqual(ids['items']['enum'], [1, 2])
+            self.assertEqual(ids['maxItems'], 2)
+        self.opener.open.assert_called_once()
+
+    def test_dated_work_filters_future_claims_and_retains_validated_dates_in_cache(self):
+        cases = (
+            ('今日、好きな本を買いました。次のお給仕は明日です。',
+             [dated(link('unspecified'), '2026-09-07')], 'no_event', ['2026-09-07']),
+            ('今日もお給仕します。', [link('unspecified')], 'links', ['2026-09-06']),
+            ('今日も明日もお給仕します。',
+             [dated(link('unspecified'), '2026-09-07'), link('unspecified')],
+             'links', ['2026-09-06', '2026-09-07']),
+        )
+        for text, links, expected_reason, expected_dates in cases:
+            with self.subTest(expected_reason=expected_reason, dates=expected_dates):
+                self.state = personal.empty_state()
+                analyzer = self.make_analyzer()
+                self.opener.reset_mock()
+                for _ in range(2):
+                    post, reason = self.parse(text, result(links=links), analyzer=analyzer)
+                    self.assertEqual(reason, expected_reason)
+                    if reason == 'no_event':
+                        self.assertIsNone(post)
+                    else:
+                        self.assertEqual(post['events'], [])
+                        self.assertEqual(post['links'], [{'scope': 'unspecified', 'status': 'work'}])
+                        self.assertEqual(post['date'], '2026-09-06')
+                        self.assertEqual(post['createdAt'], base.CREATED)
+                cached = next(iter(analyzer.state['cache'].values()))
+                self.assertEqual(cached['serviceDates'], {'events': [], 'links': expected_dates})
+                self.assertEqual(cached['channels'], {
+                    'events': 'none', 'links': 'confirmed' if expected_reason == 'links' else 'none'})
+                self.assertEqual(self.state['posts'], [])
+                self.opener.open.assert_called_once()
+                personal.read_state(self.snapshot)
+
+    def test_service_dates_are_required_canonical_and_never_defaulted(self):
+        for field, item in (('events', event('昼', 'placement', [1], 's1')),
+                            ('links', link('unspecified'))):
+            values = [item]
+            for day in (None, True, 0, [], {}, '2026-9-6', '2026-02-30', '2026-13-01',
+                        '0000-09-06', '2026-W36-7', '2026-09-06T00:00:00Z',
+                        '2026-09-06\n', ' 2026-09-06', '２０２６-０９-０６'):
+                values.append(dated(item, day))
+            for value in values:
+                with self.subTest(field=field, value=value), self.assertRaises(azure.AnalysisFailure):
+                    self.assess('本日昼1号店でお給仕します', {**result(), field: [value]})
+        with self.assertRaises(azure.AnalysisFailure):
+            self.assess('本日お給仕します', {'events': [], 'links': [link('unspecified')]})
+        self.assertEqual(self.assess('2月29日にお給仕します',
+                                    result(links=[dated(link('unspecified'), '2028-02-29')])),
+                         ([], [], 'no_event'))
+
+    def test_all_dated_groups_validate_before_filter_with_per_date_and_wire_bounds(self):
+        text = '今日も明日も昼1号店、夜2号店でお給仕します'
+        events = [dated(event(shift, 'placement', [1], store), day)
+                  for day in ('2026-09-06', '2026-09-07')
+                  for shift, store in (('昼', 's1'), ('夜', 's2'))]
+        links = [dated(link(scope), day) for day in ('2026-09-06', '2026-09-07')
+                 for scope in ('昼', '夜', 'unspecified')]
+        value = result(*events, links=links)
+        accepted, accepted_links, reason = self.assess(text, value)
+        self.assertEqual(([item['storeId'] for item in accepted], len(accepted_links), reason),
+                         (['s1', 's2'], 3, 'events'))
+        _, _, channels, dates = azure._grounded_v7(
+            value, text, base.DATE, base.AMU['shifts'], personal.azure_context())
+        self.assertEqual(channels, {'events': 'confirmed', 'links': 'confirmed'})
+        self.assertEqual(dates, {field: ['2026-09-06', '2026-09-07'] for field in ('events', 'links')})
+        invalid = [
+            result(*events, dated(event('昼', 'placement', [1], 's1'), '2026-09-08'), links=links),
+            result(*events, links=[*links, dated(link('昼'), '2026-09-08')]),
+            result(events[0], events[0]),
+            result(events[2], events[2], links=[link('昼')]),
+            result(*events[:2], events[0]),
+            result(links=[links[0], links[0]]),
+            result(links=[*links[:3], links[0]]),
+            result(dated(event('夜', 'placement', [1], 's4'), '2026-09-07'), links=[link('昼')]),
+            result(links=[link('昼'), dated(link('夜', line_ids=[999]), '2026-09-07')]),
+            result(links=[link('昼'), dated(link('朝'), '2026-09-07')]),
+        ]
+        for proposed in invalid:
+            with self.subTest(proposed=proposed), self.assertRaises(azure.AnalysisFailure):
+                self.assess(text, proposed)
+        self.assertEqual(self.assess(text, result(events[3]), shifts=('昼',)), ([], [], 'no_event'))
+        with self.assertRaises(azure.AnalysisFailure):
+            self.assess(text, result(events[1]), shifts=('昼',))
+        _, _, channels, dates = azure._grounded_v7(
+            result(events[3], links=None), text, base.DATE, ('昼',), personal.azure_context())
+        self.assertEqual(channels, {'events': 'none', 'links': 'pending'})
+        self.assertEqual(dates, {'events': ['2026-09-07'], 'links': []})
+
+    def test_request_dates_use_original_jst_publication_with_calendar_rollovers(self):
+        cases = (
+            ('2026-09-05T14:59:59Z', '2026-09-05T23:59:59+09:00',
+             ['2026-09-04', '2026-09-05', '2026-09-06', '2026-09-07']),
+            ('2026-09-05T15:11:00Z', '2026-09-06T00:11:00+09:00',
+             ['2026-09-05', '2026-09-06', '2026-09-07', '2026-09-08']),
+            ('2026-09-30T15:00:00Z', '2026-10-01T00:00:00+09:00',
+             ['2026-09-30', '2026-10-01', '2026-10-02', '2026-10-03']),
+            ('2026-12-31T14:59:59Z', '2026-12-31T23:59:59+09:00',
+             ['2026-12-30', '2026-12-31', '2027-01-01', '2027-01-02']),
+            ('2026-12-31T15:00:00Z', '2027-01-01T00:00:00+09:00',
+             ['2026-12-31', '2027-01-01', '2027-01-02', '2027-01-03']),
+            ('2028-02-28T15:00:00Z', '2028-02-29T00:00:00+09:00',
+             ['2028-02-28', '2028-02-29', '2028-03-01', '2028-03-02']),
+        )
+        self.clock = dt.datetime(2030, 1, 1, tzinfo=dt.timezone.utc)
+        for created, expected_stamp, days in cases:
+            with self.subTest(created=created), mock.patch.object(
+                    self.analyzer.client, 'structured', return_value=result()) as structured:
+                self.analyzer.request(azure.source_lines('今日と明日のお給仕について'),
+                                      personal.official.timestamp(created), base.DATE, ['昼'], 'あむ')
+                context = json.loads(structured.call_args.args[0][1]['content'])
+                self.assertEqual(set(context), {'bodyLines', 'postedAtJST', 'postedDateJST',
+                                                'relativeDatesJST', 'author', 'knownShiftsByDate'})
+                self.assertEqual(context['postedAtJST'], expected_stamp)
+                self.assertEqual(context['postedDateJST'], days[1])
+                self.assertEqual(context['relativeDatesJST'], dict(zip(
+                    ('yesterday', 'today', 'tomorrow', 'dayAfterTomorrow'), days)))
+                self.assertEqual(context['knownShiftsByDate'], {'2026-09-06': ['昼']})
+        self.opener.open.assert_not_called()
+
+    def test_explicit_v6_replay_keeps_typed_valid_but_semantically_wrong_negative(self):
+        text = '今日、好きな本を買いました。次のお給仕は明日です。'
+        old = result_v6(links=[link('unspecified')])
+        replay = lambda value: azure.grounded_assessment_v6(
+            value, text, base.DATE, base.AMU['shifts'], personal.azure_context())
+        self.assertEqual(replay(old), ([], [{'scope': 'unspecified', 'status': 'work'}], 'links'))
+        self.assertEqual(replay(result_v6(pending_events=True, links=[link('夜')]))[2], 'links')
+        self.assertEqual(replay(result_v6()), ([], [], 'no_event'))
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_pending'):
+            replay(result_v6(links=None))
+        for value in (result(), result_v5(), legacy_result()):
+            with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_invalid_output'):
+                replay(value)
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_invalid_output'):
+            self.parse(text, old)
+        self.opener.open.assert_called_once()
+
+    def test_broad_calendar_and_daily_chatter_mock_no_results_do_not_claim_model_acceptance(self):
+        for text in ('9月前半のお給仕予定表です。1日昼、3日夜、6日昼、8日夜。',
+                     '今日、好きな本を買いました。'):
+            with self.subTest(text=text):
+                post, reason = self.parse(text, result())
+                self.assertIsNone(post)
+                self.assertEqual(reason, 'no_event')
+        self.assertEqual(self.opener.open.call_count, 2)
+
+    def test_optional_link_cache_fields_validate_legacy_and_v7_results(self):
+        entry = {'postId': base.TID, 'bodyHash': azure.digest('body'),
+                 'versionHash': azure.digest('v4'), 'at': base.CREATED, 'reason': 'events',
+                 'events': [{'shift': '昼', 'kind': 'placement', 'storeId': 's1', 'excerpt': '1号店'}]}
+        for value in (entry, {**entry, 'reason': 'no_event', 'events': []},
+                      {**entry, 'links': []},
+                      {**entry, 'links': [{'scope': '昼', 'status': 'work'}]},
+                      {**entry, 'reason': 'links', 'events': [],
+                       'links': [{'scope': 'unspecified', 'status': 'work'}]}):
+            state = {**azure.empty_state(), 'cache': {azure.digest('cache'): value}}
+            azure.validate_state(state, personal.azure_context())
+        invalid = [
+            {**entry, 'reason': 'links'}, {**entry, 'reason': 'links', 'events': []},
+            {**entry, 'reason': 'no_event', 'events': [], 'links': [{'scope': '昼', 'status': 'work'}]},
+            {**entry, 'reason': 'azure_pending', 'events': [], 'links': [{'scope': '昼', 'status': 'work'}]},
+            {**entry, 'links': [{'scope': '昼', 'status': 'work'}] * 2},
+            {**entry, 'links': [{'scope': '昼', 'status': 'work'}] * 4},
+            {**entry, 'links': [{'scope': 'unspecified', 'status': 'withdrawn'}]},
+            {**entry, 'links': [{'scope': '昼', 'status': 'work', 'evidenceLineIds': [1]}]},
+            {**entry, 'links': None}, {**entry, 'events': None},
+        ]
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                azure.validate_state({**azure.empty_state(), 'cache': {azure.digest('cache'): value}},
+                                     personal.azure_context())
+
+    def test_optional_cache_channels_require_exact_states_consistent_with_facts_and_reason(self):
+        entry = {'postId': base.TID, 'bodyHash': azure.digest('body'),
+                 'versionHash': azure.digest('v6'), 'at': base.CREATED, 'reason': 'events',
+                 'events': [{'shift': '昼', 'kind': 'placement', 'storeId': 's1', 'excerpt': '1号店'}],
+                 'links': [], 'channels': {'events': 'confirmed', 'links': 'pending'}}
+        azure.validate_state({**azure.empty_state(), 'cache': {azure.digest('cache'): entry}},
+                             personal.azure_context())
+        invalid_channels = [
+            None, [], 'pending', {}, {'events': 'confirmed'}, {'links': 'pending'},
+            {'events': 'confirmed', 'links': 'pending', 'body': 'PRIVATE_SENTINEL'},
+            {'events': 'confirmed', 'links': 'confirmed'},
+            {'events': 'none', 'links': 'pending'},
+            {'events': 'pending', 'links': 'none'},
+        ]
+        for value in (None, True, False, 0, [], {}, 'unknown', 'work'):
+            invalid_channels.append({'events': 'confirmed', 'links': value})
+        invalid = [{**entry, 'channels': channels} for channels in invalid_channels]
+        invalid.extend([
+            {**entry, 'events': [], 'reason': 'no_event',
+             'channels': {'events': 'none', 'links': 'pending'}},
+            {**entry, 'events': [], 'reason': 'azure_pending',
+             'channels': {'events': 'none', 'links': 'none'}},
+            {**entry, 'events': [], 'reason': 'azure_timeout',
+             'channels': {'events': 'pending', 'links': 'pending'}},
+        ])
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                azure.validate_state({**azure.empty_state(), 'cache': {azure.digest('cache'): value}},
+                                     personal.azure_context())
+        legacy = {key: value for key, value in entry.items() if key != 'channels'}
+        azure.validate_state({**azure.empty_state(), 'cache': {azure.digest('cache'): legacy}},
+                             personal.azure_context())
+
+    def test_optional_cache_service_dates_are_private_canonical_sorted_and_bounded(self):
+        entry = {'postId': base.TID, 'bodyHash': azure.digest('body'),
+                 'versionHash': azure.digest('v7'), 'at': base.CREATED, 'reason': 'no_event',
+                 'events': [], 'links': [], 'channels': {'events': 'none', 'links': 'none'},
+                 'serviceDates': {'events': [], 'links': ['2026-09-07']}}
+        azure.validate_state({**azure.empty_state(), 'cache': {azure.digest('cache'): entry}},
+                             personal.azure_context())
+        invalid_dates = [
+            None, [], {}, {'events': []}, {'events': [], 'links': [], 'raw': 'PRIVATE_SENTINEL'},
+            {'events': None, 'links': []}, {'events': [], 'links': '2026-09-07'},
+            {'events': [], 'links': [None]}, {'events': [], 'links': ['2026-02-30']},
+            {'events': [], 'links': ['2026-9-7']},
+            {'events': [], 'links': ['2026-09-07', '2026-09-06']},
+            {'events': [], 'links': ['2026-09-07', '2026-09-07']},
+            {'events': [f'2026-09-{day:02}' for day in range(1, 6)], 'links': []},
+            {'events': [], 'links': [f'2026-09-{day:02}' for day in range(1, 8)]},
+        ]
+        invalid = [{**entry, 'serviceDates': dates} for dates in invalid_dates]
+        invalid.extend([
+            {**entry, 'reason': 'azure_pending', 'channels': {'events': 'none', 'links': 'pending'}},
+            {**entry, 'reason': 'links', 'links': [{'scope': '昼', 'status': 'work'}],
+             'channels': {'events': 'none', 'links': 'confirmed'},
+             'serviceDates': {'events': [], 'links': []}},
+            {**entry, 'reason': 'azure_invalid_output', 'channels': {'events': 'none', 'links': 'none'}},
+        ])
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                azure.validate_state({**azure.empty_state(), 'cache': {azure.digest('cache'): value}},
+                                     personal.azure_context())
+        legacy = {key: value for key, value in entry.items() if key != 'serviceDates'}
+        azure.validate_state({**azure.empty_state(), 'cache': {azure.digest('cache'): legacy}},
+                             personal.azure_context())
 
     def test_line_ids_preserve_endings_blank_lines_and_unicode_without_offsets(self):
         text = '🍓\r\n\r\n　♡ ꒱\n最後\r'
@@ -453,7 +1025,7 @@ class AzureTests(base.Offline):
         for text in ('今日 夜2号店かも', '今日 夜2号店には出ません',
                      '明日 夜2号店', '今日「夜2号店」', '今日 夜2号店、訂正、夜3号店'):
             with self.subTest(text=text):
-                events, _ = self.validate(text, result(event('夜', 'placement', [1], 's2')))
+                events, _ = self.validate(text, legacy_result(event('夜', 'placement', [1], 's2')))
                 self.assertEqual(events[0]['storeId'], 's2')
         # These deliberately wrong model decisions require model evaluation,
         # not another Japanese interpreter hidden in the mechanical validator.
@@ -463,7 +1035,7 @@ class AzureTests(base.Offline):
         selected = azure.selected_lines(azure.source_lines(text), [3, 2, 1])
         self.assertEqual([line['text'] for line in selected], ['今日🍓\r\n', '　♡ 3号店ひる→2号店よる ꒱\r\n', ''])
         post, _ = self.parse(text, result(
-            event('昼', 'placement', [1, 2, 3], 's3'), event('夜', 'placement', [2], 's2')))
+            event('昼', 'placement', [1, 2], 's3'), event('夜', 'placement', [2], 's2')))
         self.assertEqual(post['events'], [
             {'shift': '昼', 'kind': 'placement', 'storeId': 's3', 'excerpt': '3号店'},
             {'shift': '夜', 'kind': 'placement', 'storeId': 's2', 'excerpt': '2号店'}])
@@ -478,8 +1050,8 @@ class AzureTests(base.Offline):
         for proposed in (event('夜', 'placement', [2, 4], 's1'),
                          event('夜', 'late', [5, 7], time='19:30')):
             with self.subTest(proposed=proposed), self.assertRaises(azure.AnalysisFailure):
-                self.validate(text, result(proposed))
-        events, _ = self.validate('今日\n3号店\n余談🍓\n夜19時に遅れます', result(
+                self.validate(text, legacy_result(proposed))
+        events, _ = self.validate('今日\n3号店\n余談🍓\n夜19時に遅れます', legacy_result(
             event('夜', 'late', [2, 4], 's3', '19:00')))
         self.assertEqual(events[0]['storeId'], 's3')
         self.assertEqual(events[0]['time'], '19:00')
@@ -489,9 +1061,9 @@ class AzureTests(base.Offline):
         for ids in (None, '2', 2, [], [0], [-1], [5], [True], [2.0], ['2'], [[2]], [2, 2],
                     list(range(1, azure.MAX_EVIDENCE_LINES + 2))):
             with self.subTest(ids=ids), self.assertRaises(azure.AnalysisFailure):
-                self.validate(text, result(event('夜', 'placement', ids, 's2')))
+                self.validate(text, legacy_result(event('夜', 'placement', ids, 's2')))
         with self.assertRaises(azure.AnalysisFailure):
-            self.validate(text, result(event('夜', 'absence', [4])))
+            self.validate(text, legacy_result(event('夜', 'absence', [4])))
         boundary = '2号店\n' + '\n' * (azure.MAX_SOURCE_LINES - 2)
         self.assertEqual(len(azure.source_lines(boundary)), azure.MAX_SOURCE_LINES)
         with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_input_limit'):
@@ -513,39 +1085,39 @@ class AzureTests(base.Offline):
         ]
         for text, proposed in cases:
             with self.subTest(text=text), self.assertRaises(azure.AnalysisFailure):
-                self.validate(text, result(proposed))
+                self.validate(text, legacy_result(proposed))
         post, _ = self.parse('今日 夜４号店に１９時３０分から遅れて行きます', result(
             event('夜', 'late', [1], 's4', '19:30')))
         self.assertEqual(post['events'][0], {
             'shift': '夜', 'kind': 'late', 'storeId': 's4', 'time': '19:30', 'excerpt': '４号店'})
         for evidence in ('夜　２', '夜\u00a0２', '夜\t２'):
             with self.subTest(evidence=evidence):
-                events, _ = self.validate('今日 ' + evidence, result(event('夜', 'placement', [1], 's2')))
+                events, _ = self.validate('今日 ' + evidence, legacy_result(event('夜', 'placement', [1], 's2')))
                 self.assertEqual(events[0]['storeId'], 's2')
                 self.assertEqual(events[0]['excerpt'], evidence.replace('\t', ' '))
 
     def test_schema_target_boundaries_and_duplicate_events_fail_closed(self):
         text = '今日 昼1号店、夜2号店'
         valid = event('夜', 'placement', [1], 's2')
-        cases = [result(valid, valid), result(valid, valid, valid),
+        cases = [legacy_result(valid, valid), legacy_result(valid, valid, valid),
                  {'date': '2026-09-07', 'decision': 'events', 'events': [valid]},
                  {'date': base.DATE.isoformat(), 'decision': 'no_event', 'events': [valid]},
-                 {**result(valid), 'author': 'someone'},
-                 result({**valid, 'confidence': 1}),
-                 result({**valid, 'shift': '朝'}), result({**valid, 'shift': []}),
-                 result({**valid, 'storeId': 's5'}), result({**valid, 'storeId': 2}),
-                 result({**valid, 'kind': 'working'}), result({**valid, 'evidenceLineIds': None}),
-                 result({'shift': '夜', 'kind': 'placement', 'storeId': 's2', 'time': None,
+                 {**legacy_result(valid), 'author': 'someone'},
+                 legacy_result({**valid, 'confidence': 1}),
+                 legacy_result({**valid, 'shift': '朝'}), legacy_result({**valid, 'shift': []}),
+                 legacy_result({**valid, 'storeId': 's5'}), legacy_result({**valid, 'storeId': 2}),
+                 legacy_result({**valid, 'kind': 'working'}), legacy_result({**valid, 'evidenceLineIds': None}),
+                 legacy_result({'shift': '夜', 'kind': 'placement', 'storeId': 's2', 'time': None,
                          'evidence': '夜2号店'}),
-                 result({**valid, 'storeId': None}),
-                 result({**valid, 'time': '19:00'}),
-                 result(event('夜', 'absence', [1], 's2')),
-                 result(event('夜', 'return', [1], 's2', False))]
+                 legacy_result({**valid, 'storeId': None}),
+                 legacy_result({**valid, 'time': '19:00'}),
+                 legacy_result(event('夜', 'absence', [1], 's2')),
+                 legacy_result(event('夜', 'return', [1], 's2', False))]
         for value in cases:
             with self.subTest(value=value), self.assertRaises(azure.AnalysisFailure):
                 self.validate(text, value)
         with self.assertRaises(azure.AnalysisFailure):
-            self.validate(text, result(valid), shifts=('昼',))
+            self.validate(text, legacy_result(valid), shifts=('昼',))
 
     def test_short_public_anchors_do_not_persist_full_evidence_or_health_prose(self):
         text = '今日は体調の事情で、今日は終日お休みします'
@@ -561,7 +1133,7 @@ class AzureTests(base.Offline):
 
     def test_model_pending_refusal_and_metadata_are_distinct(self):
         with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_pending'):
-            self.parse('今日 夜2号店かも', result(decision='pending'))
+            self.parse('今日 夜2号店かも', result(pending_events=True))
         self.opener.open.assert_called_once()
         for field in ('quoted_tweet', 'retweeted_status', 'in_reply_to_status_id_str'):
             payload = base.post()
@@ -576,7 +1148,7 @@ class AzureTests(base.Offline):
                 personal.validate_post(base.candidate(), payload, base.AMU, self.clock, analyzer=self.analyzer)
         self.opener.open.assert_called_once()
 
-    def test_same_body_cache_edit_and_old_version_failure_are_separate(self):
+    def test_explicit_saved_reanalysis_cache_edit_and_old_version_failure_are_separate(self):
         text = '今日 昼1号店'
         expected = result(event('昼', 'placement', [1], 's1'))
         with mock.patch.object(azure, 'VERSION', 'personal-nano-v3-gpt-5.4-nano-2026-03-17'):
@@ -596,6 +1168,47 @@ class AzureTests(base.Offline):
         self.assertEqual(self.opener.open.call_count, 3)
         for key, entry in old_cache.items():
             self.assertEqual(current.state['cache'][key], entry)
+
+    def test_version_change_never_automatically_reissues_known_legacy_results(self):
+        cases = [('v4', reason) for reason in ('events', 'no_event', 'azure_pending')]
+        cases.extend(('v5', reason) for reason in ('events', 'links', 'no_event',
+                                                  'azure_pending', 'azure_invalid_output'))
+        cases.extend(('v6', reason) for reason in ('events', 'links', 'no_event',
+                                                  'azure_pending', 'azure_invalid_output'))
+        for version, reason in cases:
+            with self.subTest(version=version, reason=reason):
+                self.state = personal.empty_state()
+                events = ([{'shift': '昼', 'kind': 'placement', 'storeId': 's1', 'excerpt': '1号店'}]
+                          if reason == 'events' else [])
+                links = [{'scope': 'unspecified', 'status': 'work'}] if reason == 'links' else []
+                old = {'postId': base.TID, 'bodyHash': azure.digest('今日昼1号店'),
+                       'versionHash': azure.digest('saved-' + version), 'at': base.CREATED,
+                       'reason': reason, 'events': events}
+                if version in ('v5', 'v6'):
+                    old['links'] = links
+                self.state['azureAnalysis'] = {
+                    **azure.empty_state(), 'cache': {azure.digest('saved-' + version + '-key'): old}}
+                if reason.startswith('azure_'):
+                    self.known()
+                    self.state['pending'][0]['reason'] = reason
+                else:
+                    self.state['resolved'] = [{
+                        'id': base.TID, 'name': 'あむ', 'url': base.candidate()['url'],
+                        'date': base.DATE.isoformat(), 'resolvedAt': base.CREATED, 'reason': reason}]
+                if events or links:
+                    post = personal.validate_post(base.candidate(), base.post(), base.AMU, self.clock)[0]
+                    if links:
+                        post.update(events=[], links=copy.deepcopy(links))
+                    self.state['posts'] = [post]
+                cache, posts = copy.deepcopy(self.state['azureAnalysis']['cache']), copy.deepcopy(self.state['posts'])
+                analyzer = self.make_analyzer()
+                _, _, client = self.collect(entries=[], analyzer=analyzer)
+                client.fetch_post.assert_not_called()
+                self.assertEqual(analyzer.state['cache'], cache)
+                self.assertEqual(self.state['posts'], posts)
+                self.assertEqual(analyzer.used, 0)
+                self.assertEqual(analyzer.state['review'], {})
+        self.opener.open.assert_not_called()
 
     def test_invalid_responses_are_negative_cached_without_raw_errors(self):
         cases = [response(content='{'), response(result(), refusal='refused'),
@@ -763,12 +1376,13 @@ class AzureTests(base.Offline):
 
     def test_no_event_pending_and_budget_do_not_delete_existing_facts(self):
         self.known()
-        self.opener.open.return_value = response(result(event('昼', 'placement', [1], 's1')))
+        self.opener.open.return_value = response(result(
+            event('昼', 'placement', [1], 's1'), links=[link('昼')]))
         self.collect(payloads={base.TID: base.post('今日 昼1号店')})
         original = copy.deepcopy(self.state['posts'])
         resolved = copy.deepcopy(self.state['resolved'])
         for text, value, reason in (
-                ('今日 昼2号店', result(decision='pending'), 'azure_pending'),
+                ('今日 昼2号店', result(pending_events=True), 'azure_pending'),
                 ('今日 晴れ', result(), 'azure_no_event_conflict')):
             self.opener.open.return_value = response(value)
             self.collect(payloads={base.TID: base.post(text)})
@@ -779,6 +1393,45 @@ class AzureTests(base.Offline):
         self.collect(payloads={base.TID: base.post('今日 昼3号店')})
         self.assertEqual(self.state['pending'][0]['reason'], 'azure_budget_exhausted')
         self.assertEqual(self.state['posts'], original)
+
+    def test_partial_saved_assessments_preserve_existing_events_and_links(self):
+        self.known()
+        self.opener.open.return_value = response(result(
+            event('昼', 'placement', [1], 's1'), links=[link('昼')]))
+        self.collect(payloads={base.TID: base.post('今日 昼1号店')})
+        original = copy.deepcopy(self.state['posts'][0])
+        self.opener.open.return_value = response(result(pending_events=True, links=[link('夜')]))
+        self.collect(payloads={base.TID: base.post('今日 夜お給仕します')})
+        intermediate = copy.deepcopy(self.state['posts'][0])
+        self.assertEqual(intermediate['events'], original['events'])
+        self.assertEqual({item['scope']: item['status'] for item in intermediate['links']},
+                         {'昼': 'work', '夜': 'work'})
+        self.opener.open.return_value = response(result(
+            event('昼', 'placement', [1], 's2'), links=None))
+        self.collect(payloads={base.TID: base.post('今日 昼2号店')})
+        final = self.state['posts'][0]
+        self.assertEqual(final['events'][0]['storeId'], 's2')
+        self.assertEqual(final['links'], intermediate['links'])
+        self.assertEqual(final['createdAt'], original['createdAt'])
+        self.assertEqual(self.analyzer.state['history'], [original, intermediate])
+        self.assertEqual(self.opener.open.call_count, 3)
+        personal.read_state(self.snapshot)
+
+    def test_refusal_never_withdraws_saved_links_or_uses_rule_fallback(self):
+        self.known()
+        self.opener.open.return_value = response(result(links=[link('unspecified')]))
+        self.collect(payloads={base.TID: base.post('本日お給仕します')})
+        before = copy.deepcopy(self.state['posts'])
+        self.assertEqual(before[0]['events'], [])
+        self.opener.open.return_value = response(result(), refusal='PRIVATE_REFUSAL')
+        with mock.patch.object(personal, 'parse_events', side_effect=AssertionError('no rules fallback')):
+            for _ in range(2):
+                self.collect(payloads={base.TID: base.post('本日昼1号店に行きます')})
+        self.assertEqual(self.state['posts'], before)
+        self.assertEqual(self.state['pending'][0]['reason'], 'azure_refused')
+        self.assertEqual(self.opener.open.call_count, 2)
+        self.assertNotIn('PRIVATE_REFUSAL', self.snapshot.read_text(encoding='utf-8'))
+        personal.read_state(self.snapshot)
 
     def test_legacy_removed_fact_is_not_resurrected_from_seed(self):
         old = personal.validate_post(base.candidate(), base.post(), base.AMU, self.clock)[0]
@@ -796,7 +1449,7 @@ class AzureTests(base.Offline):
         self.known()
         text = '今日🍓\r\n　♡ 3号店ひる→2号店よる ꒱\r\n'
         self.opener.open.return_value = response(result(
-            event('昼', 'placement', [1, 2, 3], 's3'), event('夜', 'placement', [2], 's2')))
+            event('昼', 'placement', [1, 2], 's3'), event('夜', 'placement', [2], 's2')))
         _, code, client = self.collect(payloads={base.TID: base.post(text)})
         self.assertEqual(code, 0)
         client.fetch_post.assert_not_called()
@@ -817,6 +1470,225 @@ process.stdout.write(JSON.stringify({store:person.storeId,history:person.history
             env={key: value for key, value in os.environ.items() if not key.startswith('AZURE_OPENAI_')},
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         self.assertEqual(json.loads(process.stdout), {'store': 's2', 'history': [base.TID]})
+
+    def test_pending_events_confirmed_link_crosses_cloud_pages_ui_without_creating_work_facts(self):
+        from test_cloud_collection import cloud
+        from test_pages import pages
+
+        executable = shutil.which('node') or str(personal.NODE_FALLBACK)
+        if not Path(executable).is_file():
+            self.skipTest('Existing Node runtime is unavailable')
+        name, handle = base.AMU['name'], base.AMU['handle']
+        schedule = {base.DATE.isoformat(): {shift: [{'name': name}] for shift in ('昼', '夜')}}
+        self.targets = personal.select_targets(
+            {'roster': [name], 'schedule': schedule}, {'maidTendency': {name: {'x': handle}}},
+            [{'name': name, 'handle': handle, 'source': '本人確認済み'}], base.DATE, self.state)
+        self.known()
+        text = '本日お給仕します\nPRIVATE_CROSS_LAYER_BODY_SENTINEL'
+        self.opener.open.return_value = response(result(pending_events=True, links=[link('unspecified')]))
+        with self.shared_usage() as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+            _, code, client = self.collect(payloads={base.TID: base.post(text)}, analyzer=analyzer)
+            self.assertEqual(code, 0)
+            self.assertEqual(ledger.used, 1)
+            self.assertEqual(next(iter(ledger.state['receipts'].values()))['reason'], 'links')
+        client.search.assert_not_called()
+        client.fetch_post.assert_not_called()
+        self.opener.open.assert_called_once()
+        checked, raw = cloud.validate_personal(self.snapshot, personal)
+        self.assertEqual(raw, self.snapshot.read_bytes())
+        self.assertEqual(checked, personal.read_state(self.snapshot))
+        self.assertTrue(checked['azureAnalysis']['cache'])
+        self.assertEqual(next(iter(checked['azureAnalysis']['cache'].values()))['channels'],
+                         {'events': 'pending', 'links': 'confirmed'})
+        self.assertTrue(checked['coverage'][base.DATE.isoformat()][name]['linkScopes'])
+        public = pages.personal_projection(checked, collector=personal.official)
+        self.assertEqual(public['posts'][0]['events'], [])
+        self.assertEqual(public['posts'][0]['links'], [{'scope': 'unspecified', 'status': 'work'}])
+        self.assertEqual(set(public), {'schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt',
+                                      'posts', 'lastRun'})
+        self.assertEqual(set(public['posts'][0]), {
+            'id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt', 'observedAt',
+            'date', 'events', 'links'})
+        encoded = json.dumps(public, ensure_ascii=False)
+        for private in ('PRIVATE_CROSS_LAYER_BODY_SENTINEL', text, 'bodyLines', 'evidenceLineIds',
+                        'azureAnalysis', 'cache', 'channels', 'coverage', 'receipts', 'bodyHash', 'versionHash',
+                        'identityBindings', 'pending', 'resolved', 'budgets', ENV['AZURE_OPENAI_API_KEY']):
+            self.assertNotIn(private, encoded)
+        script = """
+const assert=require('node:assert/strict'),fs=require('node:fs'),api=require('./app.js');
+const snapshot=api.validatePersonalShifts(JSON.parse(fs.readFileSync(0,'utf8')));
+const post=snapshot.posts[0],shifts=['昼','夜'];
+assert.deepEqual(post.events,[]);
+const insights={stores:['s1','s2','s3','s4'].map(id=>({id})),
+  maidTendency:{[post.name]:{x:post.authorScreenName}}};
+const schedule={[post.date]:Object.fromEntries(shifts.map(shift=>[shift,[{name:post.name}]]))};
+const original=JSON.stringify([snapshot,insights,schedule]),urls=[];
+for(const shift of shifts){
+  const options={insights,dateKey:post.date,shift,schedule,roster:[post.name],personal:snapshot};
+  const displayed=api.resolveShiftRoster(options);
+  assert.deepEqual(displayed,api.resolveShiftRoster({...options,personal:null}));
+  assert.deepEqual(displayed.entries,[{name:post.name}]);
+  assert.equal(displayed.assignment,null);
+  assert.deepEqual(displayed.personal.posts,[]);
+  assert.equal(displayed.personal.byMaid.size,0);
+  assert.deepEqual(api.resolveShiftRoster({...options,schedule:{}}).entries,[]);
+  const source=api.personalPostLink({...options,name:displayed.entries[0].name});
+  assert.equal(source.url,post.url);
+  urls.push(source.url);
+}
+assert.equal(api.dayHasPersonStoreEvidence(insights,null,post.date,snapshot),false);
+assert.equal(JSON.stringify([snapshot,insights,schedule]),original);
+process.stdout.write(JSON.stringify({urls,events:post.events}));
+"""
+        process = subprocess.run(
+            [executable, '-e', script], cwd=personal.ROOT, input=encoded,
+            capture_output=True, encoding='utf-8', timeout=10, check=True,
+            env={key: value for key, value in os.environ.items() if not key.startswith('AZURE_OPENAI_')},
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        self.assertEqual(json.loads(process.stdout), {
+            'urls': [base.candidate()['url'], base.candidate()['url']], 'events': []})
+
+    def test_confirmed_events_pending_link_crosses_cloud_pages_ui_without_inferred_link(self):
+        from test_cloud_collection import cloud
+        from test_pages import pages
+
+        executable = shutil.which('node') or str(personal.NODE_FALLBACK)
+        if not Path(executable).is_file():
+            self.skipTest('Existing Node runtime is unavailable')
+        self.known()
+        text = '本日昼1号店でお給仕します\nPRIVATE_PENDING_LINK_BODY'
+        self.opener.open.return_value = response(result(event('昼', 'placement', [1], 's1'), links=None))
+        with self.shared_usage() as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+            _, code, client = self.collect(payloads={base.TID: base.post(text)}, analyzer=analyzer)
+            self.assertEqual(code, 0)
+            self.assertEqual(ledger.used, 1)
+            self.assertEqual(next(iter(ledger.state['receipts'].values()))['reason'], 'events')
+        client.search.assert_not_called()
+        client.fetch_post.assert_not_called()
+        self.opener.open.assert_called_once()
+        checked, raw = cloud.validate_personal(self.snapshot, personal)
+        self.assertEqual(raw, self.snapshot.read_bytes())
+        self.assertEqual(next(iter(checked['azureAnalysis']['cache'].values()))['channels'],
+                         {'events': 'confirmed', 'links': 'pending'})
+        self.assertEqual(checked['posts'][0]['links'], [])
+        public = pages.personal_projection(checked, collector=personal.official)
+        self.assertEqual(public['posts'][0]['events'], [
+            {'shift': '昼', 'kind': 'placement', 'storeId': 's1', 'excerpt': '1号店'}])
+        self.assertEqual(public['posts'][0]['links'], [])
+        encoded = json.dumps(public, ensure_ascii=False)
+        for private in ('PRIVATE_PENDING_LINK_BODY', text, 'bodyLines', 'evidenceLineIds',
+                        'channels', 'azureAnalysis', 'cache', 'receipts'):
+            self.assertNotIn(private, encoded)
+        script = """
+const assert=require('node:assert/strict'),fs=require('node:fs'),api=require('./app.js');
+const snapshot=api.validatePersonalShifts(JSON.parse(fs.readFileSync(0,'utf8')));
+const post=snapshot.posts[0];
+assert.ok(Object.hasOwn(post,'links'));
+assert.deepEqual(post.links,[]);
+const options={personal:snapshot,dateKey:post.date,name:post.name,shift:'昼',
+  insights:{stores:[{id:'s1'}],maidTendency:{[post.name]:{x:post.authorScreenName}}},
+  schedule:{},roster:[post.name]};
+const roster=api.resolveShiftRoster(options);
+assert.equal(roster.personal.byMaid.get(post.name).storeId,'s1');
+assert.equal(roster.entries.length,1);
+assert.equal(api.personalPostLink(options),null);
+assert.equal(api.personalPostLink({...options,shift:'夜'}),null);
+const legacy=JSON.parse(JSON.stringify(snapshot));
+delete legacy.posts[0].links;
+assert.equal(api.personalPostLink({...options,personal:legacy}).url,post.url);
+assert.deepEqual(snapshot.posts[0].links,[]);
+process.stdout.write(JSON.stringify({store:roster.personal.byMaid.get(post.name).storeId,link:null}));
+"""
+        process = subprocess.run(
+            [executable, '-e', script], cwd=personal.ROOT, input=encoded,
+            capture_output=True, encoding='utf-8', timeout=10, check=True,
+            env={key: value for key, value in os.environ.items() if not key.startswith('AZURE_OPENAI_')},
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        self.assertEqual(json.loads(process.stdout), {'store': 's1', 'link': None})
+
+    def test_future_only_and_mixed_dates_cross_cloud_pages_ui_without_creating_work_facts(self):
+        from test_cloud_collection import cloud
+        from test_pages import pages
+
+        executable = shutil.which('node') or str(personal.NODE_FALLBACK)
+        if not Path(executable).is_file():
+            self.skipTest('Existing Node runtime is unavailable')
+        cases = (
+            ('今日、好きな本を買いました。次のお給仕は明日です。',
+             [dated(link('unspecified'), '2026-09-07')], None, ['2026-09-07']),
+            ('今日と明日はお給仕します。',
+             [dated(link('unspecified'), '2026-09-07'), link('unspecified')],
+             base.candidate()['url'], ['2026-09-06', '2026-09-07']),
+        )
+        for text, links, url, dates in cases:
+            with self.subTest(dates=dates):
+                self.state = personal.empty_state()
+                analyzer = self.make_analyzer()
+                self.known()
+                self.opener.reset_mock()
+                self.opener.open.return_value = response(result(links=links))
+                _, code, client = self.collect(payloads={base.TID: base.post(text)}, analyzer=analyzer)
+                self.assertEqual(code, 0)
+                client.search.assert_not_called()
+                client.fetch_post.assert_not_called()
+                self.opener.open.assert_called_once()
+                checked, raw = cloud.validate_personal(self.snapshot, personal)
+                self.assertEqual(raw, self.snapshot.read_bytes())
+                cached = next(iter(checked['azureAnalysis']['cache'].values()))
+                self.assertEqual(cached['serviceDates'], {'events': [], 'links': dates})
+                self.assertEqual(cached['channels'], {'events': 'none', 'links': 'confirmed' if url else 'none'})
+                public = pages.personal_projection(checked, collector=personal.official)
+                self.assertEqual(len(public['posts']), 1 if url else 0)
+                if url:
+                    self.assertEqual(public['posts'][0]['date'], base.DATE.isoformat())
+                    self.assertEqual(public['posts'][0]['events'], [])
+                encoded = json.dumps(public, ensure_ascii=False)
+                for private in ('serviceDate', 'channels', 'azureAnalysis', 'evidenceLineIds',
+                                'bodyLines', text, 'receipts'):
+                    self.assertNotIn(private, encoded)
+                script = """
+const assert=require('node:assert/strict'),fs=require('node:fs'),api=require('./app.js');
+const input=JSON.parse(fs.readFileSync(0,'utf8')),personal=api.validatePersonalShifts(input.personal);
+const insights={stores:[{id:'s1'}],maidTendency:{[input.name]:{x:input.handle}}};
+for(const shift of ['昼','夜']){
+  const options={personal,insights,dateKey:input.date,shift,name:input.name,roster:[input.name],
+    schedule:{[input.date]:{[shift]:[{name:input.name}]}}};
+  const roster=api.resolveShiftRoster(options);
+  assert.deepEqual(roster,api.resolveShiftRoster({...options,personal:null}));
+  assert.deepEqual(roster.entries,[{name:input.name}]);
+  assert.equal(roster.personal.byMaid.size,0);
+  assert.deepEqual(api.resolveShiftRoster({...options,schedule:{}}).entries,[]);
+  const source=api.personalPostLink(options);
+  assert.equal(source?.url??null,input.url);
+}
+assert.equal(api.dayHasPersonStoreEvidence(insights,null,input.date,personal),false);
+process.stdout.write('ok');
+"""
+                process = subprocess.run(
+                    [executable, '-e', script], cwd=personal.ROOT,
+                    input=json.dumps({'personal': public, 'name': base.AMU['name'],
+                                      'handle': base.AMU['handle'], 'date': base.DATE.isoformat(), 'url': url}),
+                    capture_output=True, encoding='utf-8', timeout=10, check=True,
+                    env={key: value for key, value in os.environ.items() if not key.startswith('AZURE_OPENAI_')},
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                self.assertEqual(process.stdout, 'ok')
+
+    def test_future_only_reanalysis_cannot_delete_existing_target_events_or_links(self):
+        self.known()
+        self.opener.open.return_value = response(result(
+            event('昼', 'placement', [1], 's1'), links=[link('昼')]))
+        self.collect(payloads={base.TID: base.post('本日昼1号店でお給仕します')})
+        original = copy.deepcopy(self.state['posts'])
+        self.opener.open.return_value = response(result(links=[dated(link('夜'), '2026-09-07')]))
+        self.collect(payloads={base.TID: base.post('次のお給仕は明日夜です')})
+        self.assertEqual(self.state['posts'], original)
+        self.assertEqual(self.state['pending'][0]['reason'], 'azure_no_event_conflict')
+        self.assertEqual(self.opener.open.call_count, 2)
+        self.assertTrue(any(entry.get('serviceDates', {}).get('links') == ['2026-09-07']
+                            for entry in self.analyzer.state['cache'].values()))
+        personal.read_state(self.snapshot)
 
 
 if __name__ == '__main__':
