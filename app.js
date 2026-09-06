@@ -174,6 +174,7 @@
         notice && typeof notice.name === "string" && notice.name.trim() && notice.kind === "late" &&
         typeof notice.excerpt === "string" && notice.excerpt.trim() &&
         [...notice.excerpt].length <= 160 && !/[\r\n\u2028\u2029]/.test(notice.excerpt) &&
+        (notice.observedAt === undefined || isoTime(notice.observedAt)) &&
         (notice.time === undefined || /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(notice.time))))) &&
       (post.names.length > 0 || post.notices?.length > 0);
     for (const time of [value.checkedAt, value.lastSuccessAt]) {
@@ -185,6 +186,8 @@
           post.authorId !== "822429861218131969" || post.authorScreenName !== "akibazettai" ||
           !isoTime(post.createdAt) || !isoTime(post.observedAt) ||
           !validContent(post) ||
+          (post.notices ?? []).some((notice) => notice.observedAt !== undefined &&
+            Date.parse(notice.observedAt) < Date.parse(post.createdAt)) ||
           (post.editTweetIds !== undefined && !validEditTweetIds(post)) ||
           (post.lastCheckedAt !== undefined && !isoTime(post.lastCheckedAt)) ||
           (post.revisions !== undefined && (!Array.isArray(post.revisions) ||
@@ -264,11 +267,9 @@
     for (const [name, notice] of result.notices) {
       const recorded = result.byMaid.get(name);
       if (!recorded) continue;
-      if (recorded.sources.some((post) => comparePosts(post, notice.sources[0]) >= 0)) {
+      if (recorded.sources.some((post) => comparePosts(post, notice.sources[0]) > 0)) {
         result.notices.delete(name);
       } else {
-        notice.conflict = recorded.storeIds.some((id) => id !== notice.storeId);
-        if (notice.conflict) notice.storeId = null;
         result.byMaid.delete(name);
         for (const people of result.byStore.values()) people.delete(name);
       }
@@ -334,17 +335,19 @@
       const name = aliases.get(post.name) ?? post.name;
       if (!result.byMaid.has(name)) result.byMaid.set(name, {
         name, sources: [], history: [], storeId: null, placementSource: null, absent: false, returned: false,
-        late: null, uncertain: false, conflict: false, suppressObserved: false, resetAt: null,
+        late: null, lateSource: null, uncertain: false, conflict: false, suppressObserved: false, resetAt: null,
+        superseded: false,
         trainee: observedTrainee(insights, name, key)
       });
       const person = result.byMaid.get(name);
       person.sources.push(post);
       for (const event of post.events.filter((event) => event.shift === shift)) {
         person.history.push({ post, event });
-        if (event.kind === "uncertain") {
-          person.uncertain = true;
-        } else if (event.kind === "late") {
+        person.uncertain = event.kind === "uncertain";
+        if (person.uncertain) continue;
+        if (event.kind === "late") {
           person.late = { time: event.time ?? null };
+          person.lateSource = post;
           if (!person.absent && event.storeId) {
             person.storeId = event.storeId;
             person.placementSource = post;
@@ -355,6 +358,7 @@
           person.placementSource = null;
           person.returned = false;
           person.late = null;
+          person.lateSource = null;
           person.resetAt = Date.parse(post.createdAt);
         } else if (event.kind === "return") {
           person.absent = false;
@@ -362,10 +366,13 @@
           person.storeId = event.storeId ?? null;
           person.placementSource = event.storeId ? post : null;
           person.late = null;
+          person.lateSource = null;
           person.resetAt = Date.parse(post.createdAt);
         } else if (!person.absent) {
           person.storeId = event.storeId;
           person.placementSource = post;
+          person.late = null;
+          person.lateSource = null;
         }
       }
     }
@@ -378,12 +385,23 @@
         person.resetAt === null || Date.parse(post.createdAt) > person.resetAt);
       if (!relevant.length) {
         person.suppressObserved = true;
-      } else if (person.absent || (person.storeId && relevant.some((post) => post.storeId !== person.storeId))) {
+      } else if (person.absent) {
         person.conflict = true;
         person.absent = false;
         person.storeId = null;
         person.placementSource = null;
         person.suppressObserved = true;
+      } else if (person.storeId && relevant.some((post) => post.storeId !== person.storeId)) {
+        const latest = relevant.reduce((left, right) => comparePosts(left, right) >= 0 ? left : right);
+        if (person.placementSource && comparePosts(person.placementSource, latest) > 0) {
+          person.suppressObserved = true;
+        } else {
+          // A later collection supports the observed shop, not an older personal link.
+          person.storeId = null;
+          person.placementSource = null;
+          person.superseded = !person.lateSource || comparePosts(person.lateSource, latest) <= 0;
+          if (person.superseded) person.late = null;
+        }
       }
     }
     return result;
@@ -422,7 +440,7 @@
       if (!entries.has(person.name) && !person.storeId && !person.returned && !person.conflict) continue;
       const entry = entries.get(person.name) ?? { name: person.name };
       entries.set(person.name, {
-        ...entry, personalNotice: person,
+        ...entry, personalNotice: person.superseded ? null : person,
         personalPlacement: Boolean(person.storeId && !entry.observed),
         trainee: person.trainee
       });
@@ -431,8 +449,31 @@
       const person = notices.byMaid.get(name);
       if (person?.resetAt !== null && person?.resetAt !== undefined &&
           Date.parse(official.sources[0].createdAt) <= person.resetAt) continue;
+      if (person?.placementSource && comparePosts(person.placementSource, official.sources[0]) > 0) continue;
       const conflict = official.conflict || Boolean(person?.absent || person?.conflict ||
-        (person?.storeId && person.storeId !== official.storeId));
+        (person?.storeId && person.storeId !== official.storeId && !person.placementSource));
+      const latestPersonal = person?.history.at(-1)?.post;
+      const superseded = latestPersonal && comparePosts(latestPersonal, official.sources[0]) <= 0;
+      if (!conflict && person?.lateSource && comparePosts(person.lateSource, official.sources[0]) <= 0) {
+        person.late = null;
+        person.lateSource = null;
+      }
+      const newerLate = person?.late && person?.lateSource &&
+        comparePosts(person.lateSource, official.sources[0]) > 0;
+      const guidance = {
+        ...official,
+        uncertain: Boolean(person?.uncertain && latestPersonal && !superseded),
+        ...(!conflict && newerLate ? { time: person.late.time, arrivalSource: person.lateSource } : {})
+      };
+      if (!conflict && person && (superseded || (person.storeId && person.storeId !== official.storeId))) {
+        person.storeId = null;
+        person.placementSource = null;
+        person.superseded = Boolean(superseded);
+        if (person.superseded) {
+          person.late = null;
+          person.lateSource = null;
+        }
+      }
       if (conflict && person) {
         person.absent = false;
         person.conflict = true;
@@ -441,7 +482,8 @@
       }
       const entry = entries.get(name) ?? { name };
       entries.set(name, {
-        ...entry, officialNotice: { ...official, conflict, storeId: conflict ? null : official.storeId },
+        ...entry, officialNotice: { ...guidance, conflict, storeId: conflict ? null : official.storeId },
+        personalNotice: person?.superseded ? null : entry.personalNotice,
         officialPlacement: !conflict, personalPlacement: false,
         trainee: entry.trainee ?? official.trainee
       });
@@ -2665,7 +2707,8 @@
   }
 
   function officialNoticeLabel(notice) {
-    return notice.conflict ? "案内が不一致・保留" : notice.time ? `${notice.time}到着予定` : "あとから";
+    if (notice.conflict) return "案内が不一致・保留";
+    return (notice.time ? `${notice.time}到着予定` : "あとから") + (notice.uncertain ? "・保留" : "");
   }
 
   function createChangeNotice(person, prefix = "") {
@@ -2772,8 +2815,9 @@
     item.dataset.evidence = evidence;
     if (storeId) item.dataset.store = storeId;
     const person = entry.personalNotice;
-    const source = storeId && person?.storeId === storeId && !person.absent && !person.conflict
-      ? person.placementSource : null;
+    const arrival = entry.officialNotice?.arrivalSource;
+    const source = arrival ?? (storeId && person?.storeId === storeId && !person.absent && !person.conflict
+      ? person.placementSource : null);
     const account = profileLink && insights?.maidTendency?.[entry.name]?.x;
     const href = source?.url ?? (account ? `https://x.com/${account}` : null);
     const name = document.createElement(href ? "a" : "span");
@@ -2808,7 +2852,7 @@
       item.classList.add("is-featured");
       descriptions.push(`${entry.eventLabel}の主役（公開予定）`);
     }
-    if (entry.personalNotice) {
+    if (entry.personalNotice && !entry.officialNotice) {
       const person = entry.personalNotice;
       if (person.conflict || person.late || (person.returned && !person.storeId) ||
           (!entry.observed && person.uncertain)) {

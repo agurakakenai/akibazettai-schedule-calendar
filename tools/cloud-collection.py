@@ -1,7 +1,8 @@
 """Data-only collector-state orchestration for trusted GitHub Actions main runs.
 
-CLI: --mode restore|collect|personal|both --output data/observed-shifts.json
-collect remains official-only; personal/both require an explicit manual event.
+CLI: --mode restore|collect|personal|both|daily-guidance|apply-saved
+collect remains official-only; daily-guidance requires the activation flag and
+the exact existing scheduled event. apply-saved requires an explicit main input.
 Optional: --recovery-dir .cloud-collection-recovery (not a Pages artifact).
 Collect needs contents:write and GH_TOKEN supplied from the existing GITHUB_TOKEN;
 restore needs contents:read. Checkout latest main with persist-credentials:false,
@@ -18,8 +19,9 @@ Never automatically expire or clear a lease, including on a rerun of the same jo
 The permanent state-owner.json marker is mandatory on every existing state
 branch. Missing/mismatched markers are never adopted automatically. Only the
 fixed collector-state ref is allowed, and it must not be the remote default.
-personal-shifts.json is optional on legacy branches. Restore uses a checked main
-seed when absent; only manual personal/both first adds it to the branch.
+personal-shifts.json and ai-usage.json are optional on legacy branches. Restore
+uses a checked personal seed when absent, but never invents a shared usage ledger.
+Activation requires an approved, explicitly imported usage ledger.
 Recovery: inspect the failed run's recovery JSON files and shared cooldowns, commit
 them to collector-state without force and remove lease.json in that same commit,
 preserving state-owner.json, then run again. Reports and the private scratch
@@ -28,6 +30,7 @@ repository are never artifacts.
 import argparse
 import copy
 import datetime as dt
+import hashlib
 import importlib.util
 import json
 import os
@@ -49,9 +52,13 @@ MAIN_REF = 'refs/heads/main'
 SNAPSHOT = 'observed-shifts.json'
 HTTP_STATE = 'observed-shifts.http-state.json'
 PERSONAL = 'personal-shifts.json'
+AI_USAGE = 'ai-usage.json'
+ANALYSIS_BUFFER = 'official-analysis-buffer.json'
 LEASE = 'lease.json'
 OWNER_FILE = 'state-owner.json'
-FILES = {SNAPSHOT, HTTP_STATE, PERSONAL, OWNER_FILE, LEASE}
+FILES = {SNAPSHOT, HTTP_STATE, PERSONAL, AI_USAGE, OWNER_FILE, LEASE}
+DAILY_SCHEDULE = '30 3-6,8-11 * * *'
+JST = dt.timezone(dt.timedelta(hours=9))
 MANAGER = 'cloud-collection/v1'
 STATE_OWNER = {
     'schemaVersion': 1, 'owner': 'agurakakenai', 'managedBy': MANAGER,
@@ -60,8 +67,8 @@ STATE_OWNER = {
 MAX_JSON_BYTES = 16 * 1024 * 1024
 SHA_RE = re.compile(r'[0-9a-f]{40}\Z')
 RECOVERY = (
-    '失敗runの公式JSON・共有HTTPstate・本人JSON（導入済みの場合）が揃っていることを'
-    '検査し、cooldownと本人pause/budgetを確認してください。'
+    '失敗runの公式JSON・共有HTTPstate・本人JSON・共有AI台帳（導入済みの場合）が揃っていることを'
+    '検査し、cooldownと本人pause/budget・AI予約を確認してください。'
     '恒久markerを維持し、collector-stateへ非force commitでstate JSON一式を戻して'
     '同じcommitでlease.jsonを除去後、'
     '次runを実行してください。leaseは自動失効しません。')
@@ -92,13 +99,22 @@ def load_personal_collector():
     return module
 
 
+def load_analysis_state():
+    spec = importlib.util.spec_from_file_location(
+        'cloud_analysis_state', ROOT / 'tools' / 'analysis-state.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def safe_environment(environment, *, credentials=False, azure=False):
     result = {
         key: value for key, value in environment.items()
         if not key.upper().startswith(('GIT_', 'GCM_', 'GH_DEBUG'))
         and key.upper() not in ('GH_HOST', 'GH_FORCE_TTY', 'GITHUB_TOKEN')
         and not key.upper().startswith('AZURE_OPENAI_')
-        and key.upper() != 'PERSONAL_ANALYSIS_BACKEND'
+        and key.upper() not in ('PERSONAL_ANALYSIS_BACKEND', 'APPLY_SAVED_MANIFEST')
+        and not key.upper().startswith('CLOUD_COLLECTION_')
     }
     if not credentials:
         result.pop('GH_TOKEN', None)
@@ -186,7 +202,7 @@ def validate_failure(value, collector):
 def validate_snapshot(path, collector):
     state, raw = read_json(path)
     keys(state, ('schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt',
-                 'posts', 'pending', 'resolved', 'cooldowns', 'lastRun'),
+                 'posts', 'pending', 'resolved', 'cooldowns', 'lastRun', 'officialAnalysis'),
          ('schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt',
           'posts', 'pending', 'lastRun'))
     # Reuse the collector's author/id/url/date checks and resolved-first merge.
@@ -194,7 +210,10 @@ def validate_snapshot(path, collector):
     for post in state['posts']:
         fields = ('id', 'url', 'authorId', 'authorScreenName', 'createdAt',
                   'date', 'shift', 'storeId', 'names', 'observedAt')
-        keys(post, fields, fields)
+        keys(post, (*fields, 'notices'), fields)
+        if 'notices' in post:
+            collector.analysis_module().validate_notices(
+                post['notices'], collector.analysis_context(), collector.timestamp(post['createdAt']))
         require(all(re.fullmatch(r'[ぁ-んァ-ヶ一-龠ーａ-ｚA-Za-z0-9]{1,12}', name)
                     for name in post['names']))
         require(len(post['names']) == len(set(post['names'])))
@@ -216,7 +235,7 @@ def validate_snapshot(path, collector):
         'attemptedCount', 'fetchedCount', 'newPostCount', 'newNameCount',
         'skippedCuratedCount', 'skippedObservedCount', 'skippedResolvedCount',
         'deferredCount', 'pendingCount', 'pendingOutsideRangeCount', 'maxPosts')
-    keys(run, (*counts, 'status', 'dateFrom', 'dateTo', 'dateBasis', 'finishedAt',
+    keys(run, (*counts, 'status', 'dateFrom', 'dateTo', 'dateBasis', 'finishedAt', 'requests',
                'sources', 'failures', 'rejected', 'complete', 'lastSuccessMeaning'),
          ('status', 'dateFrom', 'dateTo'))
     for field in counts:
@@ -227,6 +246,10 @@ def validate_snapshot(path, collector):
             require(dt.date.fromisoformat(run[field]).isoformat() == run[field])
     if 'finishedAt' in run:
         collector.timestamp(run['finishedAt'])
+    if 'requests' in run:
+        keys(run['requests'], ('searches', 'posts'), ('searches', 'posts'))
+        integer(run['requests']['searches'], 0, 2)
+        integer(run['requests']['posts'], 0, 20)
     if 'complete' in run:
         require(run['complete'] is False)
     for field, expected in (
@@ -262,6 +285,43 @@ def validate_transport(path, collector):
     require(type(state['schemaVersion']) is int and state['schemaVersion'] == 1)
     validate_limits(state['cooldowns'], collector)
     return state, raw
+
+
+def validate_ai_usage(path):
+    state, raw = read_json(path)
+    load_analysis_state().validate_state(state)
+    return state, raw
+
+
+def validate_usage_links(usage, personal):
+    for record in usage.get('sourceImports', {}).values():
+        require(personal is not None, 'source_usage_budget_mismatch')
+        budget = personal['budgets'].get(record['receipt']['date'], {'searches': 0, 'posts': 0})
+        require(all(budget[kind] >= record['budgetAfter'][kind] for kind in ('searches', 'posts')),
+                'source_usage_budget_mismatch')
+
+
+def validate_legacy_budget(usage, personal):
+    ledger = load_analysis_state()
+    for day, count in personal.get('azureAnalysis', {}).get('budgets', {}).items():
+        when = dt.datetime.combine(dt.date.fromisoformat(day), dt.time(12), tzinfo=JST)
+        require(ledger.usage_counts(usage, 'saved-import', when)['day'] >= count,
+                'incomplete_legacy_usage_import')
+
+
+def validate_reconciled_usage(usage, personal, collector):
+    if personal is None:
+        return
+    validate_legacy_budget(usage, personal)
+    legacy = personal.get('azureAnalysis', {})
+    require(not legacy.get('paused') or usage['paused'] is not None, 'unreconciled_ai_usage')
+    now = collector.utc_now()
+    for field in ('nextRequestAt', 'retryAt'):
+        until = legacy.get(field)
+        if until is not None and collector.timestamp(until) > now:
+            require(usage['retryAt'] is not None
+                    and collector.timestamp(usage['retryAt']) >= collector.timestamp(until),
+                    'unreconciled_ai_usage')
 
 
 def validate_personal(path, personal=None, *, private=True):
@@ -437,7 +497,17 @@ def trusted_context(environment):
 
 
 def require_manual_personal(mode, environment):
-    if mode not in ('personal', 'both'):
+    if mode == 'daily-guidance':
+        require(environment.get('DAILY_GUIDANCE_ENABLED', 'false') == 'true'
+                and environment.get('GITHUB_EVENT_NAME') == 'schedule',
+                'daily_guidance_not_enabled')
+        try:
+            event = json.loads(Path(environment['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
+            require(event.get('schedule') == DAILY_SCHEDULE, 'unknown_collection_schedule')
+        except (KeyError, TypeError, ValueError, OSError):
+            raise CloudError('untrusted_event') from None
+        return
+    if mode not in ('personal', 'both', 'apply-saved'):
         return
     require(environment.get('GITHUB_EVENT_NAME') == 'workflow_dispatch',
             'personal_requires_manual_run')
@@ -553,8 +623,13 @@ class StateRepository:
         validate_snapshot(self.path / SNAPSHOT, collector)
         validate_transport(self.path / HTTP_STATE, collector)
         has_personal = (self.path / PERSONAL).exists()
+        personal_state = None
         if has_personal:
-            validate_personal(self.path / PERSONAL, personal)
+            personal_state, _ = validate_personal(self.path / PERSONAL, personal)
+        has_ai = (self.path / AI_USAGE).exists()
+        if has_ai:
+            usage, _ = validate_ai_usage(self.path / AI_USAGE)
+            validate_usage_links(usage, personal_state)
         if leased:
             validate_lease(self.path / LEASE, collector)
         else:
@@ -565,13 +640,15 @@ class StateRepository:
         self.git('add', '--', SNAPSHOT, HTTP_STATE, OWNER_FILE, reason='state_stage_failed')
         if has_personal:
             self.git('add', '--', PERSONAL, reason='state_stage_failed')
+        if has_ai:
+            self.git('add', '--', AI_USAGE, reason='state_stage_failed')
         if leased:
             self.git('add', '--', LEASE, reason='state_stage_failed')
         else:
             self.git('rm', '--quiet', '--cached', '--ignore-unmatch', '--', LEASE,
                      reason='state_stage_failed')
         message = ('Record collection lease' if leased else 'Save collection state') + (
-            '\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>')
+            '\n\nCo-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>')
         self.git('commit', '--quiet', '-m', message, reason='state_commit_failed')
         # A concurrent lease or state update rejects this ordinary fast-forward
         # push. Never fetch/rebase/retry over it, force, or use force-with-lease.
@@ -597,26 +674,42 @@ def checked_paths(root, output, recovery):
         require(not path.is_symlink(), 'unsafe_recovery_path')
     if recovery.exists():
         require(recovery.is_dir() and {p.name for p in recovery.iterdir()} <= {
-            SNAPSHOT, HTTP_STATE, PERSONAL},
+            SNAPSHOT, HTTP_STATE, PERSONAL, AI_USAGE},
                 'unsafe_recovery_path')
     return output, recovery
 
 
-def copy_pair(source, destination, collector, *, include_personal=False, personal=None):
+def copy_pair(source, destination, collector, *, include_personal=False, personal=None,
+              include_ai=False):
     _, canonical = validate_snapshot(source / SNAPSHOT, collector)
     _, transport = validate_transport(source / HTTP_STATE, collector)
-    extra = validate_personal(source / PERSONAL, personal)[1] if include_personal else None
+    personal_state, extra = validate_personal(source / PERSONAL, personal) if include_personal else (None, None)
+    usage, ai = validate_ai_usage(source / AI_USAGE) if include_ai else (None, None)
+    if usage is not None:
+        validate_usage_links(usage, personal_state)
     atomic_bytes(destination / SNAPSHOT, canonical)
     atomic_bytes(destination / HTTP_STATE, transport)
     if extra is not None:
         atomic_bytes(destination / PERSONAL, extra)
+    if ai is not None:
+        atomic_bytes(destination / AI_USAGE, ai)
+    else:
+        (destination / AI_USAGE).unlink(missing_ok=True)
 
 
-def save_recovery(source, destination, collector, *, include_personal=False, personal=None):
+def save_recovery(source, destination, collector, *, include_personal=False, personal=None,
+                  include_ai=False):
     invalid = False
     validators = [(SNAPSHOT, validate_snapshot), (HTTP_STATE, validate_transport)]
     if include_personal:
         validators.append((PERSONAL, lambda path, _: validate_personal(path, personal)))
+    if include_ai:
+        def checked_usage(path, _):
+            usage, raw = validate_ai_usage(path)
+            personal_state = validate_personal(source / PERSONAL, personal)[0] if include_personal else None
+            validate_usage_links(usage, personal_state)
+            return usage, raw
+        validators.append((AI_USAGE, checked_usage))
     for name, validate in validators:
         try:
             _, raw = validate(source / name, collector)
@@ -630,12 +723,22 @@ def save_recovery(source, destination, collector, *, include_personal=False, per
 
 
 def invoke_collector(root, state, report, environment):
+    azure = environment.get('CLOUD_COLLECTION_OFFICIAL_AZURE') == 'true'
+    argv = [sys.executable, '-I', '-B', str(root / 'tools' / 'collect-shifts.py'),
+            '--once', '--days', '2', '--max-posts', '20',
+            '--snapshot', str(state / SNAPSHOT), '--report', str(report)]
+    if azure:
+        argv.extend(['--analysis-backend', 'azure',
+                     *analysis_arguments(state, environment, allow_zero=True)])
+        buffer_mode = environment.get('CLOUD_COLLECTION_BUFFER_MODE', '')
+        require(buffer_mode in ('', 'write', 'replay'), 'invalid_analysis_buffer_mode')
+        if buffer_mode:
+            path = analysis_buffer_path(root, state)
+            argv.extend(['--analysis-buffer' if buffer_mode == 'write' else '--replay-buffer',
+                         str(path)])
     try:
         process = child_process(
-            [sys.executable, '-I', '-B', str(root / 'tools' / 'collect-shifts.py'),
-             '--once', '--days', '2', '--max-posts', '20',
-             '--snapshot', str(state / SNAPSHOT), '--report', str(report)],
-            cwd=root, environment=safe_environment(environment), timeout=1200)
+            argv, cwd=root, environment=safe_environment(environment, azure=azure), timeout=1200)
     except (OSError, subprocess.SubprocessError):
         raise CloudError('collector_process_failed') from None
     # The report/stdout/stderr may contain local paths and process IDs.
@@ -645,18 +748,239 @@ def invoke_collector(root, state, report, environment):
 def invoke_personal_collector(root, state, report, environment):
     backend = environment.get('PERSONAL_ANALYSIS_BACKEND', 'rules')
     require(backend in ('rules', 'azure'), 'invalid_analysis_backend')
+    max_posts = environment.get('CLOUD_COLLECTION_PERSONAL_POSTS', '3')
+    require(max_posts in ('0', '1', '2', '3'), 'invalid_source_limit')
+    argv = [sys.executable, '-I', '-B', str(root / 'tools' / 'collect-personal-shifts.py'),
+            '--once', '--snapshot', str(state / PERSONAL),
+            '--http-state', str(state / HTTP_STATE),
+            '--seed', str(state.parent / 'personal-seed.json'),
+            '--analysis-backend', backend,
+            '--max-searches', '3', '--max-posts', max_posts, '--report', str(report)]
+    if environment.get('CLOUD_COLLECTION_SCHEDULED') == 'true':
+        argv.append('--scheduled')
+    if backend == 'azure':
+        require(environment.get('CLOUD_COLLECTION_SHARED') == 'true', 'missing_ai_usage')
+        argv.extend(analysis_arguments(state, environment))
     try:
         process = child_process(
-            [sys.executable, '-I', '-B', str(root / 'tools' / 'collect-personal-shifts.py'),
-             '--once', '--snapshot', str(state / PERSONAL),
-             '--http-state', str(state / HTTP_STATE),
-             '--seed', str(state.parent / 'personal-seed.json'),
-             '--analysis-backend', backend,
-             '--max-searches', '3', '--max-posts', '3', '--report', str(report)],
+            argv,
             cwd=root, environment=safe_environment(environment, azure=backend == 'azure'), timeout=600)
     except (OSError, subprocess.SubprocessError):
         raise CloudError('personal_process_failed') from None
     return process.returncode
+
+
+def analysis_arguments(state, environment, *, allow_zero=False):
+    run_id = environment.get('CLOUD_COLLECTION_RUN_ID', '')
+    limit = environment.get('CLOUD_COLLECTION_ANALYSIS_LIMIT', '3')
+    require(bool(re.fullmatch(r'[1-9][0-9]{0,19}-[1-9][0-9]{0,19}', run_id))
+            and limit in (('0', '1', '2', '3') if allow_zero else ('1', '2', '3')),
+            'invalid_analysis_allocation')
+    return ['--ai-state', str(state / AI_USAGE), '--analysis-run-id', run_id,
+            '--analysis-limit', limit]
+
+
+def personal_window_open(now, *, scheduled):
+    local = now.astimezone(JST)
+    cutoff = dt.time(18) if scheduled else dt.time(19, 30)
+    return local.time().replace(tzinfo=None) <= cutoff
+
+
+def analysis_buffer_path(root, state):
+    work = state.parent
+    path = work / ANALYSIS_BUFFER
+    require(work.parent.resolve() == root.resolve()
+            and re.fullmatch(r'\.cc-work-[0-9a-f]{16}', work.name)
+            and not work.is_symlink() and not path.is_symlink(),
+            'unsafe_analysis_buffer_path')
+    return path
+
+
+def load_official_buffer(root, state, snapshot, run_id, collector):
+    path = analysis_buffer_path(root, state)
+    require(path.is_file(), 'official_analysis_buffer_missing')
+    try:
+        value = collector.load_analysis_buffer(path, snapshot, run_id, collector.utc_now())
+        require(isinstance(value, dict) and isinstance(value.get('items'), list)
+                and len(value['items']) <= 3, 'official_analysis_buffer_invalid')
+        return value
+    except (ValueError, KeyError, TypeError, OSError):
+        raise CloudError('official_analysis_buffer_invalid') from None
+
+
+def official_allocation(path, run_id, now, personal_active, scheduled):
+    state, _ = validate_ai_usage(path)
+    remaining = load_analysis_state().remaining(state, run_id, now)
+    used = sum(receipt['runId'] == run_id and receipt['component'] == 'official'
+               for receipt in state['receipts'].values())
+    if remaining == 0:
+        return min(3, used)
+    if not personal_active or not personal_window_open(now, scheduled=scheduled):
+        return min(3, used + remaining)
+    previous = {}
+    for receipt in state['receipts'].values():
+        if receipt['runId'] == run_id:
+            continue
+        run = previous.setdefault(receipt['runId'], {'official': 0, 'personal': 0, 'at': ''})
+        run[receipt['component']] += 1
+        run['at'] = max(run['at'], receipt['reservedAt'])
+    extra = sorted((run for run in previous.values()
+                    if run['official'] and run['personal'] and run['official'] != run['personal']),
+                   key=lambda run: run['at'])
+    prefer_personal = bool(extra and extra[-1]['official'] > extra[-1]['personal'])
+    local = now.astimezone(JST).replace(tzinfo=None)
+    cutoffs = (dt.time(13, 30), dt.time(18) if scheduled else dt.time(19, 30))
+    near_deadline = any(dt.timedelta(0) <= dt.datetime.combine(local.date(), cutoff) - local
+                        <= dt.timedelta(minutes=3) for cutoff in cutoffs)
+    if remaining == 1:
+        extra = 0 if prefer_personal or near_deadline else 1
+    elif remaining == 2:
+        extra = 1
+    else:
+        extra = 1 if prefer_personal or near_deadline else 2
+    return min(3, used + extra)
+
+
+def aggregate_official_resume(initial, resumed, resumed_ids, requests, collector):
+    """Keep the initial source result while completing only buffered analysis."""
+    before = {post['id']: {key: value for key, value in post.items() if key != 'notices'}
+              for post in initial['posts']}
+    after = {post['id']: {key: value for key, value in post.items() if key != 'notices'}
+             for post in resumed['posts']}
+    require(before == after, 'official_resume_changed_facts')
+    require(resumed.get('resolved', []) == initial.get('resolved', []),
+            'official_resume_changed_facts')
+    pending = {item['id']: item for item in resumed['pending']}
+    for item in initial['pending']:
+        if item['id'] not in resumed_ids:
+            require(pending.get(item['id']) == item, 'official_resume_changed_pending')
+    result = copy.deepcopy(resumed)
+    run = copy.deepcopy(initial['lastRun'])
+    failures = []
+    for failure in [*run.get('failures', []), *resumed['lastRun'].get('failures', [])]:
+        if (failure.get('id') in resumed_ids and failure.get('reason', '').startswith('azure_')
+                and pending.get(failure['id'], {}).get('reason') != failure['reason']):
+            continue
+        if failure not in failures:
+            failures.append(copy.deepcopy(failure))
+    run['failures'] = failures
+    run['requests'] = dict(requests)
+    run['pendingCount'] = len(result['pending'])
+    run['finishedAt'] = resumed['lastRun'].get('finishedAt', collector.iso(collector.utc_now()))
+    source_incomplete = (
+        any(item['status'] != 'ok' for item in run.get('sources', []))
+        or ('sourceCount' in run and run['sourceCount'] != len(collector.SEARCH_URLS)))
+    if run['status'] == 'unavailable':
+        status = 'unavailable'
+    elif source_incomplete or failures or run.get('deferredCount', 0) or result['pending']:
+        status = 'partial'
+    elif run.get('newPostCount', 0):
+        status = 'ok'
+    else:
+        status = run['status'] if run['status'] in ('ok', 'no-new', 'no-results') else 'no-new'
+    run['status'] = status
+    result['lastRun'] = run
+    result['checkedAt'] = initial['checkedAt']
+    result['lastSuccessAt'] = (run['finishedAt'] if status in ('ok', 'no-new', 'no-results')
+                              else initial['lastSuccessAt'])
+    return result
+
+
+def data_hash(value):
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                     separators=(',', ':')).encode('utf-8')).hexdigest()
+
+
+def read_saved_manifest(environment):
+    text = environment.get('APPLY_SAVED_MANIFEST', '')
+    require(isinstance(text, str) and 0 < len(text.encode('utf-8')) <= 32768,
+            'invalid_saved_manifest')
+    try:
+        value = json.loads(text, object_pairs_hook=no_duplicate_keys,
+                           parse_constant=lambda _: require(False, 'invalid_saved_manifest'))
+        event = json.loads(Path(environment['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
+        require(event.get('inputs', {}).get('saved_manifest') == text, 'saved_manifest_input_mismatch')
+        scan_private(value)
+        fields = ('schemaVersion', 'expectedMainSHA', 'expectedStateSHA',
+                  'officialAmendments', 'usageImports', 'sourceReceipts')
+        keys(value, fields, fields)
+        require(type(value['schemaVersion']) is int and value['schemaVersion'] == 1)
+        for field in ('expectedMainSHA', 'expectedStateSHA'):
+            require(isinstance(value[field], str) and SHA_RE.fullmatch(value[field]))
+        for field, maximum in (('officialAmendments', 3), ('usageImports', 10), ('sourceReceipts', 10)):
+            require(isinstance(value[field], list) and len(value[field]) <= maximum)
+        require(any(value[field] for field in ('officialAmendments', 'usageImports', 'sourceReceipts')))
+        for entry in value['officialAmendments']:
+            keys(entry, ('expectedPostHash', 'amendment'), ('expectedPostHash', 'amendment'))
+            require(isinstance(entry['expectedPostHash'], str)
+                    and re.fullmatch(r'[0-9a-f]{64}', entry['expectedPostHash']))
+        for receipt in value['usageImports']:
+            require(isinstance(receipt, dict) and isinstance(receipt.get('counts'), dict))
+            integer(receipt['counts'].get('requests'), 1, 1000)
+            require(isinstance(receipt.get('modelBreakdown'), list)
+                    and 1 <= len(receipt['modelBreakdown']) <= 8)
+        for receipt in value['sourceReceipts']:
+            require(isinstance(receipt, dict))
+            integer(receipt.get('searches'), 0, 60)
+            integer(receipt.get('posts'), 0, 30)
+    except (OSError, ValueError, TypeError, KeyError, RecursionError):
+        raise CloudError('invalid_saved_manifest') from None
+    return value
+
+
+def prepare_saved(manifest, canonical, personal_state, usage, collector, personal):
+    """Validate and prepare the complete bounded delta without I/O or clients."""
+    ledger = load_analysis_state()
+    require(usage is not None or bool(manifest['usageImports']), 'missing_initial_usage_import')
+    official_result = copy.deepcopy(canonical)
+    personal_result = copy.deepcopy(personal_state)
+    usage_result = copy.deepcopy(usage) if usage is not None else ledger.empty_state()
+    for receipt in manifest['usageImports']:
+        ledger.apply_import(usage_result, receipt)
+    legacy = personal_result.get('azureAnalysis', {})
+    validate_legacy_budget(usage_result, personal_result)
+    now = collector.utc_now()
+    for field in ('nextRequestAt', 'retryAt'):
+        value = legacy.get(field)
+        if value is None:
+            continue
+        # Legacy nextRequestAt may represent 429 backoff, not ordinary spacing.
+        targets = ('nextRequestAt', 'retryAt') if (
+            field == 'retryAt' or collector.timestamp(value) > now) else ('nextRequestAt',)
+        for target in targets:
+            previous = usage_result.get(target)
+            if previous is None or collector.timestamp(value) > collector.timestamp(previous):
+                usage_result[target] = value
+    if legacy.get('paused') is not None and usage_result.get('paused') is None:
+        usage_result['paused'] = copy.deepcopy(legacy['paused'])
+    for receipt in manifest['sourceReceipts']:
+        ledger.apply_source_import(usage_result, receipt, personal_result)
+    ids = set()
+    for entry in manifest['officialAmendments']:
+        amendment = entry['amendment']
+        require(isinstance(amendment, dict) and isinstance(amendment.get('id'), str),
+                'invalid_saved_amendment')
+        require(isinstance(amendment.get('source'), dict)
+                and {'analyzedAt', 'analysisReceiptHash'} <= set(amendment['source']),
+                'missing_saved_analysis_receipt')
+        tid = amendment['id']
+        require(tid not in ids, 'duplicate_saved_amendment')
+        ids.add(tid)
+        post = next((post for post in official_result['posts'] if post['id'] == tid), None)
+        require(post is not None, 'unknown_saved_post')
+        receipt_id = data_hash(amendment)
+        receipts = official_result.get('officialAnalysis', {}).get('receipts', {})
+        require(data_hash(post) == entry['expectedPostHash'] or receipt_id in receipts,
+                'saved_post_hash_mismatch')
+        official_result = collector.apply_saved_notice(official_result, amendment)
+    ledger.validate_state(usage_result)
+    # A no-op replay is permitted; none of these updates means "delete facts".
+    require(len(official_result['posts']) == len(canonical['posts']), 'saved_facts_changed')
+    for before, after in zip(canonical['posts'], official_result['posts']):
+        require({key: value for key, value in before.items() if key != 'notices'}
+                == {key: value for key, value in after.items() if key != 'notices'}, 'saved_facts_changed')
+    require(personal_result['posts'] == personal_state['posts'], 'saved_facts_changed')
+    return official_result, personal_result, usage_result
 
 
 def combined_status(official, personal):
@@ -666,29 +990,45 @@ def combined_status(official, personal):
     return 'ok' if 'ok' in (official, personal) else official
 
 
-def validate_personal_completion(path, status, code):
+def validate_completion(path, status, code, component):
     require(path.is_file() and not path.is_symlink() and path.stat().st_size <= MAX_JSON_BYTES,
-            'personal_report_missing')
+            component + '_report_missing')
     try:
         report = json.loads(path.read_text(encoding='utf-8'), object_pairs_hook=no_duplicate_keys)
     except (OSError, ValueError, UnicodeError, RecursionError):
-        raise CloudError('personal_report_invalid') from None
+        raise CloudError(component + '_report_invalid') from None
     # Only inspect a completion attestation. Never copy or log the report, which
     # is permitted to contain internal paths and other operational diagnostics.
-    require(isinstance(report, dict) and report.get('component') == 'personal'
+    require(isinstance(report, dict) and report.get('component') == component
             and report.get('status') == status and type(report.get('exitCode')) is int
-            and report['exitCode'] == code, 'personal_report_mismatch')
+            and report['exitCode'] == code, component + '_report_mismatch')
+    return report
+
+
+def validate_personal_completion(path, status, code):
+    return validate_completion(path, status, code, 'personal')
 
 
 def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=None):
     environment = dict(os.environ if environment is None else environment)
-    require(args.mode in ('restore', 'collect', 'personal', 'both'), 'invalid_collection_mode')
+    require(args.mode in ('restore', 'collect', 'personal', 'both', 'daily-guidance', 'apply-saved'),
+            'invalid_collection_mode')
+    environment = {key: value for key, value in environment.items()
+                   if not key.startswith('CLOUD_COLLECTION_')}
+    enabled = environment.get('DAILY_GUIDANCE_ENABLED', 'false') == 'true'
+    scheduled = args.mode == 'daily-guidance'
+    applying = args.mode == 'apply-saved'
     writing = args.mode != 'restore'
-    collect_official = args.mode in ('collect', 'both')
-    collect_personal = args.mode in ('personal', 'both')
+    collect_official = args.mode in ('collect', 'both', 'daily-guidance')
+    collect_personal = args.mode in ('personal', 'both', 'daily-guidance')
+    personal_backend = environment.get('PERSONAL_ANALYSIS_BACKEND', 'rules')
+    if collect_personal:
+        require(personal_backend in ('rules', 'azure'), 'invalid_analysis_backend')
+    authoritative_usage = enabled or (collect_personal and personal_backend == 'azure')
     if writing:
         trusted_context(environment)
         require_manual_personal(args.mode, environment)
+    manifest = read_saved_manifest(environment) if applying else None
     output, recovery = checked_paths(root, args.output, args.recovery_dir)
     collector = collector or load_collector()
     work = root / ('.cc-work-' + uuid.uuid4().hex[:16])
@@ -698,6 +1038,9 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
     repo = StateRepository(state_dir, environment)
     try:
         source = repo.initialize(root, writing=writing)
+        if applying:
+            require(source == manifest['expectedMainSHA'] and repo.head == manifest['expectedStateSHA'],
+                    'saved_manifest_stale')
         if repo.head:
             canonical, _ = validate_snapshot(state_dir / SNAPSHOT, collector)
             validate_transport(state_dir / HTTP_STATE, collector)
@@ -714,6 +1057,13 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
             else:
                 collector.atomic_json(state_dir / HTTP_STATE, {
                     'schemaVersion': 1, 'cooldowns': canonical.get('cooldowns', {})})
+        has_ai = (state_dir / AI_USAGE).exists()
+        usage_state = None
+        if has_ai:
+            usage_state, _ = validate_ai_usage(state_dir / AI_USAGE)
+        require(not authoritative_usage or applying or has_ai, 'missing_ai_usage')
+        require(not authoritative_usage or applying or bool(usage_state['imports']),
+                'missing_initial_usage_import')
         has_personal = (state_dir / PERSONAL).exists()
         personal_seed = output.parent / PERSONAL
         personal_state = None
@@ -735,6 +1085,8 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                     collector.atomic_json(seed_path, personal_state)
                     personal_state, personal_raw = validate_personal(seed_path, personal)
             personal_source = 'branch' if has_personal else 'seed'
+        if authoritative_usage and not applying:
+            validate_reconciled_usage(usage_state, personal_state, collector)
         if collect_personal:
             require(personal_state is not None, 'missing_personal_seed')
             if not has_personal:
@@ -742,7 +1094,7 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 # The first explicit manual run from merged main owns migration.
                 atomic_bytes(state_dir / PERSONAL, personal_raw)
                 has_personal = True
-        bundle = {'include_personal': has_personal, 'personal': personal}
+        bundle = {'include_personal': has_personal, 'personal': personal, 'include_ai': has_ai}
         result = {
             'sourceCodeSHA': source, 'stateCommit': repo.head,
             'stateSource': 'branch' if repo.head else 'seed',
@@ -761,14 +1113,22 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 atomic_bytes(personal_seed, personal_raw)
             return result
 
-        if repo.head and output.exists():
+        if applying:
+            require(has_personal, 'missing_personal_state')
+            # Validate the entire delta against current state before obtaining a lease.
+            try:
+                prepared = prepare_saved(manifest, canonical, personal_state, usage_state,
+                                         collector, personal)
+            except (ValueError, TypeError, KeyError, OverflowError):
+                raise CloudError('saved_manifest_rejected') from None
+        if repo.head and output.exists() and not applying:
             mirror, _ = validate_snapshot(output, collector)
             canonical = collector.merge_snapshots(canonical, mirror)
         # Keep the longest recorded host cooldown, even if the canonical facts
         # predate an HTTP-only save. The collector consumes the same sidecar.
         limits, _ = validate_transport(state_dir / HTTP_STATE, collector)
         local_sidecar = output.with_suffix('.http-state.json')
-        if local_sidecar.exists():
+        if local_sidecar.exists() and not applying:
             local, _ = validate_transport(local_sidecar, collector)
             for host, until in local['cooldowns'].items():
                 previous = limits['cooldowns'].get(host)
@@ -797,7 +1157,30 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
         repo.persist(collector, leased=True, personal=personal)
         collected = work / 'collected'
         copy_pair(state_dir, collected, collector, **bundle)
+        buffered = None
+        initial_official = initial_requests = None
         try:
+            if applying:
+                canonical, personal_state, usage = prepared
+                collector.atomic_json(collected / SNAPSHOT, canonical)
+                collector.atomic_json(collected / PERSONAL, personal_state)
+                collector.atomic_json(collected / AI_USAGE, usage)
+                bundle['include_ai'] = True
+            environment.update(
+                CLOUD_COLLECTION_SHARED='true' if has_ai else 'false',
+                CLOUD_COLLECTION_RUN_ID=environment['GITHUB_RUN_ID'] + '-' + environment['GITHUB_RUN_ATTEMPT'],
+                CLOUD_COLLECTION_SCHEDULED='true' if scheduled else 'false',
+                CLOUD_COLLECTION_OFFICIAL_AZURE='true' if enabled else 'false')
+            if enabled:
+                environment['PERSONAL_ANALYSIS_BACKEND'] = 'azure'
+            if enabled and collect_official:
+                environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = str(
+                    official_allocation(collected / AI_USAGE, environment['CLOUD_COLLECTION_RUN_ID'],
+                                        collector.utc_now(),
+                                        collect_personal and not personal_state.get('paused'),
+                                        scheduled))
+                if collect_personal:
+                    environment['CLOUD_COLLECTION_BUFFER_MODE'] = 'write'
             if collect_official:
                 code = invoke_collector(root, collected, work / 'official-report.json', environment)
                 require(code in (0, 2, 3), 'collector_local_failure')
@@ -805,8 +1188,34 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 status = canonical['lastRun']['status']
                 require(status != 'never' and code == {'partial': 2, 'unavailable': 3}.get(status, 0),
                         'collector_status_mismatch')
+                report = validate_completion(work / 'official-report.json', status, code, 'official')
+                requests = report.get('requests')
+                require(isinstance(requests, dict), 'official_source_report_missing')
+                integer(requests.get('searches'), 0, 2)
+                integer(requests.get('posts'), 0, 20)
+                environment['CLOUD_COLLECTION_PERSONAL_POSTS'] = str(min(3, 20 - requests['posts']))
                 result.update(officialCollectionStatus=status, officialCollectionCode=code)
+                if environment.get('CLOUD_COLLECTION_BUFFER_MODE') == 'write':
+                    buffered = load_official_buffer(
+                        root, collected, canonical, environment['CLOUD_COLLECTION_RUN_ID'], collector)
+                    initial_official, initial_requests = copy.deepcopy(canonical), dict(requests)
+            if collect_personal and scheduled and not personal_window_open(
+                    collector.utc_now(), scheduled=True):
+                # Do not even construct the personal child after its scheduled cutoff.
+                now = collector.utc_now()
+                personal_state['checkedAt'] = collector.iso(now)
+                personal_state['lastRun'] = {
+                    'status': 'outside-window', 'date': now.astimezone(JST).date().isoformat(),
+                    'finishedAt': collector.iso(now), 'complete': False,
+                    'requests': {'searches': 0, 'posts': 0},
+                    'pendingCount': len(personal_state['pending']),
+                    'deferredCount': len(personal_state['pending']),
+                }
+                collector.atomic_json(collected / PERSONAL, personal_state)
+                result.update(personalCollectionStatus='outside-window', personalCollectionCode=0)
+                collect_personal = False
             if collect_personal:
+                environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = '3'
                 collector.atomic_json(work / 'personal-seed.json', personal.public_state(personal_state))
                 code = invoke_personal_collector(
                     root, collected, work / 'personal-report.json', environment)
@@ -821,15 +1230,62 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                         'personal_status_mismatch')
                 validate_personal_completion(work / 'personal-report.json', status, code)
                 result.update(personalCollectionStatus=status, personalCollectionCode=code)
+            if buffered and buffered['items']:
+                usage, _ = validate_ai_usage(collected / AI_USAGE)
+                now = collector.utc_now()
+                run_id = environment['CLOUD_COLLECTION_RUN_ID']
+                remaining = load_analysis_state().remaining(usage, run_id, now)
+                used = sum(item['runId'] == run_id and item['component'] == 'official'
+                           for item in usage['receipts'].values())
+                if (remaining and used < 3 and usage['paused'] is None
+                        and (usage['retryAt'] is None or collector.timestamp(usage['retryAt']) <= now)):
+                    environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = str(min(3, used + remaining))
+                    environment['CLOUD_COLLECTION_BUFFER_MODE'] = 'replay'
+                    personal_before = (collected / PERSONAL).read_bytes()
+                    code = invoke_collector(root, collected, work / 'official-resume-report.json', environment)
+                    require(code in (0, 2, 3), 'official_resume_local_failure')
+                    resumed, _ = validate_snapshot(collected / SNAPSHOT, collector)
+                    require(resumed['lastRun']['status'] != 'never'
+                            and code == {'partial': 2, 'unavailable': 3}.get(resumed['lastRun']['status'], 0),
+                            'official_resume_status_mismatch')
+                    report = validate_completion(
+                        work / 'official-resume-report.json', resumed['lastRun']['status'], code, 'official')
+                    keys(report.get('requests'), ('searches', 'posts'), ('searches', 'posts'))
+                    for count in report['requests'].values():
+                        require(type(count) is int and count == 0, 'official_resume_used_source')
+                    require((collected / PERSONAL).read_bytes() == personal_before,
+                            'official_resume_changed_personal')
+                    resumed_ids = {item['id'] for item in buffered['items']}
+                    failures = report.get('analysisReplayFailures', [])
+                    require(isinstance(failures, list) and len(failures) <= 3,
+                            'official_resume_report_mismatch')
+                    for failure in failures:
+                        keys(failure, ('id', 'reason', 'httpStatus', 'retryAt'), ('id', 'reason'))
+                        require(failure['id'] in resumed_ids, 'official_resume_report_mismatch')
+                        validate_failure(failure, collector)
+                    resumed['lastRun']['failures'] = [*resumed['lastRun'].get('failures', []), *failures]
+                    resumed['lastRun']['finishedAt'] = collector.iso(collector.utc_now())
+                    canonical = aggregate_official_resume(
+                        initial_official, resumed, resumed_ids, initial_requests, collector)
+                    collector.atomic_json(collected / SNAPSHOT, canonical)
+                    validate_snapshot(collected / SNAPSHOT, collector)
+                    status = canonical['lastRun']['status']
+                    result.update(officialCollectionStatus=status,
+                                  officialCollectionCode={'partial': 2, 'unavailable': 3}.get(status, 0))
         finally:
             # Capture the actual saved bytes, not an in-memory report/projection.
             # Invalid data is never copied; retain a valid HTTP-only save so its
             # cooldowns can still be inspected during manual recovery.
-            save_recovery(collected, recovery, collector, **bundle)
-        if args.mode == 'both':
+            try:
+                save_recovery(collected, recovery, collector, **bundle)
+            finally:
+                (work / ANALYSIS_BUFFER).unlink(missing_ok=True)
+        if args.mode in ('both', 'daily-guidance'):
             status = combined_status(
                 result['officialCollectionStatus'], result['personalCollectionStatus'])
             code = {'partial': 2, 'unavailable': 3}.get(status, 0)
+        elif applying:
+            status, code = 'applied-saved', 0
         elif collect_personal:
             status, code = result['personalCollectionStatus'], result['personalCollectionCode']
         else:
@@ -868,7 +1324,8 @@ def emit(result, environment):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode', choices=('restore', 'collect', 'personal', 'both'), required=True)
+    parser.add_argument('--mode', choices=(
+        'restore', 'collect', 'personal', 'both', 'daily-guidance', 'apply-saved'), required=True)
     parser.add_argument('--output', type=Path, default=Path('data') / SNAPSHOT)
     parser.add_argument('--recovery-dir', type=Path, default=Path('.cloud-collection-recovery'))
     args = parser.parse_args(argv)

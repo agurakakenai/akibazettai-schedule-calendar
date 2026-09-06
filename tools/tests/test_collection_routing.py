@@ -74,18 +74,17 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(routing.collection_mode('workflow_dispatch', 'personal'), 'personal')
         self.assertEqual(routing.collection_mode('workflow_dispatch', 'both'), 'both')
 
-    def test_future_schedule_mapping_is_exact_and_has_20_8_21_slots(self):
-        expected = {
-            '30 3-6,8-10 * * *': 'both',
-            '30 11 * * *': 'collect',
-            '30 0-2,7,15-23 * * *': 'personal',
-        }
-        for schedule, mode in expected.items():
-            self.assertEqual(routing.collection_mode('schedule', 'collect', schedule), mode)
-        official = set().union(*(hours(s) for s, m in expected.items() if m in ('both', 'collect')))
-        personal = set().union(*(hours(s) for s, m in expected.items() if m in ('both', 'personal')))
-        self.assertEqual((len(official), len(personal), len(official | personal)), (8, 20, 21))
-        self.assertEqual({(hour + 9) % 24 for hour in personal}, set(range(20)))
+    def test_activation_uses_same_eight_frames_without_clock_routing(self):
+        self.assertEqual(routing.collection_mode(
+            'schedule', 'collect', routing.LEGACY_SCHEDULE, enabled=True), 'daily-guidance')
+        self.assertEqual({(hour + 9) % 24 for hour in hours(routing.LEGACY_SCHEDULE)},
+                         {12, 13, 14, 15, 17, 18, 19, 20})
+        for schedule in ('30 3-6,8-10 * * *', '30 11 * * *', '30 0-2,7,15-23 * * *'):
+            with self.assertRaisesRegex(ValueError, 'unknown_collection_schedule'):
+                routing.collection_mode('schedule', schedule=schedule, enabled=True)
+        self.assertEqual(routing.collection_mode('workflow_dispatch', 'apply-saved'), 'apply-saved')
+        with self.assertRaises(ValueError):
+            routing.collection_mode('workflow_dispatch', 'daily-guidance', enabled=True)
 
     def test_unknown_schedules_and_unapproved_events_fail_closed(self):
         for schedule in ('', '30 3-6,8-11 * * * ', '30 3-6,8-11  * * *',
@@ -120,7 +119,7 @@ class RoutingTests(unittest.TestCase):
 
 
 class ProductionWorkflowTests(unittest.TestCase):
-    def test_azure_backend_and_credentials_are_scoped_to_manual_personal_collection(self):
+    def test_azure_backend_and_credentials_exclude_saved_restore_and_build(self):
         collect = job_block('collect')
         for name in ('PERSONAL_ANALYSIS_BACKEND', 'AZURE_OPENAI_API_KEY',
                      'AZURE_OPENAI_ENDPOINT', 'AZURE_OPENAI_DEPLOYMENT'):
@@ -129,6 +128,10 @@ class ProductionWorkflowTests(unittest.TestCase):
             self.assertIn("steps.route.outputs.collectionMode == 'both'", line)
             self.assertEqual(WORKFLOW.count(name + ':'), 1)
         self.assertIn("&& 'azure' || 'rules'", collect)
+        self.assertIn("steps.route.outputs.collectionMode == 'daily-guidance'", collect)
+        self.assertIn("vars.DAILY_GUIDANCE_ENABLED == 'true'", collect)
+        azure_lines = [line for line in collect.splitlines() if 'AZURE_OPENAI_' in line]
+        self.assertTrue(all("apply-saved" not in line for line in azure_lines))
         for job in ('validate', 'probe', 'build', 'deploy'):
             self.assertNotIn('AZURE_OPENAI_', job_block(job))
             self.assertNotIn('PERSONAL_ANALYSIS_BACKEND', job_block(job))
@@ -138,16 +141,19 @@ class ProductionWorkflowTests(unittest.TestCase):
         self.assertEqual(enabled, [routing.LEGACY_SCHEDULE])
         options = re.search(r'        options:\n(.*?)        default:', WORKFLOW, re.S).group(1)
         self.assertEqual(re.findall(r'          - (\S+)', options),
-                         ['deploy', 'collect', 'personal', 'both', 'probe'])
+                         ['deploy', 'collect', 'personal', 'both', 'apply-saved', 'probe'])
         collect = job_block('collect')
         self.assertIn('EVENT_SCHEDULE: ${{ github.event.schedule }}', collect)
         self.assertIn('run: python tools/collection-routing.py', collect)
-        self.assertIn('--mode "${{ steps.route.outputs.collectionMode }}"', collect)
+        self.assertIn('--mode "$COLLECTION_MODE"', collect)
+        self.assertIn("DAILY_GUIDANCE_ENABLED: ${{ vars.DAILY_GUIDANCE_ENABLED || 'false' }}", collect)
+        self.assertIn('APPLY_SAVED_MANIFEST: ${{ inputs.saved_manifest }}', collect)
+        self.assertNotRegex(WORKFLOW, r'run:.*\$\{\{ inputs\.saved_manifest')
         self.assertNotIn('continue-on-error', collect)
 
     def test_collection_guard_runs_only_explicit_main_or_scheduled_work(self):
         expression = job_condition('collect')
-        for mode in ('collect', 'personal', 'both'):
+        for mode in ('collect', 'personal', 'both', 'apply-saved'):
             self.assertTrue(evaluate(expression, mode=mode))
         self.assertTrue(evaluate(expression, event='schedule', mode=''))
         for overrides in (
@@ -162,7 +168,7 @@ class ProductionWorkflowTests(unittest.TestCase):
 
     def test_build_guard_cannot_deploy_after_infra_lease_or_routing_failure(self):
         expression = job_condition('build')
-        for mode in ('deploy', 'collect', 'personal', 'both'):
+        for mode in ('deploy', 'collect', 'personal', 'both', 'apply-saved'):
             self.assertTrue(evaluate(expression, mode=mode, collect='success'))
         self.assertTrue(evaluate(expression, event='push', mode='', collect='skipped'))
         self.assertTrue(evaluate(expression, event='schedule', mode='', collect='success'))

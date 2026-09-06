@@ -827,9 +827,10 @@ async function main() {
     assert.equal(await evaluate('document.querySelectorAll("#dialog-day [data-evidence=personal]").length'), 0,
       "matching personal and collection sources share one person row");
     assert.equal(await evaluate('document.querySelector("#dialog-day .maid-name[data-name=\\"あむ\\"]").getAttribute("href")'), personalSeed.posts[0].url);
-    assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=pending]").length'), 1);
-    assert.equal(await evaluate('document.querySelectorAll("#dialog-night .maid-entry[data-name=\\"あむ\\"][data-evidence=personal], #dialog-night [data-evidence=observed]").length'), 0,
-      "contradictory sources cannot settle the person's store");
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=pending]").length'), 0);
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-night .maid-entry[data-name=\\"あむ\\"][data-evidence=personal], #dialog-night [data-evidence=observed]").length'), 1,
+      "the later collection supersedes an earlier personal placement");
+    assert.equal(await evaluate('document.querySelector("#dialog-night .maid-entry[data-name=\\"あむ\\"]").dataset.store'), "s4");
     assert.equal(await evaluate('document.activeElement.dataset.focusKey'), interactionBefore.key,
       "official refresh also preserves the focused person");
     observationResponse = originalOfficial;

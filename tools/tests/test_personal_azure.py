@@ -14,6 +14,7 @@ from unittest import mock
 import urllib.error
 
 import test_collect_personal_shifts as base
+from test_analysis_state import historical, usage
 
 
 personal, azure = base.personal, base.personal.azure
@@ -63,10 +64,306 @@ class AzureTests(base.Offline):
         self.sleeps.append(seconds)
         self.clock += dt.timedelta(seconds=seconds)
 
-    def make_analyzer(self, environment=None):
+    def make_analyzer(self, environment=None, usage=None):
         return azure.AzureAnalyzer(self.state, self.save, personal.azure_context(),
                                    ENV if environment is None else environment,
-                                   clock=lambda: self.clock, sleep=self.sleep, opener=self.opener)
+                                   clock=lambda: self.clock, sleep=self.sleep, opener=self.opener, usage=usage)
+
+    def shared_usage(self, **kwargs):
+        path = self.folder / 'ai-usage.json'
+        if not path.exists():
+            usage.atomic_json(path, usage.empty_state())
+        return usage.SharedUsage(path, run_id='personal-test', component='personal',
+                                 clock=lambda: self.clock, sleep=self.sleep, **kwargs)
+
+    def test_shared_grounding_cache_identity_and_legacy_budget_are_preserved(self):
+        text = '今日🍓\r\n3号店ひる→2号店よる\r\nPRIVATE_BODY_SENTINEL'
+        self.analyzer.state['budgets']['2026-09-06'] = 30
+        original_budgets = copy.deepcopy(self.analyzer.state['budgets'])
+        expected = result(event('昼', 'placement', [2], 's3'), event('夜', 'placement', [2], 's2'))
+        with self.shared_usage() as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+            self.assertEqual(analyzer.version, self.analyzer.version)
+            for _ in range(2):
+                post, _ = self.parse(text, expected, analyzer=analyzer)
+            self.assertEqual([item['storeId'] for item in post['events']], ['s3', 's2'])
+            self.assertEqual(ledger.used, 1)
+            self.assertEqual(analyzer.used, 1)
+            self.assertEqual(analyzer.state['budgets'], original_budgets)
+            self.assertIsNone(analyzer.state['nextRequestAt'])
+            receipt = next(iter(ledger.state['receipts'].values()))
+            self.assertEqual(receipt['reason'], 'events')
+            self.assertIsNotNone(receipt['issuedAt'])
+            self.assertIsNotNone(receipt['completedAt'])
+            self.assertEqual(receipt['identity']['model'], 'gpt-5.6-luna')
+            encoded = json.dumps(ledger.state)
+            for private in ('PRIVATE_BODY_SENTINEL', 'bodyLines', 'evidenceLineIds',
+                            ENV['AZURE_OPENAI_API_KEY'], 'offline.openai.azure.com'):
+                self.assertNotIn(private, encoded)
+        self.opener.open.assert_called_once()
+        personal.read_state(self.snapshot)
+
+    def test_shared_saved_case_grounding_failure_is_negative_cached_without_source(self):
+        self.known()
+        with self.shared_usage() as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+            self.opener.open.return_value = response(result(event('昼', 'placement', [1], 's4')))
+            _, code, client = self.collect(payloads={base.TID: base.post('今日 昼1号店')}, analyzer=analyzer)
+            self.assertEqual(code, 3)
+            self.assertEqual(self.state['pending'][0]['reason'], 'azure_ungrounded')
+            client.search.assert_not_called()
+            client.fetch_post.assert_not_called()
+            _, _, client = self.collect(payloads={base.TID: base.post('今日 昼1号店')}, analyzer=analyzer)
+            client.search.assert_not_called()
+            client.fetch_post.assert_not_called()
+            self.assertEqual(ledger.used, 1)
+            self.assertEqual(next(iter(ledger.state['receipts'].values()))['reason'], 'azure_ungrounded')
+        self.opener.open.assert_called_once()
+
+    def test_shared_http_marker_is_durable_before_network_and_timeout_is_not_retried(self):
+        with self.shared_usage() as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+
+            def failed(*args, **kwargs):
+                receipt = next(iter(usage.load_state(ledger.path)['receipts'].values()))
+                self.assertIsNotNone(receipt['issuedAt'])
+                self.assertIsNone(receipt['completedAt'])
+                raise TimeoutError('PRIVATE_ERROR_SENTINEL')
+
+            self.opener.open.side_effect = failed
+            for _ in range(2):
+                with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_timeout'):
+                    self.parse('今日 昼1号店', result(), analyzer=analyzer)
+            self.assertEqual(ledger.used, 1)
+            self.assertNotIn('PRIVATE_ERROR_SENTINEL', ledger.path.read_text())
+        self.opener.open.assert_called_once()
+
+    def test_shared_issue_save_crossing_18h_stops_before_transport_without_refund(self):
+        self.clock = dt.datetime(2026, 9, 6, 8, 59, 59, tzinfo=dt.timezone.utc)
+        cutoff = self.clock + dt.timedelta(seconds=1)
+        with self.shared_usage(deadline=lambda: self.clock < cutoff) as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+            save = ledger._save
+
+            def slow_issue_save():
+                save()
+                if any(item['issuedAt'] is not None and item['completedAt'] is None
+                       for item in ledger.state['receipts'].values()):
+                    self.clock += dt.timedelta(seconds=2)
+
+            with mock.patch.object(ledger, '_save', side_effect=slow_issue_save):
+                with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_deadline'):
+                    self.parse('今日 昼1号店', result(), analyzer=analyzer)
+            self.assertEqual(ledger.used, 1)
+            receipt = next(iter(usage.load_state(ledger.path)['receipts'].values()))
+            self.assertIsNotNone(receipt['issuedAt'])
+            self.assertEqual(receipt['reason'], 'azure_deadline')
+        with self.shared_usage() as ledger:
+            with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_deadline'):
+                self.parse('今日 昼1号店', result(), analyzer=self.make_analyzer(usage=ledger))
+            self.assertEqual(ledger.used, 1)
+        self.opener.open.assert_not_called()
+        personal.read_state(self.snapshot)
+
+    def test_shared_issue_save_crossing_midnight_never_uses_new_day_capacity(self):
+        for next_day_count in (0, 30):
+            with self.subTest(next_day_count=next_day_count):
+                self.clock = dt.datetime(2026, 9, 6, 14, 59, 59, tzinfo=dt.timezone.utc)
+                self.state = personal.empty_state()
+                usage.atomic_json(self.folder / 'ai-usage.json', usage.empty_state())
+                with self.shared_usage() as ledger:
+                    if next_day_count:
+                        usage.apply_import(ledger.state, historical('2026-09-07', next_day_count))
+                        ledger._save()
+                    analyzer = self.make_analyzer(usage=ledger)
+                    save = ledger._save
+
+                    def slow_issue_save():
+                        save()
+                        if any(item['issuedAt'] is not None and item['completedAt'] is None
+                               for item in ledger.state['receipts'].values()):
+                            self.clock += dt.timedelta(seconds=2)
+
+                    with mock.patch.object(ledger, '_save', side_effect=slow_issue_save):
+                        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_interrupted'):
+                            self.parse('今日 昼1号店', result(), analyzer=analyzer)
+                    receipt = next(iter(usage.load_state(ledger.path)['receipts'].values()))
+                    self.assertEqual(receipt['date'], '2026-09-06')
+                    self.assertEqual(receipt['reason'], 'azure_interrupted')
+                    self.assertEqual(ledger.used, 1)
+                    self.assertEqual(usage.usage_counts(ledger.state, ledger.run_id, self.clock)['day'],
+                                     next_day_count)
+                    with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_interrupted'):
+                        self.parse('今日 昼1号店', result(), analyzer=analyzer)
+                personal.read_state(self.snapshot)
+        self.opener.open.assert_not_called()
+
+    def test_shared_crash_between_ledger_and_personal_save_never_reissues(self):
+        text = '今日 昼1号店'
+        with self.shared_usage() as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+            with mock.patch.object(analyzer, 'save', side_effect=OSError('offline disk failure')):
+                with self.assertRaises(OSError):
+                    self.parse(text, result(), analyzer=analyzer)
+            self.assertEqual(ledger.used, 1)
+            self.assertIsNone(next(iter(ledger.state['receipts'].values()))['issuedAt'])
+        self.state = personal.empty_state()
+        with self.shared_usage() as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+            with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_interrupted'):
+                self.parse(text, result(), analyzer=analyzer)
+            self.assertEqual(ledger.used, 1)
+        self.opener.open.assert_not_called()
+
+    def test_shared_deadline_after_spacing_prevents_source_and_ai(self):
+        self.known()
+        with self.shared_usage() as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+            self.parse('今日 昼1号店', result(), analyzer=analyzer)
+        deadline = self.clock + dt.timedelta(seconds=30)
+        with self.shared_usage(deadline=lambda: self.clock < deadline) as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+            self.opener.reset_mock()
+            _, code, client = self.collect(payloads={base.TID: base.post('今日 昼2号店')}, analyzer=analyzer)
+            self.assertEqual(code, 3)
+            self.assertEqual(self.state['pending'][0]['reason'], 'azure_deadline')
+            client.search.assert_not_called()
+            client.fetch_post.assert_not_called()
+            self.opener.open.assert_not_called()
+            self.assertEqual(ledger.used, 1)
+
+    def test_shared_401_and_429_pause_other_component_without_legacy_double_count(self):
+        for status in (401, 403, 429):
+            with self.subTest(status=status):
+                self.state = personal.empty_state()
+                path = self.folder / 'ai-usage.json'
+                usage.atomic_json(path, usage.empty_state())
+                with self.shared_usage() as ledger:
+                    analyzer = self.make_analyzer(usage=ledger)
+                    self.opener.open.side_effect = urllib.error.HTTPError(
+                        ENV['AZURE_OPENAI_ENDPOINT'], status, 'PRIVATE_ERROR_SENTINEL',
+                        {'Retry-After': '900'}, None)
+                    with self.assertRaises(azure.AnalysisFailure):
+                        self.parse('今日 昼1号店', result(), analyzer=analyzer)
+                    self.assertEqual(analyzer.state['budgets'], {})
+                    self.assertIsNone(analyzer.state['paused'])
+                    self.assertEqual(ledger.used, 1)
+                with usage.SharedUsage(path, run_id='personal-test', component='official',
+                                       clock=lambda: self.clock, sleep=self.sleep) as official:
+                    with self.assertRaises(usage.UsageFailure):
+                        official.reserve(azure.digest('official request'), self.analyzer.client.identity)
+                    self.assertEqual(official.used, 0)
+                personal.read_state(self.snapshot)
+        self.assertEqual(self.opener.open.call_count, 3)
+
+    def test_existing_legacy_pause_is_not_ignored_by_shared_mode(self):
+        self.analyzer.state['paused'] = {'reason': 'azure_auth_stopped', 'httpStatus': 401,
+                                         'at': base.CREATED}
+        with self.shared_usage() as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+            with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_auth_stopped'):
+                analyzer.check()
+            self.assertIsNone(ledger.state['paused'])
+            with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_auth_stopped'):
+                self.parse('今日 昼1号店', result(), analyzer=analyzer)
+            self.assertEqual(ledger.state['paused']['httpStatus'], 401)
+            self.assertEqual(ledger.used, 0)
+        self.opener.open.assert_not_called()
+
+    def test_shared_external_budget_cannot_be_treated_as_personal_zero(self):
+        with self.shared_usage() as ledger:
+            usage.apply_import(ledger.state, historical('2026-09-06', 30))
+            ledger._save()
+            analyzer = self.make_analyzer(usage=ledger)
+            with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_budget_exhausted'):
+                self.parse('今日 昼1号店', result(), analyzer=analyzer)
+            self.assertEqual(ledger.used, 0)
+            self.assertEqual(analyzer.state['budgets'], {})
+        self.opener.open.assert_not_called()
+
+    def test_shared_preflight_maps_deadline_without_source_or_negative_cache(self):
+        for allowed, limit, reason in ((False, 3, 'outside_window'),
+                                       (True, 0, 'azure_budget_exhausted')):
+            with self.subTest(reason=reason):
+                with self.shared_usage(request_limit=limit, deadline=lambda: allowed) as ledger:
+                    analyzer = self.make_analyzer(usage=ledger)
+                    previous = copy.deepcopy(analyzer.state)
+                    with self.assertRaisesRegex(azure.AnalysisFailure, reason):
+                        analyzer.check_capacity()
+                    self.assertEqual(analyzer.state, previous)
+                    self.assertEqual(ledger.used, 0)
+                    self.assertEqual(ledger.state['receipts'], {})
+        self.opener.open.assert_not_called()
+        self.assertEqual(self.sleeps, [])
+        self.assertFalse(self.snapshot.exists())
+
+    def test_shared_adapter_does_not_convert_infrastructure_or_lookalike_failures(self):
+        with self.shared_usage() as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+            for kind in (OSError, ValueError, RuntimeError):
+                failure = kind('PRIVATE_INFRASTRUCTURE_ERROR')
+                failure.reason, failure.status, failure.retry_at = 'azure_timeout', None, None
+                with self.subTest(kind=kind), mock.patch.object(ledger, 'check', side_effect=failure):
+                    with self.assertRaises(kind) as caught:
+                        analyzer.check_capacity()
+                    self.assertIs(caught.exception, failure)
+            self.assertEqual(ledger.used, 0)
+            self.assertEqual(analyzer.state['cache'], {})
+        self.assertFalse(self.snapshot.exists())
+        self.opener.open.assert_not_called()
+
+    def test_shared_adapter_converts_only_valid_known_failures(self):
+        with self.shared_usage() as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+            failure = ledger.failure_type('azure_rate_limited', 429, '2026-09-06T04:00:00Z')
+            with mock.patch.object(ledger, 'check', side_effect=failure):
+                with self.assertRaises(azure.AnalysisFailure) as caught:
+                    analyzer.check_capacity()
+                self.assertEqual(caught.exception.facts(), failure.facts())
+            for invalid in (ledger.failure_type('PRIVATE_UNKNOWN_REASON'),
+                            ledger.failure_type('azure_timeout', True)):
+                with mock.patch.object(ledger, 'check', side_effect=invalid):
+                    with self.assertRaises(ledger.failure_type) as caught:
+                        analyzer.check_capacity()
+                    self.assertIs(caught.exception, invalid)
+            invalid = ledger.failure_type('azure_backoff', retry_at='not-a-timestamp')
+            with mock.patch.object(ledger, 'check', side_effect=invalid):
+                with self.assertRaises(ValueError):
+                    analyzer.check_capacity()
+
+    def test_legacy_capacity_checks_run_actual_day_and_pause_without_reserving(self):
+        for cause, reason in (('run', 'azure_budget_exhausted'),
+                              ('day', 'azure_budget_exhausted'),
+                              ('pause', 'azure_auth_stopped')):
+            with self.subTest(cause=cause):
+                self.state = personal.empty_state()
+                analyzer = self.make_analyzer()
+                self.assertIsNone(analyzer.usage)
+                self.assertIsNone(analyzer.check_capacity())
+                if cause == 'run':
+                    analyzer.used = azure.RUN_LIMIT
+                elif cause == 'day':
+                    analyzer.state['budgets'][base.DATE.isoformat()] = azure.DAY_LIMIT
+                else:
+                    analyzer.state['paused'] = {'reason': 'azure_auth_stopped', 'httpStatus': 403,
+                                                 'at': base.CREATED}
+                original = copy.deepcopy(analyzer.state)
+                with self.assertRaisesRegex(azure.AnalysisFailure, reason):
+                    analyzer.check_capacity()
+                self.assertEqual(analyzer.state, original)
+        self.opener.open.assert_not_called()
+        self.assertEqual(self.sleeps, [])
+        self.assertFalse(self.snapshot.exists())
+
+    def test_legacy_capacity_uses_current_jst_day_without_changing_old_budget(self):
+        analyzer = self.analyzer
+        analyzer.state['budgets'][base.DATE.isoformat()] = azure.DAY_LIMIT
+        self.clock = dt.datetime(2026, 9, 6, 15, tzinfo=dt.timezone.utc)
+        original = copy.deepcopy(analyzer.state)
+        self.assertIsNone(analyzer.check_capacity())
+        self.assertEqual(analyzer.state, original)
+        self.assertEqual(analyzer.used, 0)
+        self.opener.open.assert_not_called()
 
     def parse(self, text, value, *, analyzer=None, target=base.AMU, tid=base.TID, created=base.CREATED):
         self.opener.open.return_value = response(value)

@@ -12,6 +12,7 @@ import copy
 import csv
 import datetime as dt
 import email.utils
+import functools
 import html
 from html.parser import HTMLParser
 import http.client
@@ -64,6 +65,22 @@ def load_importer():
 
 
 IMPORTER = load_importer()
+
+
+@functools.lru_cache(maxsize=1)
+def analysis_module():
+    spec = importlib.util.spec_from_file_location('official_notice_analysis',
+                                                 ROOT / 'tools' / 'official-azure.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def analysis_context():
+    return SimpleNamespace(
+        ROOT=ROOT, IMPORTER=IMPORTER, STORE_IDS=STORE_IDS, timestamp=timestamp,
+        snowflake_time=snowflake_time, post_id=post_id, iso=iso,
+        validate_post=validate_post)
 
 
 def utc_now():
@@ -305,6 +322,7 @@ class PublicClient:
         self.cooldowns = {}
         self.blocked = set()
         self.last_request = {}
+        self.requests = {'searches': 0, 'posts': 0}
         self.importer = load_importer()
         # Reuse fetch unchanged, but capture HTTP safety metadata before it parses
         # the response. Do not replace urllib's process-global urlopen.
@@ -314,6 +332,7 @@ class PublicClient:
 
     def begin_run(self):
         self.blocked.clear()
+        self.requests = {'searches': 0, 'posts': 0}
 
     def open(self, request, timeout=45):
         url = request.full_url
@@ -334,6 +353,7 @@ class PublicClient:
         try:
             # Use an ordinary unauthenticated GET, including when the reused
             # importer supplies browser-like headers. No cookies or identity spoof.
+            self.requests['posts' if is_post else 'searches'] += 1
             response = self.opener.open(urllib.request.Request(url), timeout=timeout)
         except urllib.error.HTTPError as exc:
             retry_at = None
@@ -472,6 +492,9 @@ def load_snapshot(path):
                     or service_day(timestamp(post['createdAt'])).isoformat() != post['date']):
                 raise ValueError
             timestamp(post['observedAt'])
+            if 'notices' in post:
+                analysis_module().validate_notices(
+                    post['notices'], analysis_context(), timestamp(post['createdAt']))
             ids.add(tid)
         pending_ids = set()
         for item in state['pending']:
@@ -494,6 +517,8 @@ def load_snapshot(path):
                 raise ValueError
             timestamp(item['resolvedAt'])
             resolved_ids.add(tid)
+        if 'officialAnalysis' in state:
+            analysis_module().validate_state(state['officialAnalysis'], analysis_context())
         return state
     except (KeyError, ValueError, TypeError, OverflowError):
         raise ValueError('invalid_snapshot') from None
@@ -544,9 +569,30 @@ def merge_snapshots(primary, published):
     for post in published['posts']:
         existing = posts.get(post['id'])
         if existing is not None:
-            facts = lambda item: {key: value for key, value in item.items() if key != 'observedAt'}
+            facts = lambda item: {key: value for key, value in item.items()
+                                  if key not in ('observedAt', 'notices')}
             if facts(existing) != facts(post):
                 raise ValueError('observation_conflict')
+            if post.get('notices') and not existing.get('notices'):
+                existing['notices'] = copy.deepcopy(post['notices'])
+            elif post.get('notices') and existing.get('notices'):
+                if existing['notices'] != post['notices']:
+                    previous_at = max(timestamp(item.get('observedAt', existing['observedAt']))
+                                      for item in existing['notices'])
+                    published_at = max(timestamp(item.get('observedAt', post['observedAt']))
+                                       for item in post['notices'])
+                    if published_at == previous_at:
+                        notice_facts = lambda items: sorted(
+                            ({key: value for key, value in item.items() if key != 'observedAt'}
+                             for item in items), key=lambda item: item['name'])
+                        if notice_facts(existing['notices']) != notice_facts(post['notices']):
+                            raise ValueError('observation_conflict')
+                        by_name = {item['name']: item for item in post['notices']}
+                        for item in existing['notices']:
+                            if 'observedAt' not in item and 'observedAt' in by_name[item['name']]:
+                                item['observedAt'] = by_name[item['name']]['observedAt']
+                    if published_at > previous_at:
+                        existing['notices'] = copy.deepcopy(post['notices'])
         else:
             posts[post['id']] = copy.deepcopy(post)
     result['posts'] = list(posts.values())
@@ -559,7 +605,8 @@ def merge_snapshots(primary, published):
     result['resolved'] = list(resolved.values())
     pending = {}
     for item in [*primary['pending'], *published['pending']]:
-        if item['id'] in posts or item['id'] in resolved:
+        if ((item['id'] in posts or item['id'] in resolved)
+                and not item['reason'].startswith('azure_')):
             continue
         previous = pending.get(item['id'])
         when = timestamp(item.get('lastAttemptAt') or item['firstSeenAt'])
@@ -577,6 +624,178 @@ def merge_snapshots(primary, published):
                 result[field] = value
     result['cooldowns'] = limits
     return result
+
+
+def apply_saved_notice(state, amendment):
+    """Apply a trusted, data-only same-ID amendment without touching roster facts."""
+    analysis = analysis_module()
+    analysis.require(amendment, ('schemaVersion', 'id', 'source', 'notices'))
+    source = amendment['source']
+    analysis.require(source, ('url', 'authorId', 'authorScreenName', 'createdAt',
+                              'fetchedAt', 'bodyHash'), ('analyzedAt', 'analysisReceiptHash'))
+    tid = amendment['id']
+    if (type(amendment['schemaVersion']) is not int or amendment['schemaVersion'] != 1
+            or not isinstance(tid, str) or not post_id(tid)
+            or not isinstance(source['bodyHash'], str) or not analysis.HEX.fullmatch(source['bodyHash'])
+            or source['url'] != canonical(tid) or source['authorId'] != AUTHOR_ID
+            or source['authorScreenName'] != AUTHOR):
+        raise ValueError('invalid_official_amendment')
+    created, fetched = timestamp(source['createdAt']), timestamp(source['fetchedAt'])
+    if fetched < created or abs((snowflake_time(tid) - created).total_seconds()) >= 2:
+        raise ValueError('invalid_official_amendment')
+    if ('analyzedAt' in source) != ('analysisReceiptHash' in source):
+        raise ValueError('invalid_official_amendment')
+    analyzed_at = source.get('analyzedAt', source['fetchedAt'])
+    if (timestamp(analyzed_at) < fetched
+            or ('analysisReceiptHash' in source and (
+                not isinstance(source['analysisReceiptHash'], str)
+                or not analysis.HEX.fullmatch(source['analysisReceiptHash'])))):
+        raise ValueError('invalid_official_amendment')
+    result = copy.deepcopy(state)
+    post = next((item for item in result['posts'] if item['id'] == tid), None)
+    if post is None or any(post[field] != source[field] for field in (
+            'url', 'authorId', 'authorScreenName', 'createdAt')):
+        raise ValueError('official_amendment_target_mismatch')
+    analysis.validate_notices(amendment['notices'], analysis_context(), created)
+    if not amendment['notices'] or any('observedAt' not in notice or timestamp(notice['observedAt']) != fetched
+                                       for notice in amendment['notices']):
+        raise ValueError('invalid_official_amendment')
+    private = result.setdefault('officialAnalysis', analysis.empty_state())
+    analysis.validate_state(private, analysis_context())
+    receipt = analysis.digest(analysis.canonical_json(amendment))
+    if receipt in private['receipts']:
+        return result
+    if any(timestamp(notice.get('observedAt', post['observedAt'])) > fetched
+           for notice in post.get('notices', [])):
+        raise ValueError('stale_official_amendment')
+    analysis.replace_notices(result, post, amendment['notices'], analyzed_at,
+                             receipt, analysis_context())
+    private['receipts'][receipt] = {'id': tid, 'at': source['fetchedAt'], 'bodyHash': source['bodyHash']}
+    if 'analyzedAt' in source:
+        private['receipts'][receipt].update(
+            analyzedAt=analyzed_at, analysisReceiptHash=source['analysisReceiptHash'])
+    private['queue'].pop(tid, None)
+    result['pending'] = [item for item in result['pending']
+                         if item['id'] != tid or not item['reason'].startswith('azure_')]
+    return result
+
+
+def analysis_buffer_path(value):
+    path = value.resolve()
+    if (value.is_symlink() or value.parent.is_symlink()
+            or path.parent.parent != ROOT.resolve()
+            or not re.fullmatch(r'\.cc-work-[0-9a-f]{16}', path.parent.name)
+            or path.suffix != '.json' or not path.parent.is_dir()):
+        raise ValueError('invalid_analysis_buffer_path')
+    return path
+
+
+def buffer_state_hash(state):
+    analysis = analysis_module()
+    return analysis.digest(analysis.canonical_json({
+        key: state[key] for key in ('posts', 'lastRun', 'checkedAt')}))
+
+
+def make_analysis_buffer(state, run_id, version_hash, items, now):
+    value = {'schemaVersion': 1, 'runId': run_id,
+             'createdAt': now.astimezone(UTC).isoformat().replace('+00:00', 'Z'),
+             'versionHash': version_hash, 'stateHash': buffer_state_hash(state),
+             'items': copy.deepcopy(items)}
+    validate_analysis_buffer(value, state, run_id, now, version_hash)
+    return value
+
+
+def validate_analysis_buffer(value, state, run_id, now, version_hash=None):
+    analysis = analysis_module()
+    analysis.require(value, ('schemaVersion', 'runId', 'createdAt', 'versionHash', 'stateHash', 'items'))
+    if (type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
+            or not isinstance(value['runId'], str) or value['runId'] != run_id
+            or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}', run_id)
+            or not isinstance(value['versionHash'], str) or not analysis.HEX.fullmatch(value['versionHash'])
+            or (version_hash is not None and value['versionHash'] != version_hash)
+            or value['stateHash'] != buffer_state_hash(state)
+            or not isinstance(value['items'], list) or len(value['items']) > 3):
+        raise ValueError('invalid_analysis_buffer')
+    created = timestamp(value['createdAt'])
+    if created > now:
+        raise ValueError('invalid_analysis_buffer')
+    posts = {post['id']: post for post in state['posts']}
+    queued = state.get('officialAnalysis', {}).get('queue', {})
+    seen = set()
+    for entry in value['items']:
+        analysis.require(entry, ('id', 'fetchedAt', 'bodyHash', 'payload'))
+        tid = entry['id']
+        if (not isinstance(tid, str) or tid not in posts or tid in seen or tid not in queued
+                or not isinstance(entry['bodyHash'], str) or not analysis.HEX.fullmatch(entry['bodyHash'])
+                or entry['bodyHash'] != queued[tid]['bodyHash']
+                or timestamp(entry['fetchedAt']) != timestamp(queued[tid]['fetchedAt'])
+                or timestamp(entry['fetchedAt']) > created):
+            raise ValueError('invalid_analysis_buffer')
+        post = posts[tid]
+        day = dt.date.fromisoformat(post['date'])
+        try:
+            verified = validate_post(tid, entry['payload'], day, day, now)
+            if (verified is None or any(verified[key] != post[key] for key in (
+                    'id', 'url', 'authorId', 'authorScreenName', 'createdAt', 'date', 'shift', 'storeId'))
+                    or timestamp(entry['fetchedAt']) < timestamp(post['createdAt'])
+                    or analysis.digest(entry['payload']['text']) != entry['bodyHash']
+                    or not analysis.edit_metadata_supported(entry['payload'], tid)):
+                raise ValueError('invalid_analysis_buffer')
+            analysis.source_lines(entry['payload']['text'])
+        except (FetchFailure, analysis.AnalysisFailure):
+            raise ValueError('invalid_analysis_buffer') from None
+        seen.add(tid)
+
+
+def load_analysis_buffer(path, state, run_id, now):
+    if not path.is_file() or path.stat().st_size > 3 * MAX_BODY + 65536:
+        raise ValueError('invalid_analysis_buffer')
+    value = analysis_module().transport.strict_json(path.read_text(encoding='utf-8'))
+    validate_analysis_buffer(value, state, run_id, now)
+    return value
+
+
+def replay_analysis_buffer(state, value, analyzer, clock=utc_now):
+    """Consume this run's bounded in-memory sources; retain the first source report."""
+    validate_analysis_buffer(value, state, analyzer.usage.run_id, clock(), analyzer.version)
+    analysis = analysis_module()
+    updated = copy.deepcopy(state)
+    initial = copy.deepcopy(state['lastRun'])
+    analyzer.bind(updated)
+    posts = {post['id']: post for post in updated['posts']}
+    pending = {item['id']: item for item in updated['pending']}
+    attempted, failures = 0, []
+    for entry in value['items']:
+        tid = entry['id']
+        if not analyzer.can_fetch(tid):
+            continue
+        attempted += 1
+        try:
+            notices, reason, key = analyzer.parse(entry['payload'], posts[tid], entry['fetchedAt'])
+            if reason == 'notices':
+                analysis.replace_notices(updated, posts[tid], notices, iso(clock()), key, analysis_context())
+            pending.pop(tid, None)
+        except analysis.AnalysisFailure as exc:
+            previous = pending.get(tid, {})
+            pending[tid] = {
+                'id': tid, 'url': canonical(tid), **exc.facts(),
+                'firstSeenAt': previous.get('firstSeenAt', entry['fetchedAt']),
+                'lastAttemptAt': iso(clock()), 'attempts': previous.get('attempts', 0) + 1}
+            failures.append({'id': tid, **exc.facts()})
+    updated['pending'] = sorted(pending.values(), key=lambda item: int(item['id']))
+    updated['lastRun'] = initial
+    status = initial['status']
+    code = {'partial': 2, 'unavailable': 3}.get(status, 0)
+    report = {
+        'schemaVersion': 1, **copy.deepcopy(initial), 'component': 'official', 'exitCode': code,
+        'checkedAt': updated['checkedAt'], 'lastSuccessAt': updated['lastSuccessAt'],
+        'requests': {'searches': 0, 'posts': 0}, 'attemptedCount': 0, 'fetchedCount': 0,
+        'newPostCount': 0, 'newNameCount': 0, 'newFacts': [], 'pending': updated['pending'],
+        'analysisReplayCount': attempted, 'analysisReplayFailures': failures, 'initialRun': initial,
+        'analysisDeferredCount': len(analyzer.state['queue']),
+        'analysisPendingCount': sum(item['reason'].startswith('azure_') for item in updated['pending']),
+    }
+    return updated, report, code
 
 
 class ProcessLock:
@@ -618,14 +837,22 @@ class ProcessLock:
             self.handle = None
 
 
-def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit=None):
+def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit=None,
+            analyzer=None, saved_payloads=None, source_fetched_at=None, buffered_payloads=None):
     checked = clock()
     next_state = copy.deepcopy(state)
+    analysis = analysis_module() if analyzer is not None else None
+    staged_analysis = analyzer is not None and buffered_payloads is not None and saved_payloads is None
+    analysis_jobs = []
+    if analyzer is not None:
+        analyzer.bind(next_state)
     present = {post['id'] for post in state['posts']}
     resolved = {item['id']: copy.deepcopy(item) for item in state.get('resolved', [])}
-    pending = {item['id']: copy.deepcopy(item) for item in state['pending']
-               if item['id'] not in present | known | resolved.keys()}
+    pending = {item['id']: copy.deepcopy(item) for item in next_state['pending']
+               if item['id'] not in present | known | resolved.keys()
+               or item['reason'].startswith('azure_')}
     sources, candidates, failures, rejected = [], set(), [], []
+    search_attempted = 0
     new_posts = []
     cooldowns = {host: timestamp(until) for host, until in state.get('cooldowns', {}).items()}
     blocked_hosts = set()
@@ -641,35 +868,72 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
             if on_limit is not None:
                 on_limit(host, cooldowns[host])
 
-    client.begin_run()
-    for url in SEARCH_URLS:
+    if saved_payloads is not None:
+        if analyzer is None or not isinstance(saved_payloads, dict) or not source_fetched_at:
+            raise ValueError('invalid_saved_analysis')
+        acquired = timestamp(source_fetched_at)
+        if acquired > checked:
+            raise ValueError('future_source_fetched_at')
+        if any(not isinstance(tid, str) or not post_id(tid)
+               or tid not in present | known | resolved.keys() for tid in saved_payloads):
+            raise ValueError('saved_post_not_known')
+        candidates.update(saved_payloads)
+    else:
+        client.begin_run()
+    for url in (() if saved_payloads is not None else SEARCH_URLS):
         host = urllib.parse.urlsplit(url).hostname
+        called = False
         try:
             if limited(host):
                 raise FetchFailure('host_rate_limited', retry_at=cooldowns.get(host))
+            search_attempted += 1
+            called = True
             ids = client.search(url)
             candidates.update(ids)
             sources.append({'url': url, 'status': 'ok', 'candidateCount': len(ids)})
         except FetchFailure as exc:
+            if called and exc.reason in ('host_rate_limited', 'route_refused'):
+                search_attempted -= 1
             remember_limit(host, exc)
             sources.append({'url': url, 'status': 'failed', **exc.facts()})
     discovered_count = len(candidates)
-    candidates.update(pending)
+    if saved_payloads is None:
+        candidates.update(pending)
     skipped_curated = skipped_observed = skipped_resolved = 0
     eligible = []
     for tid in sorted(candidates, key=int, reverse=True):
+        queued = False
+        if analyzer is not None and tid in analyzer.state['queue']:
+            queued = analyzer.prefetch_capacity() > 0 if staged_analysis else analyzer.can_fetch(tid)
+        saved = saved_payloads is not None and tid in saved_payloads
+        recover_roster = False
+        if analyzer is not None and not (queued or saved):
+            cached = [entry for entry in analyzer.state['cache'].values() if entry['postId'] == tid]
+            if cached and tid not in present:
+                latest = max(enumerate(cached), key=lambda pair: (timestamp(pair[1]['at']), pair[0]))[1]
+                recover_roster = latest['reason'] in ('notices', 'no_event')
+                if not recover_roster:
+                    continue
+        if (tid in pending and pending[tid]['reason'].startswith('azure_')
+                and not (queued or saved or recover_roster)):
+            continue
         try:
             created = snowflake_time(tid)
-            if created > checked:
+            if created - dt.timedelta(seconds=2) > checked:
                 rejected.append({'id': tid, 'reason': 'future_candidate'})
                 continue
-            if not start <= service_day(created) <= end:
+            # Metadata is authoritative within the existing <2s snowflake tolerance.
+            margin = dt.timedelta(seconds=2)
+            if not (service_day(created + margin) >= start
+                    and service_day(created - margin) <= end):
                 rejected.append({'id': tid, 'reason': 'outside_date_range'})
                 continue
         except (ValueError, OSError, OverflowError):
             rejected.append({'id': tid, 'reason': 'invalid_post_id'})
             continue
-        if tid in known:
+        if saved or queued:
+            eligible.append(tid)
+        elif tid in known:
             skipped_curated += 1
         elif tid in present:
             skipped_observed += 1
@@ -677,10 +941,12 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
             skipped_resolved += 1
         else:
             eligible.append(tid)
-    # Retry older failed attempts first; no cursor can silently skip a failure.
+    # New roster facts precede supplemental known-ID work; retry failures within each group.
     eligible.sort(key=lambda tid: (
+        tid in present | known | resolved.keys(),
         tid not in pending, pending.get(tid, {}).get('lastAttemptAt') or '', -int(tid)))
-    attempted = fetched = handled = 0
+    attempted = fetched = handled = post_issued = 0
+    known_prefetch_slots, known_prefetch_attempts, preceding_jobs = None, 0, 0
     host_stopped = limited(POST_HOST)
     for index, tid in enumerate(eligible):
         previous = pending.get(tid, {})
@@ -688,7 +954,23 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
                 'firstSeenAt': previous.get('firstSeenAt', iso(checked)),
                 'lastAttemptAt': previous.get('lastAttemptAt'),
                 'attempts': previous.get('attempts', 0)}
-        if index >= max_posts or host_stopped:
+        known_queue = (analyzer is not None and tid in analyzer.state['queue']
+                       and tid in present | known | resolved.keys())
+        if saved_payloads is None and known_queue:
+            if staged_analysis:
+                if known_prefetch_slots is None:
+                    preceding_jobs = len(analysis_jobs)
+                    known_prefetch_slots = min(
+                        3, max(0, analyzer.prefetch_capacity() - preceding_jobs), max_posts - attempted)
+                if (known_prefetch_attempts >= known_prefetch_slots
+                        or known_prefetch_attempts >= analyzer.prefetch_capacity() - preceding_jobs):
+                    continue
+            elif not analyzer.can_fetch(tid):
+                continue
+        host_stopped = host_stopped or limited(POST_HOST)
+        if (attempted if saved_payloads is None else index) >= max_posts or host_stopped:
+            if known_queue:
+                continue
             item['reason'] = 'host_rate_limited' if host_stopped else 'post_limit'
             if host_stopped and POST_HOST in cooldowns:
                 item['retryAt'] = iso(cooldowns[POST_HOST])
@@ -696,33 +978,97 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
                 item['retryAt'] = previous['retryAt']
             pending[tid] = item
             continue
-        attempted += 1
+        if saved_payloads is None:
+            attempted += 1
+            if staged_analysis and known_queue:
+                known_prefetch_attempts += 1
         item['lastAttemptAt'] = iso(clock())
         item['attempts'] += 1
         try:
-            value = client.fetch_post(tid)
-            fetched += 1
+            if saved_payloads is None:
+                post_issued += 1
+                value = client.fetch_post(tid)
+                fetched += 1
+                acquired_at = clock().astimezone(UTC).isoformat().replace('+00:00', 'Z')
+            else:
+                value = saved_payloads[tid]
+                acquired_at = source_fetched_at
             post = validate_post(tid, value, start, end, clock())
             handled += 1
             pending.pop(tid, None)
             if post is None:
+                if tid in present and analyzer is not None:
+                    raise FetchFailure('azure_header_changed')
                 rejected.append({'id': tid, 'reason': 'not_shift_post'})
                 resolved[tid] = {'id': tid, 'url': canonical(tid),
                                  'reason': 'not_shift_post', 'resolvedAt': iso(clock())}
             else:
-                new_posts.append(post)
+                existing = next((item for item in next_state['posts'] if item['id'] == tid), None)
+                if existing is not None:
+                    if any(existing[key] != post[key] for key in (
+                            'id', 'url', 'authorId', 'authorScreenName', 'createdAt',
+                            'date', 'shift', 'storeId')):
+                        raise FetchFailure('saved_metadata_conflict')
+                    post = existing
+                else:
+                    new_posts.append(post)
+                    if analyzer is not None:
+                        next_state['posts'].append(post)
+                if analyzer is not None:
+                    try:
+                        if staged_analysis:
+                            notices, reason, key = analyzer.parse(value, post, acquired_at, allow_request=False)
+                        else:
+                            notices, reason, key = analyzer.parse(value, post, acquired_at)
+                        if reason == 'notices':
+                            analysis.replace_notices(next_state, post, notices, iso(clock()),
+                                                     key, analysis_context())
+                    except analysis.AnalysisFailure as exc:
+                        item.update(exc.facts())
+                        pending[tid] = item
+                        if (staged_analysis and tid in analyzer.state['queue']
+                                and len(analysis_jobs) < min(3, analyzer.prefetch_capacity())):
+                            analysis_jobs.append((tid, value, post, acquired_at, item))
+                        else:
+                            failures.append({'id': tid, 'url': canonical(tid), **exc.facts()})
+                        if (not staged_analysis and buffered_payloads is not None and tid in analyzer.state['queue']
+                                and len(buffered_payloads) < 3
+                                and not any(entry['id'] == tid for entry in buffered_payloads)):
+                            buffered_payloads.append({
+                                'id': tid, 'fetchedAt': acquired_at,
+                                'bodyHash': analysis.digest(value['text']), 'payload': copy.deepcopy(value)})
         except FetchFailure as exc:
+            if saved_payloads is None and exc.reason in ('host_rate_limited', 'route_refused'):
+                post_issued -= 1
+            if analyzer is not None and tid in analyzer.state['queue']:
+                analyzer.state['queue'].pop(tid, None)
+                exc = FetchFailure('azure_saved_body_required', exc.status, exc.retry_at)
             remember_limit(POST_HOST, exc)
             item.update(exc.facts())
             pending[tid] = item
             failures.append({'id': tid, 'url': canonical(tid), **exc.facts()})
             if exc.status in (403, 429) or exc.reason == 'host_rate_limited':
                 host_stopped = True
+    for tid, value, post, acquired_at, item in analysis_jobs:
+        try:
+            notices, reason, key = analyzer.parse(value, post, acquired_at)
+            if reason == 'notices':
+                analysis.replace_notices(next_state, post, notices, iso(clock()), key, analysis_context())
+            pending.pop(tid, None)
+        except analysis.AnalysisFailure as exc:
+            item.update(exc.facts())
+            pending[tid] = item
+            failures.append({'id': tid, 'url': canonical(tid), **exc.facts()})
+            if tid in analyzer.state['queue']:
+                buffered_payloads.append({
+                    'id': tid, 'fetchedAt': acquired_at,
+                    'bodyHash': analysis.digest(value['text']), 'payload': copy.deepcopy(value)})
     source_count = sum(source['status'] == 'ok' for source in sources)
-    deferred = len(eligible) - attempted
-    if source_count == 0 and handled == 0:
+    deferred = max(0, len(eligible) - (attempted if saved_payloads is None else handled + len(failures)))
+    if source_count == 0 and handled == 0 and saved_payloads is None:
         status = 'unavailable'
-    elif source_count != len(SEARCH_URLS) or failures or deferred or pending:
+    elif ((saved_payloads is None and source_count != len(SEARCH_URLS))
+          or failures or deferred or pending):
         status = 'partial'
     elif new_posts:
         status = 'ok'
@@ -734,12 +1080,18 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
     next_state['checkedAt'] = iso(checked)
     if status in ('ok', 'no-new', 'no-results'):
         next_state['lastSuccessAt'] = finished
-    next_state['posts'].extend(new_posts)
+    existing_ids = {post['id'] for post in next_state['posts']}
+    next_state['posts'].extend(post for post in new_posts if post['id'] not in existing_ids)
     next_state['posts'].sort(key=lambda post: (post['createdAt'], int(post['id'])))
     next_state['pending'] = sorted(pending.values(), key=lambda item: int(item['id']))
     next_state['resolved'] = sorted(resolved.values(), key=lambda item: int(item['id']))
     next_state['cooldowns'] = {host: iso(until) for host, until in cooldowns.items()
                                if until > clock()}
+    requests = {'searches': search_attempted, 'posts': post_issued}
+    measured = getattr(client, 'requests', None) if saved_payloads is None else None
+    if (isinstance(measured, dict) and set(measured) == set(requests)
+            and all(type(value) is int and value >= 0 for value in measured.values())):
+        requests = dict(measured)
     next_state['lastRun'] = {
         'status': status, 'dateFrom': start.isoformat(), 'dateTo': end.isoformat(),
         'dateBasis': 'JST service day, 05:00 boundary',
@@ -747,6 +1099,7 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
         'sourcePageLimit': len(SEARCH_URLS), 'sources': sources,
         'discoveredCount': discovered_count, 'eligibleCount': len(eligible),
         'attemptedCount': attempted, 'fetchedCount': fetched,
+        'requests': requests,
         'newPostCount': len(new_posts),
         'newNameCount': sum(len(post['names']) for post in new_posts),
         'skippedCuratedCount': skipped_curated, 'skippedObservedCount': skipped_observed,
@@ -760,7 +1113,12 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
     report = {'schemaVersion': 1, 'checkedAt': next_state['checkedAt'],
               'lastSuccessAt': next_state['lastSuccessAt'],
               **next_state['lastRun'], 'newFacts': new_posts,
-              'pending': next_state['pending']}
+              'pending': next_state['pending'],
+              'component': 'official', 'exitCode': {'partial': 2, 'unavailable': 3}.get(status, 0)}
+    if analyzer is not None:
+        report['analysisDeferredCount'] = len(analyzer.state['queue'])
+        report['analysisPendingCount'] = sum(
+            item['reason'].startswith('azure_') for item in next_state['pending'])
     return next_state, report, {'partial': 2, 'unavailable': 3}.get(status, 0)
 
 
@@ -785,6 +1143,17 @@ def argument_parser():
                         help='canonical durable JSON path (default: data/observed-shifts.json)')
     parser.add_argument('--publish', type=Path,
                         help='atomically mirror the canonical snapshot to this frontend JSON path')
+    parser.add_argument('--analysis-backend', choices=('rules', 'azure'), default='rules')
+    parser.add_argument('--ai-state', type=Path, help='existing private shared AI usage ledger')
+    parser.add_argument('--analysis-run-id', help='shared official/personal run identifier')
+    parser.add_argument('--analysis-limit', type=int, default=3, help='AI request allocation, 0..3')
+    parser.add_argument('--analyze-saved', type=Path, help='known post ID to saved source payload JSON')
+    parser.add_argument('--source-fetched-at', help='actual UTC raw acquisition time; required with saved input')
+    buffer_mode = parser.add_mutually_exclusive_group()
+    buffer_mode.add_argument('--analysis-buffer', type=Path,
+                             help='same-run .cc-work buffer for at most three unissued sources')
+    buffer_mode.add_argument('--replay-buffer', type=Path,
+                             help='consume this run buffer without constructing a source client')
     return parser
 
 
@@ -803,14 +1172,56 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
     paths = {snapshot}
     if publish:
         paths.add(publish)
+    if not 0 <= args.analysis_limit <= 3:
+        raise ValueError('invalid_analysis_limit')
+    if args.analysis_backend == 'azure' and (not args.ai_state or not args.analysis_run_id):
+        raise ValueError('missing_analysis_configuration')
+    if args.analysis_backend == 'azure' and publish == snapshot:
+        raise ValueError('private_public_path_overlap')
+    if ((args.analysis_buffer or args.replay_buffer)
+            and (args.analysis_backend != 'azure' or args.watch or args.dry_run or args.analyze_saved)):
+        raise ValueError('invalid_analysis_buffer_mode')
+    buffer_output = analysis_buffer_path(args.analysis_buffer) if args.analysis_buffer else None
+    replay_path = analysis_buffer_path(args.replay_buffer) if args.replay_buffer else None
+    if buffer_output and buffer_output.exists():
+        raise ValueError('analysis_buffer_exists')
+    if args.analyze_saved and (args.analysis_backend != 'azure' or not args.source_fetched_at
+                               or args.watch):
+        raise ValueError('invalid_saved_analysis')
+    if args.source_fetched_at and not args.analyze_saved:
+        raise ValueError('invalid_saved_analysis')
+    saved_payloads = None
+    if args.analyze_saved:
+        saved_payloads = analysis_module().transport.strict_json(
+            args.analyze_saved.read_text(encoding='utf-8-sig'))
+        if not isinstance(saved_payloads, dict):
+            raise ValueError('invalid_saved_analysis')
+        timestamp(args.source_fetched_at)
     transport_paths = {path.with_suffix('.http-state.json') for path in paths}
     if paths & transport_paths or any(path.name.endswith('.http-state.json') for path in paths):
         raise ValueError('overlapping_storage_paths')
+    if args.ai_state:
+        ledger_path = args.ai_state.resolve()
+        if (ledger_path in paths | transport_paths
+                or ledger_path == curated.resolve()
+                or any(ledger_path == path.with_suffix('.lock') for path in paths)):
+            raise ValueError('overlapping_storage_paths')
+    if args.analyze_saved and args.analyze_saved.resolve() in paths | transport_paths:
+        raise ValueError('overlapping_storage_paths')
+    for buffer_path in (buffer_output, replay_path):
+        if buffer_path and (buffer_path in paths | transport_paths
+                            or args.ai_state and buffer_path == args.ai_state.resolve()):
+            raise ValueError('overlapping_storage_paths')
     if args.report:
         report_path = args.report.resolve()
         protected = {snapshot.resolve(), snapshot.with_suffix('.lock').resolve(),
                      curated.resolve()}
         protected.update(transport_paths)
+        if args.ai_state:
+            protected.update((args.ai_state.resolve(), Path(str(args.ai_state.resolve()) + '.lock')))
+        if args.analyze_saved:
+            protected.add(args.analyze_saved.resolve())
+        protected.update(path for path in (buffer_output, replay_path) if path is not None)
         if publish:
             protected.update((publish, publish.with_suffix('.lock')))
         # Reports may be in external artifact folders, but may not overwrite
@@ -822,11 +1233,14 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
     with ExitStack() as locks:
         for path in sorted(paths, key=lambda item: str(item).casefold()):
             locks.enter_context(ProcessLock(path.with_suffix('.lock')))
-        client = client or PublicClient(clock=clock, sleep=sleep)
+        if saved_payloads is None and replay_path is None:
+            client = client or PublicClient(clock=clock, sleep=sleep)
         while True:
             state = load_snapshot(snapshot)
             if publish and publish != snapshot and publish.exists():
                 state = merge_snapshots(state, load_snapshot(publish))
+            replay_value = load_analysis_buffer(replay_path, state, args.analysis_run_id, clock()) if replay_path else None
+            buffered_payloads = [] if buffer_output is not None else None
             limits = dict(state.get('cooldowns', {}))
             for path in transport_paths:
                 for host, until in load_transport(path).items():
@@ -848,8 +1262,47 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
             state['cooldowns'] = dict(limits)
             known = curated_ids(curated)
             start, end = date_range(args, clock())
-            updated, report, code = collect(
-                state, known, client, start, end, args.max_posts, clock, on_limit=persist_limits)
+            with ExitStack() as analysis_lock:
+                analyzer = None
+                if args.analysis_backend == 'azure':
+                    analysis = analysis_module()
+                    usage = analysis_lock.enter_context(analysis.ledger.SharedUsage(
+                        args.ai_state, run_id=args.analysis_run_id, component='official',
+                        clock=clock, sleep=sleep, request_limit=args.analysis_limit))
+                    def save_analysis(partial):
+                        checkpoint = copy.deepcopy(state if args.dry_run else partial)
+                        checkpoint['officialAnalysis'] = copy.deepcopy(partial['officialAnalysis'])
+                        pending_by_id = {item['id']: item for item in checkpoint['pending']}
+                        latest = {}
+                        for entry in partial['officialAnalysis']['cache'].values():
+                            previous = latest.get(entry['postId'])
+                            if previous is None or timestamp(entry['at']) >= timestamp(previous['at']):
+                                latest[entry['postId']] = entry
+                        for tid, entry in latest.items():
+                            if entry['reason'] not in ('notices', 'no_event'):
+                                pending_by_id[tid] = {
+                                    'id': tid, 'url': canonical(tid), 'reason': entry['reason'],
+                                    'firstSeenAt': entry['at'], 'lastAttemptAt': entry['at'], 'attempts': 1}
+                        for tid, entry in partial['officialAnalysis']['queue'].items():
+                            pending_by_id[tid] = {
+                                'id': tid, 'url': canonical(tid), 'reason': entry['reason'],
+                                'firstSeenAt': entry['fetchedAt'], 'lastAttemptAt': None, 'attempts': 0}
+                        checkpoint['pending'] = list(pending_by_id.values())
+                        atomic_json(snapshot, checkpoint)
+                    analyzer = analysis.AzureAnalyzer(state, analysis_context(), os.environ, usage,
+                                                       clock=clock, save=save_analysis)
+                if replay_value is not None:
+                    validate_analysis_buffer(replay_value, state, args.analysis_run_id, clock(), analyzer.version)
+                    replay_path.unlink()
+                    updated, report, code = replay_analysis_buffer(state, replay_value, analyzer, clock)
+                else:
+                    updated, report, code = collect(
+                        state, known, client, start, end, args.max_posts, clock, on_limit=persist_limits,
+                        analyzer=analyzer, saved_payloads=saved_payloads,
+                        source_fetched_at=args.source_fetched_at, buffered_payloads=buffered_payloads)
+                if analyzer is not None:
+                    report['analysisBackend'] = 'azure'
+                    report['analysisRequests'] = usage.used
             report['dryRun'] = args.dry_run
             report['saved'] = not args.dry_run
             report['processId'] = os.getpid()
@@ -864,12 +1317,17 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
                 report['published'] = publish == snapshot
                 if publish and publish != snapshot:
                     try:
-                        atomic_json(publish, updated)
+                        atomic_json(publish, {key: value for key, value in updated.items()
+                                              if key != 'officialAnalysis'})
                         report['published'] = True
                     except OSError:
                         report['collectionStatus'] = report['status']
                         report.update(status='unavailable', reason='publication_failed')
                         code = 4
+            if buffer_output is not None:
+                atomic_json(buffer_output, make_analysis_buffer(
+                    updated, args.analysis_run_id, analyzer.version, buffered_payloads, clock()))
+            report['exitCode'] = code
             write_report(report, args.report)
             if not args.watch:
                 return code
@@ -883,13 +1341,15 @@ def main(argv=None):
         parser.error('--days must be 1..366 and --max-posts must be 1..20')
     if args.interval < 60:
         parser.error('--interval must be at least 60 seconds')
+    if not 0 <= args.analysis_limit <= 3:
+        parser.error('--analysis-limit must be 0..3')
     try:
         date_range(args, utc_now())
         return run(args)
     except KeyboardInterrupt:
         return 130
-    except (OSError, ValueError) as exc:
-        reason = str(exc) if isinstance(exc, ValueError) else 'local_io_error'
+    except (OSError, ValueError, analysis_module().ledger.UsageFailure) as exc:
+        reason = 'local_io_error' if isinstance(exc, OSError) else str(exc)
         if not re.fullmatch(r'[a-z_]+', reason):
             reason = 'invalid_local_data'
         print(json.dumps({'status': 'unavailable', 'reason': reason, 'exitCode': 4}))

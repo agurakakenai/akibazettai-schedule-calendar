@@ -10,15 +10,20 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Deploy, collect official posts, explicitly collect personal/both, or probe
+        description: Deploy, collect, apply approved saved evidence without HTTP, or probe
         type: choice
         options:
           - deploy
           - collect
           - personal
           - both
+          - apply-saved
           - probe
         default: deploy
+      saved_manifest:
+        description: Approved bounded data-only JSON for apply-saved (expected main/state SHA required)
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -58,7 +63,8 @@ jobs:
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'schedule' ||
        (github.event_name == 'workflow_dispatch' &&
-        (inputs.mode == 'collect' || inputs.mode == 'personal' || inputs.mode == 'both')))
+        (inputs.mode == 'collect' || inputs.mode == 'personal' || inputs.mode == 'both' ||
+         inputs.mode == 'apply-saved')))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -75,6 +81,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REQUESTED_MODE: ${{ inputs.mode }}
           EVENT_SCHEDULE: ${{ github.event.schedule }}
+          DAILY_GUIDANCE_ENABLED: ${{ vars.DAILY_GUIDANCE_ENABLED || 'false' }}
         run: python tools/collection-routing.py
       - name: Collect with durable state
         id: collection
@@ -82,12 +89,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_PROMPT_DISABLED: "1"
           GIT_TERMINAL_PROMPT: "0"
-          # Only the personal child receives the shared production Luna configuration.
+          COLLECTION_MODE: ${{ steps.route.outputs.collectionMode }}
+          DAILY_GUIDANCE_ENABLED: ${{ vars.DAILY_GUIDANCE_ENABLED || 'false' }}
+          APPLY_SAVED_MANIFEST: ${{ inputs.saved_manifest }}
+          # Cloud strips Azure configuration from Git, restore, and all non-AI children.
           PERSONAL_ANALYSIS_BACKEND: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both') && 'azure' || 'rules' }}
-          AZURE_OPENAI_API_KEY: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both') && secrets.AZURE_OPENAI_API_KEY || '' }}
-          AZURE_OPENAI_ENDPOINT: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both') && vars.AZURE_OPENAI_ENDPOINT || '' }}
-          AZURE_OPENAI_DEPLOYMENT: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both') && vars.AZURE_OPENAI_DEPLOYMENT || '' }}
-        run: python tools/cloud-collection.py --mode "${{ steps.route.outputs.collectionMode }}" --output data/observed-shifts.json --recovery-dir _recovery-state
+          AZURE_OPENAI_API_KEY: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both' || steps.route.outputs.collectionMode == 'daily-guidance' || (steps.route.outputs.collectionMode == 'collect' && vars.DAILY_GUIDANCE_ENABLED == 'true')) && secrets.AZURE_OPENAI_API_KEY || '' }}
+          AZURE_OPENAI_ENDPOINT: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both' || steps.route.outputs.collectionMode == 'daily-guidance' || (steps.route.outputs.collectionMode == 'collect' && vars.DAILY_GUIDANCE_ENABLED == 'true')) && vars.AZURE_OPENAI_ENDPOINT || '' }}
+          AZURE_OPENAI_DEPLOYMENT: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both' || steps.route.outputs.collectionMode == 'daily-guidance' || (steps.route.outputs.collectionMode == 'collect' && vars.DAILY_GUIDANCE_ENABLED == 'true')) && vars.AZURE_OPENAI_DEPLOYMENT || '' }}
+        run: python tools/cloud-collection.py --mode "$COLLECTION_MODE" --output data/observed-shifts.json --recovery-dir _recovery-state
       - name: Warn when verified data is published with incomplete collection
         if: >-
           steps.collection.outputs.collectionStatus == 'partial' ||
@@ -113,7 +123,7 @@ jobs:
       (github.event_name == 'push' || github.event_name == 'schedule' ||
        (github.event_name == 'workflow_dispatch' &&
         (inputs.mode == 'deploy' || inputs.mode == 'collect' ||
-         inputs.mode == 'personal' || inputs.mode == 'both'))) &&
+         inputs.mode == 'personal' || inputs.mode == 'both' || inputs.mode == 'apply-saved'))) &&
       (needs.collect.result == 'success' || needs.collect.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
@@ -127,6 +137,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_PROMPT_DISABLED: "1"
           GIT_TERMINAL_PROMPT: "0"
+          DAILY_GUIDANCE_ENABLED: ${{ vars.DAILY_GUIDANCE_ENABLED || 'false' }}
         run: python tools/cloud-collection.py --mode restore --output data/observed-shifts.json
       - uses: ./.github/actions/validate-site
       - name: Stage only public frontend files

@@ -176,6 +176,50 @@ class WorkspaceTests(unittest.TestCase):
 
 
 class ProjectionTests(WorkspaceTests):
+    def test_official_notices_are_short_public_guidance_not_roster_facts(self):
+        state = snapshot()
+        post = state['posts'][0]
+        post['notices'] = [{
+            'name': 'こい', 'kind': 'late', 'excerpt': 'こいちゃんもあとから来るにゃんね',
+            'observedAt': '2026-09-05T19:00:00Z', 'private': SECRET,
+        }]
+        state['officialAnalysis'] = {'cache': {'private': SECRET}, 'history': [SECRET]}
+        state['aiUsage'] = {'private': SECRET}
+        result = pages.public_projection(state)
+        notice = result['posts'][0]['notices'][0]
+        self.assertEqual(set(notice), {'name', 'kind', 'excerpt', 'observedAt'})
+        self.assertNotIn('time', notice)
+        self.assertEqual(result['posts'][0]['names'], post['names'])
+        self.assertEqual(result['posts'][0]['observedAt'], post['observedAt'])
+        self.assertNotEqual(notice['observedAt'], post['observedAt'])
+        encoded = json.dumps(result)
+        for private in ('officialAnalysis', 'aiUsage', 'private', 'cache', 'history'):
+            self.assertNotIn(private, encoded)
+        del post['notices'][0]['observedAt']
+        legacy = pages.public_projection(state)['posts'][0]['notices'][0]
+        self.assertNotIn('observedAt', legacy)
+
+    def test_official_notice_rejects_invalid_values(self):
+        original = {'name': 'こい', 'kind': 'late', 'excerpt': 'こいちゃんもあとから',
+                    'observedAt': collector.iso(NOW)}
+        for field, value in (('name', '../secret'), ('kind', 'placement'),
+                             ('excerpt', 'x' * 81), ('excerpt', 'bad\ntext'),
+                             ('time', None), ('time', '24:00'),
+                             ('observedAt', '2026-09-04T00:00:00Z')):
+            with self.subTest(field=field, value=value):
+                state = snapshot()
+                state['posts'][0]['notices'] = [{**original, field: value}]
+                with self.assertRaises(pages.PagesError):
+                    pages.public_projection(state)
+
+    def test_metadata_tolerance_does_not_change_five_am_service_day(self):
+        created = '2026-09-05T19:59:59Z'
+        state = snapshot()
+        state['posts'] = [fact(make_id('2026-09-05T20:00:00Z'), created)]
+        state['posts'][0]['observedAt'] = '2026-09-05T20:01:00Z'
+        result = pages.public_projection(state)
+        self.assertEqual(result['posts'][0]['date'], '2026-09-05')
+
     def test_personal_projection_keeps_midnight_guidance_separate_from_attendance(self):
         state = personal_snapshot()
         result = pages.personal_projection(state)
@@ -368,7 +412,7 @@ class StageTests(WorkspaceTests):
     def test_allowlist_excludes_backend_and_same_named_private_files(self):
         private_names = (
             'README.md', '.git', 'staticwebapp.config.json', 'config.json', 'logs/run.log',
-            'data/observed-shifts.http-state.json', 'data/observed-shifts.lock',
+            'data/observed-shifts.http-state.json', 'data/observed-shifts.lock', 'data/ai-usage.json',
             'data/rawsource.json', 'http-state.json', 'lock', 'rawsource.txt',
             'tools/collect-shifts.py', 'tools/tests/test_secret.py',
             'backend/index.html', 'backend/app.js', 'backend/styles.css',

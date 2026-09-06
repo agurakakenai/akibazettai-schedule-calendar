@@ -265,6 +265,41 @@ class CloudTests(unittest.TestCase):
         event['inputs'] = {'mode': mode}
         self.event_path.write_text(json.dumps(event), encoding='utf-8')
 
+    def saved_mode(self, manifest):
+        self.personal_mode('apply-saved')
+        text = json.dumps(manifest, ensure_ascii=False)
+        self.environment['APPLY_SAVED_MANIFEST'] = text
+        event = json.loads(self.event_path.read_bytes())
+        event['inputs']['saved_manifest'] = text
+        self.event_path.write_text(json.dumps(event), encoding='utf-8')
+
+    def saved_manifest(self):
+        return {
+            'schemaVersion': 1, 'expectedMainSHA': self.source,
+            'expectedStateSHA': self.git(self.remote, 'rev-parse', cloud.REF).decode().strip(),
+            'officialAmendments': [], 'sourceReceipts': [],
+            'usageImports': [{
+                'receiptId': 'a' * 64, 'date': '2026-09-07', 'counts': {'requests': 4},
+                'modelBreakdown': [{
+                    'model': 'gpt-5.6-luna', 'kind': 'image', 'count': 1,
+                    'deployment': 'gpt-5.6-luna-compare', 'modelVersion': '2026-07-09',
+                    'component': 'external',
+                }, {
+                    'model': 'gpt-5.6-luna', 'kind': 'text', 'count': 3,
+                    'deployment': 'gpt-5.6-luna', 'modelVersion': '2026-07-09',
+                    'component': 'personal',
+                }],
+                'sourceHash': 'b' * 64,
+            }],
+        }
+
+    def empty_analysis_buffer(self, state, environment):
+        if environment.get('CLOUD_COLLECTION_BUFFER_MODE') == 'write':
+            snapshot, _ = cloud.validate_snapshot(state / cloud.SNAPSHOT, collector)
+            value = collector.make_analysis_buffer(
+                snapshot, environment['CLOUD_COLLECTION_RUN_ID'], 'f' * 64, [], collector.utc_now())
+            collector.atomic_json(state.parent / cloud.ANALYSIS_BUFFER, value)
+
     def run_personal_cloud(self, module, *, official_client=None, denial=None,
                            candidates=None, post_failure=False, on_http=None, when=None, posts=None):
         calls = []
@@ -313,7 +348,7 @@ class CloudTests(unittest.TestCase):
             lease, _ = self.remote_json(cloud.LEASE)
             self.assertEqual(lease['runId'], '12345')
             self.assertEqual(lease['sourceCodeSHA'], self.source)
-            self.assertEqual(self.remote_names(), cloud.FILES - {cloud.PERSONAL})
+            self.assertEqual(self.remote_names(), cloud.FILES - {cloud.PERSONAL, cloud.AI_USAGE})
             checks.append(True)
 
         result = self.run_cloud(OfflineClient(on_http=check_lease))
@@ -326,6 +361,10 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(self.remote_names(), {cloud.SNAPSHOT, cloud.HTTP_STATE, cloud.OWNER_FILE})
         history = self.git(self.remote, 'rev-list', cloud.REF).decode().splitlines()
         self.assertEqual(len(history), 2)
+        message = self.git(self.remote, 'log', '-1', '--format=%B', cloud.REF).decode()
+        self.assertIn('Co-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>', message)
+        author = self.git(self.remote, 'log', '-1', '--format=%an <%ae>', cloud.REF).decode().strip()
+        self.assertEqual(author, 'github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>')
         for revision in history:
             self.assertLessEqual(self.remote_names(revision), cloud.FILES)
             self.assertEqual(self.remote_json(cloud.OWNER_FILE, revision)[0], cloud.STATE_OWNER)
@@ -491,7 +530,7 @@ class CloudTests(unittest.TestCase):
         with mock.patch.object(cloud, 'child_process', side_effect=fail_final):
             with self.assertRaisesRegex(cloud.CloudError, '^state_push_failed$'):
                 self.run_cloud()
-        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.PERSONAL})
+        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.PERSONAL, cloud.AI_USAGE})
         self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0]['posts'], [])
         recovery = self.root / 'recovery' / cloud.SNAPSHOT
         self.assertEqual(json.loads(recovery.read_bytes())['posts'], [fact()])
@@ -514,7 +553,7 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(result['reason'], 'unresolved_lease')
         self.assertIn('lease', result['recoveryInstructions'])
         self.assertNotIn(TOKEN.encode(), process.stdout + process.stderr)
-        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.PERSONAL})
+        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.PERSONAL, cloud.AI_USAGE})
 
     def test_collector_local_failure_preserves_http_only_sidecar_and_blocks_retry(self):
         def fail_local(root, state, report, environment):
@@ -526,7 +565,7 @@ class CloudTests(unittest.TestCase):
             with self.assertRaisesRegex(cloud.CloudError, 'collector_local_failure'):
                 cloud.orchestrate(self.args, root=self.root,
                                   environment=self.environment, collector=collector)
-        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.PERSONAL})
+        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.PERSONAL, cloud.AI_USAGE})
         recovery, _ = cloud.validate_transport(self.root / 'recovery' / cloud.HTTP_STATE, collector)
         self.assertEqual(recovery['cooldowns'], {'search.yahoo.co.jp': '2026-09-06T20:00:00Z'})
         with self.assertRaisesRegex(cloud.CloudError, 'unresolved_lease'):
@@ -545,7 +584,7 @@ class CloudTests(unittest.TestCase):
             with self.assertRaisesRegex(cloud.CloudError, 'recovery_state_invalid'):
                 cloud.orchestrate(self.args, root=self.root,
                                   environment=self.environment, collector=collector)
-        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.PERSONAL})
+        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.PERSONAL, cloud.AI_USAGE})
         self.assertFalse((self.root / 'recovery' / cloud.SNAPSHOT).exists())
         limits = json.loads((self.root / 'recovery' / cloud.HTTP_STATE).read_bytes())
         self.assertEqual(limits['cooldowns'], {'search.yahoo.co.jp': '2026-09-06T20:00:00Z'})
@@ -811,7 +850,7 @@ class CloudTests(unittest.TestCase):
         checks = []
 
         def before_http():
-            self.assertEqual(self.remote_names(), cloud.FILES)
+            self.assertEqual(self.remote_names(), cloud.FILES - {cloud.AI_USAGE})
             saved = self.remote_json(cloud.PERSONAL)[0]
             self.assertEqual(saved['posts'], seed['posts'])
             self.assertEqual(saved['budgets'], {'2026-09-06': {'searches': 7, 'posts': 2}})
@@ -826,7 +865,7 @@ class CloudTests(unittest.TestCase):
         saved = self.remote_json(cloud.PERSONAL)[0]
         self.assertEqual(saved['budgets']['2026-09-06'], {'searches': 7 + len(calls), 'posts': 2})
         self.assertEqual(saved['posts'], seed['posts'])
-        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.LEASE})
+        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.LEASE, cloud.AI_USAGE})
         self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0]['posts'], official['posts'])
         for name in (cloud.SNAPSHOT, cloud.HTTP_STATE, cloud.PERSONAL):
             self.assertEqual((self.output.parent / name).read_bytes(), self.remote_json(name)[1])
@@ -1041,7 +1080,7 @@ class CloudTests(unittest.TestCase):
         with mock.patch.object(cloud, 'invoke_personal_collector', side_effect=failed):
             with self.assertRaisesRegex(cloud.CloudError, 'personal_local_failure'):
                 self.run_cloud()
-        self.assertEqual(self.remote_names(), cloud.FILES)
+        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.AI_USAGE})
         self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0]['posts'], [])
         recovery = self.root / 'recovery'
         self.assertEqual(json.loads((recovery / cloud.SNAPSHOT).read_bytes())['posts'], [fact()])
@@ -1078,7 +1117,7 @@ class CloudTests(unittest.TestCase):
         with mock.patch.object(cloud, 'child_process', side_effect=fail_final):
             with self.assertRaisesRegex(cloud.CloudError, 'state_push_failed'):
                 self.run_personal_cloud(module)
-        self.assertEqual(self.remote_names(), cloud.FILES)
+        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.AI_USAGE})
         self.assertEqual(self.remote_json(cloud.PERSONAL)[0]['budgets']['2026-09-06']['searches'], 7)
         recovery = module.read_state(self.root / 'recovery' / cloud.PERSONAL)
         self.assertGreater(recovery['budgets']['2026-09-06']['searches'], 7)
@@ -1154,6 +1193,7 @@ class CloudTests(unittest.TestCase):
 
     def test_azure_credentials_only_reach_explicit_personal_backend(self):
         environment = {**self.environment, 'PERSONAL_ANALYSIS_BACKEND': 'azure',
+                       'CLOUD_COLLECTION_SHARED': 'true', 'CLOUD_COLLECTION_RUN_ID': '12345-1',
                        'AZURE_OPENAI_API_KEY': 'OFFLINE_AZURE_SENTINEL',
                        'AZURE_OPENAI_ENDPOINT': 'https://offline.openai.azure.com/',
                        'AZURE_OPENAI_DEPLOYMENT': 'gpt-5.6-luna',
@@ -1217,6 +1257,740 @@ class CloudTests(unittest.TestCase):
             collector.atomic_json(self.root / 'bad-azure.json', bad)
             with self.assertRaises((ValueError, cloud.CloudError)):
                 cloud.validate_personal(self.root / 'bad-azure.json', module)
+
+    def test_daily_guidance_requires_exact_schedule_activation_and_imported_ledger(self):
+        self.personal_seed()
+        self.args.mode = 'daily-guidance'
+        self.environment['GITHUB_EVENT_NAME'] = 'schedule'
+        event = json.loads(self.event_path.read_bytes())
+        event['schedule'] = cloud.DAILY_SCHEDULE
+        self.event_path.write_text(json.dumps(event), encoding='utf-8')
+        self.assert_read_only_failure('daily_guidance_not_enabled')
+        self.environment['DAILY_GUIDANCE_ENABLED'] = 'true'
+        event['schedule'] += ' '
+        self.event_path.write_text(json.dumps(event), encoding='utf-8')
+        self.assert_read_only_failure('unknown_collection_schedule')
+        event['schedule'] = cloud.DAILY_SCHEDULE
+        self.event_path.write_text(json.dumps(event), encoding='utf-8')
+        self.assert_read_only_failure('missing_ai_usage')
+        self.args.mode = 'restore'
+        self.assert_read_only_failure('missing_ai_usage')
+
+    def test_shared_ledger_restore_is_byte_exact_and_never_seeded_from_checkout(self):
+        usage = cloud.load_analysis_state()
+        self.seed_branch()
+        state = usage.empty_state()
+        usage.apply_import(state, {
+            'receiptId': 'a' * 64, 'date': '2026-09-06', 'counts': {'requests': 24},
+            'modelBreakdown': [{'model': 'nano', 'kind': 'text', 'count': 18},
+                               {'model': 'mini', 'kind': 'text', 'count': 6}],
+            'sourceHash': 'b' * 64,
+        })
+        usage.apply_import(state, {
+            'receiptId': 'c' * 64, 'date': '2026-09-07', 'counts': {'requests': 4},
+            'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'image', 'count': 1},
+                               {'model': 'gpt-5.6-luna', 'kind': 'text', 'count': 3}],
+            'sourceHash': 'd' * 64,
+        })
+        self.bare_commit({cloud.AI_USAGE: state})
+        self.args.mode = 'restore'
+        self.environment['DAILY_GUIDANCE_ENABLED'] = 'true'
+        self.run_cloud()
+        restored, raw = cloud.validate_ai_usage(self.output.parent / cloud.AI_USAGE)
+        self.assertEqual(raw, self.remote_json(cloud.AI_USAGE)[1])
+        self.assertEqual(usage.remaining(restored, 'new-run',
+                                       dt.datetime(2026, 9, 7, 3, tzinfo=dt.timezone.utc)), 3)
+        self.assertEqual(usage.usage_counts(restored, 'new-run',
+                                          dt.datetime(2026, 9, 7, 3, tzinfo=dt.timezone.utc))['day'], 4)
+        self.environment['DAILY_GUIDANCE_ENABLED'] = 'false'
+        self.bare_commit({cloud.AI_USAGE: None})
+        self.run_cloud()
+        self.assertFalse((self.output.parent / cloud.AI_USAGE).exists())
+
+    def test_shared_child_arguments_zero_source_remainder_and_scheduled_guard(self):
+        environment = {**self.environment, 'PERSONAL_ANALYSIS_BACKEND': 'azure',
+                       'CLOUD_COLLECTION_SHARED': 'true', 'CLOUD_COLLECTION_RUN_ID': '12345-1',
+                       'CLOUD_COLLECTION_ANALYSIS_LIMIT': '2', 'CLOUD_COLLECTION_SCHEDULED': 'true',
+                       'CLOUD_COLLECTION_PERSONAL_POSTS': '0',
+                       'CLOUD_COLLECTION_OFFICIAL_AZURE': 'true',
+                       'AZURE_OPENAI_API_KEY': 'OFFLINE_AZURE_SENTINEL',
+                       'APPLY_SAVED_MANIFEST': '{"must":"never reach children"}'}
+        completed = subprocess.CompletedProcess([], 0, b'', b'')
+        with mock.patch.object(cloud, 'child_process', return_value=completed) as child:
+            cloud.invoke_personal_collector(self.root, self.root, self.root / 'report.json', environment)
+            args = cloud.load_personal_collector().argument_parser().parse_args(child.call_args.args[0][4:])
+            self.assertEqual(args.ai_state, self.root / cloud.AI_USAGE)
+            self.assertEqual((args.analysis_run_id, args.analysis_limit, args.max_posts),
+                             ('12345-1', 2, 0))
+            self.assertTrue(args.scheduled)
+            self.assertNotIn('APPLY_SAVED_MANIFEST', child.call_args.kwargs['environment'])
+            cloud.invoke_collector(self.root, self.root, self.root / 'report.json', environment)
+            args = collector.argument_parser().parse_args(child.call_args.args[0][4:])
+            self.assertEqual(args.analysis_backend, 'azure')
+            self.assertEqual(args.analysis_limit, 2)
+            self.assertEqual(child.call_args.kwargs['environment']['AZURE_OPENAI_API_KEY'],
+                             'OFFLINE_AZURE_SENTINEL')
+            environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = '0'
+            cloud.invoke_collector(self.root, self.root, self.root / 'report.json', environment)
+            args = collector.argument_parser().parse_args(child.call_args.args[0][4:])
+            self.assertEqual(args.analysis_limit, 0)
+            with self.assertRaisesRegex(cloud.CloudError, 'invalid_analysis_allocation'):
+                cloud.invoke_personal_collector(self.root, self.root, self.root / 'report.json', environment)
+        for hour, minute, scheduled, expected in (
+                (18, 0, True, True), (18, 1, True, False), (18, 30, True, False),
+                (19, 30, True, False), (20, 30, True, False), (19, 30, False, True)):
+            with self.subTest(hour=hour, minute=minute, scheduled=scheduled):
+                self.assertEqual(cloud.personal_window_open(
+                    dt.datetime(2026, 9, 7, hour, minute, tzinfo=cloud.JST), scheduled=scheduled), expected)
+
+    def test_stale_official_status_without_completion_attestation_retains_lease(self):
+        state = collector.empty_snapshot()
+        state['lastRun'] = {'status': 'ok', 'dateFrom': '2026-09-05', 'dateTo': '2026-09-06'}
+        self.seed_branch(state)
+        with mock.patch.object(cloud, 'invoke_collector', return_value=0), \
+                self.assertRaisesRegex(cloud.CloudError, 'official_report_missing'):
+            cloud.orchestrate(self.args, root=self.root, environment=self.environment, collector=collector)
+        self.assertIn(cloud.LEASE, self.remote_names())
+
+    def test_saved_import_is_explicit_data_only_idempotent_and_uses_normal_lease(self):
+        module, seed = self.personal_seed()
+        private = module.empty_state()
+        module.merge_seed(private, seed)
+        self.seed_branch()
+        self.bare_commit({cloud.PERSONAL: private})
+        before = self.remote_json(cloud.PERSONAL)[0]
+        manifest = self.saved_manifest()
+        manifest['sourceReceipts'] = [{
+            'receiptId': 'c' * 64, 'date': '2026-09-06', 'searches': 8, 'posts': 6,
+            'sourceHash': 'd' * 64,
+        }]
+        self.saved_mode(manifest)
+        with mock.patch.object(cloud, 'invoke_collector', side_effect=AssertionError('No source')), \
+                mock.patch.object(cloud, 'invoke_personal_collector', side_effect=AssertionError('No AI')):
+            result = cloud.orchestrate(
+                self.args, root=self.root, environment=self.environment, collector=collector, personal=module)
+        self.assertEqual(result['collectionStatus'], 'applied-saved')
+        self.assertNotIn(cloud.LEASE, self.remote_names())
+        before['budgets']['2026-09-06']['searches'] += 8
+        before['budgets']['2026-09-06']['posts'] += 6
+        self.assertEqual(self.remote_json(cloud.PERSONAL)[0], before)
+        state, raw = self.remote_json(cloud.AI_USAGE)
+        self.assertEqual(state['imports']['a' * 64], manifest['usageImports'][0])
+        self.assertEqual(state['sourceImports']['c' * 64]['receipt'], manifest['sourceReceipts'][0])
+        self.assertEqual((self.root / 'recovery' / cloud.AI_USAGE).read_bytes(), raw)
+        manifest['expectedStateSHA'] = result['stateCommit']
+        self.saved_mode(manifest)
+        cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                          collector=collector, personal=module)
+        self.assertEqual(self.remote_json(cloud.AI_USAGE)[0], state)
+        self.assertEqual(self.remote_json(cloud.PERSONAL)[0], before)
+        rolled_back = copy.deepcopy(before)
+        rolled_back['budgets']['2026-09-06']['searches'] -= 1
+        self.bare_commit({cloud.PERSONAL: rolled_back})
+        self.args.mode = 'restore'
+        self.assert_read_only_failure('source_usage_budget_mismatch')
+
+    def test_saved_stale_or_raw_manifest_refuses_before_lease_or_collector(self):
+        self.seed_branch()
+        manifest = self.saved_manifest()
+        for field, value, reason in (
+                ('expectedMainSHA', 'f' * 40, 'saved_manifest_stale'),
+                ('expectedStateSHA', 'e' * 40, 'saved_manifest_stale'),
+                ('rawBody', 'must not be accepted', 'unsafe_state'),
+                ('officialAmendments', [None] * 4, 'unsafe_state')):
+            with self.subTest(field=field):
+                bad = copy.deepcopy(manifest)
+                bad[field] = value
+                self.saved_mode(bad)
+                self.assert_read_only_failure(reason)
+        self.saved_mode(manifest)
+        self.environment['APPLY_SAVED_MANIFEST'] = self.environment['APPLY_SAVED_MANIFEST'].replace(
+            '"schemaVersion": 1', '"schemaVersion": 1, "schemaVersion": 1')
+        self.assert_read_only_failure('unsafe_state')
+
+    def test_synthetic_saved_notice_preserves_roster_and_distinct_observation_times(self):
+        module, seed = self.personal_seed()
+        private = module.empty_state()
+        module.merge_seed(private, seed)
+        snapshot = collector.empty_snapshot()
+        snapshot['posts'] = [fact()]
+        snapshot['officialAnalysis'] = collector.analysis_module().empty_state()
+        snapshot['officialAnalysis']['cache']['f' * 64] = {
+            'postId': TID, 'bodyHash': 'a' * 64, 'versionHash': 'c' * 64,
+            'createdAt': snapshot['posts'][0]['createdAt'], 'fetchedAt': '2026-09-06T04:00:00Z',
+            'at': '2026-09-06T04:00:00Z', 'reason': 'no_event', 'notices': [],
+        }
+        self.seed_branch(snapshot)
+        self.bare_commit({cloud.PERSONAL: private})
+        manifest = self.saved_manifest()
+        source = {field: snapshot['posts'][0][field] for field in (
+            'url', 'authorId', 'authorScreenName', 'createdAt')}
+        source.update(fetchedAt='2026-09-06T05:54:14.290Z', bodyHash='e' * 64,
+                      analyzedAt='2026-09-07T03:00:00Z', analysisReceiptHash='d' * 64)
+        amendment = {
+            'schemaVersion': 1, 'id': TID, 'source': source,
+            'notices': [{'name': 'るるか', 'kind': 'late', 'excerpt': 'るるかちゃんもあとから',
+                         'observedAt': source['fetchedAt']}],
+        }
+        manifest['officialAmendments'] = [{
+            'expectedPostHash': cloud.data_hash(snapshot['posts'][0]), 'amendment': amendment,
+        }]
+        for change, reason in (
+                (lambda item: item.update(expectedPostHash='f' * 64), 'saved_post_hash_mismatch'),
+                (lambda item: item['amendment'].update(rawBody='not allowed'), 'saved_manifest_rejected'),
+                (lambda item: item['amendment']['source'].update(
+                    url='https://untrusted.invalid/input'), 'saved_manifest_rejected')):
+            rejected = copy.deepcopy(manifest)
+            change(rejected['officialAmendments'][0])
+            self.saved_mode(rejected)
+            self.assert_read_only_failure(reason)
+        self.saved_mode(manifest)
+        with mock.patch.object(cloud, 'invoke_collector', side_effect=AssertionError('No source or AI')), \
+                mock.patch.object(cloud, 'invoke_personal_collector', side_effect=AssertionError('No source or AI')):
+            result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                       collector=collector, personal=module)
+        saved = self.remote_json(cloud.SNAPSHOT)[0]
+        self.assertEqual(saved['posts'][0]['names'], snapshot['posts'][0]['names'])
+        self.assertEqual(saved['posts'][0]['observedAt'], snapshot['posts'][0]['observedAt'])
+        self.assertEqual(saved['posts'][0]['notices'], amendment['notices'])
+        self.assertEqual(saved['officialAnalysis']['cache'], snapshot['officialAnalysis']['cache'])
+        self.assertEqual(len(saved['officialAnalysis']['history']), 1)
+        receipt = saved['officialAnalysis']['receipts'][cloud.data_hash(amendment)]
+        self.assertEqual(receipt['analyzedAt'], source['analyzedAt'])
+        self.assertEqual(receipt['at'], source['fetchedAt'])
+        pages_spec = importlib.util.spec_from_file_location('saved_pages', ROOT / 'tools' / 'pages.py')
+        pages = importlib.util.module_from_spec(pages_spec)
+        pages_spec.loader.exec_module(pages)
+        public = pages.load_public_snapshot(self.output)
+        self.assertEqual(public['posts'][0]['notices'], amendment['notices'])
+        self.assertNotIn('officialAnalysis', public)
+        manifest['expectedStateSHA'] = result['stateCommit']
+        self.saved_mode(manifest)
+        cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                          collector=collector, personal=module)
+        self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0], saved)
+
+    def test_daily_children_share_three_ai_requests_and_official_source_remainder(self):
+        module, seed = self.personal_seed()
+        private = module.empty_state()
+        module.merge_seed(private, seed)
+        self.seed_branch()
+        ledger = cloud.load_analysis_state()
+        imported = ledger.empty_state()
+        ledger.apply_import(imported, {
+            'receiptId': 'a' * 64, 'date': '2026-09-07', 'counts': {'requests': 27},
+            'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'text', 'count': 27}],
+            'sourceHash': 'b' * 64,
+        })
+        self.bare_commit({cloud.PERSONAL: private, cloud.AI_USAGE: imported})
+        self.args.mode = 'daily-guidance'
+        self.environment.update(GITHUB_EVENT_NAME='schedule', DAILY_GUIDANCE_ENABLED='true')
+        event = json.loads(self.event_path.read_bytes())
+        event['schedule'] = cloud.DAILY_SCHEDULE
+        self.event_path.write_text(json.dumps(event), encoding='utf-8')
+        now = [dt.datetime(2026, 9, 7, 12, 30, tzinfo=cloud.JST)]
+        calls = []
+        identity = {'provider': 'azure_openai', 'endpoint': 'https://offline.openai.azure.com',
+                    'deployment': 'gpt-5.6-luna', 'model': 'gpt-5.6-luna', 'modelVersion': '2026-07-09'}
+
+        def sleep(seconds):
+            now[0] += dt.timedelta(seconds=seconds)
+
+        def invoke(component, state, report, environment):
+            with ledger.SharedUsage(
+                    state / cloud.AI_USAGE, run_id=environment['CLOUD_COLLECTION_RUN_ID'],
+                    component=component, clock=lambda: now[0], sleep=sleep,
+                    request_limit=int(environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'])) as usage:
+                for index in range(3):
+                    key = cloud.data_hash([component, index])
+                    try:
+                        usage.reserve(key, identity)
+                    except ledger.UsageFailure:
+                        break
+                    usage.issued(key)
+                    usage.finish(key, 'no_event')
+                    calls.append(component)
+            if component == 'official':
+                self.assertEqual(environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'], '2')
+                snapshot, _ = cloud.validate_snapshot(state / cloud.SNAPSHOT, collector)
+                snapshot['lastRun'] = {
+                    'status': 'no-new', 'dateFrom': '2026-09-06', 'dateTo': '2026-09-07',
+                    'requests': {'searches': 2, 'posts': 19},
+                }
+                collector.atomic_json(state / cloud.SNAPSHOT, snapshot)
+                self.empty_analysis_buffer(state, environment)
+                code = 0
+            else:
+                self.assertEqual(environment['CLOUD_COLLECTION_PERSONAL_POSTS'], '1')
+                snapshot = module.read_state(state / cloud.PERSONAL)
+                self.assertEqual(snapshot['posts'], private['posts'])
+                snapshot['lastRun'] = {'status': 'partial', 'requests': {'searches': 3, 'posts': 1}}
+                collector.atomic_json(state / cloud.PERSONAL, snapshot)
+                code = 2
+            collector.atomic_json(report, {'component': component, 'status': snapshot['lastRun']['status'],
+                                           'exitCode': code, 'requests': snapshot['lastRun']['requests']})
+            return code
+
+        with mock.patch.object(collector, 'utc_now', side_effect=lambda: now[0]), \
+                mock.patch.object(cloud, 'invoke_collector', side_effect=lambda r, s, p, e: invoke('official', s, p, e)), \
+                mock.patch.object(cloud, 'invoke_personal_collector', side_effect=lambda r, s, p, e: invoke('personal', s, p, e)):
+            result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                       collector=collector, personal=module)
+        self.assertEqual(calls, ['official', 'official', 'personal'])
+        self.assertEqual(result['collectionStatus'], 'partial')
+        self.assertEqual(self.remote_json(cloud.PERSONAL)[0]['posts'], private['posts'])
+        saved = self.remote_json(cloud.AI_USAGE)[0]
+        self.assertEqual(ledger.remaining(saved, '12345-1', now[0]), 0)
+        self.assertEqual(ledger.usage_counts(saved, '12345-1', now[0])['day'], 30)
+        path = self.output.parent / cloud.AI_USAGE
+        self.assertEqual(cloud.official_allocation(
+            path, '12346-1', now[0] + dt.timedelta(days=1), True, True), 1)
+        self.assertEqual(cloud.official_allocation(
+            path, '12346-1', now[0].replace(hour=18, minute=30), True, True), 0)
+        self.assertEqual(cloud.official_allocation(
+            path, '12346-1', now[0].replace(hour=18, minute=30) + dt.timedelta(days=1),
+            True, True), 3)
+
+    def test_waiting_past_scheduled_cutoff_never_starts_personal_child(self):
+        module, seed = self.personal_seed()
+        private = module.empty_state()
+        module.merge_seed(private, seed)
+        self.seed_branch()
+        ledger = cloud.load_analysis_state()
+        state = ledger.empty_state()
+        ledger.apply_import(state, self.saved_manifest()['usageImports'][0])
+        self.bare_commit({cloud.PERSONAL: private, cloud.AI_USAGE: state})
+        self.args.mode = 'daily-guidance'
+        self.environment.update(GITHUB_EVENT_NAME='schedule', DAILY_GUIDANCE_ENABLED='true')
+        event = json.loads(self.event_path.read_bytes())
+        event['schedule'] = cloud.DAILY_SCHEDULE
+        self.event_path.write_text(json.dumps(event), encoding='utf-8')
+        now = [dt.datetime(2026, 9, 7, 17, 30, tzinfo=cloud.JST)]
+
+        def official(root, saved, report, environment):
+            now[0] = now[0].replace(hour=18, minute=30)
+            snapshot, _ = cloud.validate_snapshot(saved / cloud.SNAPSHOT, collector)
+            snapshot['lastRun'] = {
+                'status': 'no-new', 'dateFrom': '2026-09-06', 'dateTo': '2026-09-07',
+            }
+            collector.atomic_json(saved / cloud.SNAPSHOT, snapshot)
+            self.empty_analysis_buffer(saved, environment)
+            collector.atomic_json(report, {
+                'component': 'official', 'status': 'no-new', 'exitCode': 0,
+                'requests': {'searches': 2, 'posts': 20},
+            })
+            return 0
+
+        with mock.patch.object(collector, 'utc_now', side_effect=lambda: now[0]), \
+                mock.patch.object(cloud, 'invoke_collector', side_effect=official), \
+                mock.patch.object(cloud, 'invoke_personal_collector') as personal:
+            result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                       collector=collector, personal=module)
+        personal.assert_not_called()
+        self.assertEqual(result['personalCollectionStatus'], 'outside-window')
+        saved = self.remote_json(cloud.PERSONAL)[0]
+        self.assertEqual(saved['lastRun']['status'], 'outside-window')
+        for field in ('posts', 'pending', 'budgets', 'paused', 'originalTargets', 'lastSuccessAt'):
+            self.assertEqual(saved[field], private[field])
+        self.assertEqual(self.remote_json(cloud.AI_USAGE)[0], state)
+
+    def test_shared_reservation_survives_child_failure_in_exact_private_recovery(self):
+        self.seed_branch()
+        ledger = cloud.load_analysis_state()
+        initial = ledger.empty_state()
+        ledger.apply_import(initial, self.saved_manifest()['usageImports'][0])
+        self.bare_commit({cloud.AI_USAGE: initial})
+        now = dt.datetime(2026, 9, 7, 12, tzinfo=cloud.JST)
+        reserved = []
+
+        def interrupted(root, saved, report, environment):
+            with ledger.SharedUsage(
+                    saved / cloud.AI_USAGE, run_id=environment['CLOUD_COLLECTION_RUN_ID'],
+                    component='official', clock=lambda: now, sleep=lambda _: None) as usage:
+                usage.reserve('f' * 64, {
+                    'provider': 'azure_openai', 'endpoint': 'https://offline.openai.azure.com',
+                    'deployment': 'gpt-5.6-luna', 'model': 'gpt-5.6-luna', 'modelVersion': '2026-07-09',
+                })
+            reserved.append((saved / cloud.AI_USAGE).read_bytes())
+            return 4
+
+        with mock.patch.object(cloud, 'invoke_collector', side_effect=interrupted), \
+                self.assertRaisesRegex(cloud.CloudError, 'collector_local_failure'):
+            cloud.orchestrate(self.args, root=self.root, environment=self.environment, collector=collector)
+        self.assertIn(cloud.LEASE, self.remote_names())
+        self.assertEqual(self.remote_json(cloud.AI_USAGE)[0], initial)
+        path = self.root / 'recovery' / cloud.AI_USAGE
+        recovered, raw = cloud.validate_ai_usage(path)
+        self.assertEqual(raw, reserved[0])
+        self.assertEqual(ledger.usage_counts(recovered, '12345-1', now)['run'], 1)
+        self.assert_read_only_failure('unresolved_lease')
+
+    def test_saved_import_preserves_legacy_backoff_pause_and_requires_usage_coverage(self):
+        module, seed = self.personal_seed()
+        private = module.empty_state()
+        module.merge_seed(private, seed)
+        legacy = module.azure.empty_state()
+        legacy['budgets'] = {'2026-09-07': 4}
+        legacy['nextRequestAt'] = '2026-09-07T05:00:00Z'
+        legacy['paused'] = {'reason': 'azure_auth_stopped', 'httpStatus': 403,
+                            'at': '2026-09-07T03:00:00Z'}
+        private['azureAnalysis'] = legacy
+        self.seed_branch()
+        manifest = self.saved_manifest()
+        now = dt.datetime(2026, 9, 7, 3, tzinfo=dt.timezone.utc)
+        with mock.patch.object(collector, 'utc_now', return_value=now):
+            _, personal_result, usage = cloud.prepare_saved(
+                manifest, collector.empty_snapshot(), private, None, collector, module)
+        self.assertEqual(personal_result, private)
+        self.assertEqual(usage['paused'], legacy['paused'])
+        self.assertEqual(usage['nextRequestAt'], legacy['nextRequestAt'])
+        self.assertEqual(usage['retryAt'], legacy['nextRequestAt'])
+        manifest['usageImports'][0]['counts']['requests'] = 3
+        manifest['usageImports'][0]['modelBreakdown'][1]['count'] = 2
+        with self.assertRaisesRegex(cloud.CloudError, 'incomplete_legacy_usage_import'):
+            cloud.prepare_saved(manifest, collector.empty_snapshot(), private, None, collector, module)
+
+    def test_manual_azure_requires_reconciled_shared_ledger_even_with_activation_off(self):
+        module, seed = self.personal_seed()
+        private = module.empty_state()
+        module.merge_seed(private, seed)
+        self.seed_branch()
+        self.bare_commit({cloud.PERSONAL: private})
+        self.environment.update(PERSONAL_ANALYSIS_BACKEND='azure', DAILY_GUIDANCE_ENABLED='false')
+        for mode in ('personal', 'both'):
+            self.personal_mode(mode)
+            self.assert_read_only_failure('missing_ai_usage')
+        ledger = cloud.load_analysis_state()
+        usage = ledger.empty_state()
+        self.bare_commit({cloud.AI_USAGE: usage})
+        self.assert_read_only_failure('missing_initial_usage_import')
+        ledger.apply_import(usage, self.saved_manifest()['usageImports'][0])
+        private['azureAnalysis'] = module.azure.empty_state()
+        private['azureAnalysis']['budgets'] = {'2026-09-07': 5}
+        self.bare_commit({cloud.AI_USAGE: usage, cloud.PERSONAL: private})
+        self.assert_read_only_failure('incomplete_legacy_usage_import')
+        private['azureAnalysis']['budgets']['2026-09-07'] = 4
+        private['azureAnalysis']['paused'] = {
+            'reason': 'azure_auth_stopped', 'httpStatus': 403, 'at': '2026-09-07T03:00:00Z',
+        }
+        self.bare_commit({cloud.PERSONAL: private})
+        self.assert_read_only_failure('unreconciled_ai_usage')
+        self.args.mode = 'restore'
+        result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                   collector=collector, personal=module)
+        self.assertEqual(result['persistenceStatus'], 'restored')
+        self.assertEqual(self.remote_json(cloud.PERSONAL)[0], private)
+
+    def test_personal_azure_child_cannot_fall_back_to_private_zero_budget(self):
+        environment = {**self.environment, 'PERSONAL_ANALYSIS_BACKEND': 'azure'}
+        with mock.patch.object(cloud, 'child_process') as child, \
+                self.assertRaisesRegex(cloud.CloudError, 'missing_ai_usage'):
+            cloud.invoke_personal_collector(self.root, self.root, self.root / 'report.json', environment)
+        child.assert_not_called()
+
+    def test_zero_official_allocation_keeps_scarce_deadline_slot_for_personal(self):
+        ledger = cloud.load_analysis_state()
+        path = self.root / cloud.AI_USAGE
+        for used, hour, minute, personal_active, expected in (
+                (29, 13, 29, True, 0), (29, 14, 0, True, 1),
+                (28, 13, 29, True, 1), (30, 12, 30, True, 0),
+                (29, 13, 29, False, 1)):
+            with self.subTest(used=used, hour=hour, minute=minute, personal_active=personal_active):
+                state = ledger.empty_state()
+                ledger.apply_import(state, {
+                    'receiptId': 'a' * 64, 'date': '2026-09-07', 'counts': {'requests': used},
+                    'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'text', 'count': used}],
+                    'sourceHash': 'b' * 64,
+                })
+                collector.atomic_json(path, state)
+                now = dt.datetime(2026, 9, 7, hour, minute, tzinfo=cloud.JST)
+                self.assertEqual(cloud.official_allocation(
+                    path, '12345-1', now, personal_active, True), expected)
+
+    def test_resume_aggregation_keeps_source_counters_and_source_failures(self):
+        initial = collector.empty_snapshot()
+        initial.update(checkedAt=collector.iso(NOW), posts=[fact(TID), fact(OTHER), fact(THIRD)])
+        initial['pending'] = [{**pending(THIRD), 'reason': 'azure_budget_exhausted'}]
+        initial['lastRun'] = {
+            'status': 'partial', 'dateFrom': '2026-09-04', 'dateTo': '2026-09-05',
+            'finishedAt': collector.iso(NOW), 'requests': {'searches': 2, 'posts': 3},
+            'sourceCount': 2, 'attemptedCount': 3, 'fetchedCount': 3,
+            'newPostCount': 3, 'newNameCount': 6, 'deferredCount': 0, 'pendingCount': 1,
+            'sources': [{'url': url, 'status': 'ok', 'candidateCount': 3}
+                        for url in collector.SEARCH_URLS],
+            'failures': [{'id': THIRD, 'url': collector.canonical(THIRD),
+                          'reason': 'azure_budget_exhausted'}],
+        }
+        resumed = copy.deepcopy(initial)
+        resumed['pending'] = []
+        resumed['lastRun'] = {
+            'status': 'no-new', 'dateFrom': '2026-09-04', 'dateTo': '2026-09-05',
+            'finishedAt': collector.iso(NOW + dt.timedelta(minutes=2)),
+            'requests': {'searches': 0, 'posts': 0}, 'sourceCount': 0,
+            'newPostCount': 0, 'newNameCount': 0, 'failures': [],
+        }
+        result = cloud.aggregate_official_resume(
+            initial, resumed, {THIRD}, initial['lastRun']['requests'], collector)
+        self.assertEqual(result['lastRun']['status'], 'ok')
+        for field in ('requests', 'sourceCount', 'attemptedCount', 'fetchedCount',
+                      'newPostCount', 'newNameCount', 'sources'):
+            self.assertEqual(result['lastRun'][field], initial['lastRun'][field])
+        self.assertEqual(result['lastRun']['failures'], [])
+        self.assertEqual(result['checkedAt'], initial['checkedAt'])
+        self.assertEqual(result['posts'], initial['posts'])
+        initial['lastRun']['sourceCount'] = 1
+        initial['lastRun']['sources'][0] = {
+            'url': collector.SEARCH_URLS[0], 'status': 'failed', 'reason': 'network_error',
+        }
+        result = cloud.aggregate_official_resume(
+            initial, resumed, {THIRD}, initial['lastRun']['requests'], collector)
+        self.assertEqual(result['lastRun']['status'], 'partial')
+        self.assertEqual(result['lastRun']['sources'], initial['lastRun']['sources'])
+        self.assertEqual(result['lastSuccessAt'], initial['lastSuccessAt'])
+
+    def buffered_guidance(self, *, personal_attempts=0, near_deadline=False,
+                          search_failure=False, corrupt_buffer=False, fail_replay=False,
+                          replay_refusal=False, known_queue=False):
+        module, seed = self.personal_seed()
+        private = module.empty_state()
+        module.merge_seed(private, seed)
+        self.seed_branch()
+        analysis = collector.analysis_module()
+        usage = analysis.ledger.empty_state()
+        analysis.ledger.apply_import(usage, self.saved_manifest()['usageImports'][0])
+        self.bare_commit({cloud.PERSONAL: private, cloud.AI_USAGE: usage})
+        self.args.mode = 'daily-guidance'
+        self.environment.update(
+            GITHUB_EVENT_NAME='schedule', DAILY_GUIDANCE_ENABLED='true',
+            AZURE_OPENAI_ENDPOINT='https://offline.openai.azure.com',
+            AZURE_OPENAI_API_KEY='OFFLINE_TRANSIENT_AZURE_KEY')
+        event = json.loads(self.event_path.read_bytes())
+        event['schedule'] = cloud.DAILY_SCHEDULE
+        self.event_path.write_text(json.dumps(event), encoding='utf-8')
+        now = [dt.datetime(2026, 9, 7, 13 if near_deadline else 12,
+                           29 if near_deadline else 30, tzinfo=cloud.JST)]
+        ids = [make_id(f'2026-09-07T02:0{minute}:00Z') for minute in range(3)]
+        posts = {tid: {**payload(tid), 'text': payload(tid)['text'] + '\n\nみりあちゃんもあとから来るにゃんね',
+                       'rawOnly': 'RAW-TRANSIENT-ONLY'} for tid in ids}
+        if known_queue:
+            initial = collector.empty_snapshot()
+            initial['officialAnalysis'] = analysis.empty_state()
+            previous = now[0] - dt.timedelta(minutes=10)
+            for tid in ids:
+                saved = collector.validate_post(
+                    tid, posts[tid], dt.date(2026, 9, 7), dt.date(2026, 9, 7), previous)
+                initial['posts'].append(saved)
+                initial['officialAnalysis']['queue'][tid] = {
+                    'createdAt': saved['createdAt'], 'fetchedAt': collector.iso(previous),
+                    'bodyHash': analysis.digest(posts[tid]['text']), 'reason': 'azure_budget_exhausted'}
+            self.bare_commit({cloud.SNAPSHOT: initial})
+        source = OfflineClient(ids, posts)
+        search = source.search
+
+        def search_once(url):
+            if search_failure and not source.searches:
+                source.searches.append(url)
+                raise collector.FetchFailure('network_error')
+            return search(url)
+
+        source.search = search_once
+        trace, phases, buffers = [], [], []
+        real_analyzer, real_child = analysis.AzureAnalyzer, cloud.child_process
+        outer = self
+
+        def sleep(seconds):
+            now[0] += dt.timedelta(seconds=seconds)
+
+        class Response:
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def getcode(self):
+                return 200
+
+            def read(self, limit):
+                result = {'decision': 'notices', 'date': '2026-09-07', 'notices': [{
+                    'name': 'みりあ', 'kind': 'late', 'time': None, 'evidenceLineIds': [1, 2, 8],
+                }]}
+                message = ({'refusal': 'offline refusal', 'content': None}
+                           if replay_refusal and phases[-1][0] == 'replay' else {'content': json.dumps(result)})
+                return json.dumps({'model': analysis.transport.MODEL_NAME, 'choices': [{
+                    'finish_reason': 'stop', 'message': message,
+                }]}).encode('utf-8')[:limit]
+
+        class Opener:
+            def open(self, request, timeout):
+                trace.append('official')
+                return Response()
+
+        def analyzer(state, context, environment, shared, **kwargs):
+            return real_analyzer(
+                state, context, self.environment, shared, **kwargs,
+                names=('あむ', 'こい', 'みりあ'), opener=Opener())
+
+        def child(argv, **kwargs):
+            if len(argv) < 4 or argv[0] != sys.executable:
+                return real_child(argv, **kwargs)
+            name = Path(argv[3]).name
+            if name == 'collect-shifts.py':
+                args = collector.argument_parser().parse_args(argv[4:])
+                phase = 'replay' if args.replay_buffer else 'source'
+                phases.append((phase, args.analysis_limit, args.analysis_run_id))
+                outer.assertNotIn('GH_TOKEN', kwargs['environment'])
+                outer.assertEqual(kwargs['environment']['AZURE_OPENAI_API_KEY'], 'OFFLINE_TRANSIENT_AZURE_KEY')
+                if args.replay_buffer:
+                    outer.assertEqual(len(source.requests), 3)
+                    if fail_replay:
+                        return subprocess.CompletedProcess(argv, 4, b'', b'')
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = collector.run(
+                        args, curated=self.root / 'tools' / 'data' / 'shifts.csv',
+                        client=None if args.replay_buffer else source, clock=lambda: now[0], sleep=sleep)
+                if args.analysis_buffer:
+                    buffers.append(args.analysis_buffer)
+                    value = json.loads(args.analysis_buffer.read_bytes())
+                    outer.assertLessEqual(len(value['items']), 3)
+                    outer.assertIn('RAW-TRANSIENT-ONLY', args.analysis_buffer.read_text(encoding='utf-8'))
+                    if corrupt_buffer:
+                        value['items'] = value['items'][:1] * 4
+                        collector.atomic_json(args.analysis_buffer, value)
+                return subprocess.CompletedProcess(argv, code, b'', b'')
+            if name == 'collect-personal-shifts.py':
+                args = module.argument_parser().parse_args(argv[4:])
+                state = module.read_state(args.snapshot)
+                day = now[0].astimezone(cloud.JST).date().isoformat()
+                budget = state['budgets'].setdefault(day, {'searches': 0, 'posts': 0})
+                budget['searches'] += 3
+                budget['posts'] += personal_attempts
+                sleep(3)
+                with analysis.ledger.SharedUsage(
+                        args.ai_state, run_id=args.analysis_run_id, component='personal',
+                        clock=lambda: now[0], sleep=sleep, request_limit=args.analysis_limit) as shared:
+                    for index in range(personal_attempts):
+                        key = cloud.data_hash(['personal-buffer-test', index])
+                        shared.reserve(key, {
+                            'provider': 'azure_openai', 'endpoint': 'https://offline.openai.azure.com',
+                            'deployment': 'gpt-5.6-luna', 'model': 'gpt-5.6-luna', 'modelVersion': '2026-07-09',
+                        })
+                        shared.issued(key)
+                        shared.finish(key, 'no_event')
+                        trace.append('personal')
+                state['lastRun'] = {
+                    'status': 'no-new' if personal_attempts else 'no-results', 'date': day,
+                    'sourceCount': 3, 'requests': {'searches': 3, 'posts': personal_attempts},
+                }
+                collector.atomic_json(args.snapshot, state)
+                collector.atomic_json(args.report, {
+                    'component': 'personal', 'status': state['lastRun']['status'], 'exitCode': 0,
+                })
+                return subprocess.CompletedProcess(argv, 0, b'', b'')
+            return real_child(argv, **kwargs)
+
+        with mock.patch.object(collector, 'ROOT', self.root), \
+                mock.patch.object(collector, 'utc_now', side_effect=lambda: now[0]), \
+                mock.patch.object(collector, 'analysis_module', return_value=analysis), \
+                mock.patch.object(collector, 'PublicClient', side_effect=AssertionError('No new source client')), \
+                mock.patch.object(analysis, 'AzureAnalyzer', side_effect=analyzer), \
+                mock.patch.object(cloud, 'child_process', side_effect=child):
+            if corrupt_buffer or fail_replay:
+                reason = 'official_analysis_buffer_invalid' if corrupt_buffer else 'official_resume_local_failure'
+                with self.assertRaisesRegex(cloud.CloudError, reason):
+                    cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                      collector=collector, personal=module)
+                result = None
+            else:
+                result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                           collector=collector, personal=module)
+        self.assertEqual((len(source.searches), len(source.requests)), (2, 3))
+        self.assertTrue(all(not path.exists() for path in buffers))
+        self.assertFalse(list(self.root.glob('.cc-work-*')))
+        self.assertNotIn(cloud.ANALYSIS_BUFFER, self.remote_names())
+        for path in (self.root / 'recovery').iterdir():
+            self.assertNotEqual(path.name, cloud.ANALYSIS_BUFFER)
+            self.assertNotIn(b'RAW-TRANSIENT-ONLY', path.read_bytes())
+            self.assertNotIn(b'OFFLINE_TRANSIENT_AZURE_KEY', path.read_bytes())
+        saved = self.remote_json(cloud.SNAPSHOT)[0]
+        ledger = self.remote_json(cloud.AI_USAGE)[0]
+        return result, saved, ledger, trace, phases, now[0]
+
+    def test_personal_no_candidates_returns_third_slot_without_another_source_get(self):
+        result, state, usage, trace, phases, now = self.buffered_guidance()
+        self.assertEqual(trace, ['official', 'official', 'official'])
+        self.assertEqual([(phase, limit) for phase, limit, _ in phases], [('source', 2), ('replay', 3)])
+        self.assertEqual(len({run for _, _, run in phases}), 1)
+        self.assertEqual(result['officialCollectionStatus'], 'ok')
+        self.assertEqual(state['lastRun']['requests'], {'searches': 2, 'posts': 3})
+        self.assertEqual((state['lastRun']['newPostCount'], state['lastRun']['newNameCount']), (3, 6))
+        self.assertEqual(state['pending'], [])
+        self.assertTrue(all(len(post['notices']) == 1 for post in state['posts']))
+        replayed = state['posts'][0]
+        cached = next(entry for entry in state['officialAnalysis']['cache'].values()
+                      if entry['postId'] == replayed['id'])
+        self.assertGreater(collector.timestamp(cached['at']),
+                           collector.timestamp(replayed['notices'][0]['observedAt']))
+        spec = importlib.util.spec_from_file_location('buffer_pages', ROOT / 'tools' / 'pages.py')
+        pages = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pages)
+        public = pages.load_public_snapshot(self.output)
+        self.assertEqual(public['posts'], state['posts'])
+        self.assertNotIn('RAW-TRANSIENT-ONLY', json.dumps(public))
+        self.assertNotIn('officialAnalysis', public)
+        self.assertEqual(cloud.load_analysis_state().remaining(usage, '12345-1', now), 0)
+        self.assertNotIn(cloud.LEASE, self.remote_names())
+
+    def test_shared_slots_stay_fair_before_one_source_free_official_replay(self):
+        result, state, usage, trace, phases, now = self.buffered_guidance(
+            personal_attempts=1, near_deadline=True)
+        self.assertEqual(trace, ['official', 'personal', 'official'])
+        self.assertEqual([(phase, limit) for phase, limit, _ in phases], [('source', 1), ('replay', 2)])
+        self.assertEqual(result['officialCollectionStatus'], 'partial')
+        self.assertEqual(len(state['pending']), 1)
+        self.assertEqual(cloud.load_analysis_state().remaining(usage, '12345-1', now), 0)
+        self.assertEqual(state['lastRun']['requests'], {'searches': 2, 'posts': 3})
+
+    def test_known_queue_only_uses_returned_personal_slot_without_replay_get(self):
+        result, state, usage, trace, phases, now = self.buffered_guidance(known_queue=True)
+        self.assertEqual(trace, ['official'] * 3)
+        self.assertEqual([(phase, limit) for phase, limit, _ in phases], [('source', 2), ('replay', 3)])
+        self.assertEqual(result['officialCollectionStatus'], 'no-new')
+        self.assertEqual(state['lastRun']['requests'], {'searches': 2, 'posts': 3})
+        self.assertEqual((state['lastRun']['newPostCount'], state['lastRun']['newNameCount']), (0, 0))
+        self.assertEqual(state['pending'], [])
+        self.assertTrue(all(len(post['notices']) == 1 for post in state['posts']))
+        self.assertEqual(cloud.load_analysis_state().remaining(usage, '12345-1', now), 0)
+
+    def test_official_replay_does_not_clear_initial_search_failure(self):
+        result, state, _, trace, phases, _ = self.buffered_guidance(search_failure=True)
+        self.assertEqual(trace, ['official'] * 3)
+        self.assertEqual(len(phases), 2)
+        self.assertEqual(result['officialCollectionStatus'], 'partial')
+        self.assertEqual(state['lastRun']['sourceCount'], 1)
+        self.assertEqual(state['lastRun']['sources'][0]['reason'], 'network_error')
+        self.assertEqual(state['lastRun']['requests'], {'searches': 2, 'posts': 3})
+        self.assertIsNone(state['lastSuccessAt'])
+
+    def test_invalid_or_failed_transient_buffer_is_never_recovered_or_published(self):
+        self.buffered_guidance(corrupt_buffer=True)
+        self.assertIn(cloud.LEASE, self.remote_names())
+
+    def test_failed_official_replay_keeps_lease_without_retaining_raw_buffer(self):
+        self.buffered_guidance(fail_replay=True)
+        self.assertIn(cloud.LEASE, self.remote_names())
+
+    def test_official_replay_refusal_remains_partial_without_dropping_source_facts(self):
+        result, state, usage, trace, _, now = self.buffered_guidance(replay_refusal=True)
+        self.assertEqual(trace, ['official'] * 3)
+        self.assertEqual(result['officialCollectionStatus'], 'partial')
+        self.assertEqual(state['pending'][0]['reason'], 'azure_refused')
+        self.assertEqual(state['lastRun']['failures'][0]['reason'], 'azure_refused')
+        self.assertEqual((state['lastRun']['newPostCount'], state['lastRun']['newNameCount']), (3, 6))
+        self.assertEqual(state['lastRun']['requests'], {'searches': 2, 'posts': 3})
+        self.assertEqual(cloud.load_analysis_state().remaining(usage, '12345-1', now), 0)
 
     def test_personal_entrypoint_respects_the_official_canonical_lock_before_any_work(self):
         module, seed = self.personal_seed()
