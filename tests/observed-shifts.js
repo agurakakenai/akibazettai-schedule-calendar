@@ -18,6 +18,8 @@ const makePost = (id, storeId, names) => ({
   createdAt: "2026-09-05T03:00:00Z", observedAt: "2026-09-05T05:00:00Z",
   date: "2026-09-05", shift: "昼", storeId, names
 });
+const snowflakeDate = (id) => new Date(Number((BigInt(id) >> 22n) + 1288834974657n)).toISOString();
+const snowflakeAt = (time) => ((BigInt(Date.parse(time)) - 1288834974657n) << 22n).toString();
 const fixture = {
   schemaVersion: 1, complete: false, checkedAt: "2026-09-05T05:00:00Z",
   lastSuccessAt: "2026-09-05T05:00:00Z", pending: [],
@@ -61,10 +63,12 @@ assert.equal(api.observedShift(fixture, insights, "2026-09-06", "昼").posts.len
   const first = makePost("2096000000000000010", "s1", ["まこと", "あむ"]);
   const second = {
     ...makePost("2096000000000000011", "s2", ["あむ"]),
+    createdAt: snowflakeDate("2096000000000000011"),
     notices: [{ name: "みりあ", kind: "late", excerpt: "あとから" }],
     editTweetIds: [first.id, "2096000000000000011"]
   };
   const latest = { ...makePost("2096000000000000012", "s4", ["みりあ"]),
+    createdAt: snowflakeDate("2096000000000000012"),
     editTweetIds: [first.id, second.id, "2096000000000000012"] };
   const snapshot = { ...fixture, posts: [first, second] };
   const raw = JSON.stringify(snapshot);
@@ -130,10 +134,48 @@ assert.equal(api.observedShift(fixture, insights, "2026-09-06", "昼").posts.len
   assert.deepEqual(api.activeObservationPosts({ posts: [cyclic[0]] }).map(post => post.id), [first.id],
     "an invalid descending claim cannot erase the only available facts");
   const twentyOneIds = Array.from({ length: 21 }, (_, index) => (2096800000000000000n + BigInt(index)).toString());
-  const bounded = { ...makePost(twentyOneIds[19], "s1", ["あむ"]), editTweetIds: twentyOneIds.slice(0, 20) };
+  const bounded = { ...makePost(twentyOneIds[19], "s1", ["あむ"]),
+    createdAt: snowflakeDate(twentyOneIds[19]), editTweetIds: twentyOneIds.slice(0, 20) };
   assert.ok(api.validateObservations({ ...fixture, posts: [bounded] }));
-  const oversized = { ...makePost(twentyOneIds[20], "s1", ["あむ"]), editTweetIds: twentyOneIds };
+  const oversized = { ...makePost(twentyOneIds[20], "s1", ["あむ"]),
+    createdAt: snowflakeDate(twentyOneIds[20]), editTweetIds: twentyOneIds };
   assert.throws(() => api.validateObservations({ ...fixture, posts: [oversized] }));
+}
+{
+  const sameClock = (oldTime, currentTime) => {
+    const old = { ...makePost(snowflakeAt(oldTime), "s1", ["あむ"]), createdAt: oldTime };
+    const current = { ...makePost(snowflakeAt(currentTime), "s2", ["みりあ"]), createdAt: currentTime,
+      editTweetIds: [old.id, snowflakeAt(currentTime)] };
+    return { old, current, snapshot: { ...fixture, posts: [old, current] } };
+  };
+  for (const [oldTime, currentTime] of [
+    ["2026-09-05T23:59:59Z", "2026-09-06T00:00:00Z"],
+    ["2026-09-05T23:59:59+09:00", "2026-09-06T04:59:59+09:00"]
+  ]) {
+    const { current, snapshot } = sameClock(oldTime, currentTime);
+    assert.ok(api.validateObservations(snapshot), "UTC/civil midnight is not the service-day boundary");
+    assert.deepEqual(api.activeObservationPosts(snapshot).map(post => post.id), [current.id]);
+  }
+  const boundary = sameClock("2026-09-06T04:59:59.999+09:00", "2026-09-06T05:00:00+09:00");
+  assert.throws(() => api.validateObservations(boundary.snapshot));
+  assert.ok(api.activeObservationPosts(boundary.snapshot).includes(boundary.old),
+    "a same-UTC-date, same-civil-date chain crossing JST05 cannot erase old facts");
+  const old = { ...makePost("2096436633973526890", "s4", ["あむ"]), date: "2026-09-06",
+    createdAt: snowflakeDate("2096436633973526890") };
+  const next = { ...makePost("2096800623621046272", "s4", ["みりあ"]), date: old.date,
+    createdAt: "2026-09-07T03:20:00Z", editTweetIds: [old.id, "2096800623621046272"] };
+  assert.ok(api.validateObservations({ ...fixture, posts: [{ ...next, editTweetIds: [next.id] }] }));
+  const crossDay = { ...fixture, posts: [old, next] };
+  const raw = JSON.stringify(crossDay);
+  assert.throws(() => api.validateObservations(crossDay));
+  assert.ok(api.activeObservationPosts(crossDay).includes(old), "matching headers cannot hide cross-day Snowflakes");
+  assert.equal(JSON.stringify(crossDay), raw);
+  const originalClock = { ...next, createdAt: old.createdAt };
+  assert.throws(() => api.validateObservations({ ...fixture, posts: [originalClock] }),
+    "a new ID cannot borrow the original version's createdAt");
+  const mismatch = { ...next, editTweetIds: [next.id], createdAt: "2026-09-07T03:20:02Z" };
+  assert.throws(() => api.validateObservations({ ...fixture, posts: [mismatch] }),
+    "the producer's strict two-second timestamp boundary remains rejected");
 }
 const traineeMetadata = { traineePeriods: { byName: { "見習い例": { from: "2026-08-01", to: "2026-10-29" } } } };
 assert.equal(api.observedTrainee(traineeMetadata, "見習い例", "2026-09-05"), true);
@@ -318,6 +360,7 @@ const unchanged = JSON.stringify([dailyPlans, personalFixture, officialToday, in
   const first = { ...officialToday.posts[0], shift: "夜", names: ["あむ"] };
   const latest = { ...first, id: "2096400000000000002",
     url: "https://x.com/akibazettai/status/2096400000000000002", storeId: "s2",
+    createdAt: snowflakeDate("2096400000000000002"),
     editTweetIds: [first.id, "2096400000000000002"] };
   const result = api.resolveShiftRoster({ ...options, shift: "夜", observations: { ...officialToday, posts: [first, latest] } });
   const amu = result.entries.find(entry => entry.name === "あむ");

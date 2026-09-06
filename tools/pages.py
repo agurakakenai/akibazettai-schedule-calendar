@@ -39,6 +39,7 @@ POST_FIELDS = (
     'shift', 'storeId', 'names', 'observedAt',
 )
 PUBLIC_COUNTS = ('sourceCount', 'newPostCount', 'newNameCount')
+OPTIONAL_PUBLIC_COUNTS = ('refreshedCount', 'updatedPostCount', 'noticeCount')
 PROBE_COUNTS = PUBLIC_COUNTS + (
     'discoveredCount', 'eligibleCount', 'attemptedCount', 'fetchedCount',
     'skippedCuratedCount', 'deferredCount', 'pendingCount',
@@ -55,6 +56,7 @@ SAFE_REASONS = {
     'future_post', 'outside_date_range', 'id_timestamp_mismatch',
     'invalid_post_id', 'missing_post_text', 'missing_store_header',
     'parse_failed', 'parsed_metadata_mismatch',
+    'stale_edit_response', 'refresh_metadata_mismatch', 'edit_date_mismatch',
 }
 
 
@@ -105,6 +107,10 @@ def _timestamp(value, collector, nullable=False):
     return collector.iso(collector.timestamp(value))
 
 
+def _precise_iso(value):
+    return value.astimezone(dt.timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
 def _date(value):
     if (not isinstance(value, str)
             or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', value)):
@@ -118,11 +124,67 @@ def _count(value):
     return value
 
 
+def _public_name(value, collector):
+    return (isinstance(value, str) and NAME_RE.fullmatch(value)
+            and not value.startswith('http') and 'にゃんこ' not in value
+            and (value in collector.IMPORTER.CONFIRMED_NAMES
+                 or not re.search(r'(にゃん(ね|こ)?|です|ます|だよ|でした)$', value)))
+
+
+def _public_notices(value, collector):
+    if not isinstance(value, list):
+        raise ValueError
+    result = []
+    names = set()
+    for notice in value:
+        if (not isinstance(notice, dict) or not _public_name(notice['name'], collector)
+                or notice['name'] in names or notice['kind'] != 'late'):
+            raise ValueError
+        excerpt = notice['excerpt']
+        if (not isinstance(excerpt, str) or not excerpt.strip() or len(excerpt) > 160
+                or any(ord(char) < 32 or ord(char) == 127 for char in excerpt)
+                or len(excerpt.splitlines()) != 1
+                or re.search(r'(?:^|[^A-Za-z0-9])[A-Za-z]:[\\/]|\\\\'
+                             r'|(?:^|\s)(?:\.\.?[\\/]|/(?!\s))', excerpt)):
+            raise ValueError
+        item = {field: notice[field] for field in ('name', 'kind', 'excerpt')}
+        if 'time' in notice:
+            when = notice['time']
+            if not isinstance(when, str) or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', when):
+                raise ValueError
+            item['time'] = when
+        result.append(item)
+        names.add(item['name'])
+    return result
+
+
+def _public_shift_facts(value, created, collector, *, revision=False):
+    if (not isinstance(value, dict)
+            or _date(value['date']) != collector.service_day(created).isoformat()
+            or value['shift'] not in ('昼', '夜')
+            or value['storeId'] not in collector.STORE_IDS.values()):
+        raise ValueError
+    observed = collector.timestamp(value['observedAt'])
+    names = value['names']
+    if (observed < created or not isinstance(names, list) or not names
+            or any(not _public_name(name, collector) for name in names)
+            or len(set(names)) != len(names)):
+        raise ValueError
+    result = {field: value[field] for field in ('date', 'shift', 'storeId')}
+    result.update(names=list(names), observedAt=_precise_iso(observed))
+    if revision or 'notices' in value:
+        result['notices'] = _public_notices(value['notices'], collector)
+    return result
+
+
 def public_projection(state, *, collector=None):
     """Whitelist a snapshot dict; reject invalid facts, never repair names.
 
     For files, use load_public_snapshot(), which also runs load_snapshot's
     private-state validation. Unknown fields never cross the public boundary.
+    Optional notices/revisions stay separate from the current roster. Legacy
+    posts keep lastCheckedAt absent so consumers can fall back to observedAt.
+    Edit chains are metadata only; projection never removes superseded posts.
     """
     collector = collector or load_collector()
     try:
@@ -147,28 +209,42 @@ def public_projection(state, *, collector=None):
             if (not isinstance(tid, str) or not collector.post_id(tid) or tid in ids
                     or item['authorId'] != collector.AUTHOR_ID
                     or item['authorScreenName'] != collector.AUTHOR
-                    or item['url'] != collector.canonical(tid)
-                    or item['storeId'] not in collector.STORE_IDS.values()
-                    or item['shift'] not in ('昼', '夜')):
+                    or item['url'] != collector.canonical(tid)):
                 raise ValueError
             created = collector.timestamp(item['createdAt'])
-            observed = collector.timestamp(item['observedAt'])
-            if (_date(item['date']) != collector.service_day(created).isoformat()
-                    or abs((collector.snowflake_time(tid) - created).total_seconds()) >= 2
-                    or observed < created):
+            if abs((collector.snowflake_time(tid) - created).total_seconds()) >= 2:
                 raise ValueError
-            names = item['names']
-            if (not isinstance(names, list) or not names
-                    or any(not isinstance(name, str) or not NAME_RE.fullmatch(name)
-                           or name.startswith('http') or 'にゃんこ' in name
-                           or (name not in collector.IMPORTER.CONFIRMED_NAMES
-                               and re.search(r'(にゃん(ね|こ)?|です|ます|だよ|でした)$', name))
-                           for name in names)
-                    or len(set(names)) != len(names)):
-                raise ValueError
-            item['createdAt'] = collector.iso(created)
-            item['observedAt'] = collector.iso(observed)
-            item['names'] = list(names)
+            item.update(_public_shift_facts(post, created, collector), createdAt=_precise_iso(created))
+            if 'lastCheckedAt' in post:
+                checked = collector.timestamp(post['lastCheckedAt'])
+                if checked < collector.timestamp(item['observedAt']):
+                    raise ValueError
+                item['lastCheckedAt'] = _precise_iso(checked)
+            if 'revisions' in post:
+                if not isinstance(post['revisions'], list):
+                    raise ValueError
+                item['revisions'] = [
+                    _public_shift_facts(previous, created, collector, revision=True)
+                    for previous in post['revisions']
+                ]
+                previous = None
+                observed = collector.timestamp(item['observedAt'])
+                for revision in item['revisions']:
+                    when = collector.timestamp(revision['observedAt'])
+                    if when >= observed or (previous is not None and when <= previous):
+                        raise ValueError
+                    previous = when
+            if 'editTweetIds' in post:
+                chain = post['editTweetIds']
+                if (not isinstance(chain, list) or not 1 <= len(chain) <= collector.MAX_POSTS
+                        or any(not isinstance(value, str) or not collector.post_id(value)
+                               for value in chain)
+                        or len(set(chain)) != len(chain) or chain[-1] != tid
+                        or any(int(before) >= int(after) for before, after in zip(chain, chain[1:]))
+                        or any(collector.service_day(collector.snowflake_time(value))
+                               != collector.service_day(created) for value in chain)):
+                    raise ValueError
+                item['editTweetIds'] = list(chain)
             ids.add(tid)
             result['posts'].append(item)
         run = state['lastRun']
@@ -180,7 +256,7 @@ def public_projection(state, *, collector=None):
             if start > end:
                 raise ValueError
         public_run = {'status': run['status'], 'dateFrom': start, 'dateTo': end}
-        for field in PUBLIC_COUNTS:
+        for field in (*PUBLIC_COUNTS, *OPTIONAL_PUBLIC_COUNTS):
             if field in run:
                 public_run[field] = _count(run[field])
         if (public_run.get('sourceCount', 0) > len(collector.SEARCH_URLS)
@@ -194,10 +270,31 @@ def public_projection(state, *, collector=None):
         raise PagesError('invalid_public_snapshot') from None
 
 
+class _SnapshotDocument:
+    """Read-only JSON source for the collector's existing file-shaped validator."""
+
+    def __init__(self, state):
+        self.text = json.dumps(state, ensure_ascii=False)
+
+    def exists(self):
+        return True
+
+    def read_text(self, encoding='utf-8'):
+        return self.text
+
+
 def load_public_snapshot(path, *, collector=None):
     collector = collector or load_collector()
     try:
-        return public_projection(collector.load_snapshot(Path(path)), collector=collector)
+        source = Path(path)
+        if not source.exists():
+            return public_projection(collector.load_snapshot(source), collector=collector)
+        state = json.loads(source.read_text(encoding='utf-8'))
+        public = public_projection(state, collector=collector)
+        # Optional public records are whitelisted before the producer's strict
+        # schema check; private pending/cooldown/resolved validation is unchanged.
+        validation = _SnapshotDocument({**state, 'posts': public['posts']})
+        return public_projection(collector.load_snapshot(validation), collector=collector)
     except (ValueError, TypeError, KeyError, OverflowError, AttributeError):
         raise PagesError('invalid_public_snapshot') from None
 
@@ -535,6 +632,8 @@ def _probe_report(raw, code, trace, collector):
     }
     public = public_projection(state, collector=collector)
     counts = {field: _count(raw[field]) for field in PROBE_COUNTS}
+    counts.update({field: public['lastRun'][field] for field in OPTIONAL_PUBLIC_COUNTS
+                   if field in public['lastRun']})
     facts = [post for post in public['posts'] if post['id'] in trace.successful_posts]
     consistent = (counts['newPostCount'] == len(facts) == len(public['posts'])
                   and counts['newNameCount'] == sum(len(post['names']) for post in facts))

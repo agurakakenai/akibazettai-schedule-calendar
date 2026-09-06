@@ -177,6 +177,45 @@ def validate_failure(value, collector):
         collector.timestamp(value['retryAt'])
 
 
+def validate_notices(notices):
+    require(isinstance(notices, list))
+    for notice in notices:
+        keys(notice, ('name', 'kind', 'excerpt', 'time'), ('name', 'kind', 'excerpt'))
+        require(isinstance(notice['name'], str)
+                and re.fullmatch(r'[ぁ-んァ-ヶ一-龠ーａ-ｚA-Za-z0-9]{1,12}', notice['name'])
+                and notice['kind'] == 'late'
+                and isinstance(notice['excerpt'], str) and 1 <= len(notice['excerpt']) <= 160
+                and '\r' not in notice['excerpt'] and '\n' not in notice['excerpt'])
+        if 'time' in notice:
+            require(isinstance(notice['time'], str)
+                    and re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', notice['time']))
+
+
+def validate_official_names(names):
+    require(isinstance(names, list) and names
+            and all(isinstance(name, str)
+                    and re.fullmatch(r'[ぁ-んァ-ヶ一-龠ーａ-ｚA-Za-z0-9]{1,12}', name) for name in names)
+            and len(names) == len(set(names)))
+
+
+def validate_edit_tweet_ids(post, collector):
+    if 'editTweetIds' not in post:
+        return
+    ids = post['editTweetIds']
+    require(isinstance(ids, list) and 1 <= len(ids) <= collector.MAX_POSTS
+            and all(isinstance(tid, str) and collector.post_id(tid) for tid in ids),
+            'invalid_edit_chain')
+    require(len(ids) == len(set(ids)) and ids[-1] == post['id']
+            and all(int(first) < int(second) for first, second in zip(ids, ids[1:])),
+            'invalid_edit_chain')
+    try:
+        day = collector.service_day(collector.timestamp(post['createdAt']))
+        same_day = all(collector.service_day(collector.snowflake_time(tid)) == day for tid in ids)
+    except (ValueError, TypeError, OverflowError, OSError):
+        raise CloudError('edit_date_mismatch') from None
+    require(same_day, 'edit_date_mismatch')
+
+
 def validate_snapshot(path, collector):
     state, raw = read_json(path)
     keys(state, ('schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt',
@@ -188,17 +227,34 @@ def validate_snapshot(path, collector):
     for post in state['posts']:
         fields = ('id', 'url', 'authorId', 'authorScreenName', 'createdAt',
                   'date', 'shift', 'storeId', 'names', 'observedAt')
-        keys(post, fields, fields)
-        require(all(re.fullmatch(r'[ぁ-んァ-ヶ一-龠ーａ-ｚA-Za-z0-9]{1,12}', name)
-                    for name in post['names']))
-        require(len(post['names']) == len(set(post['names'])))
+        keys(post, (*fields, 'notices', 'lastCheckedAt', 'revisions', 'editTweetIds'), fields)
+        validate_edit_tweet_ids(post, collector)
+        validate_official_names(post['names'])
+        # Edit metadata never authorizes substituting another version's creation time.
         require(abs((collector.snowflake_time(post['id'])
                      - collector.timestamp(post['createdAt'])).total_seconds()) < 2)
+        validate_notices(post.get('notices', []))
+        if 'lastCheckedAt' in post:
+            collector.timestamp(post['lastCheckedAt'])
+        require(isinstance(post.get('revisions', []), list))
+        for revision in post.get('revisions', []):
+            fields = ('date', 'shift', 'storeId', 'names', 'notices', 'observedAt')
+            keys(revision, fields, fields)
+            require(revision['date'] == collector.service_day(
+                collector.timestamp(post['createdAt'])).isoformat()
+                and revision['shift'] in ('昼', '夜') and revision['storeId'] in collector.STORE_IDS.values())
+            validate_official_names(revision['names'])
+            validate_notices(revision['notices'])
+            collector.timestamp(revision['observedAt'])
     for pending in state['pending']:
         keys(pending, ('id', 'url', 'reason', 'firstSeenAt', 'lastAttemptAt',
-                       'attempts', 'httpStatus', 'retryAt'),
+                       'attempts', 'httpStatus', 'retryAt', 'editSourceId'),
              ('id', 'url', 'reason', 'firstSeenAt', 'lastAttemptAt', 'attempts'))
         integer(pending['attempts'])
+        if 'editSourceId' in pending:
+            source = pending['editSourceId']
+            require(isinstance(source, str) and collector.post_id(source)
+                    and int(source) < int(pending['id']), 'invalid_edit_source')
         validate_failure(pending, collector)
     for resolved in state.get('resolved', []):
         keys(resolved, ('id', 'url', 'reason', 'resolvedAt'),
@@ -209,7 +265,8 @@ def validate_snapshot(path, collector):
         'sourceCount', 'sourcePageLimit', 'discoveredCount', 'eligibleCount',
         'attemptedCount', 'fetchedCount', 'newPostCount', 'newNameCount',
         'skippedCuratedCount', 'skippedObservedCount', 'skippedResolvedCount',
-        'deferredCount', 'pendingCount', 'pendingOutsideRangeCount', 'maxPosts')
+        'deferredCount', 'pendingCount', 'pendingOutsideRangeCount', 'maxPosts',
+        'refreshedCount', 'updatedPostCount', 'noticeCount')
     keys(run, (*counts, 'status', 'dateFrom', 'dateTo', 'dateBasis', 'finishedAt',
                'sources', 'failures', 'rejected', 'complete', 'lastSuccessMeaning'),
          ('status', 'dateFrom', 'dateTo'))
@@ -628,6 +685,7 @@ def invoke_collector(root, state, report, environment):
         process = child_process(
             [sys.executable, '-I', '-B', str(root / 'tools' / 'collect-shifts.py'),
              '--once', '--days', '2', '--max-posts', '20',
+             '--refresh-known', '3',
              '--snapshot', str(state / SNAPSHOT), '--report', str(report)],
             cwd=root, environment=safe_environment(environment), timeout=1200)
     except (OSError, subprocess.SubprocessError):

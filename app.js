@@ -147,13 +147,28 @@
     return value;
   }
 
+  function snowflakeMilliseconds(id) {
+    const milliseconds = Number((BigInt(id) >> 22n) + 1288834974657n);
+    return Number.isSafeInteger(milliseconds) ? milliseconds : NaN;
+  }
+
+  function editServiceDay(milliseconds) {
+    // JST's 05:00 boundary is UTC 20:00; shifting four hours yields its date.
+    const shifted = new Date(milliseconds + 4 * 3600000);
+    return Number.isFinite(shifted.getTime()) ? shifted.toISOString().split("T")[0] : null;
+  }
+
   function validEditTweetIds(post) {
     const ids = post.editTweetIds;
+    const created = Date.parse(post.createdAt);
+    const day = editServiceDay(created);
     return Array.isArray(ids) && ids.length > 0 && ids.length <= 20 &&
       ids.every((id) => typeof id === "string" && /^[1-9][0-9]{9,24}$/.test(id)) &&
       new Set(ids).size === ids.length &&
       ids.every((id, index) => index === 0 || BigInt(ids[index - 1]) < BigInt(id)) &&
-      ids.at(-1) === post.id;
+      ids.at(-1) === post.id && day !== null &&
+      Math.abs(snowflakeMilliseconds(post.id) - created) < 2000 &&
+      ids.every((id) => editServiceDay(snowflakeMilliseconds(id)) === day);
   }
 
   function validateObservations(value) {

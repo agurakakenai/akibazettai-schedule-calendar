@@ -49,9 +49,39 @@ def fact(tid=TID):
         tid, payload(tid), dt.date(2026, 9, 4), dt.date(2026, 9, 5), NOW)
 
 
+def collected_fact(tid=TID):
+    return {**fact(tid), 'lastCheckedAt': collector.iso(NOW)}
+
+
+def dated_fact(tid):
+    created = collector.snowflake_time(tid)
+    day = collector.service_day(created)
+    return collector.validate_post(tid, payload(tid), day, day, created + dt.timedelta(hours=1))
+
+
 def pending(tid=TID):
     return {'id': tid, 'url': collector.canonical(tid), 'reason': 'network_error',
             'firstSeenAt': CREATED, 'lastAttemptAt': CREATED, 'attempts': 1}
+
+
+def refresh_fixture():
+    old = fact()
+    for key in ('notices', 'lastCheckedAt', 'revisions'):
+        old.pop(key, None)
+    old['observedAt'] = '2026-09-05T18:00:00Z'
+    current = copy.deepcopy(old)
+    current.update(
+        names=['あむ', 'こい', 'るるか'],
+        notices=[{'name': 'あむ', 'kind': 'late', 'excerpt': '19時から', 'time': '19:00'}],
+        observedAt='2026-09-05T19:00:00Z', lastCheckedAt='2026-09-05T19:30:00.123456Z',
+        revisions=[{
+            **{key: copy.deepcopy(old[key]) for key in ('date', 'shift', 'storeId', 'names', 'observedAt')},
+            'notices': [],
+        }])
+    state = collector.empty_snapshot()
+    state['posts'] = [current]
+    state['lastRun'].update(refreshedCount=1, updatedPostCount=1, noticeCount=1)
+    return old, state
 
 
 class OfflineClient:
@@ -171,18 +201,19 @@ class CloudTests(unittest.TestCase):
             self.fail('Offline fixture git failed: ' + result.stderr.decode(errors='replace'))
         return result.stdout
 
-    def run_cloud(self, client=None):
+    def run_cloud(self, client=None, *, when=NOW):
         client = client or OfflineClient()
 
         def offline_collect(root, state, report, environment):
             self.assertEqual(root, self.root)
             args = collector.argument_parser().parse_args([
                 '--once', '--days', '2', '--max-posts', '20',
+                '--refresh-known', '3',
                 '--snapshot', str(state / cloud.SNAPSHOT), '--report', str(report)])
             with contextlib.redirect_stdout(io.StringIO()):
                 return collector.run(
                     args, curated=self.root / 'tools' / 'data' / 'shifts.csv',
-                    client=client, clock=lambda: NOW)
+                    client=client, clock=lambda: when)
 
         with mock.patch.object(cloud, 'invoke_collector', side_effect=offline_collect):
             return cloud.orchestrate(
@@ -244,7 +275,7 @@ class CloudTests(unittest.TestCase):
 
         with mock.patch.object(cloud, 'child_process', side_effect=record), \
                 mock.patch.object(cloud, 'invoke_collector') as collect:
-            with self.assertRaisesRegex(cloud.CloudError, '^' + reason + '$'):
+            with self.assertRaisesRegex((cloud.CloudError, ValueError), '^' + reason + '$'):
                 cloud.orchestrate(self.args, root=self.root,
                                   environment=self.environment, collector=collector)
             collect.assert_not_called()
@@ -332,7 +363,7 @@ class CloudTests(unittest.TestCase):
         self.assertNotIn(self.source, history)
         self.assertEqual((self.root / '.git' / 'index').read_bytes(), index_before)
         self.assertEqual(self.git(self.root, 'rev-parse', 'HEAD').decode().strip(), self.source)
-        self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0]['posts'], [fact()])
+        self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0]['posts'], [collected_fact()])
         self.assertEqual(self.output.read_bytes(), self.remote_json(cloud.SNAPSHOT)[1])
         self.assertFalse((self.output.parent / cloud.OWNER_FILE).exists())
         self.assertFalse((self.root / 'recovery' / cloud.OWNER_FILE).exists())
@@ -345,7 +376,7 @@ class CloudTests(unittest.TestCase):
         with mock.patch.object(cloud, 'invoke_collector', side_effect=AssertionError('no HTTP')):
             result = cloud.orchestrate(self.args, root=self.root, environment={}, collector=collector)
         self.assertEqual(result['stateSource'], 'branch')
-        self.assertEqual(json.loads(self.output.read_bytes())['posts'], [fact()])
+        self.assertEqual(json.loads(self.output.read_bytes())['posts'], [collected_fact()])
         self.assertEqual(self.output.read_bytes(), self.remote_json(cloud.SNAPSHOT)[1])
         self.assertEqual(self.output.with_suffix('.http-state.json').read_bytes(),
                          self.remote_json(cloud.HTTP_STATE)[1])
@@ -390,6 +421,364 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(result['collectionStatus'], 'no-new')
         self.assertEqual(third.requests, [])
 
+    def test_official_refresh_schema_restores_notices_history_and_counters_exactly(self):
+        old, state = refresh_fixture()
+        seed = collector.empty_snapshot()
+        seed['posts'] = [old]
+        collector.atomic_json(self.output, seed)
+        self.seed_branch(state)
+        self.args.mode = 'restore'
+        self.run_cloud()
+        saved = json.loads(self.output.read_bytes())
+        self.assertEqual(saved, state)
+        self.assertEqual(self.output.read_bytes(), self.remote_json(cloud.SNAPSHOT)[1])
+        self.assertEqual(saved['posts'][0]['notices'][0]['time'], '19:00')
+        self.assertEqual(saved['posts'][0]['revisions'][0]['names'], old['names'])
+
+    def test_official_refresh_history_proves_old_main_seed_without_rollback_or_refetch(self):
+        old, state = refresh_fixture()
+        seed = collector.empty_snapshot()
+        seed['posts'] = [old]
+        collector.atomic_json(self.output, seed)
+        self.seed_branch(state)
+        client = OfflineClient()
+        result = self.run_cloud(client)
+        self.assertEqual(client.requests, [])
+        self.assertEqual(result['collectionStatus'], 'no-new')
+        saved = self.remote_json(cloud.SNAPSHOT)[0]
+        self.assertEqual(saved['posts'], state['posts'])
+        self.assertEqual(json.loads(self.output.read_bytes())['posts'], state['posts'])
+
+    def test_official_refresh_cli_handoff_keeps_late_notice_out_of_names_and_restores_latest_version(self):
+        old = fact()
+        for key in ('notices', 'lastCheckedAt', 'revisions'):
+            old.pop(key, None)
+        old['observedAt'] = '2026-09-05T10:00:00Z'
+        seed = collector.empty_snapshot()
+        seed['posts'] = [old]
+        collector.atomic_json(self.output, seed)
+        self.seed_branch(seed)
+        current = dt.datetime(2026, 9, 5, 11, tzinfo=dt.timezone.utc)
+        response = payload()
+        response['text'] += '\n\nりるは21時から遅れて合流します'
+        checks = []
+
+        def check_lease():
+            self.assertIn(cloud.LEASE, self.remote_names())
+            checks.append(True)
+
+        client = OfflineClient(posts={TID: response}, on_http=check_lease)
+        original = cloud.child_process
+        commands = []
+
+        def offline_process(argv, **kwargs):
+            if argv[0] != sys.executable:
+                return original(argv, **kwargs)
+            self.assertEqual(Path(argv[3]).name, 'collect-shifts.py')
+            commands.append(argv)
+            args = collector.argument_parser().parse_args(argv[4:])
+            self.assertEqual((args.max_posts, args.refresh_known), (20, 3))
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                code = collector.run(args, curated=self.root / 'tools' / 'data' / 'shifts.csv',
+                                     client=client, clock=lambda: current)
+            return subprocess.CompletedProcess(argv, code, output.getvalue().encode('utf-8'), b'')
+
+        with mock.patch.object(cloud, 'child_process', side_effect=offline_process), \
+                mock.patch.object(collector, 'notice_name_evidence', return_value={'りる': 'りる'}):
+            result = cloud.orchestrate(self.args, root=self.root,
+                                       environment=self.environment, collector=collector)
+        self.assertEqual(len(commands), 1)
+        self.assertTrue(checks)
+        self.assertEqual(client.requests, [TID])
+        self.assertEqual(result['collectionStatus'], 'ok')
+        saved, raw = self.remote_json(cloud.SNAPSHOT)
+        post = saved['posts'][0]
+        self.assertEqual(post['names'], old['names'])
+        self.assertNotIn('りる', post['names'])
+        self.assertEqual(post['notices'], [{
+            'name': 'りる', 'kind': 'late', 'time': '21:00',
+            'excerpt': 'りるは21時から遅れて合流します'}])
+        self.assertEqual(post['lastCheckedAt'], collector.iso(current))
+        self.assertEqual(post['revisions'], [{
+            **{key: old[key] for key in ('date', 'shift', 'storeId', 'names', 'observedAt')},
+            'notices': [],
+        }])
+        self.assertEqual([saved['lastRun'][key] for key in (
+            'refreshedCount', 'updatedPostCount', 'noticeCount', 'attemptedCount', 'maxPosts')],
+            [1, 1, 1, 1, 20])
+        self.assertEqual(self.output.read_bytes(), raw)
+        self.assertEqual((self.root / 'recovery' / cloud.SNAPSHOT).read_bytes(), raw)
+        self.assertNotIn(cloud.LEASE, self.remote_names())
+        self.assertEqual((self.root / 'tools' / 'data' / 'shifts.csv').read_text(), 'tweet_id\n')
+        # A fresh main seed cannot roll back the version saved by this run.
+        collector.atomic_json(self.output, seed)
+        self.args.mode = 'restore'
+        restored = cloud.orchestrate(self.args, root=self.root,
+                                     environment=self.environment, collector=collector)
+        self.assertEqual(restored['stateCommit'], result['stateCommit'])
+        self.assertEqual(self.output.read_bytes(), raw)
+        self.assertEqual(client.requests, [TID])
+
+    def test_official_refresh_failure_pending_survives_save_restore_until_success(self):
+        old = fact()
+        old['observedAt'] = '2026-09-05T10:00:00Z'
+        seed = collector.empty_snapshot()
+        seed['posts'] = [old]
+        collector.atomic_json(self.output, seed)
+        self.seed_branch(seed)
+        current = dt.datetime(2026, 9, 5, 11, tzinfo=dt.timezone.utc)
+        failed = OfflineClient(posts={TID: collector.FetchFailure('network_error')})
+        result = self.run_cloud(failed, when=current)
+        self.assertEqual(result['collectionStatus'], 'partial')
+        self.assertEqual(failed.requests, [TID])
+        state, raw = self.remote_json(cloud.SNAPSHOT)
+        self.assertEqual(state['posts'], [old])
+        self.assertEqual(state['pending'], [{
+            'id': TID, 'url': collector.canonical(TID), 'reason': 'refresh_network_error',
+            'firstSeenAt': old['observedAt'], 'lastAttemptAt': collector.iso(current), 'attempts': 1,
+        }])
+        self.assertEqual((state['lastRun']['refreshedCount'], state['lastRun']['updatedPostCount']), (0, 0))
+        self.assertNotIn(cloud.LEASE, self.remote_names())
+        collector.atomic_json(self.output, seed)
+        self.args.mode = 'restore'
+        self.run_cloud()
+        self.assertEqual(self.output.read_bytes(), raw)
+        self.args.mode = 'collect'
+        early = OfflineClient(posts={TID: AssertionError('Failed refresh must retain its interval')})
+        self.run_cloud(early, when=current + dt.timedelta(minutes=15))
+        self.assertEqual(early.requests, [])
+        self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0]['pending'], state['pending'])
+        retried = OfflineClient()
+        self.run_cloud(retried, when=current + dt.timedelta(minutes=31))
+        self.assertEqual(retried.requests, [TID])
+        final = self.remote_json(cloud.SNAPSHOT)[0]
+        self.assertEqual(final['pending'], [])
+        self.assertEqual(final['posts'][0]['names'], old['names'])
+        self.assertEqual(final['posts'][0].get('revisions', []), old.get('revisions', []))
+        self.assertEqual((final['lastRun']['refreshedCount'], final['lastRun']['updatedPostCount']), (1, 0))
+
+    def test_official_refresh_metadata_only_is_not_a_conflicting_new_fact(self):
+        old, state = refresh_fixture()
+        state['posts'] = [{
+            **old, 'notices': [], 'lastCheckedAt': '2026-09-05T19:30:00Z', 'revisions': []}]
+        seed = collector.empty_snapshot()
+        seed['posts'] = [copy.deepcopy(old)]
+        expected_seed = copy.deepcopy(seed)
+        result = collector.merge_snapshots(state, seed)
+        self.assertEqual(result['posts'], state['posts'])
+        self.assertEqual(seed, expected_seed)
+
+    def test_official_refresh_unproven_main_fact_conflict_stops_without_writing(self):
+        old, state = refresh_fixture()
+        old['names'] = ['あむ', 'めい']
+        seed = collector.empty_snapshot()
+        seed['posts'] = [old]
+        collector.atomic_json(self.output, seed)
+        self.seed_branch(state)
+        self.assert_read_only_failure('observation_conflict')
+
+    def test_official_refresh_schema_rejects_private_or_malformed_optional_fields(self):
+        _, state = refresh_fixture()
+        changes = (
+            lambda value: value['posts'][0]['notices'][0].update(full_text='entire original post'),
+            lambda value: value['posts'][0]['notices'][0].update(kind='absence'),
+            lambda value: value['posts'][0]['notices'][0].update(time='24:00'),
+            lambda value: value['posts'][0]['notices'][0].update(time=None),
+            lambda value: value['posts'][0]['notices'][0].update(excerpt='x' * 161),
+            lambda value: value['posts'][0]['notices'][0].update(excerpt='first\nsecond'),
+            lambda value: value['posts'][0]['notices'][0].update(excerpt=r'C:\Users\private\state'),
+            lambda value: value['posts'][0].update(lastCheckedAt='2026-09-05T19:30:00'),
+            lambda value: value['posts'][0]['revisions'][0].update(processId=123),
+            lambda value: value['posts'][0]['revisions'][0].update(date='2026-09-06'),
+            lambda value: value['posts'][0]['revisions'][0].update(names=[]),
+            lambda value: value['lastRun'].update(refreshedCount=True),
+            lambda value: value['lastRun'].update(updatedPostCount=-1),
+            lambda value: value['lastRun'].update(noticeCount='1'),
+        )
+        for change in changes:
+            with self.subTest(change=change):
+                value = copy.deepcopy(state)
+                change(value)
+                collector.atomic_json(self.output, value)
+                with self.assertRaises((cloud.CloudError, ValueError)):
+                    cloud.validate_snapshot(self.output, collector)
+
+    def test_official_edit_chain_restores_both_raw_posts_without_deleting_old_facts(self):
+        state = collector.empty_snapshot()
+        old, latest = fact(), fact(OTHER)
+        latest['editTweetIds'] = [TID, OTHER]
+        latest['names'] = ['あむ', 'るるか']
+        state['posts'] = [old, latest]
+        self.seed_branch(state)
+        self.args.mode = 'restore'
+        self.run_cloud()
+        self.assertEqual(json.loads(self.output.read_bytes())['posts'], [old, latest])
+        self.assertEqual(self.output.read_bytes(), self.remote_json(cloud.SNAPSHOT)[1])
+        self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0]['posts'][0]['names'], old['names'])
+
+    def test_official_edit_chain_requires_unique_ordered_string_ids_ending_in_current_id(self):
+        for chain in (
+                [], TID, [TID, TID], [int(TID)], ['1'], [None], [TID, OTHER], [OTHER, TID],
+                [str(int(TID) - index) for index in reversed(range(21))]):
+            with self.subTest(chain=chain):
+                state = collector.empty_snapshot()
+                post = fact()
+                post['editTweetIds'] = chain
+                state['posts'] = [post]
+                collector.atomic_json(self.output, state)
+                with self.assertRaises((cloud.CloudError, ValueError)):
+                    cloud.validate_snapshot(self.output, collector)
+        for chain in ([TID], [str(int(TID) - index) for index in reversed(range(20))]):
+            state['posts'][0]['editTweetIds'] = chain
+            collector.atomic_json(self.output, state)
+            cloud.validate_snapshot(self.output, collector)
+
+    def test_official_edit_chain_does_not_relax_author_or_current_id_timestamp_validation(self):
+        for field, value in (
+                ('authorId', '123456789012345678'), ('authorScreenName', 'someone_else'),
+                ('createdAt', fact()['createdAt'])):
+            with self.subTest(field=field):
+                post = fact(OTHER)
+                post['editTweetIds'] = [TID, OTHER]
+                post[field] = value
+                state = collector.empty_snapshot()
+                state['posts'] = [post]
+                collector.atomic_json(self.output, state)
+                with self.assertRaises((cloud.CloudError, ValueError)):
+                    cloud.validate_snapshot(self.output, collector)
+
+    def test_official_edit_chain_uses_jst_service_day_not_utc_or_civil_date(self):
+        for before, after in (
+                ('2026-09-05T14:30:00Z', '2026-09-05T15:30:00Z'),
+                ('2026-09-05T23:30:00Z', '2026-09-06T00:30:00Z')):
+            with self.subTest(before=before, after=after):
+                old_id, latest_id = make_id(before), make_id(after)
+                latest = dated_fact(latest_id)
+                latest['editTweetIds'] = [old_id, latest_id]
+                self.assertEqual(collector.service_day(collector.timestamp(before)),
+                                 collector.service_day(collector.timestamp(after)))
+                cloud.validate_edit_tweet_ids(latest, collector)
+                state = collector.empty_snapshot()
+                state['posts'] = [latest]
+                collector.atomic_json(self.output, state)
+                cloud.validate_snapshot(self.output, collector)
+
+    def test_official_edit_chain_rejects_service_day_boundary_and_reported_cross_day_ids(self):
+        pairs = (
+            (make_id('2026-09-05T19:59:00Z'), make_id('2026-09-05T20:01:00Z')),
+            ('2096436633973526890', '2096800623621046272'),
+        )
+        for old_id, latest_id in pairs:
+            with self.subTest(old_id=old_id, latest_id=latest_id):
+                latest = dated_fact(latest_id)
+                latest['editTweetIds'] = [old_id, latest_id]
+                self.assertNotEqual(collector.service_day(collector.snowflake_time(old_id)),
+                                    collector.service_day(collector.timestamp(latest['createdAt'])))
+                with self.assertRaisesRegex(cloud.CloudError, 'edit_date_mismatch'):
+                    cloud.validate_edit_tweet_ids(latest, collector)
+                state = collector.empty_snapshot()
+                state['posts'] = [latest]
+                collector.atomic_json(self.output, state)
+                with self.assertRaises((cloud.CloudError, ValueError)):
+                    cloud.validate_snapshot(self.output, collector)
+
+    def test_official_direct_search_cross_day_edit_stays_pending_and_keeps_old_facts(self):
+        old_id = make_id('2026-09-05T19:59:00Z')
+        latest_id = make_id('2026-09-05T20:01:00Z')
+        old = dated_fact(old_id)
+        seed = collector.empty_snapshot()
+        seed['posts'] = [old]
+        collector.atomic_json(self.output, seed)
+        self.seed_branch(seed)
+        latest = payload(latest_id)
+        latest['edit_control'] = {'edit_tweet_ids': [old_id, latest_id]}
+        client = OfflineClient(ids=(latest_id,), posts={latest_id: latest})
+        result = self.run_cloud(client, when=dt.datetime(2026, 9, 5, 21, tzinfo=dt.timezone.utc))
+        self.assertEqual(result['collectionStatus'], 'partial')
+        self.assertEqual(client.requests, [latest_id])
+        state, raw = self.remote_json(cloud.SNAPSHOT)
+        self.assertEqual(state['posts'], [old])
+        self.assertEqual(state['pending'][0]['id'], latest_id)
+        self.assertEqual(state['pending'][0]['reason'], 'edit_date_mismatch')
+        self.assertEqual(self.output.read_bytes(), raw)
+        self.assertNotIn(cloud.LEASE, self.remote_names())
+
+    def test_official_edit_source_pending_roundtrips_without_removing_old_post(self):
+        state = collector.empty_snapshot()
+        old = fact()
+        state['posts'] = [old]
+        item = pending(OTHER)
+        item.update(reason='edit_latest_pending', editSourceId=TID,
+                    firstSeenAt='2026-09-05T10:00:00Z', lastAttemptAt=None, attempts=0)
+        state['pending'] = [item]
+        self.seed_branch(state)
+        self.args.mode = 'restore'
+        self.run_cloud()
+        self.assertEqual(json.loads(self.output.read_bytes())['posts'], [old])
+        self.assertEqual(json.loads(self.output.read_bytes())['pending'], [item])
+        self.assertEqual(self.output.read_bytes(), self.remote_json(cloud.SNAPSHOT)[1])
+
+    def test_official_edit_source_requires_an_older_valid_string_id(self):
+        state = collector.empty_snapshot()
+        item = pending(OTHER)
+        state['pending'] = [item]
+        for source in (None, int(TID), True, '1', 'invalid', OTHER, THIRD):
+            with self.subTest(source=source):
+                item['editSourceId'] = source
+                collector.atomic_json(self.output, state)
+                with self.assertRaises((cloud.CloudError, ValueError)):
+                    cloud.validate_snapshot(self.output, collector)
+        item['editSourceId'] = TID
+        collector.atomic_json(self.output, state)
+        cloud.validate_snapshot(self.output, collector)
+
+    def edit_follow_fixture(self):
+        old = fact()
+        old['observedAt'] = '2026-09-05T10:00:00Z'
+        seed = collector.empty_snapshot()
+        seed['posts'] = [old]
+        collector.atomic_json(self.output, seed)
+        self.seed_branch(seed)
+        stale = payload()
+        stale['text'] = '【アキバ絶対領域】\nよるにゃんこ\n\nねむ\n⊂(´ω´⊂)))'
+        stale.update(isStaleEdit=True, edit_control={'edit_tweet_ids': [TID, OTHER]})
+        latest = payload(OTHER)
+        latest['text'] = '【アキバ絶対領域】\nよるにゃんこ\n\nあむ\nるるか\n⊂(´ω´⊂)))'
+        latest['edit_control'] = {'edit_tweet_ids': [TID, OTHER]}
+        return old, stale, latest
+
+    def test_official_edit_verified_follow_hands_off_both_raw_posts_without_stale_overwrite(self):
+        old, stale, latest = self.edit_follow_fixture()
+        client = OfflineClient(posts={TID: stale, OTHER: latest})
+        result = self.run_cloud(client, when=dt.datetime(2026, 9, 5, 11, tzinfo=dt.timezone.utc))
+        self.assertEqual(result['persistenceStatus'], 'saved')
+        self.assertEqual(client.requests, [TID, OTHER])
+        state, raw = self.remote_json(cloud.SNAPSHOT)
+        by_id = {post['id']: post for post in state['posts']}
+        self.assertEqual(by_id[TID], old)
+        self.assertEqual(by_id[OTHER]['editTweetIds'], [TID, OTHER])
+        self.assertEqual(by_id[OTHER]['names'], ['あむ', 'るるか'])
+        self.assertFalse(any(item.get('editSourceId') == TID for item in state['pending']))
+        self.assertLessEqual(state['lastRun']['attemptedCount'], 20)
+        self.assertEqual(self.output.read_bytes(), raw)
+        self.assertNotIn(cloud.LEASE, self.remote_names())
+
+    def test_official_edit_original_ctime_on_new_id_stays_pending_and_keeps_old_verified_facts(self):
+        old, stale, latest = self.edit_follow_fixture()
+        latest['created_at'] = stale['created_at']
+        client = OfflineClient(posts={TID: stale, OTHER: latest})
+        result = self.run_cloud(client, when=dt.datetime(2026, 9, 5, 11, tzinfo=dt.timezone.utc))
+        self.assertEqual(result['persistenceStatus'], 'saved')
+        self.assertEqual(result['collectionStatus'], 'partial')
+        self.assertEqual(client.requests, [TID, OTHER])
+        state, raw = self.remote_json(cloud.SNAPSHOT)
+        self.assertEqual(state['posts'], [old])
+        pending_latest = next(item for item in state['pending'] if item['id'] == OTHER)
+        self.assertEqual(pending_latest['editSourceId'], TID)
+        self.assertIn('id_timestamp_mismatch', pending_latest['reason'])
+        self.assertEqual(self.output.read_bytes(), raw)
+        self.assertNotIn(cloud.LEASE, self.remote_names())
+
     def test_resolved_wins_over_old_mirror_pending_and_failures_are_retained(self):
         state = collector.empty_snapshot()
         state['posts'] = [fact()]
@@ -418,7 +807,7 @@ class CloudTests(unittest.TestCase):
             TID: payload(), OTHER: collector.FetchFailure('network_error')}))
         self.assertEqual(result['collectionStatus'], 'partial')
         saved, raw = self.remote_json(cloud.SNAPSHOT)
-        self.assertEqual(saved['posts'], [fact()])
+        self.assertEqual(saved['posts'], [collected_fact()])
         self.assertEqual([item['id'] for item in saved['pending']], [OTHER])
         self.assertEqual(self.output.read_bytes(), raw)
         self.assertEqual((self.root / 'recovery' / cloud.SNAPSHOT).read_bytes(), raw)
@@ -494,7 +883,7 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(self.remote_names(), cloud.FILES - {cloud.PERSONAL})
         self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0]['posts'], [])
         recovery = self.root / 'recovery' / cloud.SNAPSHOT
-        self.assertEqual(json.loads(recovery.read_bytes())['posts'], [fact()])
+        self.assertEqual(json.loads(recovery.read_bytes())['posts'], [collected_fact()])
         self.assertEqual(json.loads(recovery.read_bytes())['lastRun']['status'], 'ok')
         script = (
             'import importlib.util,pathlib,sys;'
@@ -877,7 +1266,7 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(result['collectionStatus'], 'partial')
         self.assertEqual(result['persistenceStatus'], 'saved')
         self.assertEqual(len(calls), 1)
-        self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0]['posts'], [fact()])
+        self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0]['posts'], [collected_fact()])
         person = self.remote_json(cloud.PERSONAL)[0]
         self.assertEqual(person['paused']['httpStatus'], status)
         self.assertEqual(person['budgets']['2026-09-06'], {'searches': 8, 'posts': 2})
@@ -912,7 +1301,7 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(result['officialCollectionStatus'], 'ok')
         self.assertEqual(result['personalCollectionStatus'], 'ok')
         self.assertEqual([item for item in calls if item[0] == 'post'], [('post', tid)])
-        self.assertEqual(json.loads(self.output.read_bytes())['posts'], [fact()])
+        self.assertEqual(json.loads(self.output.read_bytes())['posts'], [collected_fact()])
         state = json.loads((self.output.parent / cloud.PERSONAL).read_bytes())
         self.assertEqual(state['posts'][:2], seed['posts'])
         self.assertEqual(state['posts'][-1]['events'][0]['storeId'], 's3')
@@ -1044,7 +1433,7 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(self.remote_names(), cloud.FILES)
         self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0]['posts'], [])
         recovery = self.root / 'recovery'
-        self.assertEqual(json.loads((recovery / cloud.SNAPSHOT).read_bytes())['posts'], [fact()])
+        self.assertEqual(json.loads((recovery / cloud.SNAPSHOT).read_bytes())['posts'], [collected_fact()])
         self.assertEqual(json.loads((recovery / cloud.PERSONAL).read_bytes())['budgets']['2026-09-06']['searches'], 8)
         self.assertIn(module.SEARCH_HOST, json.loads((recovery / cloud.HTTP_STATE).read_bytes())['cooldowns'])
         self.assert_read_only_failure('unresolved_lease')
@@ -1148,6 +1537,7 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(args.snapshot.name, cloud.PERSONAL)
         self.assertEqual((args.max_searches, args.max_posts), (3, 3))
         self.assertIsNone(args.publish)
+        self.assertNotIn('--refresh-known', argv)
         self.assertNotIn('GH_TOKEN', child.call_args.kwargs['environment'])
         self.assertNotIn('GITHUB_TOKEN', child.call_args.kwargs['environment'])
         self.assertEqual(logged.getvalue(), '')
@@ -1220,6 +1610,8 @@ class CloudTests(unittest.TestCase):
         self.assertIn(str(self.root / 'tools' / 'collect-shifts.py'), argv)
         self.assertEqual(argv[4:9], ['--once', '--days', '2', '--max-posts', '20'])
         self.assertNotIn('--publish', argv)
+        self.assertEqual(argv[argv.index('--refresh-known') + 1], '3')
+        self.assertEqual(argv.count('--refresh-known'), 1)
         environment = child.call_args.kwargs['environment']
         self.assertNotIn('GH_TOKEN', environment)
         self.assertNotIn('GITHUB_TOKEN', environment)

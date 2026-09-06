@@ -4,6 +4,14 @@ Only two Yahoo realtime keyword pages and the existing public post fetcher are
 used. Default dates are the last two JST service days (a day starts at 05:00).
 lastSuccessAt means a completed run with both searches and all selected posts
 successfully handled, including no-new/no-results; partial runs do not advance it.
+Optional --refresh-known shares the request cap and selects today's unchecked
+legacy posts first, then the current shift, within the JST service day. It
+reserves a 30-minute recheck interval even for dry runs.
+Footer notices are plans, not roster attendance; revisions are extraction
+updates, not evidence that X marked a post as edited.
+Verified root edit_control can enqueue one bounded follow-up GET per run.
+Unknown metadata, unparseable latest versions and cross-service-day chains
+remain pending; no unfetched ID supersedes a saved post.
 Exit codes: 0=ok/no-new/no-results, 2=partial, 3=unavailable, 4=local/lock error.
 """
 import argparse
@@ -247,6 +255,13 @@ class FetchFailure(Exception):
         return result
 
 
+class StaleEditResponse(FetchFailure):
+    def __init__(self, edit_ids):
+        super().__init__('stale_edit_response')
+        self.latest_id = edit_ids[-1]
+        self.edit_ids = tuple(edit_ids)
+
+
 def check_http_metadata(headers, now):
     headers = {key.lower(): value for key, value in headers.items()}
     try:
@@ -387,6 +402,199 @@ def matching_id(value, expected):
     return bool(supplied) and all(post_id(item) == expected for item in supplied)
 
 
+def checked_edit_ids(ids):
+    if (not isinstance(ids, list) or not 1 <= len(ids) <= MAX_POSTS
+            or any(not isinstance(tid, str) or not post_id(tid) for tid in ids)
+            or any(int(first) >= int(second) for first, second in zip(ids, ids[1:]))):
+        raise ValueError('invalid_edit_chain')
+    return ids
+
+
+def same_edit_service_day(ids, created):
+    day = service_day(created)
+    return all(service_day(snowflake_time(tid)) == day for tid in ids)
+
+
+def validate_edit_tweet_ids(post, known_posts=None):
+    if 'editTweetIds' in post:
+        ids = checked_edit_ids(post['editTweetIds'])
+        if ids[-1] != post['id']:
+            raise ValueError('invalid_edit_chain')
+        if not same_edit_service_day(ids, timestamp(post['createdAt'])):
+            raise ValueError('edit_date_mismatch')
+        if known_posts is not None:
+            # The existing two-second clock tolerance must not move a saved source across 05:00.
+            day = service_day(timestamp(post['createdAt']))
+            for tid in ids:
+                source = known_posts.get(tid)
+                if source is not None and service_day(timestamp(source['createdAt'])) != day:
+                    raise ValueError('edit_date_mismatch')
+
+
+def response_edit_ids(tid, value, now):
+    stale = value.get('isStaleEdit', False)
+    if not isinstance(stale, bool) or ('isEdited' in value and not isinstance(value['isEdited'], bool)):
+        raise FetchFailure('invalid_edit_metadata')
+    if 'edit_control' not in value:
+        if value.get('isEdited'):
+            raise FetchFailure('invalid_edit_metadata')
+        if stale:
+            raise FetchFailure('stale_edit_response')
+        return None
+    control = value['edit_control']
+    try:
+        if not isinstance(control, dict) or not isinstance(control.get('edit_tweet_ids'), list):
+            raise ValueError
+        ids = [post_id(item) for item in control['edit_tweet_ids']]
+        checked_edit_ids(ids)
+        if tid not in ids or any(snowflake_time(item) > now for item in ids):
+            raise ValueError
+        if not same_edit_service_day(ids, timestamp(value['created_at'])):
+            raise FetchFailure('edit_date_mismatch')
+    except (ValueError, OverflowError, OSError):
+        raise FetchFailure('invalid_edit_metadata') from None
+    if ids[-1] != tid:
+        raise StaleEditResponse(ids)
+    if stale:
+        raise FetchFailure('invalid_edit_metadata')
+    return ids
+
+
+def superseded_ids(posts):
+    posts = list(posts)
+    known_posts = {post['id']: post for post in posts}
+    result = set()
+    for post in posts:
+        try:
+            validate_edit_tweet_ids(post, known_posts)
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            continue
+        result.update(post.get('editTweetIds', [])[:-1])
+    return result
+
+
+def current_notice_count(posts):
+    posts = list(posts)
+    superseded = superseded_ids(posts)
+    return sum(len(post.get('notices', [])) for post in posts if post['id'] not in superseded)
+
+
+def merge_edit_ids(first, second):
+    a, b = first.get('editTweetIds'), second.get('editTweetIds')
+    if a is None or b is None:
+        return copy.deepcopy(a if b is None else b)
+    if set(a) <= set(b):
+        return copy.deepcopy(b)
+    if set(b) <= set(a):
+        return copy.deepcopy(a)
+    raise ValueError('observation_conflict')
+
+
+def notice_name_evidence():
+    counts, debuts = IMPORTER.load_known()
+    evidence = {name: name for name in set(counts) | debuts | set(IMPORTER.CONFIRMED_NAMES)}
+    try:
+        source = (ROOT / 'data' / 'schedule.js').read_text(encoding='utf-8-sig')
+        roster = re.search(r'\broster:\s*\[(.*?)\]', source, re.S)
+        if roster:
+            evidence.update({name: name for name in re.findall(r'"([^"]+)"', roster[1])})
+        source = (ROOT / 'data' / 'store-insights.js').read_text(encoding='utf-8-sig')
+        insights = json.loads(source.split('window.STORE_INSIGHTS =', 1)[1].strip().removesuffix(';'))
+        for name, item in insights.get('maidTendency', {}).items():
+            evidence.setdefault(name, name)
+            alias = item.get('alias')
+            if isinstance(alias, str) and alias:
+                if alias in evidence and evidence[alias] is None:
+                    continue
+                previous = evidence.get(alias)
+                evidence[alias] = name if previous in (None, alias, name) else None
+    except (OSError, ValueError, IndexError, AttributeError):
+        # Missing supplementary evidence cannot authorize a guessed name.
+        pass
+    return {name: canonical_name for name, canonical_name in evidence.items()
+            if canonical_name and re.fullmatch(r'[ぁ-んァ-ヶ一-龠ーａ-ｚA-Za-z0-9]{1,12}', name)}
+
+
+def parse_notices(text, created, date, shift, store_id, names, evidence=None):
+    """Extract only named future arrivals from a separate official footer."""
+    if not re.search(r'あとから|後から|遅れて', text):
+        return []
+    blocks = re.split(r'\n\s*\n', text.replace('\r\n', '\n'))
+    roster_blocks = []
+    for index, block in enumerate(blocks):
+        for line in block.splitlines():
+            name = re.match(r'[ぁ-んァ-ヶ一-龠ーａ-ｚA-Za-z0-9]{1,12}', line.strip())
+            if name and name[0] in names:
+                roster_blocks.append(index)
+                break
+    if not roster_blocks:
+        return []
+    footer = '\n'.join(blocks[max(roster_blocks) + 1:])
+    if (not footer or re.search(
+            r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f「」『』“”"?？>]|昨日|明日|明後日|あした|きのう|来週|'
+            r'ではな|じゃな|ない|ません|中止|訂正|撤回|勘違い|間違い|'
+            r'によると|と聞|らしい|とのこと|友達|友人|引用|転載|RT\s*@', footer)):
+        return []
+    if '今日' in footer and created.astimezone(JST).date().isoformat() != date:
+        return []
+    target = dt.date.fromisoformat(date)
+    for month, day in re.findall(r'(?<!\d)(\d{1,2})(?:月|/)(\d{1,2})(?:日)?', footer):
+        if (int(month), int(day)) != (target.month, target.day):
+            return []
+    normalized = IMPORTER.norm(footer)
+    explicit_stores = {'s' + number for number in re.findall(r'([1-9])号店', normalized)}
+    explicit_stores.update(STORE_IDS[label] for needle, label in IMPORTER.STORES
+                           if IMPORTER.norm(needle) in normalized)
+    if explicit_stores - {store_id}:
+        return []
+    if ((shift == '昼' and re.search(r'夜|よる|ヨル', footer))
+            or (shift == '夜' and re.search(r'昼|ひる|ヒル', footer))):
+        return []
+    evidence = notice_name_evidence() if evidence is None else evidence
+    evidence = evidence if isinstance(evidence, dict) else {name: name for name in evidence}
+    known = [name for name, canonical_name in evidence.items() if canonical_name]
+    if not known:
+        return []
+    roster_names = {evidence.get(name, name) for name in names}
+    pattern = re.compile(
+        r'^(?:[1-4]号店(?:の|に|へ)?\s*)?(?P<name>'
+        + '|'.join(re.escape(name) for name in sorted(known, key=len, reverse=True))
+        + r')(?:ちゃん)?(?:も|は|が)?\s*'
+        r'(?:(?P<time>[0-9０-９]{1,2}(?:[:：][0-9０-９]{2}|時(?:[0-9０-９]{1,2}分)?))'
+        r'\s*(?:から|に)?\s*)?'
+        r'(?:(?:あとから|後から)(?:来る|くる|来ます|きます|合流)|遅れて(?:合流|来る|くる|来ます))'
+        r'(?:にゃんね|にゃん|します|です|予定です)?[^\wぁ-んァ-ヶ一-龠ー]*$')
+    result, ambiguous = {}, set()
+    for clause in re.split(r'[\n。！!、]+', footer.replace('⊂(´ω´⊂)))', '')):
+        clause = clause.strip()
+        match = pattern.fullmatch(clause)
+        if not match:
+            continue
+        name = match['name']
+        if evidence[name] in roster_names:
+            continue
+        notice = {'name': name, 'kind': 'late', 'excerpt': ' '.join(clause.split())[:160]}
+        if match['time']:
+            raw = IMPORTER.norm(match['time'])
+            when = re.fullmatch(r'(\d{1,2})(?::(\d{2})|時(?:(\d{1,2})分)?)', raw)
+            if not when or int(when[1]) > 23 or int(when[2] or when[3] or 0) > 59:
+                continue
+            notice['time'] = f'{int(when[1]):02d}:{int(when[2] or when[3] or 0):02d}'
+        if name in result and result[name].get('time') != notice.get('time'):
+            ambiguous.add(name)
+        result.setdefault(name, notice)
+    return [notice for name, notice in result.items() if name not in ambiguous]
+
+
+def roster_text_without_arrival_footer(text):
+    blocks = re.split(r'\n\s*\n', text.replace('\r\n', '\n'))
+    kept = [block for index, block in enumerate(blocks)
+            if index < 2 or not re.search(r'あとから|後から|遅れて', block)]
+    # Short prose such as "みりあちゃんも遅れて合流" otherwise fits the
+    # importer's lexical name shape. Only separate footer paragraphs are removed.
+    return text if len(kept) == len(blocks) else '\n\n'.join(kept)
+
+
 def validate_post(tid, value, start, end, now):
     if not isinstance(value, dict) or not matching_id(value, tid):
         raise FetchFailure('response_id_mismatch')
@@ -407,6 +615,7 @@ def validate_post(tid, value, start, end, now):
             raise FetchFailure('id_timestamp_mismatch')
     except (ValueError, OverflowError, OSError):
         raise FetchFailure('invalid_post_id') from None
+    edit_ids = response_edit_ids(tid, value, now)
     # Only the outer post's text and outer author are ever inspected.
     text = value.get('text')
     if not isinstance(text, str):
@@ -417,18 +626,141 @@ def validate_post(tid, value, start, end, now):
         return None
     if 'アキバ絶対' not in head:
         raise FetchFailure('missing_store_header')
-    parsed = IMPORTER.parse(text, value['created_at'])
+    parsed = IMPORTER.parse(roster_text_without_arrival_footer(text), value['created_at'])
     if parsed is None:
         raise FetchFailure('parse_failed')
     date, store, shift, names = parsed
     if date != service_day(created).isoformat() or store not in STORE_IDS:
         raise FetchFailure('parsed_metadata_mismatch')
-    return {
+    post = {
         'id': tid, 'url': canonical(tid), 'authorId': AUTHOR_ID,
         'authorScreenName': AUTHOR, 'createdAt': iso(created), 'date': date,
         'shift': {'ひる': '昼', 'よる': '夜'}[shift],
         'storeId': STORE_IDS[store], 'names': names, 'observedAt': iso(now),
     }
+    if edit_ids is not None:
+        post['editTweetIds'] = edit_ids
+    if not any(value.get(key) for key in (
+            'quoted_tweet', 'quoted_status', 'in_reply_to_status_id_str', 'in_reply_to_status_id')):
+        notices = parse_notices(text, created, date, post['shift'], post['storeId'], names)
+        if notices:
+            post['notices'] = notices
+    return post
+
+
+def extracted_facts(post):
+    return {**{key: copy.deepcopy(post[key]) for key in ('date', 'shift', 'storeId', 'names')},
+            'notices': copy.deepcopy(post.get('notices', []))}
+
+
+def version_facts(post):
+    return {**extracted_facts(post), 'observedAt': post['observedAt']}
+
+
+def version_key(version):
+    return (timestamp(version['observedAt']),
+            json.dumps(extracted_facts(version), ensure_ascii=False, sort_keys=True))
+
+
+def last_checked(post):
+    return timestamp(post.get('lastCheckedAt', post['observedAt']))
+
+
+def checked_iso(value):
+    return value.astimezone(UTC).isoformat().replace('+00:00', 'Z')
+
+
+def validate_notices(notices):
+    if not isinstance(notices, list):
+        raise ValueError
+    seen = set()
+    for item in notices:
+        if (not isinstance(item, dict)
+                or set(item) - {'name', 'kind', 'excerpt', 'time'}
+                or not {'name', 'kind', 'excerpt'} <= set(item)
+                or not isinstance(item['name'], str)
+                or not re.fullmatch(r'[ぁ-んァ-ヶ一-龠ーａ-ｚA-Za-z0-9]{1,12}', item['name'])
+                or item['name'] in seen or item['kind'] != 'late'
+                or not isinstance(item['excerpt'], str) or not item['excerpt'].strip()
+                or len(item['excerpt']) > 160
+                or re.search(r'[\x00-\x1f\x7f\u2028\u2029]', item['excerpt'])
+                or ('time' in item and (not isinstance(item['time'], str)
+                    or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', item['time'])))):
+            raise ValueError
+        seen.add(item['name'])
+
+
+def validate_extraction_history(post):
+    validate_edit_tweet_ids(post)
+    validate_notices(post.get('notices', []))
+    observed = timestamp(post['observedAt'])
+    created = timestamp(post['createdAt'])
+    if observed < created or last_checked(post) < observed:
+        raise ValueError
+    revisions = post.get('revisions', [])
+    if not isinstance(revisions, list):
+        raise ValueError
+    previous = None
+    for revision in revisions:
+        if (not isinstance(revision, dict)
+                or set(revision) != {'date', 'shift', 'storeId', 'names', 'notices', 'observedAt'}
+                or revision['date'] != post['date']
+                or revision['shift'] not in ('昼', '夜')
+                or revision['storeId'] not in STORE_IDS.values()
+                or not isinstance(revision['names'], list) or not revision['names']
+                or any(not isinstance(name, str) or not name for name in revision['names'])):
+            raise ValueError
+        when = timestamp(revision['observedAt'])
+        if when < created or when >= observed or (previous is not None and when <= previous):
+            raise ValueError
+        validate_notices(revision['notices'])
+        previous = when
+
+
+def refresh_candidates(state, start, end, now, limit):
+    day = service_day(now)
+    shift = '昼' if 5 <= now.astimezone(JST).hour < 17 else '夜'
+    attempts = {item['id']: timestamp(item['lastAttemptAt'])
+                for item in state['pending']
+                if item['reason'].startswith('refresh_') and item.get('lastAttemptAt')}
+    excluded = superseded_ids(state['posts']) | {
+        item['editSourceId'] for item in state['pending'] if item.get('editSourceId')}
+    if not start <= day <= end:
+        return []
+    posts = [post for post in state['posts']
+             if post['id'] not in excluded
+             and post['date'] == day.isoformat()
+             and ('lastCheckedAt' not in post or post['shift'] == shift)
+             and now - max(last_checked(post), attempts.get(post['id'], last_checked(post)))
+             >= dt.timedelta(minutes=30)]
+    return sorted(posts, key=lambda post: (
+        'lastCheckedAt' in post,
+        max(last_checked(post), attempts.get(post['id'], last_checked(post))),
+        int(post['id'])))[:limit]
+
+
+def refreshed_post(previous, current, checked):
+    for key in ('id', 'url', 'authorId', 'authorScreenName', 'date'):
+        if previous[key] != current[key]:
+            raise FetchFailure('refresh_metadata_mismatch')
+    if timestamp(previous['createdAt']) != timestamp(current['createdAt']):
+        raise FetchFailure('refresh_metadata_mismatch')
+    if 'editTweetIds' in previous and 'editTweetIds' not in current:
+        raise FetchFailure('edit_metadata_missing')
+    if ('editTweetIds' in previous and 'editTweetIds' in current
+            and not set(previous['editTweetIds']) <= set(current['editTweetIds'])):
+        raise FetchFailure('edit_chain_conflict')
+    changed = extracted_facts(previous) != extracted_facts(current)
+    if changed:
+        result = copy.deepcopy(current)
+        result['revisions'] = [*copy.deepcopy(previous.get('revisions', [])), version_facts(previous)]
+    else:
+        result = copy.deepcopy(previous)
+    edit_ids = merge_edit_ids(previous, current)
+    if edit_ids is not None:
+        result['editTweetIds'] = edit_ids
+    result['lastCheckedAt'] = checked_iso(checked)
+    return result, changed
 
 
 def empty_snapshot():
@@ -451,6 +783,10 @@ def load_snapshot(path):
         for field in ('checkedAt', 'lastSuccessAt'):
             if state[field] is not None:
                 timestamp(state[field])
+        for field in ('refreshedCount', 'updatedPostCount', 'noticeCount'):
+            if field in state['lastRun'] and (
+                    type(state['lastRun'][field]) is not int or state['lastRun'][field] < 0):
+                raise ValueError
         cooldowns = state.get('cooldowns', {})
         if not isinstance(cooldowns, dict):
             raise ValueError
@@ -472,7 +808,11 @@ def load_snapshot(path):
                     or service_day(timestamp(post['createdAt'])).isoformat() != post['date']):
                 raise ValueError
             timestamp(post['observedAt'])
+            validate_extraction_history(post)
             ids.add(tid)
+        known_posts = {post['id']: post for post in state['posts']}
+        for post in state['posts']:
+            validate_edit_tweet_ids(post, known_posts)
         pending_ids = set()
         for item in state['pending']:
             tid = post_id(item['id'])
@@ -483,6 +823,11 @@ def load_snapshot(path):
             timestamp(item['firstSeenAt'])
             if item.get('lastAttemptAt') is not None:
                 timestamp(item['lastAttemptAt'])
+            if 'editSourceId' in item and (
+                    not isinstance(item['editSourceId'], str)
+                    or not post_id(item['editSourceId'])
+                    or int(item['editSourceId']) >= int(tid)):
+                raise ValueError
             pending_ids.add(tid)
         resolved_ids = set()
         if not isinstance(state.get('resolved', []), list):
@@ -537,35 +882,88 @@ def load_transport(path):
         raise ValueError('invalid_transport_state') from None
 
 
+def merge_post_versions(first, second):
+    for key in ('id', 'url', 'authorId', 'authorScreenName', 'date'):
+        if first[key] != second[key]:
+            raise ValueError('observation_conflict')
+    if timestamp(first['createdAt']) != timestamp(second['createdAt']):
+        raise ValueError('observation_conflict')
+    current_equal = extracted_facts(first) == extracted_facts(second)
+    older, newer = sorted((first, second), key=lambda post: timestamp(post['observedAt']))
+    if not current_equal:
+        old_version = version_key(older)
+        if (old_version not in {version_key(item) for item in newer.get('revisions', [])}
+                or last_checked(older) > last_checked(newer)):
+            raise ValueError('observation_conflict')
+    merged = copy.deepcopy(newer if not current_equal or newer.get('revisions') else first)
+    edit_ids = merge_edit_ids(first, second)
+    if edit_ids is not None:
+        merged['editTweetIds'] = edit_ids
+    if current_equal and not merged.get('revisions'):
+        merged['observedAt'] = min((first['observedAt'], second['observedAt']), key=timestamp)
+    history = {}
+    at_time = {}
+    for item in [*first.get('revisions', []), *second.get('revisions', [])]:
+        key = version_key(item)
+        if key[0] in at_time and at_time[key[0]] != key:
+            raise ValueError('observation_conflict')
+        at_time[key[0]] = key
+        history[key] = copy.deepcopy(item)
+    if history:
+        merged['revisions'] = [history[key] for key in sorted(history)]
+    if 'lastCheckedAt' in first or 'lastCheckedAt' in second:
+        checked = max(last_checked(first), last_checked(second)) if current_equal else last_checked(newer)
+        merged['lastCheckedAt'] = checked_iso(checked)
+    validate_extraction_history(merged)
+    return merged
+
+
 def merge_snapshots(primary, published):
-    """Import verified facts from a mirror without replacing existing facts."""
+    """Merge extraction lineages, never union names from different versions."""
+    known_posts = {post['id']: post for post in [*primary['posts'], *published['posts']]}
+    for state in (primary, published):
+        for post in state['posts']:
+            validate_edit_tweet_ids(post, known_posts)
     result = copy.deepcopy(primary)
     posts = {post['id']: post for post in result['posts']}
     for post in published['posts']:
         existing = posts.get(post['id'])
         if existing is not None:
-            facts = lambda item: {key: value for key, value in item.items() if key != 'observedAt'}
-            if facts(existing) != facts(post):
-                raise ValueError('observation_conflict')
+            posts[post['id']] = merge_post_versions(existing, post)
         else:
             posts[post['id']] = copy.deepcopy(post)
     result['posts'] = list(posts.values())
+    superseded = superseded_ids(result['posts'])
     resolved = {}
     for item in [*primary.get('resolved', []), *published.get('resolved', [])]:
         if item['id'] not in posts:
             previous = resolved.get(item['id'])
             if previous is None or timestamp(item['resolvedAt']) > timestamp(previous['resolvedAt']):
                 resolved[item['id']] = copy.deepcopy(item)
-    result['resolved'] = list(resolved.values())
     pending = {}
     for item in [*primary['pending'], *published['pending']]:
-        if item['id'] in posts or item['id'] in resolved:
+        post = posts.get(item['id'])
+        refresh_pending = (post is not None and item['reason'].startswith('refresh_')
+                           and item.get('lastAttemptAt')
+                           and timestamp(item['lastAttemptAt']) > last_checked(post))
+        edit_pending = (bool(item.get('editSourceId')) and item['id'] not in superseded
+                        and not (post and item['editSourceId'] in post.get('editTweetIds', [])[:-1]))
+        if edit_pending:
+            # Even a newer general non-shift verdict has no proof about this edit source.
+            resolved.pop(item['id'], None)
+        if ((post is not None and not refresh_pending and not edit_pending)
+                or item['id'] in resolved or item['id'] in superseded):
             continue
         previous = pending.get(item['id'])
         when = timestamp(item.get('lastAttemptAt') or item['firstSeenAt'])
         if previous is None or when >= timestamp(previous.get('lastAttemptAt') or previous['firstSeenAt']):
             pending[item['id']] = copy.deepcopy(item)
+        sources = [entry['editSourceId'] for entry in (previous, item)
+                   if entry and entry.get('editSourceId')]
+        if sources:
+            pending[item['id']]['editSourceId'] = min(sources, key=int)
     result['pending'] = list(pending.values())
+    result['resolved'] = list(resolved.values())
     limits = {}
     for state in (primary, published):
         for host, until in state.get('cooldowns', {}).items():
@@ -618,13 +1016,24 @@ class ProcessLock:
             self.handle = None
 
 
-def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit=None):
+def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit=None,
+            refresh_known=0, on_refresh_attempt=None):
+    if type(refresh_known) is not int or not 0 <= refresh_known <= 3:
+        raise ValueError('invalid_refresh_limit')
     checked = clock()
     next_state = copy.deepcopy(state)
-    present = {post['id'] for post in state['posts']}
+    original_posts = {post['id']: post for post in state['posts']}
+    present = set(original_posts)
+    superseded = superseded_ids(state['posts'])
     resolved = {item['id']: copy.deepcopy(item) for item in state.get('resolved', [])}
     pending = {item['id']: copy.deepcopy(item) for item in state['pending']
-               if item['id'] not in present | known | resolved.keys()}
+               if item['id'] not in superseded and (
+                   item['id'] not in present | known | resolved.keys()
+                   or item.get('editSourceId')
+                   or (item['id'] in present and item['reason'].startswith('refresh_')))}
+    for item in pending.values():
+        if item.get('editSourceId'):
+            resolved.pop(item['id'], None)
     sources, candidates, failures, rejected = [], set(), [], []
     new_posts = []
     cooldowns = {host: timestamp(until) for host, until in state.get('cooldowns', {}).items()}
@@ -657,6 +1066,7 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
     candidates.update(pending)
     skipped_curated = skipped_observed = skipped_resolved = 0
     eligible = []
+    waiting_sources = {item['editSourceId'] for item in pending.values() if item.get('editSourceId')}
     for tid in sorted(candidates, key=int, reverse=True):
         try:
             created = snowflake_time(tid)
@@ -669,8 +1079,14 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
         except (ValueError, OSError, OverflowError):
             rejected.append({'id': tid, 'reason': 'invalid_post_id'})
             continue
-        if tid in known:
+        if tid in superseded:
+            skipped_resolved += 1
+        elif tid in waiting_sources:
+            continue
+        elif tid in known:
             skipped_curated += 1
+        elif pending.get(tid, {}).get('editSourceId'):
+            eligible.append(tid)
         elif tid in present:
             skipped_observed += 1
         elif tid in resolved:
@@ -679,52 +1095,180 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
             eligible.append(tid)
     # Retry older failed attempts first; no cursor can silently skip a failure.
     eligible.sort(key=lambda tid: (
-        tid not in pending, pending.get(tid, {}).get('lastAttemptAt') or '', -int(tid)))
-    attempted = fetched = handled = 0
+        tid in present, tid not in pending,
+        pending.get(tid, {}).get('lastAttemptAt') or '', -int(tid)))
+    attempted = fetched = handled = refreshed = updated = known_attempted = 0
+    initial_deferred = refresh_deferred = 0
+    replacements = {}
+    attempted_ids = set()
+    edit_queue = []
+    followed = False
     host_stopped = limited(POST_HOST)
-    for index, tid in enumerate(eligible):
+
+    def working_posts():
+        return [replacements.get(post['id'], post) for post in state['posts']] + new_posts
+
+    def working_state():
+        return {'posts': working_posts(), 'pending': list(pending.values())}
+
+    def pending_record(tid):
         previous = pending.get(tid, {})
-        item = {'id': tid, 'url': canonical(tid),
-                'firstSeenAt': previous.get('firstSeenAt', iso(checked)),
-                'lastAttemptAt': previous.get('lastAttemptAt'),
-                'attempts': previous.get('attempts', 0)}
-        if index >= max_posts or host_stopped:
-            item['reason'] = 'host_rate_limited' if host_stopped else 'post_limit'
-            if host_stopped and POST_HOST in cooldowns:
-                item['retryAt'] = iso(cooldowns[POST_HOST])
-            elif previous.get('retryAt'):
-                item['retryAt'] = previous['retryAt']
-            pending[tid] = item
-            continue
-        attempted += 1
-        item['lastAttemptAt'] = iso(clock())
+        item = {
+            'id': tid, 'url': canonical(tid),
+            'firstSeenAt': previous.get('firstSeenAt', original_posts.get(tid, {}).get('observedAt', iso(checked))),
+            'lastAttemptAt': previous.get('lastAttemptAt'),
+            'attempts': previous.get('attempts', 0)}
+        if previous.get('editSourceId'):
+            item['editSourceId'] = previous['editSourceId']
+        return item
+
+    def queue_latest(source_id, exc):
+        if not isinstance(exc, StaleEditResponse) or source_id in superseded_ids(working_posts()):
+            return
+        tid = exc.latest_id
+        item = pending_record(tid)
+        item['editSourceId'] = min((source_id, item.get('editSourceId', source_id)), key=int)
+        item['reason'] = 'refresh_edit_latest_unverified' if tid in present else 'edit_latest_unverified'
+        if tid in known:
+            item['reason'] = 'edit_latest_curated'
+        pending[tid] = item
+        resolved.pop(tid, None)
+        if tid not in edit_queue:
+            edit_queue.append(tid)
+
+    def ready_known(tid):
+        if tid in known or not start <= service_day(snowflake_time(tid)) <= end:
+            return False
+        if tid not in present:
+            return True
+        return (known_attempted < refresh_known and tid in {
+            post['id'] for post in refresh_candidates(working_state(), start, end, clock(), len(present))})
+
+    def fetch_one(tid):
+        nonlocal attempted, fetched, handled, refreshed, updated, known_attempted, host_stopped
+        previous = original_posts.get(tid)
+        item = pending_record(tid)
+        item['lastAttemptAt'] = checked_iso(clock())
         item['attempts'] += 1
+        if previous is not None and on_refresh_attempt is not None:
+            on_refresh_attempt(tid, item['lastAttemptAt'])
+        attempted += 1
+        attempted_ids.add(tid)
+        if previous is not None:
+            known_attempted += 1
         try:
             value = client.fetch_post(tid)
             fetched += 1
             post = validate_post(tid, value, start, end, clock())
-            handled += 1
-            pending.pop(tid, None)
+            if post is not None:
+                try:
+                    validate_edit_tweet_ids(post, {item['id']: item for item in working_posts()})
+                except ValueError:
+                    raise FetchFailure('edit_date_mismatch') from None
+            if item.get('editSourceId'):
+                source_id = item['editSourceId']
+                if post is None:
+                    raise FetchFailure('edit_latest_unparsed')
+                if source_id not in post.get('editTweetIds', [])[:-1]:
+                    raise FetchFailure('edit_chain_unconfirmed')
+                if post['date'] != service_day(snowflake_time(source_id)).isoformat():
+                    raise FetchFailure('edit_date_mismatch')
             if post is None:
+                if previous is not None:
+                    raise FetchFailure('not_shift_post')
                 rejected.append({'id': tid, 'reason': 'not_shift_post'})
                 resolved[tid] = {'id': tid, 'url': canonical(tid),
                                  'reason': 'not_shift_post', 'resolvedAt': iso(clock())}
+            elif previous is not None:
+                replacement, changed = refreshed_post(previous, post, clock())
+                replacements[tid] = replacement
+                refreshed += 1
+                updated += int(changed)
             else:
+                if refresh_known or post.get('editTweetIds'):
+                    post['lastCheckedAt'] = checked_iso(clock())
                 new_posts.append(post)
+            handled += 1
+            pending.pop(tid, None)
         except FetchFailure as exc:
+            if isinstance(exc, StaleEditResponse) and item.get('editSourceId'):
+                if item['editSourceId'] not in exc.edit_ids:
+                    exc = FetchFailure('edit_chain_unconfirmed')
+                elif service_day(snowflake_time(item['editSourceId'])) != service_day(snowflake_time(tid)):
+                    exc = FetchFailure('edit_date_mismatch')
             remember_limit(POST_HOST, exc)
             item.update(exc.facts())
+            if previous is not None:
+                item['reason'] = 'refresh_' + exc.reason
             pending[tid] = item
             failures.append({'id': tid, 'url': canonical(tid), **exc.facts()})
+            queue_latest(tid, exc)
             if exc.status in (403, 429) or exc.reason == 'host_rate_limited':
                 host_stopped = True
+
+    for tid in eligible:
+        if tid in superseded_ids(working_posts()):
+            pending.pop(tid, None)
+            skipped_resolved += 1
+            continue
+        if tid in {item.get('editSourceId') for item in pending.values()}:
+            continue
+        if attempted >= max_posts or host_stopped or not ready_known(tid):
+            item = pending_record(tid)
+            item['reason'] = 'host_rate_limited' if host_stopped else 'post_limit'
+            if tid in present:
+                item['reason'] = 'refresh_' + item['reason']
+            if host_stopped and POST_HOST in cooldowns:
+                item['retryAt'] = iso(cooldowns[POST_HOST])
+            elif pending.get(tid, {}).get('retryAt'):
+                item['retryAt'] = pending[tid]['retryAt']
+            pending[tid] = item
+            initial_deferred += 1
+            continue
+        fetch_one(tid)
+
+    def follow_latest():
+        nonlocal followed
+        if followed or host_stopped or attempted >= max_posts:
+            return
+        for tid in edit_queue:
+            if (tid in attempted_ids or tid not in pending
+                    or tid in superseded_ids(working_posts()) or not ready_known(tid)):
+                continue
+            followed = True
+            fetch_one(tid)
+            break
+
+    follow_latest()
+    refresh_limit = min(refresh_known - known_attempted, max_posts - attempted)
+    selections = [
+        post for post in refresh_candidates(working_state(), start, end, clock(), len(present))
+        if post['id'] not in known
+    ][:refresh_limit] if refresh_limit else []
+    for index, previous in enumerate(selections):
+        if attempted >= max_posts or known_attempted >= refresh_known:
+            break
+        if host_stopped or limited(POST_HOST):
+            refresh_deferred += len(selections) - index
+            break
+        # A watch run may cross the service-day/shift boundary while fetching new posts.
+        tid = previous['id']
+        if tid in attempted_ids or not ready_known(tid):
+            continue
+        fetch_one(tid)
+        follow_latest()
+    superseded = superseded_ids(working_posts())
+    pending = {tid: item for tid, item in pending.items() if tid not in superseded}
+    failures = [item for item in failures
+                if not (item['id'] in superseded and item['reason'] == 'stale_edit_response')]
     source_count = sum(source['status'] == 'ok' for source in sources)
-    deferred = len(eligible) - attempted
+    deferred = initial_deferred + refresh_deferred + sum(
+        tid in pending and tid not in attempted_ids and tid not in eligible for tid in edit_queue)
     if source_count == 0 and handled == 0:
         status = 'unavailable'
     elif source_count != len(SEARCH_URLS) or failures or deferred or pending:
         status = 'partial'
-    elif new_posts:
+    elif new_posts or updated:
         status = 'ok'
     elif skipped_curated or skipped_observed or skipped_resolved or handled:
         status = 'no-new'
@@ -734,12 +1278,20 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
     next_state['checkedAt'] = iso(checked)
     if status in ('ok', 'no-new', 'no-results'):
         next_state['lastSuccessAt'] = finished
+    next_state['posts'] = [replacements.get(post['id'], post) for post in next_state['posts']]
     next_state['posts'].extend(new_posts)
     next_state['posts'].sort(key=lambda post: (post['createdAt'], int(post['id'])))
     next_state['pending'] = sorted(pending.values(), key=lambda item: int(item['id']))
     next_state['resolved'] = sorted(resolved.values(), key=lambda item: int(item['id']))
     next_state['cooldowns'] = {host: iso(until) for host, until in cooldowns.items()
                                if until > clock()}
+
+    def outside_requested_range(tid):
+        try:
+            return not start <= service_day(snowflake_time(tid)) <= end
+        except (ValueError, OverflowError, OSError):
+            return True
+
     next_state['lastRun'] = {
         'status': status, 'dateFrom': start.isoformat(), 'dateTo': end.isoformat(),
         'dateBasis': 'JST service day, 05:00 boundary',
@@ -752,11 +1304,15 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
         'skippedCuratedCount': skipped_curated, 'skippedObservedCount': skipped_observed,
         'skippedResolvedCount': skipped_resolved,
         'deferredCount': deferred, 'pendingCount': len(pending),
-        'pendingOutsideRangeCount': sum(tid not in eligible for tid in pending),
+        'pendingOutsideRangeCount': sum(outside_requested_range(tid) for tid in pending),
         'maxPosts': max_posts, 'failures': failures, 'rejected': rejected,
         'complete': False,
         'lastSuccessMeaning': 'Both searches and every selected post handled without failure or deferral',
     }
+    notice_count = current_notice_count(next_state['posts'])
+    if refresh_known or notice_count or refreshed or superseded:
+        next_state['lastRun'].update(
+            refreshedCount=refreshed, updatedPostCount=updated, noticeCount=notice_count)
     report = {'schemaVersion': 1, 'checkedAt': next_state['checkedAt'],
               'lastSuccessAt': next_state['lastSuccessAt'],
               **next_state['lastRun'], 'newFacts': new_posts,
@@ -767,13 +1323,16 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
 def argument_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dry-run', action='store_true',
-                        help='leave observation facts unchanged; persist HTTP cooldowns even in dry-run')
+                        help='leave facts unchanged; persist HTTP cooldowns and known-post request reservations')
     parser.add_argument('--days', type=int, default=2,
                         help='inclusive JST 05:00 service days (default: 2)')
     parser.add_argument('--date-from', help='inclusive service date YYYY-MM-DD')
     parser.add_argument('--date-to', help='inclusive service date YYYY-MM-DD')
     parser.add_argument('--max-posts', type=int, default=20,
                         help='individual request cap, 1..20 (default: 20)')
+    parser.add_argument('--refresh-known', type=int, default=0,
+                        help="recheck up to 0..3 posts: today's unchecked legacy first, "
+                             'then current shift; at least 30 minutes apart')
     parser.add_argument('--report', type=Path, help='fact-only JSON report; absolute paths allowed')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--watch', action='store_true',
@@ -848,8 +1407,23 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
             state['cooldowns'] = dict(limits)
             known = curated_ids(curated)
             start, end = date_range(args, clock())
+            refresh_safety = copy.deepcopy(state)
+
+            def reserve_refresh(tid, at):
+                pending = {item['id']: item for item in refresh_safety['pending']}
+                previous = pending.get(tid, {})
+                pending[tid] = {
+                    'id': tid, 'url': canonical(tid), 'reason': 'refresh_requested',
+                    'firstSeenAt': previous.get('firstSeenAt', at),
+                    'lastAttemptAt': at, 'attempts': previous.get('attempts', 0) + 1}
+                if previous.get('editSourceId'):
+                    pending[tid]['editSourceId'] = previous['editSourceId']
+                refresh_safety['pending'] = list(pending.values())
+                atomic_json(snapshot, refresh_safety)
+
             updated, report, code = collect(
-                state, known, client, start, end, args.max_posts, clock, on_limit=persist_limits)
+                state, known, client, start, end, args.max_posts, clock, on_limit=persist_limits,
+                refresh_known=getattr(args, 'refresh_known', 0), on_refresh_attempt=reserve_refresh)
             report['dryRun'] = args.dry_run
             report['saved'] = not args.dry_run
             report['processId'] = os.getpid()
@@ -881,6 +1455,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not 1 <= args.days <= 366 or not 1 <= args.max_posts <= MAX_POSTS:
         parser.error('--days must be 1..366 and --max-posts must be 1..20')
+    if not 0 <= args.refresh_known <= 3:
+        parser.error('--refresh-known must be 0..3')
     if args.interval < 60:
         parser.error('--interval must be at least 60 seconds')
     try:

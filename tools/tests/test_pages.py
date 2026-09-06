@@ -61,6 +61,35 @@ def snapshot():
     return value
 
 
+def refreshed_fact():
+    post = fact()
+    post.update(
+        notices=[{'name': 'ひじり', 'kind': 'late', 'excerpt': 'ひじりは19時から合流',
+                  'time': '19:00', 'rawText': SECRET}],
+        lastCheckedAt='2026-09-05T18:51:00Z',
+        revisions=[{
+            'date': post['date'], 'shift': '夜', 'storeId': 's1', 'names': ['もな'],
+            'notices': [], 'observedAt': '2026-09-05T18:40:00Z',
+            'id': OTHER, 'createdAt': SECRET, 'authorId': SECRET,
+            'url': SECRET, 'rawText': SECRET, 'lease': SECRET,
+        }],
+    )
+    return post
+
+
+def official_footer_fact():
+    tid = '2096436633973526890'
+    created = collector.iso(collector.snowflake_time(tid))
+    post = fact(tid, created)
+    post.update(
+        date='2026-09-06', shift='昼', storeId='s4',
+        names=['るるか', 'ちぇる', 'まこと'],
+        observedAt=collector.iso(collector.timestamp(created) + dt.timedelta(minutes=5)),
+        notices=[{'name': 'みりあ', 'kind': 'late', 'excerpt': 'みりあちゃんもあとから来る'}],
+    )
+    return post
+
+
 def personal_snapshot():
     value = pages.load_personal_collector().empty_snapshot()
     value.update(checkedAt=collector.iso(NOW), lastSuccessAt=collector.iso(NOW))
@@ -176,6 +205,378 @@ class WorkspaceTests(unittest.TestCase):
 
 
 class ProjectionTests(WorkspaceTests):
+    def test_official_fractional_timestamps_preserve_refresh_and_history_order(self):
+        state = snapshot()
+        post = refreshed_fact()
+        post.update(createdAt='2026-09-05T09:17:05.123456Z',
+                    observedAt='2026-09-05T18:50:00.900000Z',
+                    lastCheckedAt='2026-09-06T03:50:00.950123+09:00')
+        revision = post['revisions'][0]
+        post['revisions'] = [
+            {**copy.deepcopy(revision), 'observedAt': when}
+            for when in ('2026-09-05T18:50:00.100000Z', '2026-09-05T18:50:00.200000Z')
+        ]
+        state['posts'] = [post]
+        source = self.write('data/observed-shifts.json', pages.json_bytes(state))
+        projected = pages.load_public_snapshot(source)['posts'][0]
+        self.assertEqual(projected['createdAt'], post['createdAt'])
+        self.assertEqual(projected['observedAt'], post['observedAt'])
+        self.assertEqual(projected['lastCheckedAt'], '2026-09-05T18:50:00.950123Z')
+        self.assertEqual([entry['observedAt'] for entry in projected['revisions']],
+                         [entry['observedAt'] for entry in post['revisions']])
+        self.stage()
+        staged = json.loads((self.root / '_site' / 'data' / 'observed-shifts.json').read_text('utf-8'))
+        self.assertEqual(staged['posts'][0], projected)
+
+    def test_producer_footer_refresh_passes_public_validation_and_staging(self):
+        expected = official_footer_fact()
+        created = collector.timestamp(expected['createdAt'])
+        before = created + dt.timedelta(minutes=1)
+        checked = created + dt.timedelta(minutes=5)
+        day = dt.date(2026, 9, 6)
+        roster = '【アキバ絶対 A.D.2045】\nひるにゃんこ\n\nるるか\nちぇる\nまこと'
+        body = payload(expected['id'], expected['createdAt'], text=roster)
+        previous = collector.validate_post(expected['id'], body, day, day, before)
+        body['text'] += '\n\nみりあちゃんもあとから来る'
+        with mock.patch.object(collector, 'notice_name_evidence', return_value={'みりあ': 'みりあ'}):
+            current = collector.validate_post(expected['id'], body, day, day, checked)
+        updated, changed = collector.refreshed_post(previous, current, checked)
+        self.assertTrue(changed)
+        state = snapshot()
+        state.update(posts=[updated], checkedAt=collector.iso(checked), lastSuccessAt=collector.iso(checked))
+        state['lastRun'].update(
+            dateFrom='2026-09-06', dateTo='2026-09-06', newPostCount=0, newNameCount=0,
+            refreshedCount=1, updatedPostCount=1, noticeCount=1)
+        source = self.write('data/observed-shifts.json', pages.json_bytes(state))
+        public = pages.load_public_snapshot(source)
+        post = public['posts'][0]
+        self.assertEqual(post['names'], ['るるか', 'ちぇる', 'まこと'])
+        self.assertEqual(post['notices'], expected['notices'])
+        self.assertEqual(post['revisions'][0]['names'], post['names'])
+        self.assertEqual(post['revisions'][0]['notices'], [])
+        self.assertEqual(post['lastCheckedAt'], collector.iso(checked))
+        self.stage()
+        staged = json.loads((self.root / '_site' / 'data' / 'observed-shifts.json').read_text('utf-8'))
+        self.assertEqual(staged, public)
+
+    def test_official_edit_chain_is_optional_and_never_removes_posts_or_history(self):
+        state = snapshot()
+        old = fact(OTHER, '2026-09-05T08:00:00Z')
+        old['editTweetIds'] = [OTHER]
+        current = refreshed_fact()
+        current['editTweetIds'] = [OTHER, TID]
+        state['posts'] = [old, current]
+        result = pages.public_projection(state)
+        self.assertEqual([post['id'] for post in result['posts']], [OTHER, TID])
+        self.assertEqual(result['posts'][0]['editTweetIds'], [OTHER])
+        self.assertEqual(result['posts'][1]['editTweetIds'], [OTHER, TID])
+        self.assertEqual(result['posts'][1]['revisions'][0]['names'], ['もな'])
+        self.assertNotIn('editTweetIds', pages.POST_FIELDS)
+        result['posts'][1]['editTweetIds'].clear()
+        self.assertEqual(current['editTweetIds'], [OTHER, TID])
+
+    def test_official_edit_chain_rejects_invalid_ids_duplicates_and_stale_current_id(self):
+        for chain in (
+            None, {}, TID, [], [int(TID)], [True], [None], [SECRET], ['123', TID],
+            [OTHER, int(TID)], [OTHER, TID, TID], [TID, OTHER], [OTHER], [OTHER, {}],
+            [OTHER, CURATED, TID],
+        ):
+            with self.subTest(chain=chain):
+                state = snapshot()
+                state['posts'][0]['editTweetIds'] = chain
+                with self.assertRaisesRegex(pages.PagesError, 'invalid_public_snapshot'):
+                    pages.public_projection(state)
+
+    def test_official_edit_chain_matches_producer_twenty_id_boundary(self):
+        state = snapshot()
+        chain = [str(int(TID) - offset) for offset in reversed(range(20))]
+        state['posts'][0]['editTweetIds'] = chain
+        self.assertEqual(pages.public_projection(state)['posts'][0]['editTweetIds'], chain)
+        state['posts'][0]['editTweetIds'].insert(0, str(int(TID) - 20))
+        with self.assertRaisesRegex(pages.PagesError, 'invalid_public_snapshot'):
+            pages.public_projection(state)
+
+    def test_official_edit_chain_rejects_cross_service_day_direct_latest_response(self):
+        state = snapshot()
+        current = fact('2096800623621046272', '2026-09-07T03:20:00Z')
+        current.update(
+            observedAt='2026-09-07T03:21:00Z',
+            editTweetIds=['2096436633973526890', current['id']])
+        state.update(posts=[current], checkedAt=current['observedAt'], lastSuccessAt=current['observedAt'])
+        state['lastRun'].update(dateFrom=current['date'], dateTo=current['date'])
+        before = copy.deepcopy(state)
+        with self.assertRaisesRegex(pages.PagesError, 'invalid_public_snapshot'):
+            pages.public_projection(state)
+        self.assertEqual(state, before)
+
+    def test_official_edit_chain_uses_jst_five_am_boundary_not_utc_or_civil_day(self):
+        for old_created, new_created, accepted in (
+            ('2026-09-05T20:30:00Z', '2026-09-06T19:30:00Z', True),
+            ('2026-09-05T19:59:59Z', '2026-09-05T20:00:00Z', False),
+        ):
+            with self.subTest(old=old_created, new=new_created):
+                current = fact(make_id(new_created), new_created)
+                current.update(
+                    observedAt=collector.iso(collector.timestamp(new_created) + dt.timedelta(minutes=1)),
+                    editTweetIds=[make_id(old_created), current['id']])
+                state = snapshot()
+                state.update(posts=[current], checkedAt=current['observedAt'],
+                             lastSuccessAt=current['observedAt'])
+                state['lastRun'].update(dateFrom=current['date'], dateTo=current['date'])
+                source = self.write('data/observed-shifts.json', pages.json_bytes(state))
+                original_bytes = source.read_bytes()
+                if accepted:
+                    projected = pages.public_projection(state)
+                    self.assertEqual(projected['posts'][0]['editTweetIds'], current['editTweetIds'])
+                    self.assertEqual(pages.load_public_snapshot(source), projected)
+                else:
+                    with self.assertRaisesRegex(pages.PagesError, 'invalid_public_snapshot'):
+                        pages.public_projection(state)
+                    with self.assertRaisesRegex(pages.PagesError, 'invalid_public_snapshot'):
+                        pages.load_public_snapshot(source)
+                self.assertEqual(source.read_bytes(), original_bytes)
+
+    def test_current_notice_count_does_not_recount_superseded_raw_post_notices(self):
+        state = snapshot()
+        previous = fact(OTHER, '2026-09-05T08:00:00Z')
+        previous['notices'] = [{'name': 'ひじり', 'kind': 'late', 'excerpt': 'ひじりは後から合流'}]
+        state['posts'].insert(0, previous)
+        state['posts'][1].update(editTweetIds=[OTHER, TID], notices=[])
+        state['lastRun']['noticeCount'] = 0
+        projected = pages.public_projection(state)
+        self.assertEqual(projected['lastRun']['noticeCount'], 0)
+        self.assertEqual(projected['posts'][0]['notices'], previous['notices'])
+        self.assertEqual(projected['posts'][1]['notices'], [])
+        self.assertEqual([post['id'] for post in projected['posts']], [OTHER, TID])
+
+    def test_edit_chain_cannot_replace_requested_id_creation_time_with_ancestor_time(self):
+        state = snapshot()
+        state['posts'][0].update(
+            editTweetIds=[OTHER, TID], createdAt='2026-09-05T08:00:00Z')
+        before = copy.deepcopy(state)
+        with self.assertRaisesRegex(pages.PagesError, 'invalid_public_snapshot'):
+            pages.public_projection(state)
+        self.assertEqual(state, before)
+
+        previous = fact(OTHER, '2026-09-05T08:00:00Z')
+        state['posts'] = [previous]
+        state['pending'] = [{
+            'id': TID, 'url': collector.canonical(TID), 'reason': 'edit_created_at_mismatch',
+            'firstSeenAt': collector.iso(NOW), 'lastAttemptAt': collector.iso(NOW), 'attempts': 1,
+        }]
+        state['lastRun'].update(status='partial', newPostCount=0, newNameCount=0)
+        source = self.write('data/observed-shifts.json', pages.json_bytes(state))
+        source_bytes = source.read_bytes()
+        public = pages.load_public_snapshot(source)
+        self.assertEqual(public['posts'], [previous])
+        self.assertEqual(public['pending'], [])
+        self.assertEqual(public['lastRun']['status'], 'partial')
+        self.assertNotIn(TID, json.dumps(public))
+        self.assertEqual(source.read_bytes(), source_bytes)
+
+    def test_unfetched_or_quoted_edit_metadata_cannot_replace_existing_facts(self):
+        state = snapshot()
+        state['posts'][0].update(
+            edit_control={'edit_tweet_ids': [TID, OTHER], 'cookie': SECRET},
+            quoted_status={'editTweetIds': [TID, OTHER], 'authorId': SECRET},
+        )
+        state['pending'] = [{'id': OTHER, 'reason': 'unverified_edit', 'rawText': SECRET}]
+        result = pages.public_projection(state)
+        self.assertEqual(result['posts'], [fact()])
+        self.assertEqual(result['pending'], [])
+        self.assertNotIn('editTweetIds', result['posts'][0])
+        self.assertNotIn(OTHER, json.dumps(result))
+        self.assertNotIn('private-person', json.dumps(result))
+
+    def test_official_footer_notice_inherits_header_without_becoming_attendance(self):
+        state = snapshot()
+        state['posts'] = [official_footer_fact()]
+        state['checkedAt'] = state['lastSuccessAt'] = state['posts'][0]['observedAt']
+        state['lastRun'].update(dateFrom='2026-09-06', dateTo='2026-09-06',
+                                newNameCount=3, noticeCount=1)
+        notice = state['posts'][0]['notices'][0]
+        notice.update(date=SECRET, shift=SECRET, storeId='s1', cookie=SECRET)
+        result = pages.public_projection(state)
+        post = result['posts'][0]
+        self.assertEqual((post['id'], post['date'], post['shift'], post['storeId']),
+                         ('2096436633973526890', '2026-09-06', '昼', 's4'))
+        self.assertEqual(post['names'], ['るるか', 'ちぇる', 'まこと'])
+        self.assertEqual(post['notices'], [{
+            'name': 'みりあ', 'kind': 'late', 'excerpt': 'みりあちゃんもあとから来る'}])
+        self.assertNotIn('みりあ', post['names'])
+        self.assertNotIn('private-person', json.dumps(result))
+
+    def test_official_history_retains_original_and_changes_in_order(self):
+        state = snapshot()
+        current = refreshed_fact()
+        original = current['revisions'][0]
+        second = {**copy.deepcopy(original), 'names': ['もな', 'あむ'],
+                  'observedAt': '2026-09-05T18:45:00Z'}
+        current['revisions'].append(second)
+        state['posts'] = [current]
+        result = pages.public_projection(state)['posts'][0]
+        self.assertEqual([revision['names'] for revision in result['revisions']],
+                         [['もな'], ['もな', 'あむ']])
+        self.assertEqual([revision['observedAt'] for revision in result['revisions']],
+                         ['2026-09-05T18:40:00Z', '2026-09-05T18:45:00Z'])
+        self.assertEqual(result['names'], ['あむ', 'あずにゃん'])
+        for revision in result['revisions']:
+            self.assertTrue(set(revision).isdisjoint({'id', 'url', 'authorId', 'createdAt'}))
+
+    def test_official_unchanged_and_failed_refresh_do_not_invent_history_or_names(self):
+        state = snapshot()
+        state['posts'] = [refreshed_fact()]
+        before = pages.public_projection(state)['posts'][0]
+        state['posts'][0]['lastCheckedAt'] = '2026-09-05T19:30:00Z'
+        state['lastRun'].update(status='no-new', newPostCount=0, newNameCount=0,
+                                refreshedCount=1, updatedPostCount=0, noticeCount=1)
+        after = pages.public_projection(state)['posts'][0]
+        self.assertEqual({key for key in after if after[key] != before[key]}, {'lastCheckedAt'})
+        state['lastRun'].update(status='partial', failures=[{'id': OTHER, 'fullText': SECRET}],
+                                refreshedCount=0, privateHttpState=SECRET)
+        failed = pages.public_projection(state)
+        self.assertEqual(failed['posts'][0], after)
+        self.assertNotIn(OTHER, json.dumps(failed))
+        self.assertNotIn('private-person', json.dumps(failed))
+
+    def test_official_notices_and_revisions_are_whitelisted_without_merging_rosters(self):
+        state = snapshot()
+        state['posts'] = [refreshed_fact()]
+        state['lastRun'].update(refreshedCount=1, updatedPostCount=1, noticeCount=1)
+        original = copy.deepcopy(state)
+        result = pages.public_projection(state)
+        post = result['posts'][0]
+        self.assertEqual(post['names'], ['あむ', 'あずにゃん'])
+        self.assertNotIn('ひじり', post['names'])
+        self.assertEqual(post['notices'], [
+            {'name': 'ひじり', 'kind': 'late', 'excerpt': 'ひじりは19時から合流', 'time': '19:00'}])
+        self.assertEqual(post['lastCheckedAt'], '2026-09-05T18:51:00Z')
+        self.assertEqual(post['revisions'], [{
+            'date': post['date'], 'shift': '夜', 'storeId': 's1', 'names': ['もな'],
+            'notices': [], 'observedAt': '2026-09-05T18:40:00Z'}])
+        self.assertEqual({field: result['lastRun'][field] for field in pages.OPTIONAL_PUBLIC_COUNTS},
+                         {'refreshedCount': 1, 'updatedPostCount': 1, 'noticeCount': 1})
+        serialized = json.dumps(result, ensure_ascii=False)
+        for value in (SECRET, 'private-person', OTHER, 'rawText', 'lease'):
+            self.assertNotIn(value, serialized)
+        self.assertEqual(state, original)
+        post['revisions'][0]['names'].append('こい')
+        post['notices'][0]['name'] = 'こい'
+        self.assertEqual(state, original)
+
+    def test_official_optional_fields_leave_legacy_snapshot_shape_unchanged(self):
+        result = pages.public_projection(snapshot())
+        self.assertEqual(result['posts'], [fact()])
+        for field in pages.OPTIONAL_PUBLIC_COUNTS:
+            self.assertNotIn(field, result['lastRun'])
+        state = snapshot()
+        state['posts'][0].update(notices=[], revisions=[], lastCheckedAt=collector.iso(NOW))
+        result = pages.public_projection(state)
+        self.assertEqual(result['posts'][0], state['posts'][0])
+
+    def test_official_revision_notices_keep_only_public_fields(self):
+        state = snapshot()
+        state['posts'] = [refreshed_fact()]
+        state['posts'][0]['revisions'][0]['notices'] = [{
+            'name': 'あずにゃん', 'kind': 'late', 'excerpt': 'あずにゃんは後から合流',
+            'httpState': {'token': SECRET}, 'id': OTHER,
+        }]
+        original = copy.deepcopy(state)
+        result = pages.public_projection(state)
+        notices = result['posts'][0]['revisions'][0]['notices']
+        self.assertEqual(notices, [{
+            'name': 'あずにゃん', 'kind': 'late', 'excerpt': 'あずにゃんは後から合流'}])
+        notices[0]['name'] = 'こい'
+        self.assertEqual(state, original)
+
+    def test_official_notice_validation_rejects_invalid_types_and_private_excerpts(self):
+        valid = {'name': 'ひじり', 'kind': 'late', 'excerpt': 'ひじりは19時から合流', 'time': '19:00'}
+        changes = (
+            ('name', SECRET), ('name', ['ひじり']), ('name', ''), ('kind', 'placement'),
+            ('kind', None), ('excerpt', None), ('excerpt', ' '), ('excerpt', 'あ' * 161),
+            ('excerpt', 'ひじり\n合流'), ('excerpt', 'ひじり\r合流'),
+            ('excerpt', 'ひじり\u2028合流'), ('excerpt', 'ひじり\t合流'),
+            ('excerpt', SECRET), ('excerpt', '/home/runner/secret'),
+            ('excerpt', 'ひじりは合流 C:/Users/private-person/secret'),
+            ('time', None), ('time', True), ('time', '24:00'), ('time', '9:00'),
+        )
+        for field, value in changes:
+            with self.subTest(field=field, value=value):
+                state = snapshot()
+                state['posts'][0]['notices'] = [{**valid, field: value}]
+                with self.assertRaisesRegex(pages.PagesError, 'invalid_public_snapshot'):
+                    pages.public_projection(state)
+        for notices in (None, {}, 'late', [None], [True], [{}], [valid, valid]):
+            with self.subTest(notices=notices):
+                state = snapshot()
+                state['posts'][0]['notices'] = notices
+                with self.assertRaises(pages.PagesError):
+                    pages.public_projection(state)
+        state = snapshot()
+        state['posts'][0]['notices'] = [{key: value for key, value in valid.items() if key != 'time'}]
+        self.assertNotIn('time', pages.public_projection(state)['posts'][0]['notices'][0])
+
+    def test_official_revision_facts_validate_using_parent_creation_time(self):
+        changes = (
+            ('date', '2026-09-04'), ('date', '2026-09-31'), ('shift', 'ひる'),
+            ('storeId', 's5'), ('names', []), ('names', [SECRET]),
+            ('names', ['あむ', 'あむ']), ('names', 'あむ'), ('notices', None),
+            ('notices', [{'name': SECRET, 'kind': 'late', 'excerpt': '合流'}]),
+            ('observedAt', '2026-09-05T09:17:04Z'), ('observedAt', SECRET),
+        )
+        for field, value in changes:
+            with self.subTest(field=field, value=value):
+                state = snapshot()
+                state['posts'] = [refreshed_fact()]
+                state['posts'][0]['revisions'][0][field] = value
+                with self.assertRaisesRegex(pages.PagesError, 'invalid_public_snapshot'):
+                    pages.public_projection(state)
+        for revisions in (None, {}, 'revision', [None]):
+            with self.subTest(revisions=revisions):
+                state = snapshot()
+                state['posts'][0]['revisions'] = revisions
+                with self.assertRaises(pages.PagesError):
+                    pages.public_projection(state)
+        for field in ('date', 'shift', 'storeId', 'names', 'notices', 'observedAt'):
+            state = snapshot()
+            state['posts'] = [refreshed_fact()]
+            del state['posts'][0]['revisions'][0][field]
+            with self.subTest(missing=field), self.assertRaises(pages.PagesError):
+                pages.public_projection(state)
+        for times in (
+            ['2026-09-05T18:50:00Z'],
+            ['2026-09-05T18:51:00Z'],
+            ['2026-09-05T18:40:00Z', '2026-09-05T18:40:00Z'],
+            ['2026-09-05T18:45:00Z', '2026-09-05T18:40:00Z'],
+        ):
+            with self.subTest(times=times):
+                state = snapshot()
+                state['posts'] = [refreshed_fact()]
+                revision = state['posts'][0]['revisions'][0]
+                state['posts'][0]['revisions'] = [
+                    {**copy.deepcopy(revision), 'observedAt': when} for when in times]
+                with self.assertRaises(pages.PagesError):
+                    pages.public_projection(state)
+
+    def test_official_refresh_timestamp_and_counts_are_typed(self):
+        for checked in (None, SECRET, '2026-09-05T18:49:59Z', '2026-09-05T18:51:00', True):
+            with self.subTest(checked=checked):
+                state = snapshot()
+                state['posts'][0]['lastCheckedAt'] = checked
+                with self.assertRaises(pages.PagesError):
+                    pages.public_projection(state)
+        for field in pages.OPTIONAL_PUBLIC_COUNTS:
+            for value in (None, True, -1, 1.0, '1'):
+                with self.subTest(field=field, value=value):
+                    state = snapshot()
+                    state['lastRun'][field] = value
+                    with self.assertRaises(pages.PagesError):
+                        pages.public_projection(state)
+        state = snapshot()
+        state['posts'][0]['lastCheckedAt'] = '2026-09-06T03:51:00+09:00'
+        self.assertEqual(pages.public_projection(state)['posts'][0]['lastCheckedAt'],
+                         '2026-09-05T18:51:00Z')
+
     def test_personal_projection_keeps_midnight_guidance_separate_from_attendance(self):
         state = personal_snapshot()
         result = pages.personal_projection(state)
@@ -365,6 +766,82 @@ class ProjectionTests(WorkspaceTests):
 
 
 class StageTests(WorkspaceTests):
+    def test_stale_edit_metadata_does_not_replace_existing_artifact(self):
+        self.stage()
+        previous = self.tree_bytes(self.root / '_site')
+        state = snapshot()
+        state['posts'][0]['editTweetIds'] = [TID, OTHER]
+        self.write('data/observed-shifts.json', pages.json_bytes(state))
+        with self.assertRaisesRegex(pages.PagesError, 'invalid_public_snapshot'):
+            self.stage(self.root / 'next-site')
+        self.assertFalse((self.root / 'next-site').exists())
+        self.assertEqual(self.tree_bytes(self.root / '_site'), previous)
+
+    def test_verified_edit_chain_stages_without_removing_original_post(self):
+        state = snapshot()
+        state['posts'].insert(0, fact(OTHER, '2026-09-05T08:00:00Z'))
+        state['posts'][1]['editTweetIds'] = [OTHER, TID]
+        self.write('data/observed-shifts.json', pages.json_bytes(state))
+        manifest = self.stage()
+        body = (self.root / '_site' / 'data' / 'observed-shifts.json').read_bytes()
+        projected = json.loads(body)
+        self.assertEqual([post['id'] for post in projected['posts']], [OTHER, TID])
+        self.assertEqual(projected['posts'][1]['editTweetIds'], [OTHER, TID])
+        self.assertNotIn('editTweetIds', projected['posts'][0])
+        self.assertEqual(manifest['files']['data/observed-shifts.json']['rawSHA256'],
+                         hashlib.sha256(body).hexdigest())
+
+    def test_growing_private_runtime_snapshot_stages_without_seed_size_assumptions(self):
+        baseline = self.stage(self.root / 'before-growth')
+        state = snapshot()
+        state['posts'] = [refreshed_fact()]
+        for minute in range(3):
+            created = f'2026-09-05T09:{minute:02d}:00Z'
+            state['posts'].append(fact(make_id(created), created))
+        state.update(
+            cooldowns={collector.POST_HOST: '2026-09-05T20:00:00Z'},
+            pending=[{'id': CURATED, 'url': collector.canonical(CURATED),
+                      'reason': 'parse_failed', 'firstSeenAt': collector.iso(NOW),
+                      'lastAttemptAt': collector.iso(NOW), 'attempts': 1}],
+            lease={'token': SECRET}, raw=SECRET, cookie=SECRET,
+        )
+        state['lastRun'].update(
+            status='partial', newPostCount=3, newNameCount=6,
+            refreshedCount=1, updatedPostCount=0, noticeCount=1,
+            failures=[{'id': CURATED, 'path': SECRET}], transportStatePath=SECRET,
+        )
+        source = self.write('data/observed-shifts.json', pages.json_bytes(state))
+        source_bytes = source.read_bytes()
+        expected = pages.load_public_snapshot(source)
+        manifest = self.stage(self.root / 'after-growth')
+        artifact = self.root / 'after-growth' / 'data' / 'observed-shifts.json'
+        projected = json.loads(artifact.read_text(encoding='utf-8'))
+        self.assertEqual(projected, expected)
+        self.assertEqual(len(projected['posts']), 4)
+        self.assertEqual(projected['pending'], [])
+        self.assertEqual(set(manifest['files']), set(baseline['files']))
+        self.assertEqual({name for name in manifest['files']
+                          if manifest['files'][name] != baseline['files'][name]},
+                         {'data/observed-shifts.json'})
+        self.assertEqual(source.read_bytes(), source_bytes)
+        self.assertNotIn('private-person', artifact.read_text(encoding='utf-8'))
+        self.assertNotIn(CURATED, artifact.read_text(encoding='utf-8'))
+
+    def test_official_optional_fields_survive_staging_and_are_hashed_as_published(self):
+        state = snapshot()
+        state['posts'] = [refreshed_fact()]
+        state['lastRun'].update(refreshedCount=1, updatedPostCount=1, noticeCount=1)
+        source = self.write('data/observed-shifts.json', pages.json_bytes(state))
+        before = source.read_bytes()
+        manifest = self.stage()
+        published = self.root / '_site' / 'data' / 'observed-shifts.json'
+        result = json.loads(published.read_text(encoding='utf-8'))
+        self.assertEqual(result, pages.public_projection(state))
+        self.assertEqual(manifest['files']['data/observed-shifts.json']['rawSHA256'],
+                         hashlib.sha256(published.read_bytes()).hexdigest())
+        self.assertNotIn(b'private-person', published.read_bytes())
+        self.assertEqual(source.read_bytes(), before)
+
     def test_allowlist_excludes_backend_and_same_named_private_files(self):
         private_names = (
             'README.md', '.git', 'staticwebapp.config.json', 'config.json', 'logs/run.log',
@@ -629,6 +1106,8 @@ class ProbeTests(WorkspaceTests):
             self.assertTrue(args.once)
             self.assertFalse(args.watch)
             self.assertEqual((args.days, args.max_posts), (2, 20))
+            if hasattr(args, 'refresh_known'):
+                self.assertEqual(args.refresh_known, 0)
             self.assertIsNone(args.report)
             self.assertIsNone(args.publish)
             self.assertFalse(args.snapshot.exists())
@@ -725,6 +1204,28 @@ class ProbeTests(WorkspaceTests):
         self.assertEqual(result['newFacts'], [])
         self.assertNotIn(TID, json.dumps(result))
 
+    def test_probe_optional_fields_remain_projected_and_counts_stay_optional(self):
+        original_write = collector.write_report
+
+        def enrich(report, destination):
+            post = refreshed_fact()
+            for field in ('notices', 'lastCheckedAt', 'revisions'):
+                report['newFacts'][0][field] = post[field]
+            report.update(refreshedCount=0, updatedPostCount=0, noticeCount=1)
+            original_write(report, destination)
+
+        with mock.patch.object(collector, 'write_report', side_effect=enrich):
+            result, _ = self.probe()
+        self.assertEqual(result['exitCode'], 0)
+        self.assertEqual(result['noticeCount'], 1)
+        self.assertEqual(result['refreshedCount'], 0)
+        self.assertEqual(result['updatedPostCount'], 0)
+        self.assertEqual(result['newFacts'][0]['names'], ['あむ', 'あずにゃん'])
+        self.assertEqual(result['newFacts'][0]['notices'][0]['name'], 'ひじり')
+        self.assertEqual(result['newFacts'][0]['revisions'][0]['names'], ['もな'])
+        self.assertNotIn(OTHER, json.dumps(result))
+        self.assert_private_absent(result)
+
     def test_both_sources_required_even_with_verified_new_fact(self):
         failure = urllib.error.URLError(SECRET)
         result, _ = self.probe(FakeOpener(searches=[[TID], failure]))
@@ -784,6 +1285,19 @@ class ProbeTests(WorkspaceTests):
         self.assertEqual(result['newFacts'], [])
         self.assertNotEqual(result['exitCode'], 0)
         self.assertEqual(result['errors'], [{'reason': 'stale_http_cache'}])
+
+    def test_cross_service_day_edit_http_200_is_not_a_verified_fact(self):
+        older = make_id('2026-09-04T09:00:00Z')
+        value = payload()
+        value['edit_control'] = {'edit_tweet_ids': [older, TID]}
+        result, _ = self.probe(FakeOpener(posts={TID: value}))
+        self.assertEqual(result['http']['syndication']['statuses'], [200])
+        self.assertEqual(result['newFacts'], [])
+        self.assertNotEqual(result['exitCode'], 0)
+        self.assertEqual(result['errors'], [{'reason': 'edit_date_mismatch'}])
+        self.assertNotIn(older, json.dumps(result))
+        self.assertNotIn(TID, json.dumps(result))
+        self.assert_private_absent(result)
 
     def test_post_cap_is_twenty_no_unbounded_retry(self):
         ids = [make_id(f'2026-09-05T09:{minute:02d}:00Z') for minute in range(21)]
