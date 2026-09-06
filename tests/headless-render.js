@@ -1673,6 +1673,7 @@ assert.ok(
   const snapshot = windowShim.OBSERVED_SHIFTS;
   const personalSnapshot = windowShim.PERSONAL_SHIFTS;
   const entries = names => names.map(name => ({ name }));
+  const editCreatedAt = id => new Date(Number((BigInt(id) >> 22n) + 1288834974657n)).toISOString();
   const plansByShift = {
     "昼": entries(["つぼみ", "かなた", "まこっちゃん", "わたげ"]),
     "夜": entries(["あむ", "かなた", "あらた"])
@@ -1699,24 +1700,24 @@ assert.ok(
   const cases = [
     { name: "fetched edited version replaces old active roster and source", mode: true,
       posts: [post("昼", ["つぽみ", "まこと"]), {
-        ...post("昼", ["かなた"]), id: "2097000000000000099",
-        url: "https://x.com/akibazettai/status/2097000000000000099", storeId: "s2",
-        editTweetIds: ["2096074325120237794", "2097000000000000099"]
+        ...post("昼", ["かなた"]), id: "2096074325120237795", createdAt: editCreatedAt("2096074325120237795"),
+        url: "https://x.com/akibazettai/status/2096074325120237795", storeId: "s2",
+        editTweetIds: ["2096074325120237794", "2096074325120237795"]
       }],
       confirmed: [["かなた"], []], unknown: [["つぼみ", "まこっちゃん", "わたげ"], ["あむ", "かなた", "あらた"]],
-      activeSource: "https://x.com/akibazettai/status/2097000000000000099" },
+      activeSource: "https://x.com/akibazettai/status/2096074325120237795" },
     { name: "partial edit chain keeps both earlier versions superseded", mode: true,
       posts: [post("昼", ["つぽみ", "まこと"]), {
-        ...post("昼", ["かなた"]), id: "2097000000000000099",
-        url: "https://x.com/akibazettai/status/2097000000000000099", storeId: "s2",
-        editTweetIds: ["2096074325120237794", "2097000000000000099"]
+        ...post("昼", ["かなた"]), id: "2096074325120237795", createdAt: editCreatedAt("2096074325120237795"),
+        url: "https://x.com/akibazettai/status/2096074325120237795", storeId: "s2",
+        editTweetIds: ["2096074325120237794", "2096074325120237795"]
       }, {
-        ...post("昼", ["わたげ"]), id: "2098000000000000099",
-        url: "https://x.com/akibazettai/status/2098000000000000099", storeId: "s4",
-        editTweetIds: ["2097000000000000099", "2098000000000000099"]
+        ...post("昼", ["わたげ"]), id: "2096074325120237796", createdAt: editCreatedAt("2096074325120237796"),
+        url: "https://x.com/akibazettai/status/2096074325120237796", storeId: "s4",
+        editTweetIds: ["2096074325120237795", "2096074325120237796"]
       }],
       confirmed: [["わたげ"], []], unknown: [["つぼみ", "かなた", "まこっちゃん"], ["あむ", "かなた", "あらた"]],
-      activeSource: "https://x.com/akibazettai/status/2098000000000000099" },
+      activeSource: "https://x.com/akibazettai/status/2096074325120237796" },
     { name: "official late stays an announced placement", posts: [{
       ...post("昼", ["まこと"]), storeId: "s4",
       notices: [{ name: "みりあ", kind: "late", excerpt: "みりあちゃんもあとから来るにゃんね" }]

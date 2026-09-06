@@ -1077,11 +1077,12 @@ async function main() {
     assert.doesNotMatch(await evaluate('document.querySelector(".maid-plan-stop[data-date=\\"2026-09-06\\"]").title'), /実績|確認/);
     await click("#reset-filters");
     await setMode("calendar");
-    const oldVersion = { ...officialLate, editTweetIds: [officialLate.id] };
+    const versionTime = id => new Date(Number((BigInt(id) >> 22n) + 1288834974657n)).toISOString();
+    const oldVersion = { ...officialLate, createdAt: versionTime(officialLate.id), editTweetIds: [officialLate.id] };
     const middleVersion = {
       ...officialLate, id: "2096436633973526891",
       url: "https://x.com/akibazettai/status/2096436633973526891",
-      createdAt: "2026-09-06T04:30:00Z", observedAt: "2026-09-06T04:35:00Z",
+      createdAt: versionTime("2096436633973526891"), observedAt: "2026-09-06T04:35:00Z",
       lastCheckedAt: "2026-09-06T04:35:00Z",
       names: ["ちぇる", "みりあ"], notices: [],
       editTweetIds: [oldVersion.id, "2096436633973526891"]
@@ -1089,7 +1090,7 @@ async function main() {
     const latestVersion = {
       ...officialLate, id: "2096436633973526892",
       url: "https://x.com/akibazettai/status/2096436633973526892",
-      createdAt: "2026-09-06T04:40:00Z", observedAt: "2026-09-06T04:45:00Z",
+      createdAt: versionTime("2096436633973526892"), observedAt: "2026-09-06T04:45:00Z",
       lastCheckedAt: "2026-09-06T04:45:00Z",
       names: ["みりあ"], notices: [],
       editTweetIds: [middleVersion.id, "2096436633973526892"]
@@ -1122,11 +1123,22 @@ async function main() {
     assert.doesNotMatch(await evaluate('document.querySelector("#dialog-day .maid-entry[data-name=\\"みりあ\\"]").textContent'), /あとから/);
     assert.deepEqual(await evaluate('(async () => (await (await fetch("data/observed-shifts.json")).json()).posts.filter(post => post.date === "2026-09-06").map(post => post.id))()'),
       [oldVersion.id, middleVersion.id, latestVersion.id], "the published raw history still contains all three versions");
-    observationResponse = { ...versionSnapshot, posts: [{ ...oldVersion, editTweetIds: latestVersion.editTweetIds }] };
-    await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").textContent.includes("読込に失敗")');
-    assert.equal(await evaluate('document.querySelector("#dialog-day .observation-source").href'), latestVersion.url,
-      "a stale current-ID chain cannot overwrite the last validated presentation");
+    const otherServiceDay = {
+      ...latestVersion, id: "2096800623621046272",
+      url: "https://x.com/akibazettai/status/2096800623621046272",
+      createdAt: "2026-09-07T03:20:00Z", observedAt: "2026-09-07T03:21:00Z",
+      lastCheckedAt: "2026-09-07T03:21:00Z", editTweetIds: [latestVersion.id, "2096800623621046272"]
+    };
+    for (const invalidPosts of [
+      [{ ...oldVersion, editTweetIds: latestVersion.editTweetIds }],
+      [...versionSnapshot.posts, otherServiceDay]
+    ]) {
+      observationResponse = { ...versionSnapshot, posts: invalidPosts };
+      await click("#refresh-observations");
+      await wait('document.querySelector("#observation-status").dataset.loaded === "true" && document.querySelector("#observation-status").textContent.includes("読込に失敗")');
+      assert.equal(await evaluate('document.querySelector("#dialog-day .observation-source").href'), latestVersion.url,
+        "stale or cross-service-day chains cannot overwrite the last validated presentation");
+    }
     observationResponse = versionSnapshot;
     await click("#refresh-observations");
     await wait('document.querySelector("#observation-status").dataset.loaded === "true" && !document.querySelector("#observation-status").textContent.includes("読込に失敗")');
