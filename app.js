@@ -137,7 +137,7 @@
     return value;
   }
 
-  function observedShift(observations, insights, key, shift) {
+  function observedShift(observations, insights, key, shift, nameCorrections = {}) {
     const result = { posts: [], byStore: new Map(), byMaid: new Map() };
     // A curated person roster takes precedence; observations are not a second
     // training source and never mutate actual/actualRoster/rotation.
@@ -149,15 +149,23 @@
       if (!result.byStore.has(post.storeId)) result.byStore.set(post.storeId, new Map());
       const store = result.byStore.get(post.storeId);
       for (const rawName of post.names) {
-        const name = aliases.get(rawName) ?? rawName;
+        const postCorrections = nameCorrections?.[post.id];
+        const correction = postCorrections && Object.hasOwn(postCorrections, rawName)
+          ? postCorrections[rawName] : null;
+        const matchedName = correction?.name ?? rawName;
+        const name = aliases.get(matchedName) ?? matchedName;
         if (!store.has(name)) store.set(name, []);
         if (!store.get(name).some((source) => source.id === post.id)) store.get(name).push(post);
         if (!result.byMaid.has(name)) result.byMaid.set(name, {
-          storeIds: [], sources: [], trainee: observedTrainee(insights, name, key)
+          storeIds: [], sources: [], trainee: observedTrainee(insights, name, key),
+          nameCorrections: []
         });
         const person = result.byMaid.get(name);
         if (!person.storeIds.includes(post.storeId)) person.storeIds.push(post.storeId);
         if (!person.sources.some((source) => source.id === post.id)) person.sources.push(post);
+        if (correction && !person.nameCorrections.some((entry) => entry.postId === post.id && entry.rawName === rawName)) {
+          person.nameCorrections.push({ postId: post.id, rawName, name, reason: correction.reason });
+        }
       }
     }
     return result;
@@ -169,10 +177,17 @@
     return key >= period.from && key <= period.to;
   }
 
+  function nameCorrectionNote(correction) {
+    return `原表記「${correction.rawName}」を「${correction.name}」として表示（${correction.reason}・この投稿のみ）`;
+  }
+
   function observationEntries(planned, observed, roster) {
     const entries = new Map(planned.map((entry) => [entry.name, { ...entry }]));
     for (const name of observed.byMaid.keys()) {
-      entries.set(name, { ...(entries.get(name) ?? {}), name, observed: true });
+      entries.set(name, {
+        ...(entries.get(name) ?? {}), name, observed: true,
+        nameCorrections: observed.byMaid.get(name).nameCorrections
+      });
     }
     const rank = new Map(roster.map((name, index) => [name, index]));
     return [...entries.values()].sort((a, b) =>
@@ -1886,6 +1901,7 @@
           observed: Boolean(observation),
           storeIds: observation?.storeIds ?? [],
           sourcePosts: observation?.sources ?? [],
+          nameCorrections: observation?.nameCorrections ?? [],
           host,
           settled,
           trainee: observation ? observation.trainee : placed?.trainee ?? null,
@@ -2291,7 +2307,7 @@
       roster: data.roster
     });
     if (recorded) return { ...recorded, observed: observedShift(null, insights, key, shift) };
-    const observed = observedShift(observations, insights, key, shift);
+    const observed = observedShift(observations, insights, key, shift, data.observationNameCorrections);
     return {
       assignment: null,
       observed,
@@ -2342,7 +2358,9 @@
       name.tabIndex = -1;
     }
     item.append(name);
-    const descriptions = note ? [note] : [];
+    const descriptions = [
+      ...(note ? [note] : []), ...(entry.nameCorrections ?? []).map(nameCorrectionNote)
+    ];
     if (kitchenStaff.has(entry.name)) {
       item.classList.add("is-kitchen");
       descriptions.push("キッチンにゃんこ");
@@ -2411,6 +2429,13 @@
         const link = createObservationLink(source, `${store.short} ${observationTime(source.createdAt)} JST`);
         link.dataset.focusKey = `${key}|${shift}|${store.id}|${source.id}`;
         sourceList.append(link);
+        for (const correction of shown.flatMap((entry) => entry.nameCorrections ?? [])
+          .filter((entry) => entry.postId === source.id)) {
+          const note = document.createElement("span");
+          note.className = "observation-name-correction";
+          note.textContent = nameCorrectionNote(correction);
+          sourceList.append(note);
+        }
       }
       details.append(sourceList);
     }
@@ -2528,9 +2553,11 @@
       const groups = storeList.map((store) => ({
         store,
         entries: partial
-          ? [...(roster.observed.byStore.get(store.id)?.keys() ?? [])].map((name) => ({
+          ? [...(roster.observed.byStore.get(store.id)?.entries() ?? [])].map(([name, sources]) => ({
             ...roster.entries.find((entry) => entry.name === name),
-            name, trainee: roster.observed.byMaid.get(name)?.trainee
+            name, trainee: roster.observed.byMaid.get(name)?.trainee,
+            nameCorrections: (roster.observed.byMaid.get(name)?.nameCorrections ?? [])
+              .filter((entry) => sources.some((source) => source.id === entry.postId))
           }))
           : roster.entries.filter((entry) => insights.actualRoster[key][shift].stores[store.id]?.includes(entry.name))
       }));
@@ -3063,7 +3090,8 @@
         const hint = document.createElement("span");
         hint.className = hasMembers ? "day-hint has-schedule" : "day-hint";
         const hasInformation = shifts.some((shift) => shiftRoster(key, shift).entries.length > 0);
-        const hasObserved = shifts.some((shift) => observedShift(observations, insights, key, shift).posts.length > 0);
+        const hasObserved = shifts.some((shift) =>
+          observedShift(observations, insights, key, shift, data.observationNameCorrections).posts.length > 0);
         hint.textContent = hasMembers ? "お給仕" : hasInformation ? "該当なし" : "未確認";
         if (hasObserved) hint.classList.add("is-observed");
         button.append(hint);
@@ -3401,7 +3429,8 @@
     const where = storeShort(insights, stop.storeId);
     if (stop.observed) {
       return `${stop.storeIds.map((id) => storeShort(insights, id)).join("・")}の公式のお給仕投稿で確認しています。` +
-        "確認できた投稿の範囲の情報で、この時間帯の全員・全店舗を網羅するものではありません。";
+        "確認できた投稿の範囲の情報で、この時間帯の全員・全店舗を網羅するものではありません。" +
+        (stop.nameCorrections ?? []).map(nameCorrectionNote).join("。");
     }
     // 過ぎた日と、これからの日を混ぜない。記録があるのは過ぎた日だけ。
     if (stop.recorded) {

@@ -42,6 +42,13 @@ window.SCHEDULE_DATA = {
     events: {}
   },
 
+  // Display/matching correction only; the observed post and its raw names stay intact.
+  observationNameCorrections: {
+    "2096074325120237794": {
+      "つぽみ": { name: "つぼみ", reason: "利用者確認（2026-09-06）" }
+    }
+  },
+
   roster: [
     "ひかり",
     "あむ",
