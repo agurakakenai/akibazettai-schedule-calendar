@@ -53,6 +53,12 @@ function makeElement(tagName = "div") {
     element.children = [];
     element.append(...nodes);
   };
+  element.replaceChild = (child, previous) => {
+    const index = element.children.indexOf(previous);
+    assert.ok(index >= 0);
+    element.children[index] = child;
+    return previous;
+  };
   element.setAttribute = (key, value) => {
     element.attributes[key] = String(value);
   };
@@ -237,7 +243,7 @@ const withClass = (root, name) =>
 
 function assertDisplayOrder(members, message) {
   const entries = members.map(member => ({
-    name: withClass(member, "maid-name")[0].textContent,
+    name: withClass(member, "maid-name")[0].dataset.name,
     trainee: member.classList.contains("is-trainee")
   }));
   assert.deepEqual(entries.map(entry => entry.name),
@@ -403,7 +409,7 @@ for (const cell of dayCells) {
         continue;
       }
       const row = withClass(section, "maid-entry").find(
-        (item) => withClass(item, "maid-name")[0].textContent === entry.name
+        (item) => withClass(item, "maid-name")[0].dataset.name === entry.name
       );
       if (settledByRecord) {
         // 記録の日に主役が出ないことはある（予定表に載っていても休むなど）。
@@ -466,7 +472,7 @@ for (const entry of maidEntries) {
     continue;
   }
   assert.ok(
-    roster.has(names[0].textContent) || recordedNames.has(names[0].textContent),
+    roster.has(names[0].dataset.name) || recordedNames.has(names[0].dataset.name),
     `unknown maid "${names[0].textContent}"`
   );
 
@@ -600,7 +606,7 @@ for (const section of shiftSections) {
 
     assertDisplayOrder(members, `${storeId}: first-service rank, trainees and kitchen`);
     for (const member of members) {
-      const name = withClass(member, "maid-name")[0].textContent;
+      const name = withClass(member, "maid-name")[0].dataset.name;
 
       // 見出しがその店を名乗っているので、チップは繰り返さない。
       assert.equal(
@@ -692,7 +698,7 @@ for (const cell of withClass(calendar, "calendar-day")) {
       ) {
         current = null;
       } else if (node.classList.contains("maid-name") && current) {
-        placementsByView.set(`${node.textContent}|${stopKey} ${shift}`, current);
+        placementsByView.set(`${node.dataset.name}|${stopKey} ${shift}`, current);
       }
     }
   });
@@ -725,7 +731,7 @@ let guessedAhead = 0;
 for (const plan of plans) {
   const heading = withClass(plan, "maid-name");
   assert.equal(heading.length, 1, "each plan must name exactly one maid");
-  const name = heading[0].textContent;
+  const name = heading[0].dataset.name;
   assert.ok(
     roster.has(name) || recordedNames.has(name),
     `unknown maid "${name}" in the maid mode`
@@ -818,7 +824,7 @@ for (const plan of plans) {
     // 確度の低い日を空欄にすると「出ない日」と読まれる。かならず何か書く。
     assert.ok(where.textContent.length > 0, "a stop must never render an empty shop");
     if (storeId === "") {
-      assert.equal(where.textContent, "未定", "an unplaced stop must say so in words");
+      assert.equal(where.textContent, "未発表", "an unplaced stop must say so in words");
     }
     // 色だけで確度を伝えないよう、状態はクラスで分け、読み上げ文も添える。
     const state = ["open", "likely", "unlikely", "unknown"].find((candidate) =>
@@ -934,7 +940,12 @@ const kitchenNames = new Set(schedule.kitchenStaff);
   assert.equal(rows.length, schedule.roster.length, "the filter must list the whole roster");
   let marked = 0;
   for (const row of rows) {
-    const name = (row.textContent ?? "").replace("🍳", "");
+    const name = row.dataset.name;
+    assert.equal(walk(row).find(node => node.tagName === "INPUT").value, name);
+    if (name === "まこっちゃん") {
+      assert.match(row.textContent, /まこと/);
+      assert.doesNotMatch(row.textContent, /まこっちゃん/);
+    }
     const isCook = kitchenNames.has(name);
     assert.ok(schedule.roster.includes(name), `the filter listed an unknown name "${name}"`);
     assert.equal(
@@ -957,7 +968,7 @@ const kitchenNames = new Set(schedule.kitchenStaff);
         `${name}: the mark must be visible as well as spoken`
       );
       assert.ok(
-        (row.textContent ?? "").startsWith(name),
+        (row.textContent ?? "").startsWith(schedule.displayNames?.[name] ?? name),
         `${name}: the mark goes after the name, not inside it`
       );
       marked += 1;
@@ -967,7 +978,7 @@ const kitchenNames = new Set(schedule.kitchenStaff);
 }
 
 const kitchenBefore = withClass(calendar, "maid-entry").filter((entry) =>
-  kitchenNames.has(withClass(entry, "maid-name")[0].textContent)
+  kitchenNames.has(withClass(entry, "maid-name")[0].dataset.name)
 ).length;
 assert.ok(kitchenBefore > 0, "the default range must show some kitchen staff");
 
@@ -981,7 +992,7 @@ dispatch("hide-kitchen", "change");
 
 assert.equal(
   withClass(calendar, "maid-entry").filter((entry) =>
-    kitchenNames.has(withClass(entry, "maid-name")[0].textContent)
+    kitchenNames.has(withClass(entry, "maid-name")[0].dataset.name)
   ).length,
   0,
   "checking the box must hide every kitchen maid"
@@ -1137,7 +1148,7 @@ selectViewMode("maid");
 let citedRecord = 0;
 let guessedHere = 0;
 for (const plan of withClass(calendar, "maid-plan")) {
-  const who = withClass(plan, "maid-name")[0].textContent;
+  const who = withClass(plan, "maid-name")[0].dataset.name;
   for (const stop of withClass(plan, "maid-plan-stop")) {
     const on = stop.dataset.date;
     if (on > lastActual) {
@@ -1192,17 +1203,13 @@ for (const cell of recordedCells) {
       assert.equal(withClass(section, redundant).length, 0, `${cellKey} ${shift}: no ${redundant} repetition`);
     }
     const details = withClass(section, "observation-details");
-    assert.equal(details.length, 1);
-    assert.ok(!details[0].open, "record sources must start collapsed");
-    assert.ok(details[0].textContent.includes(`${cellKey} ${shift}`));
-    assert.ok(details[0].textContent.includes("data/store-insights.js・actualRoster"));
-    assert.equal(withClass(details[0], "observation-source").length, 0,
-      "curated records without individual post URLs must not invent source links");
+    assert.equal(details.length, 0, "curated records without individual URLs do not create empty disclosures");
+    assert.doesNotMatch(section.textContent, /data\/store-insights|データ生成|投稿URL/);
     assert.equal(withClass(section, "maid-list").length, withClass(section, "maid-group-label").length);
     assert.ok(withClass(section, "maid-list").every((list) => list.children.length > 0),
       "recorded store groups must never be empty");
     const shown = withClass(section, "maid-entry").map(
-      (entry) => withClass(entry, "maid-name")[0].textContent
+      (entry) => withClass(entry, "maid-name")[0].dataset.name
     );
     const inRecord = Object.values(record.stores).flat();
     assert.deepEqual(
@@ -1232,7 +1239,7 @@ for (const cell of recordedCells) {
         group = node.dataset.store || null;
       } else if (node.classList.contains("maid-name") && group) {
         assert.ok(
-          record.stores[group]?.includes(node.textContent),
+          record.stores[group]?.includes(node.dataset.name),
           `${cellKey} ${shift}: ${node.textContent} is under ${group}, which the record does not say`
         );
       }
@@ -1241,7 +1248,7 @@ for (const cell of recordedCells) {
     // 見習いにゃんこの印。判定した日だけ、判定された人にだけ付く。
     const judged = Array.isArray(record.trainees);
     for (const entry of withClass(section, "maid-entry")) {
-      const name = withClass(entry, "maid-name")[0].textContent;
+      const name = withClass(entry, "maid-name")[0].dataset.name;
       const marked = withClass(entry, "maid-trainee");
       const expected = judged && record.trainees.includes(name);
       assert.equal(
@@ -1513,11 +1520,11 @@ assert.equal(
       const recorded = Boolean(insights.actualRoster?.[key]?.[shift]);
       const inShops = new Set(
         withClass(section, "maid-list").flatMap((list) =>
-          withClass(list, "maid-entry").map((e) => withClass(e, "maid-name")[0].textContent)
+          withClass(list, "maid-entry").map((e) => withClass(e, "maid-name")[0].dataset.name)
         )
       );
       const inKitchen = withClass(section, "maid-kitchen-list").flatMap((list) =>
-        withClass(list, "maid-entry").map((e) => withClass(e, "maid-name")[0].textContent)
+        withClass(list, "maid-entry").map((e) => withClass(e, "maid-name")[0].dataset.name)
       );
       for (const name of inKitchen) {
         assert.ok(cooks.has(name), `${name} is not kitchen staff but sits in the kitchen list`);
@@ -1538,7 +1545,7 @@ assert.equal(
         }
         // 記録の日と、記念日の主役だけは店の下に出てよい。どちらも分かっている。
         const row = withClass(section, "maid-entry").find(
-          (e) => withClass(e, "maid-name")[0].textContent === name
+          (e) => withClass(e, "maid-name")[0].dataset.name === name
         );
         const featured = row.classList.contains("is-featured");
         assert.ok(
@@ -1690,6 +1697,31 @@ assert.ok(
     events: [{ shift: "夜", kind: "late", storeId: "s2", time: "18:30", excerpt: "夜は2号店、18:30からです" }]
   };
   const cases = [
+    { name: "fetched edited version replaces old active roster and source", mode: true,
+      posts: [post("昼", ["つぽみ", "まこと"]), {
+        ...post("昼", ["かなた"]), id: "2097000000000000099",
+        url: "https://x.com/akibazettai/status/2097000000000000099", storeId: "s2",
+        editTweetIds: ["2096074325120237794", "2097000000000000099"]
+      }],
+      confirmed: [["かなた"], []], unknown: [["つぼみ", "まこっちゃん", "わたげ"], ["あむ", "かなた", "あらた"]],
+      activeSource: "https://x.com/akibazettai/status/2097000000000000099" },
+    { name: "partial edit chain keeps both earlier versions superseded", mode: true,
+      posts: [post("昼", ["つぽみ", "まこと"]), {
+        ...post("昼", ["かなた"]), id: "2097000000000000099",
+        url: "https://x.com/akibazettai/status/2097000000000000099", storeId: "s2",
+        editTweetIds: ["2096074325120237794", "2097000000000000099"]
+      }, {
+        ...post("昼", ["わたげ"]), id: "2098000000000000099",
+        url: "https://x.com/akibazettai/status/2098000000000000099", storeId: "s4",
+        editTweetIds: ["2097000000000000099", "2098000000000000099"]
+      }],
+      confirmed: [["わたげ"], []], unknown: [["つぼみ", "かなた", "まこっちゃん"], ["あむ", "かなた", "あらた"]],
+      activeSource: "https://x.com/akibazettai/status/2098000000000000099" },
+    { name: "official late stays an announced placement", posts: [{
+      ...post("昼", ["まこと"]), storeId: "s4",
+      notices: [{ name: "みりあ", kind: "late", excerpt: "みりあちゃんもあとから来るにゃんね" }]
+    }], plans: { "昼": entries(["まこっちゃん", "みりあ"]), "夜": entries(["みりあ", "あむ"]) },
+    mode: true, officialLate: true, confirmed: [["まこっちゃん", "みりあ"], []], unknown: [[], ["みりあ", "あむ"]] },
     { name: "no person evidence", posts: [], mode: false },
     { name: "store-only actual", posts: [], mode: false, storeOnly: true },
     { name: "empty curated roster", posts: [], mode: false, records: { "昼": { stores: { s1: [] } } } },
@@ -1709,10 +1741,21 @@ assert.ok(
       pending: [{ id: "2096000000000099999" }], mode: true,
       confirmed: [["つぼみ"], []], unknown: [["かなた", "まこっちゃん", "わたげ"], ["あむ", "かなた", "あらた"]] },
     { name: "personal evening placement", posts: [], personal: [personalPost("placement", "s2")], mode: true,
-      confirmed: [[], ["あむ"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]], own: true },
+      confirmed: [[], ["あむ"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]], own: true, linkPost: 1 },
     { name: "matching personal and collection", posts: [post("夜", ["あむ"])],
-      personal: [personalPost("placement", "s1")], mode: true,
+      personal: [personalPost("placement", "s1")], mode: true, linkPost: 1,
       confirmed: [[], ["あむ"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]] },
+    { name: "latest corrected placement is the name link", posts: [],
+      personal: [personalPost("placement", "s2"), personalPost("placement", "s4", 2)], mode: true, own: true, linkPost: 2,
+      confirmed: [[], ["あむ"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]] },
+    { name: "storeless update keeps the supporting post link", posts: [],
+      personal: [personalPost("placement", "s2"), personalPost("late", null, 2)], mode: true, own: true, linkPost: 1,
+      confirmed: [[], ["あむ"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]] },
+    { name: "canonical name selects post before display conversion", posts: [],
+      personal: [{ ...personalPost("placement", "s4"), name: "まこっちゃん" }],
+      plans: { "昼": entries(["まこっちゃん"]), "夜": entries(["まこっちゃん"]) },
+      mode: true, linkPost: 1, linkedName: "まこっちゃん",
+      confirmed: [[], ["まこっちゃん"]], unknown: [["まこっちゃん"], []] },
     { name: "conflicting personal and collection", posts: [post("夜", ["あむ"])],
       personal: [personalPost("placement", "s2")], mode: true,
       confirmed: [[], []], unknown: ["昼", "夜"].map(shift => plansByShift[shift].map(entry => entry.name)), pending: true },
@@ -1729,7 +1772,7 @@ assert.ok(
       personal: [personalPost("late", null, 2)], mode: true,
       confirmed: [[], ["あむ"]], unknown: [plansByShift["昼"].map(entry => entry.name), ["かなた", "あらた"]] },
     { name: "late with explicit shop gates both shifts", posts: [], plans: latePlans,
-      personal: [explicitStoreLate], mode: true, own: true, lateStore: true,
+      personal: [explicitStoreLate], mode: true, own: true, lateStore: true, linkPost: 2,
       confirmed: [[], ["あむ"]], unknown: [["あむ"], []] },
     { name: "late with shop does not revive cancellation", posts: [], plans: latePlans,
       personal: [personalPost("absence", null), explicitStoreLate], mode: true, cancelled: true,
@@ -1742,7 +1785,7 @@ assert.ok(
       records: { "夜": { stores: { s2: ["かなた"] }, trainees: [] } },
       confirmed: [[], ["かなた"]], unknown: [plansByShift["昼"].map(entry => entry.name), []] }
   ];
-  const namesIn = block => withClass(block, "maid-name").map(node => node.textContent).sort();
+  const namesIn = block => withClass(block, "maid-name").map(node => node.dataset.name).sort();
   try {
     for (const fixture of cases) {
       schedule.schedule[key] = fixture.plans ?? plansByShift;
@@ -1782,7 +1825,7 @@ assert.ok(
         assert.equal(unknown.length, fixture.unknown[index].length ? 1 : 0, "no empty or duplicate unknown frame");
         assert.equal(confirmed.length, fixture.confirmed[index].length ? 1 : 0, "no empty confirmed roster");
         for (const frame of unknown) {
-          assert.equal(withClass(frame, "unmatched-heading")[0].textContent, "店舗未定");
+          assert.equal(withClass(frame, "unmatched-heading")[0].textContent, "未発表");
           assert.ok(frame.getAttribute("aria-label").includes(["昼", "夜"][index]));
           assert.equal(withClass(frame, "maid-group-label").length, 0);
           const members = withClass(frame, "maid-entry");
@@ -1796,20 +1839,27 @@ assert.ok(
         assert.equal(new Set(names).size, names.length, `${fixture.name}: no confirmed/unknown duplicates`);
       }
       if (fixture.personal) {
-        const details = withClass(sections[1], "personal-details");
-        assert.equal(details.length, fixture.curated ? 0 : 1);
-        for (const block of details) {
-          assert.ok(!block.open);
-          assert.ok(block.textContent.includes("あむ"));
-          assert.ok(block.textContent.includes("勤務実績ではありません"));
-          assert.equal(withClass(block, "observation-source").length, 0, "never reuse an official source label for personal posts");
-          for (const link of withClass(block, "personal-source-link")) {
-            assert.ok(link.href.startsWith("https://x.com/amu_zettai/status/"));
-            assert.match(link.title, /本人ポスト/);
-            assert.doesNotMatch(link.title, /公式/);
-          }
+        assert.equal(withClass(sections[1], "personal-details").length, 0);
+        assert.equal(withClass(sections[1], "personal-source-link").length, 0);
+        assert.doesNotMatch(sections[1].textContent, /本人ポスト|本人案内|本人の当日案内/);
+        if (fixture.linkPost) {
+          const canonical = fixture.linkedName ?? "あむ";
+          const link = withClass(sections[1], "maid-name").find(node => node.dataset.name === canonical);
+          assert.equal(link.tagName, "A");
+          assert.equal(link.href, `https://x.com/amu_zettai/status/209650000000000000${fixture.linkPost}`);
+          assert.equal(link.rel, "noopener noreferrer");
+          assert.equal(link.target, "_blank");
+          assert.equal(link.dataset.focusKey, `${key}|夜|${canonical}`);
+          assert.equal(link.textContent, schedule.displayNames?.[canonical] ?? canonical);
+          assert.doesNotMatch(link.title, /本人ポスト|本人案内/);
+          link.focus();
+          assert.equal(documentShim.activeElement, link);
+        } else if (fixture.pending || fixture.unplaced || fixture.name === "return without restoring old store") {
+          const link = withClass(sections[1], "maid-name").find(node => node.dataset.name === "あむ");
+          assert.equal(link.href, `https://x.com/${insights.maidTendency["あむ"].x}`,
+            "unresolved placement retains the old profile behavior rather than a stale placement link");
         }
-        if (fixture.cancelled) assert.ok(details[0].textContent.includes("取消の案内"));
+        if (fixture.cancelled) assert.ok(withClass(sections[1], "shift-change").some(node => node.textContent.includes("あむ：取消")));
         if (fixture.lateStore) {
           const person = withClass(sections[1], "maid-entry")[0];
           assert.equal(person.dataset.store, "s2");
@@ -1817,6 +1867,27 @@ assert.ok(
           assert.ok(person.textContent.includes("18:30"));
           assert.ok(withClass(sections[0], "unmatched-roster")[0].textContent.includes("あむ"));
         }
+      }
+      if (fixture.officialLate) {
+          const person = withClass(sections[0], "maid-entry").find(node => node.dataset.name === "みりあ");
+          assert.equal(person.dataset.store, "s4");
+          assert.equal(person.dataset.evidence, "official-announced");
+          assert.match(person.textContent, /あとから/);
+          assert.doesNotMatch(person.title, /確認|にいた記録|実績/);
+          assert.equal(withClass(sections[0], "observation-source").length, 1);
+          const cook = withClass(sections[0], "maid-entry").find(node => node.dataset.name === "まこっちゃん");
+          assert.ok(cook.classList.contains("is-kitchen"));
+          assert.match(cook.textContent, /まこと/);
+          assert.doesNotMatch(cook.title + cook.getAttribute("aria-label"), /まこっちゃん/);
+      }
+      if (fixture.activeSource) {
+        assert.deepEqual(withClass(sections[0], "observation-source").map(node => node.href), [fixture.activeSource]);
+        assert.deepEqual(withClass(sections[0], "official-post").map(node => node.dataset.postId), [fixture.activeSource.split("/").at(-1)]);
+        const mount = withClass(sections[0], "official-embed")[0];
+        assert.equal(mount.getAttribute("inert"), "");
+        assert.equal(mount.getAttribute("aria-hidden"), "true");
+        const link = withClass(sections[0], "observation-source")[0];
+        assert.match(link.getAttribute("aria-label"), /集合ポストを開く$/);
       }
       assert.equal(JSON.stringify([schedule.schedule[key], snapshot, personalSnapshot]), preserved, "the display never edits plans or evidence");
       dispatch("close-day-dialog", "click");
@@ -1835,10 +1906,11 @@ assert.ok(
           withClass(stop, "maid-plan-when")[0].textContent.endsWith("夜"));
         if (fixture.cancelled) {
           assert.equal(nightStop, undefined);
-          assert.ok(withClass(amu, "personal-details").some(block => block.textContent.includes("取消の案内")));
+          assert.ok(withClass(amu, "shift-change").some(block => block.textContent.includes("あむ：取消")));
         } else if (fixture.own || fixture.pending) {
           assert.equal(nightStop.dataset.evidence, fixture.own ? "personal" : "pending");
-          assert.match(nightStop.title, /本人の当日案内/);
+          assert.match(nightStop.title, /お給仕予定/);
+          assert.doesNotMatch(nightStop.title, /本人|実績/);
           assert.doesNotMatch(nightStop.title, /にいた記録|実績があります/);
           assert.equal(withClass(nightStop, "maid-plan-rate").length, 0);
         } else if (fixture.unplaced) {

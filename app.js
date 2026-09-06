@@ -138,12 +138,22 @@
             (event.kind === "absence" && event.storeId !== undefined) ||
             (event.storeId !== undefined && !["s1", "s2", "s3", "s4"].includes(event.storeId)) ||
             (event.time !== undefined && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(event.time)) ||
-            typeof event.excerpt !== "string" || !event.excerpt.length || [...event.excerpt].length > 160)) {
+            typeof event.excerpt !== "string" || !event.excerpt.trim() || [...event.excerpt].length > 160 ||
+            /[\r\n\u2028\u2029]/.test(event.excerpt))) {
         throw new Error("本人ポストの検証情報が不正です");
       }
       ids.add(post.id);
     }
     return value;
+  }
+
+  function validEditTweetIds(post) {
+    const ids = post.editTweetIds;
+    return Array.isArray(ids) && ids.length > 0 && ids.length <= 20 &&
+      ids.every((id) => typeof id === "string" && /^[1-9][0-9]{9,24}$/.test(id)) &&
+      new Set(ids).size === ids.length &&
+      ids.every((id, index) => index === 0 || BigInt(ids[index - 1]) < BigInt(id)) &&
+      ids.at(-1) === post.id;
   }
 
   function validateObservations(value) {
@@ -155,6 +165,17 @@
     const ids = new Set();
     const isoTime = (time) => typeof time === "string" &&
       /(?:Z|[+-]\d{2}:\d{2})$/.test(time) && Number.isFinite(Date.parse(time));
+    const validContent = (post) => post &&
+      /^\d{4}-\d{2}-\d{2}$/.test(post.date) && Number.isFinite(Date.parse(`${post.date}T00:00:00Z`)) &&
+      new Date(`${post.date}T00:00:00Z`).toISOString().slice(0, 10) === post.date &&
+      ["昼", "夜"].includes(post.shift) && ["s1", "s2", "s3", "s4"].includes(post.storeId) &&
+      Array.isArray(post.names) && post.names.every((name) => typeof name === "string" && name.trim()) &&
+      (post.notices === undefined || (Array.isArray(post.notices) && post.notices.every((notice) =>
+        notice && typeof notice.name === "string" && notice.name.trim() && notice.kind === "late" &&
+        typeof notice.excerpt === "string" && notice.excerpt.trim() &&
+        [...notice.excerpt].length <= 160 && !/[\r\n\u2028\u2029]/.test(notice.excerpt) &&
+        (notice.time === undefined || /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(notice.time))))) &&
+      (post.names.length > 0 || post.notices?.length > 0);
     for (const time of [value.checkedAt, value.lastSuccessAt]) {
       if (time !== null && !isoTime(time)) throw new Error("自動収集時刻が不正です");
     }
@@ -163,12 +184,11 @@
           ids.has(post.id) || post.url !== `https://x.com/akibazettai/status/${post.id}` ||
           post.authorId !== "822429861218131969" || post.authorScreenName !== "akibazettai" ||
           !isoTime(post.createdAt) || !isoTime(post.observedAt) ||
-          !/^\d{4}-\d{2}-\d{2}$/.test(post.date) ||
-          !Number.isFinite(Date.parse(`${post.date}T00:00:00Z`)) ||
-          new Date(`${post.date}T00:00:00Z`).toISOString().slice(0, 10) !== post.date ||
-          !["昼", "夜"].includes(post.shift) || !["s1", "s2", "s3", "s4"].includes(post.storeId) ||
-          !Array.isArray(post.names) || post.names.length === 0 ||
-          post.names.some((name) => typeof name !== "string" || !name.trim())) {
+          !validContent(post) ||
+          (post.editTweetIds !== undefined && !validEditTweetIds(post)) ||
+          (post.lastCheckedAt !== undefined && !isoTime(post.lastCheckedAt)) ||
+          (post.revisions !== undefined && (!Array.isArray(post.revisions) ||
+            post.revisions.some((revision) => !validContent(revision) || !isoTime(revision.observedAt))))) {
         throw new Error("自動収集した投稿の検証情報が不正です");
       }
       ids.add(post.id);
@@ -176,13 +196,31 @@
     return value;
   }
 
+  function activeObservationPosts(observations) {
+    const posts = observations?.posts ?? [];
+    const byId = new Map(posts.map((post) => [post.id, post]));
+    const verifiedChains = posts.filter((post) => {
+      if (post.editTweetIds === undefined) return false;
+      try {
+        validateObservations({ ...EMPTY_OBSERVATIONS, posts: [post] });
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    const earlierIds = (post) => post.editTweetIds.slice(0, -1).filter((id) => byId.get(id)?.date === post.date);
+    // A verified replacement remains evidence after its successor is superseded.
+    const superseded = new Set(verifiedChains.flatMap(earlierIds));
+    return posts.filter((post) => !superseded.has(post.id));
+  }
+
   function observedShift(observations, insights, key, shift, nameCorrections = {}) {
-    const result = { posts: [], byStore: new Map(), byMaid: new Map() };
+    const result = { posts: [], byStore: new Map(), byMaid: new Map(), notices: new Map() };
     // A curated person roster takes precedence; observations are not a second
     // training source and never mutate actual/actualRoster/rotation.
     if (insights?.actualRoster?.[key]?.[shift]) return result;
     const aliases = displayAliases(insights);
-    for (const post of observations?.posts ?? []) {
+    for (const post of activeObservationPosts(observations)) {
       if (post.date !== key || post.shift !== shift) continue;
       result.posts.push(post);
       if (!result.byStore.has(post.storeId)) result.byStore.set(post.storeId, new Map());
@@ -206,8 +244,64 @@
           person.nameCorrections.push({ postId: post.id, rawName, name, reason: correction.reason });
         }
       }
+      for (const notice of post.notices ?? []) {
+        const postCorrections = nameCorrections?.[post.id];
+        const correction = postCorrections && Object.hasOwn(postCorrections, notice.name)
+          ? postCorrections[notice.name] : null;
+        const matchedName = correction?.name ?? notice.name;
+        const name = aliases.get(matchedName) ?? matchedName;
+        const previous = result.notices.get(name);
+        if (!previous || comparePosts(previous.sources[0], post) < 0) {
+          result.notices.set(name, {
+            name, storeId: post.storeId, time: notice.time ?? null, excerpt: notice.excerpt,
+            sources: [post], trainee: observedTrainee(insights, name, key), conflict: false,
+            nameCorrections: correction
+              ? [{ postId: post.id, rawName: notice.name, name, reason: correction.reason }] : []
+          });
+        }
+      }
+    }
+    for (const [name, notice] of result.notices) {
+      const recorded = result.byMaid.get(name);
+      if (!recorded) continue;
+      if (recorded.sources.some((post) => comparePosts(post, notice.sources[0]) >= 0)) {
+        result.notices.delete(name);
+      } else {
+        notice.conflict = recorded.storeIds.some((id) => id !== notice.storeId);
+        if (notice.conflict) notice.storeId = null;
+        result.byMaid.delete(name);
+        for (const people of result.byStore.values()) people.delete(name);
+      }
     }
     return result;
+  }
+
+  function comparePosts(left, right) {
+    return Date.parse(left.createdAt) - Date.parse(right.createdAt) ||
+      left.id.length - right.id.length || left.id.localeCompare(right.id);
+  }
+
+  function personalPostsForView(snapshot, additions = {}) {
+    return (snapshot?.posts ?? []).map((post) => {
+      if (!additions || !/^\d{10,25}$/.test(post.id) || !Object.hasOwn(additions, post.id)) return post;
+      const rule = additions[post.id];
+      if (!rule || !["name", "authorId", "authorScreenName", "date"].every((field) => rule[field] === post[field]) ||
+          !Array.isArray(rule.events)) return post;
+      const shifts = new Set(post.events.map((event) => event.shift));
+      const extra = rule.events.filter((event) => {
+        if (!event || shifts.has(event.shift)) return false;
+        shifts.add(event.shift);
+        return true;
+      });
+      if (!extra.length) return post;
+      const amended = { ...post, events: [...post.events, ...extra] };
+      try {
+        validatePersonalShifts({ ...EMPTY_PERSONAL_SHIFTS, posts: [amended] });
+        return amended;
+      } catch {
+        return post;
+      }
+    });
   }
 
   function observedTrainee(insights, name, key) {
@@ -216,31 +310,30 @@
     return key >= period.from && key <= period.to;
   }
 
-  function dayHasPersonStoreEvidence(insights, observations, key, personal) {
+  function dayHasPersonStoreEvidence(insights, observations, key, personal, personalEventAdditions = {}) {
     if (SHIFT_NAMES.some((shift) => recordedAssignment(insights, key, shift))) return true;
     const stores = new Set(storesOf(insights).map((store) => store.id));
     // Read retained source history, not filtered/current placements: a later
     // cancellation must not send the remaining people back into guessed shops.
     return (observations?.posts ?? []).some((post) =>
       post.date === key && SHIFT_NAMES.includes(post.shift) &&
-      stores.has(post.storeId) && post.names.length > 0) ||
-      (personal?.posts ?? []).some((post) => post.date === key && post.events.some((event) =>
+      stores.has(post.storeId) && (post.names.length > 0 || post.notices?.length > 0)) ||
+      personalPostsForView(personal, personalEventAdditions).some((post) => post.date === key && post.events.some((event) =>
         SHIFT_NAMES.includes(event.shift) && ["placement", "return", "late"].includes(event.kind) && stores.has(event.storeId)));
   }
 
-  function personalShift(snapshot, insights, key, shift, observed) {
+  function personalShift(snapshot, insights, key, shift, observed, personalEventAdditions = {}) {
     const result = { posts: [], byMaid: new Map() };
     if (insights?.actualRoster?.[key]?.[shift]) return result;
     const aliases = displayAliases(insights);
-    const posts = (snapshot?.posts ?? []).filter((post) =>
+    const posts = personalPostsForView(snapshot, personalEventAdditions).filter((post) =>
       post.date === key && post.events.some((event) => event.shift === shift))
-      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) ||
-        a.id.length - b.id.length || a.id.localeCompare(b.id));
+      .sort(comparePosts);
     for (const post of posts) {
       result.posts.push(post);
       const name = aliases.get(post.name) ?? post.name;
       if (!result.byMaid.has(name)) result.byMaid.set(name, {
-        name, sources: [], history: [], storeId: null, absent: false, returned: false,
+        name, sources: [], history: [], storeId: null, placementSource: null, absent: false, returned: false,
         late: null, uncertain: false, conflict: false, suppressObserved: false, resetAt: null,
         trainee: observedTrainee(insights, name, key)
       });
@@ -252,10 +345,14 @@
           person.uncertain = true;
         } else if (event.kind === "late") {
           person.late = { time: event.time ?? null };
-          if (!person.absent && event.storeId) person.storeId = event.storeId;
+          if (!person.absent && event.storeId) {
+            person.storeId = event.storeId;
+            person.placementSource = post;
+          }
         } else if (event.kind === "absence") {
           person.absent = true;
           person.storeId = null;
+          person.placementSource = null;
           person.returned = false;
           person.late = null;
           person.resetAt = Date.parse(post.createdAt);
@@ -263,10 +360,12 @@
           person.absent = false;
           person.returned = true;
           person.storeId = event.storeId ?? null;
+          person.placementSource = event.storeId ? post : null;
           person.late = null;
           person.resetAt = Date.parse(post.createdAt);
         } else if (!person.absent) {
           person.storeId = event.storeId;
+          person.placementSource = post;
         }
       }
     }
@@ -283,20 +382,21 @@
         person.conflict = true;
         person.absent = false;
         person.storeId = null;
+        person.placementSource = null;
         person.suppressObserved = true;
       }
     }
     return result;
   }
 
-  function resolveShiftRoster({ insights, observations, personal, dateKey, shift, schedule, roster, nameCorrections }) {
+  function resolveShiftRoster({ insights, observations, personal, dateKey, shift, schedule, roster, nameCorrections, personalEventAdditions }) {
     const recorded = recordedRoster({ insights, dateKey, shift, schedule, roster });
     if (recorded) return {
       ...recorded, observed: observedShift(null, insights, dateKey, shift),
       personal: { posts: [], byMaid: new Map() }
     };
     const observed = observedShift(observations, insights, dateKey, shift, nameCorrections);
-    const notices = personalShift(personal, insights, dateKey, shift, observed);
+    const notices = personalShift(personal, insights, dateKey, shift, observed, personalEventAdditions);
     for (const person of notices.byMaid.values()) {
       if (person.absent || person.suppressObserved) {
         observed.byMaid.delete(person.name);
@@ -325,6 +425,25 @@
         ...entry, personalNotice: person,
         personalPlacement: Boolean(person.storeId && !entry.observed),
         trainee: person.trainee
+      });
+    }
+    for (const [name, official] of observed.notices) {
+      const person = notices.byMaid.get(name);
+      if (person?.resetAt !== null && person?.resetAt !== undefined &&
+          Date.parse(official.sources[0].createdAt) <= person.resetAt) continue;
+      const conflict = official.conflict || Boolean(person?.absent || person?.conflict ||
+        (person?.storeId && person.storeId !== official.storeId));
+      if (conflict && person) {
+        person.absent = false;
+        person.conflict = true;
+        person.storeId = null;
+        person.placementSource = null;
+      }
+      const entry = entries.get(name) ?? { name };
+      entries.set(name, {
+        ...entry, officialNotice: { ...official, conflict, storeId: conflict ? null : official.storeId },
+        officialPlacement: !conflict, personalPlacement: false,
+        trainee: entry.trainee ?? official.trainee
       });
     }
     return { assignment: null, observed, personal: notices, entries: [...entries.values()] };
@@ -2031,8 +2150,9 @@
     const changes = [];
     for (const key of dates ?? []) {
       for (const shift of shifts ?? []) {
-        const { outlook, assignment, observed, personal, confirmedOnly } = resolve(key, shift) ?? {};
+        const { outlook, assignment, observed, personal, entries, confirmedOnly } = resolve(key, shift) ?? {};
         const notice = assignment?.recorded ? null : personal?.byMaid.get(name);
+        const officialNotice = assignment?.recorded ? null : entries?.find((entry) => entry.name === name)?.officialNotice;
         if (notice?.absent) {
           changes.push({ dateKey: key, shift, personalNotice: notice });
           continue;
@@ -2043,18 +2163,18 @@
         const roll = assignment?.recorded
           ? (assignment.byMaid.has(name) ? { name } : null)
           : (schedule?.[key]?.[shift] ?? []).find((member) => member.name === name)
-            ?? (observation || notice?.storeId || notice?.returned || notice?.conflict ? { name } : null);
+            ?? (observation || officialNotice || notice?.storeId || notice?.returned || notice?.conflict ? { name } : null);
         if (!roll) {
           if (notice) changes.push({ dateKey: key, shift, personalNotice: notice });
           continue;
         }
-        const placed = notice || (confirmedOnly && !assignment?.recorded)
+        const placed = notice || officialNotice || (confirmedOnly && !assignment?.recorded)
           ? null : assignment?.byMaid?.get(name) ?? null;
         // キッチンにゃんこの行き先は、見込みの日には店ごとの画面でも名乗らない。
         // ここで名乗ると、同じ人・同じ日で2つの画面が違うことを言う。
         const loose =
           placed && !assignment.recorded && !observation && !placed.pin && cooks.has(name);
-        const storeId = observation?.storeIds[0] ?? notice?.storeId ?? (loose ? null : placed?.storeId ?? null);
+        const storeId = observation?.storeIds[0] ?? officialNotice?.storeId ?? notice?.storeId ?? (loose ? null : placed?.storeId ?? null);
         const row = storeId
           ? outlook?.entries?.find((candidate) => candidate.store.id === storeId) ?? null
           : null;
@@ -2067,10 +2187,10 @@
         //
         // Store-only records do not establish a person's placement.
         const recorded = Boolean((assignment?.recorded && placed) || observation);
-        const announced = Boolean(notice?.storeId && !observation);
-        const host = !observation && !notice && Boolean(placed?.pin);
+        const announced = Boolean((officialNotice?.storeId || notice?.storeId) && !observation);
+        const host = !observation && !notice && !officialNotice && Boolean(placed?.pin);
         const settled = recorded || host || announced;
-        const forecast = !settled && !confirmedOnly && !notice;
+        const forecast = !settled && !confirmedOnly && !notice && !officialNotice;
         stops.push({
           dateKey: key,
           shift,
@@ -2079,19 +2199,20 @@
           // 店ごとの画面と同じ三段階を使う。別の線を引くと画面が食い違う。
           // 確定でないなら、店が100%でも「見込み」として出す。
           state: announced ? "announced" : recorded || host ? "open" : forecast && row ? stateForRate(row.rate ?? 0) : null,
-          openRate: recorded || notice || confirmedOnly ? null : row?.rate ?? null,
+          openRate: recorded || notice || officialNotice || confirmedOnly ? null : row?.rate ?? null,
           recorded,
           observed: Boolean(observation),
-          personal: announced,
+          personal: announced && !officialNotice,
           personalNotice: notice,
+          officialNotice,
           confirmedOnly: Boolean(confirmedOnly),
           forecast,
-          storeIds: observation?.storeIds ?? (announced ? [notice.storeId] : []),
-          sourcePosts: observation?.sources ?? [],
-          nameCorrections: observation?.nameCorrections ?? [],
+          storeIds: observation?.storeIds ?? (announced ? [storeId] : []),
+          sourcePosts: observation?.sources ?? officialNotice?.sources ?? [],
+          nameCorrections: observation?.nameCorrections ?? officialNotice?.nameCorrections ?? [],
           host,
           settled,
-          trainee: observation ? observation.trainee : notice?.trainee ?? placed?.trainee ?? null,
+          trainee: observation ? observation.trainee : officialNotice?.trainee ?? notice?.trainee ?? placed?.trainee ?? null,
           eventLabel: roll.eventLabel
             ?? schedule?.[key]?.[shift]?.find((entry) => entry.name === name)?.eventLabel
             ?? null
@@ -2170,8 +2291,10 @@
       maidItinerary,
       monthCells,
       observedShift,
+      activeObservationPosts,
       observedTrainee,
       personalShift,
+      personalPostsForView,
       resolveShiftRoster,
       validatePersonalShifts,
       dayHasPersonStoreEvidence,
@@ -2205,6 +2328,9 @@
   }
 
   const data = window.SCHEDULE_DATA;
+  const displayName = (name) => Object.hasOwn(data.displayNames ?? {}, name) ? data.displayNames[name] : name;
+  const displayText = (text) => Object.entries(data.displayNames ?? {}).reduce(
+    (value, [canonical, label]) => value.replaceAll(canonical, label), text);
   const shifts = ["昼", "夜"];
   const TRAINEE_PLACEHOLDER = "見習い";
 
@@ -2474,8 +2600,6 @@
     refreshObservations: document.querySelector("#refresh-observations"),
     personalStatus: document.querySelector("#personal-status"),
     refreshPersonal: document.querySelector("#refresh-personal"),
-    jumpDay: document.querySelector("#jump-day"),
-    jumpNight: document.querySelector("#jump-night"),
     selectAll: document.querySelector("#select-all"),
     clearAll: document.querySelector("#clear-all"),
     hideKitchen: document.querySelector("#hide-kitchen"),
@@ -2503,7 +2627,8 @@
   function shiftRoster(key, shift) {
     return resolveShiftRoster({
       insights, observations, personal: personalShifts, dateKey: key, shift,
-      schedule: data.schedule, roster: data.roster, nameCorrections: data.observationNameCorrections
+      schedule: data.schedule, roster: data.roster, nameCorrections: data.observationNameCorrections,
+      personalEventAdditions: data.personalEventAdditions
     });
   }
 
@@ -2525,61 +2650,117 @@
     link.rel = "noopener noreferrer";
     link.className = "observation-source";
     link.textContent = label ?? `公式投稿 ${observationTime(post.createdAt)}`;
-    link.title = `@${post.authorScreenName} / ${post.id} / 取得 ${observationTime(post.observedAt)}`;
+    link.title = `@${post.authorScreenName} / ${post.id}`;
     return link;
   }
 
   function personalNoticeLabel(person) {
     if (person.conflict) return "案内が不一致・保留";
-    if (person.absent) return "取消の案内";
-    if (person.late) return person.late.time ? `遅れ・${person.late.time}到着予定` : "遅れの案内";
-    if (person.returned && !person.storeId) return "復帰の案内・店舗未定";
-    if (person.storeId) return "本人案内";
-    return "本人案内・保留";
+    if (person.absent) return "取消";
+    const pending = person.uncertain ? "・保留" : "";
+    if (person.late) return (person.late.time ? `遅れ・${person.late.time}到着予定` : "遅れ") + pending;
+    if (person.returned && !person.storeId) return "復帰・未発表" + pending;
+    if (person.storeId) return "お給仕予定" + pending;
+    return "保留";
   }
 
-  function createPersonalDetails(personal, key, shift) {
-    const people = [...personal.byMaid.values()].filter((person) => isVisibleMaid(person.name));
-    if (!people.length) return null;
-    const details = document.createElement("details");
-    details.className = "personal-details";
-    details.dataset.stateKey = `${key}|${shift}|personal-details`;
-    const summary = document.createElement("summary");
-    summary.textContent = "本人ポスト";
-    summary.dataset.focusKey = `${key}|${shift}|personal-summary`;
-    details.append(summary);
-    const kinds = { placement: "店舗の案内", absence: "取消の案内", late: "遅れの案内",
-      return: "復帰の案内", uncertain: "内容確認待ち" };
-    for (const person of people) {
-      const heading = document.createElement("p");
-      heading.className = "personal-history-heading";
-      heading.textContent = `${person.name}：${personalNoticeLabel(person)}`;
-      details.append(heading);
-      for (const post of person.sources) {
-        const source = document.createElement("p");
-        source.className = "personal-source";
-        const link = document.createElement("a");
-        link.className = "personal-source-link";
-        link.href = post.url;
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-        link.textContent = `${person.name} @${post.authorScreenName}・${observationTime(post.createdAt)}`;
-        link.title = `本人ポスト / ${post.id} / 取得 ${observationTime(post.observedAt)}`;
-        link.dataset.focusKey = `${key}|${shift}|personal|${post.id}`;
-        source.append(link);
-        for (const event of post.events.filter((event) => event.shift === shift)) {
-          const text = document.createElement("span");
-          text.textContent = `${shift}：${kinds[event.kind]}${event.storeId ? `・${storeShort(insights, event.storeId)}` : ""}` +
-            `${event.time ? `・${event.time}` : ""}${event.excerpt ? `「${event.excerpt}」` : ""}`;
-          source.append(text);
+  function officialNoticeLabel(notice) {
+    return notice.conflict ? "案内が不一致・保留" : notice.time ? `${notice.time}到着予定` : "あとから";
+  }
+
+  function createChangeNotice(person, prefix = "") {
+    const change = document.createElement("p");
+    change.className = "shift-change";
+    change.dataset.name = person.name;
+    change.textContent = `${prefix}${displayName(person.name)}：${personalNoticeLabel(person)}`;
+    return change;
+  }
+
+  const officialEmbeds = new Map();
+  let officialWidgetScript;
+
+  function loadOfficialWidgets() {
+    if (!officialWidgetScript) {
+      officialWidgetScript = new Promise((resolve, reject) => {
+        if (window.twttr?.widgets?.createTweet) {
+          resolve(window.twttr.widgets);
+          return;
         }
-        details.append(source);
-      }
+        const script = document.createElement("script");
+        script.src = "https://platform.twitter.com/widgets.js";
+        script.async = true;
+        const timer = window.setTimeout(() => reject(new Error("widget timeout")), 10000);
+        const ready = () => {
+          window.clearTimeout(timer);
+          if (window.twttr?.widgets?.createTweet) resolve(window.twttr.widgets);
+          else reject(new Error("widget unavailable"));
+        };
+        script.onload = () => {
+          if (window.twttr?.widgets?.createTweet) ready();
+          else if (typeof window.twttr?.ready === "function") window.twttr.ready(ready);
+          else ready();
+        };
+        script.onerror = () => {
+          window.clearTimeout(timer);
+          reject(new Error("widget blocked"));
+        };
+        document.head.append(script);
+      });
     }
-    const note = document.createElement("p");
-    note.textContent = "本人の当日案内です。勤務実績ではありません。";
-    details.append(note);
-    return details;
+    return officialWidgetScript;
+  }
+
+  function createOfficialPost(post, key, shift, store) {
+    const label = `${store.short} ${observationTime(post.createdAt)}`;
+    const existing = officialEmbeds.get(post.id);
+    if (existing) {
+      // A cached widget can move between the store view and the hidden dialog.
+      const previousSection = existing.node.closest?.(".shift-section");
+      if (previousSection) delete previousSection.dataset.renderKey;
+      existing.link.textContent = label;
+      existing.link.setAttribute("aria-label", `${label}の集合ポストを開く`);
+      existing.link.dataset.focusKey = `${key}|${shift}|${store.id}|${post.id}`;
+      return existing.node;
+    }
+    const node = document.createElement("div");
+    node.className = "official-post";
+    node.dataset.postId = post.id;
+    const link = createObservationLink(post, label);
+    link.setAttribute("aria-label", `${label}の集合ポストを開く`);
+    link.dataset.focusKey = `${key}|${shift}|${store.id}|${post.id}`;
+    node.append(link);
+    const target = document.createElement("div");
+    target.className = "official-embed";
+    target.setAttribute("inert", "");
+    target.setAttribute("aria-hidden", "true");
+    node.append(target);
+    officialEmbeds.set(post.id, { node, link, target, started: false });
+    return node;
+  }
+
+  async function embedOfficialPost(post) {
+    if (!/^\d{10,25}$/.test(post.id) || post.authorScreenName !== "akibazettai" ||
+        post.authorId !== "822429861218131969" ||
+        post.url !== `https://x.com/${post.authorScreenName}/status/${post.id}`) return;
+    const embed = officialEmbeds.get(post.id);
+    if (!embed || embed.started) return;
+    embed.started = true;
+    embed.node.dataset.embedState = "loading";
+    try {
+      const widgets = await loadOfficialWidgets();
+      const result = await widgets.createTweet(post.id, embed.target, {
+        theme: "light", dnt: true, width: Math.max(250, Math.min(550, embed.target.clientWidth || 300))
+      });
+      if (!result) throw new Error("post unavailable");
+      embed.target.querySelectorAll("iframe").forEach((frame) => { frame.tabIndex = -1; });
+      embed.node.dataset.embedState = "ready";
+    } catch {
+      embed.node.dataset.embedState = "unavailable";
+      const message = document.createElement("p");
+      message.className = "embed-fallback";
+      message.textContent = "埋め込みを読み込めません。元ポストから確認できます。";
+      embed.node.append(message);
+    }
   }
 
   function createRosterEntry(entry, key, shift, {
@@ -2587,18 +2768,24 @@
   } = {}) {
     const item = document.createElement("li");
     item.className = "maid-entry";
+    item.dataset.name = entry.name;
     item.dataset.evidence = evidence;
     if (storeId) item.dataset.store = storeId;
+    const person = entry.personalNotice;
+    const source = storeId && person?.storeId === storeId && !person.absent && !person.conflict
+      ? person.placementSource : null;
     const account = profileLink && insights?.maidTendency?.[entry.name]?.x;
-    const name = document.createElement(account ? "a" : "span");
+    const href = source?.url ?? (account ? `https://x.com/${account}` : null);
+    const name = document.createElement(href ? "a" : "span");
     name.className = "maid-name";
-    name.textContent = entry.name;
+    name.textContent = displayName(entry.name);
+    name.dataset.name = entry.name;
     name.dataset.focusKey = `${key}|${shift}|${entry.name}`;
-    if (account) {
-      name.href = `https://x.com/${account}`;
+    if (href) {
+      name.href = href;
       name.target = "_blank";
       name.rel = "noopener noreferrer";
-      name.title = `${entry.name}のXを開く`;
+      name.title = source ? `${displayName(entry.name)}のお給仕予定を開く` : `${displayName(entry.name)}のXを開く`;
     } else {
       name.tabIndex = -1;
     }
@@ -2623,18 +2810,25 @@
     }
     if (entry.personalNotice) {
       const person = entry.personalNotice;
-      if (entry.personalPlacement || person.conflict || person.late || (person.returned && !person.storeId) ||
+      if (person.conflict || person.late || (person.returned && !person.storeId) ||
           (!entry.observed && person.uncertain)) {
         const update = document.createElement("span");
         update.className = "entry-update";
         update.textContent = personalNoticeLabel(person);
         item.append(update);
       }
-      descriptions.push(`本人の当日案内：${personalNoticeLabel(person)}（勤務実績ではありません）`);
+      descriptions.push(personalNoticeLabel(person));
+    }
+    if (entry.officialNotice) {
+      const update = document.createElement("span");
+      update.className = "entry-update";
+      update.textContent = officialNoticeLabel(entry.officialNotice);
+      item.append(update);
+      descriptions.push(`お給仕予定・${update.textContent}`);
     }
     if (descriptions.length) {
-      item.title = `${entry.name}：${descriptions.join(" / ")}`;
-      item.setAttribute("aria-label", `${entry.name}（${descriptions.join("・")}）`);
+      item.title = displayText(`${entry.name}：${descriptions.join(" / ")}`);
+      item.setAttribute("aria-label", displayText(`${entry.name}（${descriptions.join("・")}）`));
     }
     return item;
   }
@@ -2655,9 +2849,11 @@
     target.append(list);
   }
 
-  function createRecordedRoster({ type, groups, posts = [], personal }, key, shift) {
-    const visiblePosts = posts.filter((post) =>
-      [...observedShift({ posts: [post] }, insights, key, shift, data.observationNameCorrections).byMaid.keys()].some(isVisibleMaid));
+  function createRecordedRoster({ type, groups, posts = [] }, key, shift) {
+    const visiblePosts = posts.filter((post) => {
+      const current = observedShift({ posts: [post] }, insights, key, shift, data.observationNameCorrections);
+      return [...current.byMaid.keys(), ...current.notices.keys()].some(isVisibleMaid);
+    });
     const block = document.createElement("section");
     block.className = groups.some(({ entries }) => entries.some((entry) => isVisibleMaid(entry.name)))
       ? "recorded-roster" : "roster-sources";
@@ -2674,9 +2870,9 @@
       const shown = entries.filter((entry) => isVisibleMaid(entry.name));
       if (!shown.length) continue;
       appendRosterGroup(block, store, shown, (entry) => createRosterEntry(entry, key, shift, {
-        evidence: entry.personalPlacement ? "personal" : type === "recorded" ? "recorded" : "observed",
+        evidence: entry.officialPlacement ? "official-announced" : entry.personalPlacement ? "personal" : type === "recorded" ? "recorded" : "observed",
         storeId: store.id, profileLink: !entry.observed,
-        note: entry.personalPlacement ? `${store.short}の本人案内（勤務実績ではありません）` : type !== "recorded"
+        note: entry.personalPlacement || entry.officialPlacement ? `${store.short}のお給仕予定` : type !== "recorded"
           ? `${store.short}のお給仕投稿で確認`
           : `${shift}は${store.short}にいた記録があります`
       }));
@@ -2684,46 +2880,36 @@
     for (const store of storeList) {
       const sources = visiblePosts.filter((post) => post.storeId === store.id);
       if (!sources.length) continue;
-      const sourceList = document.createElement("p");
+      const sourceList = document.createElement("div");
       sourceList.className = "observation-sources";
       for (const source of sources) {
-        const link = createObservationLink(source, `${store.short} ${observationTime(source.createdAt)}`);
-        link.dataset.focusKey = `${key}|${shift}|${store.id}|${source.id}`;
-        sourceList.append(link);
+        sourceList.append(createOfficialPost(source, key, shift, store));
       }
       details.append(sourceList);
     }
-    if (type === "recorded") {
-      const source = document.createElement("p");
-      source.className = "roster-source";
-      source.textContent = `収録記録：${key} ${shift}（data/store-insights.js・actualRoster）`;
-      details.append(source);
-      if (insights?.generatedAt) {
-        const generated = document.createElement("p");
-        generated.textContent = `データ生成：${insights.generatedAt}。個別の投稿URLは収録されていません。`;
-        details.append(generated);
-      }
+    if (visiblePosts.length) {
+      details.addEventListener("toggle", () => {
+        if (details.open) visiblePosts.forEach(embedOfficialPost);
+      });
+      block.append(details);
     }
-    if (type === "recorded" || visiblePosts.length) block.append(details);
-    const personalDetails = personal && createPersonalDetails(personal, key, shift);
-    if (personalDetails) block.append(personalDetails);
     return block;
   }
 
   function createUnmatchedNames(entries, key, shift) {
     const block = document.createElement("section");
     block.className = "unmatched-roster";
-    block.setAttribute("aria-label", `${key} ${shift}の店舗未定`);
+    block.setAttribute("aria-label", `${key} ${shift}の未発表`);
     const heading = document.createElement("h5");
     heading.className = "unmatched-heading";
-    heading.textContent = "店舗未定";
+    heading.textContent = "未発表";
     block.append(heading);
     appendRosterGroup(block, null, entries, (entry) => createRosterEntry({
       ...entry, trainee: observedTrainee(insights, entry.name, key)
     }, key, shift, {
-      evidence: entry.personalNotice?.conflict ? "pending" : "scheduled",
-      note: entry.personalNotice?.conflict
-        ? "集合ポストと本人案内が一致しないため、店舗は保留です。"
+      evidence: entry.personalNotice?.conflict || entry.officialNotice?.conflict ? "pending" : "scheduled",
+      note: entry.personalNotice?.conflict || entry.officialNotice?.conflict
+        ? "案内が一致しないため、店舗は保留です。"
         : "公開予定。店舗を確認できる人物ごとの根拠はまだありません。"
     }));
     return block;
@@ -2792,7 +2978,24 @@
     }
   }
 
+  function sourceFacts(key, shift) {
+    return {
+      posts: activeObservationPosts(observations).filter((post) => (!key || post.date === key) && (!shift || post.shift === shift))
+        .map(({ id, url, date, shift, createdAt, names, notices, storeId }) => ({ id, url, date, shift, createdAt, names, notices, storeId })),
+      personal: personalPostsForView(personalShifts, data.personalEventAdditions)
+        .filter((post) => (!key || post.date === key) && (!shift || post.events.some((event) => event.shift === shift)))
+        .map(({ id, url, date, createdAt, name, events }) => ({
+          id, url, date, createdAt, name, events: events.filter((event) => !shift || event.shift === shift)
+        }))
+    };
+  }
+
+  let lastSourcePresentation = JSON.stringify(sourceFacts());
+
   function rerenderSourceUpdate() {
+    const presentation = JSON.stringify(sourceFacts());
+    if (lastSourcePresentation === presentation) return;
+    lastSourcePresentation = presentation;
     if (elements.dayDialog.open) {
       observationsChangedInDialog = true;
       openDayDialog(state.selectedDate, dialogOrigin, true);
@@ -2808,17 +3011,17 @@
     status.dataset.loaded = personalLoading ? "false" : "true";
     status.dataset.error = personalLoadError ? "true" : "false";
     if (personalLoadError) {
-      status.textContent = `本人案内の読込に失敗しました：${personalLoadError}。集合ポストと保存済み本人案内は維持します。`;
+      status.textContent = `追加予定の読込に失敗しました：${personalLoadError}。保存済みの表示は維持します。`;
       return;
     }
     if (personalLoading) {
-      status.textContent = "本人案内を読み込み中…";
+      status.textContent = "追加予定を読み込み中…";
       return;
     }
     const labels = { never: "未実行", ok: "更新", partial: "一部失敗あり", unavailable: "取得不能",
       "no-new": "新規追加なし", "no-results": "候補なし", paused: "一時停止",
       "budget-exhausted": "取得予算待ち", "outside-window": "対象時間外" };
-    status.textContent = `本人案内：${labels[personalShifts.lastRun.status]}` +
+    status.textContent = `追加予定：${labels[personalShifts.lastRun.status]}` +
       `${personalShifts.checkedAt ? `・確認 ${observationTime(personalShifts.checkedAt)}` : ""}。未取得・保留は欠勤を意味しません。`;
   }
 
@@ -2851,7 +3054,7 @@
     section.setAttribute("aria-label", `${shift}のお給仕`);
 
     const roster = shiftRoster(key, shift);
-    confirmedOnly = confirmedOnly || dayHasPersonStoreEvidence(insights, observations, key, personalShifts) ||
+    confirmedOnly = confirmedOnly || dayHasPersonStoreEvidence(insights, observations, key, personalShifts, data.personalEventAdditions) ||
       roster.personal.posts.length > 0;
     const partial = roster.observed.posts.length > 0;
     const forecasting = showForecast && !confirmedOnly;
@@ -2880,16 +3083,22 @@
         entries: roster.assignment?.recorded
           ? roster.entries.filter((entry) => insights.actualRoster[key][shift].stores[store.id]?.includes(entry.name))
           : roster.entries.filter((entry) => roster.observed.byStore.get(store.id)?.has(entry.name) ||
-            (entry.personalPlacement && entry.personalNotice.storeId === store.id))
+            (entry.personalPlacement && entry.personalNotice.storeId === store.id) ||
+            (entry.officialPlacement && entry.officialNotice.storeId === store.id))
             .map((entry) => ({ ...entry, trainee: roster.observed.byMaid.get(entry.name)?.trainee ?? entry.trainee }))
       }));
       const hasConfirmed = groups.some(({ entries }) => entries.some((entry) => isVisibleMaid(entry.name)));
-      if (hasConfirmed || roster.observed.posts.length || roster.personal.posts.length) {
-        section.append(createRecordedRoster({ type, groups, posts: roster.observed.posts, personal: roster.personal }, key, shift));
+      if (hasConfirmed || roster.observed.posts.length) {
+        section.append(createRecordedRoster({ type, groups, posts: roster.observed.posts }, key, shift));
       }
-      const unmatched = roster.entries.filter((entry) => !entry.observed && !entry.personalPlacement && isVisibleMaid(entry.name));
+      const unmatched = roster.entries.filter((entry) => !entry.observed && !entry.personalPlacement && !entry.officialPlacement && isVisibleMaid(entry.name));
       const hasUnmatched = !roster.assignment?.recorded && unmatched.length > 0;
       if (hasUnmatched) section.append(createUnmatchedNames(unmatched, key, shift));
+      for (const person of roster.personal.byMaid.values()) {
+        if (isVisibleMaid(person.name) && (person.absent || !roster.entries.some((entry) => entry.name === person.name))) {
+          section.append(createChangeNotice(person));
+        }
+      }
       if (!hasConfirmed && !hasUnmatched && !roster.personal.posts.length) appendEmptyShift(section, roster.entries.length > 0);
       return section;
     }
@@ -3026,8 +3235,8 @@
       }
 
       if (titles.length > 0) {
-        item.title = `${entry.name}：${titles.join(" / ")}`;
-        item.setAttribute("aria-label", `${entry.name}（${descriptions.join("・")}）`);
+        item.title = displayText(`${entry.name}：${titles.join(" / ")}`);
+        item.setAttribute("aria-label", displayText(`${entry.name}（${descriptions.join("・")}）`));
       }
       return item;
     }
@@ -3067,9 +3276,9 @@
         const item = createMaidEntry(entry, null, true);
         item.setAttribute(
           "aria-label",
-          `${entry.name}（${note}）`
+          displayText(`${entry.name}（${note}）`)
         );
-        item.title = `${entry.name}：${note}`;
+        item.title = displayText(`${entry.name}：${note}`);
         list.append(item);
       });
       target.append(heading, list);
@@ -3219,7 +3428,7 @@
     const image = document.createElement("img");
     const configured = eventImageFor(data, key, event.name);
     image.className = "event-image";
-    image.alt = configured.alt;
+    image.alt = displayText(configured.alt);
     image.width = 160;
     image.height = 160;
     image.decoding = "async";
@@ -3239,7 +3448,8 @@
     image.src = configured.src;
     const name = document.createElement("span");
     name.className = "event-art-name";
-    name.textContent = event.name;
+    name.textContent = displayName(event.name);
+    name.dataset.name = event.name;
     const label = document.createElement("span");
     label.className = "event-art-label";
     label.textContent = event.labels.join("・");
@@ -3257,8 +3467,6 @@
   function finishDayDialog() {
     if (!dialogOrigin || elements.dayDialog.open) return;
     document.body.style.overflow = previousOverflow;
-    elements.dialogContent.replaceChildren();
-    elements.dialogEvents.textContent = "";
     const origin = dialogOrigin;
     dialogOrigin = null;
     if (observationsChangedInDialog) {
@@ -3293,15 +3501,25 @@
       `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日（${weekdays[date.getDay()]}）`;
     const events = dayEvents(data, insights, key).filter((event) => isVisibleMaid(event.name));
     elements.dialogEvents.textContent = events.length > 0
-      ? events.map((event) => `${event.name} ${event.labels.join("・")}`).join(" ／ ")
+      ? events.map((event) => `${displayName(event.name)} ${event.labels.join("・")}`).join(" ／ ")
       : "";
-    const confirmedOnly = dayHasPersonStoreEvidence(insights, observations, key, personalShifts);
-    elements.dialogContent.replaceChildren(...shifts.map((shift, index) => {
+    const confirmedOnly = dayHasPersonStoreEvidence(insights, observations, key, personalShifts, data.personalEventAdditions);
+    shifts.forEach((shift, index) => {
+      const renderKey = JSON.stringify({
+        key, shift, confirmedOnly, today: tokyoToday(), selected: [...state.selectedMaids], kitchen: state.hideKitchen,
+        schedule: data.schedule[key]?.[shift], recorded: insights.actualRoster?.[key]?.[shift],
+        stores: insights.actual?.[key]?.[shift], displayNames: data.displayNames,
+        ...sourceFacts(key, shift)
+      });
+      const previous = elements.dialogContent.children[index];
+      if (previous?.dataset.renderKey === renderKey) return;
       const section = createShiftSection(key, date, shift, true, confirmedOnly);
       section.id = index === 0 ? "dialog-day" : "dialog-night";
       section.tabIndex = -1;
-      return section;
-    }));
+      section.dataset.renderKey = renderKey;
+      if (previous) elements.dialogContent.replaceChild(section, previous);
+      else elements.dialogContent.append(section);
+    });
     elements.dialogContent.scrollTop = 0;
     if (!elements.dayDialog.open) {
       dialogOrigin = origin;
@@ -3323,13 +3541,6 @@
     } else {
       elements.closeDialog.focus({ preventScroll: true });
     }
-  }
-
-  function jumpToDialogShift(id) {
-    const section = document.getElementById(id);
-    const content = elements.dialogContent;
-    content.scrollTop += section.getBoundingClientRect().top - content.getBoundingClientRect().top;
-    section.focus({ preventScroll: true });
   }
 
   function renderMonthGrid(year, monthIndex) {
@@ -3408,11 +3619,11 @@
           observedShift(observations, insights, key, shift, data.observationNameCorrections).posts.length > 0);
         const hasPersonal = shifts.some((shift) =>
           [...shiftRoster(key, shift).personal.byMaid.keys()].some(isVisibleMaid));
-        hint.textContent = hasMembers ? "お給仕" : hasPersonal ? "本人案内" : hasInformation ? "該当なし" : "未確認";
+        hint.textContent = hasMembers ? "お給仕" : hasPersonal ? "変更あり" : hasInformation ? "該当なし" : "未確認";
         if (hasObserved) hint.classList.add("is-observed");
         button.append(hint);
       }
-      const eventLabel = events.map((event) => `${event.name} ${event.labels.join("・")}`).join("、");
+      const eventLabel = events.map((event) => `${displayName(event.name)} ${event.labels.join("・")}`).join("、");
       button.setAttribute("aria-label",
         `${year}年${monthIndex + 1}月${date.getDate()}日（${weekdays[date.getDay()]}）` +
         (inRange ? ` ${eventLabel} 昼と夜のお給仕詳細を開く` : " 表示期間外"));
@@ -3525,7 +3736,7 @@
       const id = `${key}|${shift}`;
       if (!shiftCache.has(id)) {
         const roster = shiftRoster(key, shift);
-        const confirmedOnly = dayHasPersonStoreEvidence(insights, observations, key, personalShifts) ||
+        const confirmedOnly = dayHasPersonStoreEvidence(insights, observations, key, personalShifts, data.personalEventAdditions) ||
           roster.personal.posts.length > 0;
         const { outlook, pins } = confirmedOnly ? { outlook: null, pins: new Map() } : getShiftOutlook(key, shift);
         // 記録のある日は記録の割り振りを使う。カレンダーと同じものを引かないと、
@@ -3535,6 +3746,7 @@
           outlook,
           observed: roster.observed,
           personal: roster.personal,
+          entries: roster.entries,
           confirmedOnly,
           members: [...new Set([...roster.entries.map((entry) => entry.name), ...roster.personal.byMaid.keys()])],
           assignment: roster.assignment
@@ -3604,19 +3816,21 @@
   function createMaidPlan(plan) {
     const block = document.createElement("section");
     block.className = "maid-plan";
-    block.setAttribute("aria-label", `${plan.name}のお給仕`);
+    block.dataset.name = plan.name;
+    block.setAttribute("aria-label", `${displayName(plan.name)}のお給仕`);
 
     const heading = document.createElement("h3");
     heading.className = "maid-plan-name";
     const account = insights?.maidTendency?.[plan.name]?.x;
     const nameLabel = document.createElement(account ? "a" : "span");
     nameLabel.className = "maid-name";
-    nameLabel.textContent = plan.name;
+    nameLabel.textContent = displayName(plan.name);
+    nameLabel.dataset.name = plan.name;
     if (account) {
       nameLabel.href = `https://x.com/${account}`;
       nameLabel.target = "_blank";
       nameLabel.rel = "noopener noreferrer";
-      nameLabel.title = `${plan.name}のXを開く`;
+      nameLabel.title = `${displayName(plan.name)}のXを開く`;
     }
     const count = document.createElement("span");
     count.className = "maid-plan-count";
@@ -3641,13 +3855,7 @@
     plan.stops.forEach((stop) => list.append(createMaidStop(stop)));
     block.append(list);
     for (const change of plan.changes) {
-      const details = createPersonalDetails({
-        byMaid: new Map([[plan.name, change.personalNotice]])
-      }, change.dateKey, change.shift);
-      if (details) {
-        details.classList.add("maid-plan-changes");
-        block.append(details);
-      }
+      block.append(createChangeNotice(change.personalNotice, `${change.dateKey} ${change.shift} `));
     }
     return block;
   }
@@ -3667,24 +3875,20 @@
     where.dataset.store = stop.storeId ?? "";
     where.textContent = stop.observed
       ? stop.storeIds.map((id) => storeShort(insights, id)).join("・")
-      : stop.storeId ? storeShort(insights, stop.storeId) : "未定";
+      : stop.storeId ? storeShort(insights, stop.storeId) : "未発表";
     item.append(when, where);
     const evidence = document.createElement("span");
     evidence.className = "maid-plan-evidence";
     evidence.textContent = stop.observed ? "記録" : stop.recorded ? "実績"
-      : stop.personal ? "本人の当日案内" : stop.personalNotice?.conflict ? "案内が不一致・保留"
+      : stop.officialNotice ? `お給仕予定・${officialNoticeLabel(stop.officialNotice)}`
+      : stop.personal ? personalNoticeLabel(stop.personalNotice) : stop.personalNotice?.conflict ? "案内が不一致・保留"
         : stop.personalNotice ? personalNoticeLabel(stop.personalNotice)
-        : stop.host ? "イベント主役の予定" : stop.confirmedOnly ? "公開予定・店舗未定" : "未照合の予定・店舗推測";
+        : stop.host ? "イベント主役の予定" : stop.confirmedOnly ? "公開予定・未発表" : "未照合の予定・店舗推測";
     item.dataset.evidence = stop.observed ? "observed" : stop.recorded ? "recorded"
+      : stop.officialNotice ? (stop.officialNotice.conflict ? "pending" : "official-announced")
       : stop.personal ? "personal" : stop.personalNotice?.conflict ? "pending" : stop.host ? "event" : "scheduled";
     item.append(evidence);
     for (const post of stop.sourcePosts) item.append(createObservationLink(post));
-    if (stop.personalNotice) {
-      const details = createPersonalDetails({
-        byMaid: new Map([[stop.personalNotice.name, stop.personalNotice]])
-      }, stop.dateKey, stop.shift);
-      if (details) item.append(details);
-    }
     // 見習いにゃんこ。判定できた日だけ印を付ける。null は「まだ判定していない」。
     if (stop.trainee === true) {
       const mark = document.createElement("span");
@@ -3720,15 +3924,15 @@
     const recorded = plan.stops.filter((stop) => stop.recorded).length;
     const hosts = plan.stops.filter((stop) => !stop.recorded && stop.host).length;
     const observed = plan.stops.filter((stop) => stop.observed).length;
-    const personal = plan.stops.filter((stop) => stop.personal).length;
+    const personal = plan.stops.filter((stop) => stop.personal || stop.officialNotice?.storeId).length;
     const pending = plan.stops.filter((stop) => !stop.settled && !stop.forecast).length;
     const parts = [];
     if (recorded > 0) parts.push(`${recorded}件は人物の実績`);
     if (hosts > 0) parts.push(`${hosts}件はイベント主役の予定`);
     if (observed > 0) parts.push(`実績のうち${observed}件は自動収集した投稿による記録です。未照合の予定は不在の証拠ではありません`);
-    if (personal > 0) parts.push(`${personal}件は本人の当日案内で、勤務実績ではありません`);
-    if (pending > 0) parts.push(`${pending}件は店舗未定・保留の案内です`);
-    if (plan.changes.length > 0) parts.push("取消などの変更案内は本人ポストから確認できます");
+    if (personal > 0) parts.push(`${personal}件はお給仕予定`);
+    if (pending > 0) parts.push(`${pending}件は未発表・保留`);
+    if (plan.changes.length > 0) parts.push("取消などの変更あり");
     if (plan.guesses > 0) {
       parts.push(
         `${recorded + hosts > 0 ? "残り" : ""}${plan.guesses}件の行き先は推測です`
@@ -3764,9 +3968,12 @@
   // 表に出せるのは「開くと見た店のひとつ」までで、確からしさは強弱で伝える。
   function stopExplanation(stop) {
     const trainee = stop.trainee === true ? "見習いにゃんことして" : "";
+    if (stop.officialNotice) {
+      return `${stop.storeId ? `${storeShort(insights, stop.storeId)}の` : ""}お給仕予定・${officialNoticeLabel(stop.officialNotice)}。`;
+    }
     if (stop.personalNotice && !stop.observed && !stop.recorded) {
-      return `${stop.storeId ? `${storeShort(insights, stop.storeId)}の` : ""}本人の当日案内です。` +
-        `${personalNoticeLabel(stop.personalNotice)}。勤務実績ではありません。`;
+      return `${stop.storeId ? `${storeShort(insights, stop.storeId)}の` : ""}お給仕予定。` +
+        (personalNoticeLabel(stop.personalNotice) === "お給仕予定" ? "" : `${personalNoticeLabel(stop.personalNotice)}。`);
     }
     if (!stop.storeId) {
       return stop.kitchen
@@ -3777,7 +3984,7 @@
     if (stop.observed) {
       return `${stop.storeIds.map((id) => storeShort(insights, id)).join("・")}の公式のお給仕投稿で確認しています。` +
         "確認できた投稿の範囲の情報で、この時間帯の全員・全店舗を網羅するものではありません。" +
-        (stop.personalNotice ? `本人の当日案内：${personalNoticeLabel(stop.personalNotice)}。` : "");
+        (stop.personalNotice?.late ? `${personalNoticeLabel(stop.personalNotice)}。` : "");
     }
     // 過ぎた日と、これからの日を混ぜない。記録があるのは過ぎた日だけ。
     if (stop.recorded) {
@@ -3828,6 +4035,7 @@
     data.roster.forEach((name, index) => {
       const label = document.createElement("label");
       label.className = "checkbox-label";
+      label.dataset.name = name;
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.id = `maid-${index}`;
@@ -3844,7 +4052,7 @@
       });
 
       const text = document.createElement("span");
-      text.textContent = name;
+      text.textContent = displayName(name);
       label.append(checkbox, text);
 
       if (kitchenStaff.has(name)) {
@@ -3856,7 +4064,7 @@
         const badge = document.createElement("span");
         badge.className = "kitchen-badge";
         badge.textContent = "🍳";
-        badge.title = `${name}はキッチンにゃんこです`;
+        badge.title = `${displayName(name)}はキッチンにゃんこです`;
         badge.setAttribute("role", "img");
         badge.setAttribute("aria-label", "キッチンにゃんこ");
         label.append(badge);
@@ -3949,11 +4157,22 @@
   elements.closeDialog.addEventListener("click", closeDayDialog);
   elements.refreshObservations.addEventListener("click", refreshObservedData);
   elements.refreshPersonal.addEventListener("click", refreshPersonalData);
-  elements.jumpDay.addEventListener("click", () => jumpToDialogShift("dialog-day"));
-  elements.jumpNight.addEventListener("click", () => jumpToDialogShift("dialog-night"));
   elements.dayDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
     closeDayDialog();
+  });
+  elements.dayDialog.addEventListener("keydown", (event) => {
+    if (!elements.dayDialog.open || event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey) return;
+    const focusable = [...elements.dayDialog.querySelectorAll("a[href], button, input, select, textarea, summary, [tabindex]")]
+      .filter((element) => element.tabIndex >= 0 && !element.disabled &&
+        !element.closest("[inert]") && element.getClientRects().length > 0);
+    const first = focusable[0] ?? elements.closeDialog;
+    const last = focusable.at(-1) ?? first;
+    if (!focusable.includes(document.activeElement) ||
+        document.activeElement === (event.shiftKey ? first : last)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus({ preventScroll: true });
+    }
   });
   elements.dayDialog.addEventListener("click", (event) => {
     if (event.target === elements.dayDialog) closeDayDialog();
@@ -3984,8 +4203,8 @@
   const pendingNote = schedulePendingNote(insights);
   if (pendingNote && elements.schedulePendingNote) {
     elements.schedulePendingNote.textContent = pendingNote.short;
-    elements.schedulePendingNote.title = pendingNote.long;
-    elements.schedulePendingNote.setAttribute("aria-label", pendingNote.long);
+    elements.schedulePendingNote.title = displayText(pendingNote.long);
+    elements.schedulePendingNote.setAttribute("aria-label", displayText(pendingNote.long));
     elements.schedulePendingNote.hidden = false;
   }
   elements.maidFilterDetails.open =

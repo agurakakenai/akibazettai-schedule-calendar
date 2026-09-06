@@ -57,6 +57,84 @@ assert.equal(observed.byStore.get("s2").get("あむ").length, 2, "duplicate appe
 assert.equal(observed.byMaid.has("もなか"), false, "do not invent an identity correction");
 assert.equal(api.observedShift(fixture, insights, "2026-09-05", "夜").posts.length, 0);
 assert.equal(api.observedShift(fixture, insights, "2026-09-06", "昼").posts.length, 0);
+{
+  const first = makePost("2096000000000000010", "s1", ["まこと", "あむ"]);
+  const second = {
+    ...makePost("2096000000000000011", "s2", ["あむ"]),
+    notices: [{ name: "みりあ", kind: "late", excerpt: "あとから" }],
+    editTweetIds: [first.id, "2096000000000000011"]
+  };
+  const latest = { ...makePost("2096000000000000012", "s4", ["みりあ"]),
+    editTweetIds: [first.id, second.id, "2096000000000000012"] };
+  const snapshot = { ...fixture, posts: [first, second] };
+  const raw = JSON.stringify(snapshot);
+  assert.equal(api.validateObservations(snapshot), snapshot);
+  assert.deepEqual(api.activeObservationPosts(snapshot).map(post => post.id), [second.id]);
+  const active = api.observedShift(snapshot, insights, first.date, first.shift);
+  assert.deepEqual([...active.byMaid.keys()], ["あむ"]);
+  assert.deepEqual(active.byMaid.get("あむ").storeIds, ["s2"]);
+  assert.equal(active.notices.get("みりあ").storeId, "s2");
+  assert.deepEqual(active.posts.map(post => post.id), [second.id]);
+  assert.equal(JSON.stringify(snapshot), raw, "edit filtering leaves all raw posts and history intact");
+  assert.deepEqual(api.activeObservationPosts({ posts: [latest, first, second] }).map(post => post.id), [latest.id]);
+  const partialLatest = { ...latest, editTweetIds: [second.id, latest.id] };
+  const partialChain = { ...fixture, posts: [first, second, partialLatest] };
+  const partialRaw = JSON.stringify(partialChain);
+  assert.equal(api.validateObservations(partialChain), partialChain);
+  assert.deepEqual(api.activeObservationPosts(partialChain).map(post => post.id), [latest.id],
+    "adding B-to-C must preserve the earlier verified A-to-B replacement");
+  const partialRoster = api.observedShift(partialChain, insights, first.date, first.shift);
+  assert.deepEqual([...partialRoster.byMaid.keys()], ["みりあ"], "old people must not reappear");
+  assert.equal(partialRoster.notices.size, 0, "the replaced late notice must not reappear");
+  assert.deepEqual(partialRoster.posts.map(post => post.id), [latest.id]);
+  assert.equal(JSON.stringify(partialChain), partialRaw);
+  assert.deepEqual(api.activeObservationPosts({ posts: [first, partialLatest] }).map(post => post.id), [first.id, latest.id],
+    "a missing intermediary cannot supply an unverified A-to-B relationship");
+  assert.deepEqual(api.activeObservationPosts({ posts: [first, second, { ...partialLatest, date: "2026-09-06" }] })
+    .map(post => post.id), [second.id, latest.id], "a different-day successor cannot remove B or revive A");
+  assert.deepEqual(api.activeObservationPosts({ posts: [first, latest] }).map(post => post.id), [latest.id],
+    "a fetched terminal version can replace an ancestor even when intermediate IDs were not fetched");
+  assert.deepEqual(api.activeObservationPosts({ ...snapshot, pending: [{ id: latest.id }] }).map(post => post.id), [second.id],
+    "an unfetched latest ID does not remove the last available version");
+  const changedHeader = { ...second, shift: "夜" };
+  assert.equal(api.observedShift({ posts: [first, changedHeader] }, insights, first.date, first.shift).posts.length, 0);
+  assert.deepEqual(api.observedShift({ posts: [first, changedHeader] }, insights, first.date, "夜")
+    .posts.map(post => post.id), [second.id], "same-day edits apply before filtering shift");
+  const otherDay = { ...second, date: "2026-09-06" };
+  assert.deepEqual(api.activeObservationPosts({ posts: [first, otherDay] }).map(post => post.id), [first.id, second.id],
+    "a different service day cannot supersede the stored source's facts");
+  assert.equal(api.dayHasPersonStoreEvidence(insights, { posts: [first, changedHeader] }, first.date), true,
+    "the retained history gate does not collapse back into guessed stores");
+  for (const chain of [null, {}, second.id, [], [second.id, second.id], [Number(second.id)],
+    ["123", second.id], ["0123456789", second.id], ["１２３４５６７８９０", second.id],
+    ["1".repeat(26), second.id], [first.id, "2096000000000000009", second.id],
+    [first.id], [second.id, latest.id]]) {
+    assert.throws(() => api.validateObservations({ ...fixture, posts: [{ ...second, editTweetIds: chain }] }));
+  }
+  const stale = { ...first, editTweetIds: [first.id, latest.id] };
+  assert.deepEqual(api.activeObservationPosts({ posts: [stale] }).map(post => post.id), [first.id]);
+  const foreign = { ...second, authorId: "123", authorScreenName: "other" };
+  assert.throws(() => api.validateObservations({ ...fixture, posts: [first, foreign] }));
+  assert.ok(api.activeObservationPosts({ posts: [first, foreign] }).includes(first),
+    "unverified third-party metadata cannot suppress official facts");
+  assert.ok(api.activeObservationPosts({ posts: [first, second, { ...partialLatest, authorId: "123" }] }).includes(second),
+    "an unverified later author cannot suppress the last verified version");
+  const quoted = { ...first, quoted_status: { edit_control: { edit_tweet_ids: [first.id, second.id] } } };
+  assert.deepEqual(api.activeObservationPosts({ posts: [quoted] }).map(post => post.id), [first.id]);
+  const cyclic = [
+    { ...first, editTweetIds: [second.id, first.id] },
+    { ...second, editTweetIds: [first.id, second.id] }
+  ];
+  assert.throws(() => api.validateObservations({ ...fixture, posts: cyclic }),
+    "reverse intermediate IDs are invalid even when each chain ends at its current ID");
+  assert.deepEqual(api.activeObservationPosts({ posts: [cyclic[0]] }).map(post => post.id), [first.id],
+    "an invalid descending claim cannot erase the only available facts");
+  const twentyOneIds = Array.from({ length: 21 }, (_, index) => (2096800000000000000n + BigInt(index)).toString());
+  const bounded = { ...makePost(twentyOneIds[19], "s1", ["あむ"]), editTweetIds: twentyOneIds.slice(0, 20) };
+  assert.ok(api.validateObservations({ ...fixture, posts: [bounded] }));
+  const oversized = { ...makePost(twentyOneIds[20], "s1", ["あむ"]), editTweetIds: twentyOneIds };
+  assert.throws(() => api.validateObservations({ ...fixture, posts: [oversized] }));
+}
 const traineeMetadata = { traineePeriods: { byName: { "見習い例": { from: "2026-08-01", to: "2026-10-29" } } } };
 assert.equal(api.observedTrainee(traineeMetadata, "見習い例", "2026-09-05"), true);
 assert.equal(api.observedTrainee(traineeMetadata, "見習い例", "2026-07-31"), false);
@@ -214,6 +292,8 @@ for (const mutate of [
   x => { x.posts[0].events[0].kind = "absence"; },
   x => { x.posts[0].events[0].storeId = "s5"; }, x => { x.posts[0].events[0].time = "25:00"; },
   x => { x.posts[0].events[0].excerpt = ""; },
+  x => { x.posts[0].events[0].excerpt = " "; },
+  x => { x.posts[0].events[0].excerpt = "昼\n夜"; },
   x => { x.posts[0].events[0].excerpt = "x".repeat(161); }
 ]) {
   const copy = JSON.parse(JSON.stringify(personalFixture));
@@ -234,6 +314,17 @@ const officialToday = { ...fixture, posts: [{
 const options = { insights, observations: officialToday, personal: personalFixture,
   dateKey: "2026-09-06", schedule: dailyPlans, roster: schedule.roster };
 const unchanged = JSON.stringify([dailyPlans, personalFixture, officialToday, insights]);
+{
+  const first = { ...officialToday.posts[0], shift: "夜", names: ["あむ"] };
+  const latest = { ...first, id: "2096400000000000002",
+    url: "https://x.com/akibazettai/status/2096400000000000002", storeId: "s2",
+    editTweetIds: [first.id, "2096400000000000002"] };
+  const result = api.resolveShiftRoster({ ...options, shift: "夜", observations: { ...officialToday, posts: [first, latest] } });
+  const amu = result.entries.find(entry => entry.name === "あむ");
+  assert.equal(amu.observed, true);
+  assert.equal(amu.personalNotice.conflict, false, "the edited-out store is not a current conflict");
+  assert.equal(amu.personalNotice.placementSource.url, personalFixture.posts[0].url);
+}
 const lunch = api.resolveShiftRoster({ ...options, shift: "昼" });
 const night = api.resolveShiftRoster({ ...options, shift: "夜" });
 assert.equal(lunch.entries.filter(entry => entry.name === "あむ").length, 1);
@@ -256,6 +347,150 @@ assert.equal(nightPlan.stops[0].state, "announced");
 assert.equal(nightPlan.stops[0].openRate, null);
 assert.equal(nightPlan.guesses, 0, "an announcement is neither an actual nor a statistical guess");
 assert.equal(planOf("ららこ", night).stops[0].storeId, null);
+
+const additions = {
+  "2096253883677044837": {
+    name: "ららこ", authorId: "2065375500131028992", authorScreenName: "rarako_zettai", date: "2026-09-06",
+    events: [{ shift: "夜", kind: "placement", storeId: "s2", excerpt: "1号店➡️2号店 / お昼1号店" }],
+    reason: "User-reviewed placement"
+  }
+};
+const scoped = (personal = personalFixture, personalEventAdditions = additions) =>
+  api.resolveShiftRoster({ ...options, personal, personalEventAdditions, shift: "夜" });
+const amended = scoped();
+assert.equal(amended.entries.find(entry => entry.name === "ららこ").personalNotice.storeId, "s2");
+assert.equal(planOf("ららこ", amended).stops[0].storeId, "s2");
+assert.equal(planOf("ららこ", amended).stops[0].recorded, false);
+assert.equal(api.personalShift(personalFixture, insights, options.dateKey, "夜").byMaid.has("ららこ"), false);
+assert.equal(api.personalShift(personalFixture, insights, options.dateKey, "夜", null, additions).byMaid.get("ららこ").storeId, "s2");
+for (const field of ["name", "authorId", "authorScreenName", "date"]) {
+  const wrong = structuredClone(additions);
+  wrong["2096253883677044837"][field] += "wrong";
+  assert.equal(scoped(personalFixture, wrong).personal.byMaid.has("ららこ"), false, field);
+}
+assert.equal(scoped(personalFixture, Object.create(additions)).personal.byMaid.has("ららこ"), false);
+const anotherId = structuredClone(personalFixture);
+anotherId.posts[1].id = "2096253883677044838";
+anotherId.posts[1].url = "https://x.com/rarako_zettai/status/2096253883677044838";
+assert.equal(scoped(anotherId).personal.byMaid.has("ららこ"), false);
+const alreadyScoped = structuredClone(personalFixture);
+alreadyScoped.posts[1].events.push(announcement("uncertain"));
+assert.equal(scoped(alreadyScoped).personal.byMaid.get("ららこ").storeId, null,
+  "an existing event in that shift prevents an approved addition");
+const rarakoChange = (kind, storeId) => ({
+  ...personalFixture.posts[1], id: "2096500000000000099",
+  url: "https://x.com/rarako_zettai/status/2096500000000000099",
+  createdAt: "2026-09-06T14:00:00+09:00", events: [announcement(kind, storeId)]
+});
+assert.ok(!scoped({ ...personalFixture, posts: [...personalFixture.posts, rarakoChange("absence")] })
+  .entries.some(entry => entry.name === "ららこ"));
+assert.equal(scoped({ ...personalFixture, posts: [...personalFixture.posts, rarakoChange("placement", "s4")] })
+  .personal.byMaid.get("ららこ").storeId, "s4");
+const gateFixture = { ...personalFixture, posts: [{
+  ...personalFixture.posts[1], events: [announcement("uncertain", undefined, { shift: "昼" })]
+}] };
+assert.equal(api.dayHasPersonStoreEvidence(insights, null, options.dateKey, gateFixture), false);
+assert.equal(api.dayHasPersonStoreEvidence(insights, null, options.dateKey, gateFixture, additions), true);
+assert.equal(JSON.stringify([dailyPlans, personalFixture, officialToday, insights]), unchanged,
+  "approved view-only additions never modify the raw snapshot, source, schedule or insights");
+
+const lateOfficial = {
+  ...officialToday.posts[0], id: "2096436633973526890",
+  url: "https://x.com/akibazettai/status/2096436633973526890",
+  storeId: "s4", names: ["るるか", "ちぇる", "まこと"],
+  notices: [{ name: "みりあ", kind: "late", excerpt: "みりあちゃんもあとから来るにゃんね" }],
+  lastCheckedAt: "2026-09-06T04:15:00.123456Z",
+  revisions: [{
+    date: options.dateKey, shift: "昼", storeId: "s4", names: ["るるか"],
+    notices: [], observedAt: "2026-09-06T03:15:00Z"
+  }]
+};
+const officialNotices = { ...officialToday, posts: [lateOfficial] };
+const officialBefore = JSON.stringify(officialNotices);
+assert.equal(api.validateObservations(officialNotices), officialNotices);
+const resolveOfficialLate = (posts) => api.resolveShiftRoster({
+  ...options, observations: { ...officialNotices, posts }, personal: null, shift: "昼"
+});
+const officialLate = resolveOfficialLate([lateOfficial]);
+const miria = officialLate.entries.find(entry => entry.name === "みりあ");
+assert.equal(miria.officialPlacement, true);
+assert.equal(miria.officialNotice.storeId, "s4");
+assert.equal(miria.officialNotice.time, null);
+assert.equal(miria.observed, undefined);
+assert.equal(officialLate.observed.byMaid.has("みりあ"), false);
+assert.ok(officialLate.observed.byMaid.has("まこっちゃん"));
+const miriaPlan = api.maidItinerary({ name: "みりあ", dates: [options.dateKey], shifts: ["昼"],
+  schedule: dailyPlans, resolve: () => ({ ...officialLate, confirmedOnly: true }) });
+assert.equal(miriaPlan.stops[0].recorded, false);
+assert.equal(miriaPlan.stops[0].personal, false);
+assert.equal(miriaPlan.stops[0].state, "announced");
+assert.equal(miriaPlan.stops[0].openRate, null);
+assert.equal(miriaPlan.stops[0].sourcePosts[0], lateOfficial);
+assert.equal(miriaPlan.guesses, 0);
+const arrival = { ...lateOfficial, id: "2096500000000000088", createdAt: "2026-09-06T05:00:00Z",
+  names: ["みりあ"], notices: [] };
+const arrived = resolveOfficialLate([arrival, lateOfficial]);
+assert.ok(arrived.observed.byMaid.has("みりあ"));
+assert.equal(arrived.entries.find(entry => entry.name === "みりあ").officialNotice, undefined);
+assert.ok(api.validateObservations({ ...officialNotices, posts: [{ ...lateOfficial, names: [] }] }));
+assert.equal(api.dayHasPersonStoreEvidence(insights, { posts: [{ ...lateOfficial, names: [] }] }, options.dateKey), true);
+for (const mutate of [
+  x => { x.notices[0].kind = "placement"; },
+  x => { x.notices[0].excerpt = ""; },
+  x => { x.notices[0].excerpt = "x\nx"; },
+  x => { x.notices[0].excerpt = "x\u2028x"; },
+  x => { x.notices[0].excerpt = "x".repeat(161); },
+  x => { x.notices[0].time = "25:00"; },
+  x => { x.notices[0].time = null; },
+  x => { x.lastCheckedAt = "now"; },
+  x => { x.revisions[0].observedAt = null; }
+]) {
+  const post = structuredClone(lateOfficial);
+  mutate(post);
+  assert.throws(() => api.validateObservations({ ...officialNotices, posts: [post] }));
+}
+assert.equal(JSON.stringify(officialNotices), officialBefore, "official raw names/notices/history remain unchanged");
+const correctedLate = { ...makePost("2096074325120237794", "s1", []),
+  notices: [{ name: "つぽみ", kind: "late", excerpt: "あとから" }] };
+assert.equal(api.observedShift({ posts: [correctedLate] }, insights, "2026-09-05", "昼",
+  schedule.observationNameCorrections).notices.has("つぼみ"), true);
+assert.equal(api.observedShift({ posts: [{ ...correctedLate, id: "2096074325120237795" }] }, insights,
+  "2026-09-05", "昼", schedule.observationNameCorrections).notices.has("つぽみ"), true);
+
+{
+  const update = (number, kind, storeId, extra = {}) => personalPost(
+    `209670000000000000${number}`, "あむ", [announcement(kind, storeId, extra)], "2026-09-06T14:00:00+09:00");
+  const sourceOf = (...posts) => api.resolveShiftRoster({
+    ...options, observations: null, shift: "夜",
+    personal: { ...personalFixture, posts: [personalFixture.posts[0], ...posts] }
+  }).personal.byMaid.get("あむ").placementSource;
+  const moved = update(1, "placement", "s4");
+  const lateWithoutStore = update(2, "late", undefined, { time: "18:30" });
+  const lateWithStore = update(3, "late", "s2", { time: "19:00" });
+  const uncertain = update(4, "uncertain");
+  const absent = update(5, "absence");
+  const returnWithoutStore = update(6, "return");
+  const returnedToStore = update(7, "return", "s1");
+  assert.equal(sourceOf(), personalFixture.posts[0]);
+  assert.equal(sourceOf(moved), moved, "a later correction owns the current store's source");
+  assert.equal(sourceOf(lateWithoutStore, moved), moved, "storeless late does not replace placement evidence");
+  assert.equal(sourceOf(uncertain, moved), moved, "uncertain text does not replace placement evidence");
+  assert.equal(sourceOf(lateWithStore, moved), lateWithStore, "explicit-store late is placement evidence");
+  assert.equal(sourceOf(moved, absent), null);
+  assert.equal(sourceOf(absent, returnedToStore), returnedToStore);
+  assert.equal(sourceOf(absent, returnWithoutStore), null, "storeless return must not resurrect an old source");
+  assert.equal(sourceOf(absent, update(6, "late", "s2")), null, "late cannot revive a cancelled placement");
+  assert.equal(sourceOf(absent, update(6, "placement", "s2")), null, "placement alone cannot revive cancellation");
+  assert.equal(lunch.entries.find(entry => entry.name === "あむ").personalNotice.placementSource.url,
+    personalFixture.posts[0].url, "matching official evidence keeps the supporting personal post");
+  assert.equal(amended.personal.byMaid.get("ららこ").placementSource.url, personalFixture.posts[1].url,
+    "the scoped evening addition links to the reviewed original post");
+  const conflict = api.resolveShiftRoster({
+    ...options, shift: "夜", observations: { ...officialToday, posts: [{ ...officialToday.posts[0], shift: "夜", storeId: "s4" }] }
+  });
+  assert.equal(conflict.personal.byMaid.get("あむ").placementSource, null);
+  assert.equal(JSON.stringify([dailyPlans, personalFixture, officialToday, insights]), unchanged);
+}
 
 const withEvents = (...posts) => ({ ...personalFixture, posts: [personalFixture.posts[0], ...posts] });
 const cancellation = personalPost("2096500000000000001", "あむ", [announcement("absence")], "2026-09-06T13:00:00+09:00");
