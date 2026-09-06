@@ -58,6 +58,9 @@ function makeElement(tagName = "div") {
   };
   element.getAttribute = (key) => (key in element.attributes ? element.attributes[key] : null);
   element.addEventListener = (type, fn) => listeners.push({ element, type, fn });
+  element.focus = () => { documentShim.activeElement = element; };
+  element.showModal = () => { element.open = true; };
+  element.close = () => { element.open = false; };
   element.querySelector = () => null;
   element.querySelectorAll = () => [];
   Object.defineProperty(element, "textContent", {
@@ -1644,6 +1647,115 @@ assert.ok(
     insights.actualRoster[key][shift] = original;
     if (storesOnly) insights.actualWithoutRoster[key] = storesOnly;
     else delete insights.actualWithoutRoster[key];
+  }
+}
+
+// Popup-only day switching leaves the legacy prediction regressions above intact.
+{
+  const key = "2026-09-05";
+  const originalPlans = schedule.schedule[key];
+  const originalRecord = insights.actualRoster[key];
+  const originalActual = insights.actual[key];
+  const originalStoreOnly = insights.actualWithoutRoster[key];
+  const snapshot = windowShim.OBSERVED_SHIFTS;
+  const entries = names => names.map(name => ({ name }));
+  const plansByShift = {
+    "昼": entries(["つぼみ", "かなた", "まこっちゃん", "わたげ"]),
+    "夜": entries(["あむ", "かなた", "あらた"])
+  };
+  const post = (shift, names) => ({
+    id: shift === "昼" ? "2096074325120237794" : "2096000000000000002",
+    url: shift === "昼" ? "https://x.com/akibazettai/status/2096074325120237794"
+      : "https://x.com/akibazettai/status/2096000000000000002",
+    date: key, shift, storeId: "s1", names,
+    authorId: "822429861218131969", authorScreenName: "akibazettai",
+    createdAt: "2026-09-05T03:00:00Z", observedAt: "2026-09-05T05:00:00Z"
+  });
+  const cases = [
+    { name: "no person evidence", posts: [], mode: false },
+    { name: "store-only actual", posts: [], mode: false, storeOnly: true },
+    { name: "empty curated roster", posts: [], mode: false, records: { "昼": { stores: { s1: [] } } } },
+    { name: "day only with alias and correction", posts: [post("昼", ["つぽみ", "まこと"])], mode: true,
+      confirmed: [["つぼみ", "まこっちゃん"], []], unknown: [["かなた", "わたげ"], ["あむ", "かなた", "あらた"]] },
+    { name: "night only", posts: [post("夜", ["あむ"])], mode: true,
+      confirmed: [[], ["あむ"]], unknown: [["つぼみ", "かなた", "まこっちゃん", "わたげ"], ["かなた", "あらた"]] },
+    { name: "everyone confirmed", posts: ["昼", "夜"].map(shift => post(shift, plansByShift[shift].map(entry => entry.name))),
+      mode: true, confirmed: ["昼", "夜"].map(shift => plansByShift[shift].map(entry => entry.name)), unknown: [[], []] },
+    { name: "no plans with a confirmed person", posts: [post("昼", ["かなた"])], plans: {}, mode: true,
+      confirmed: [["かなた"], []], unknown: [[], []] },
+    { name: "empty day", posts: [], plans: {}, mode: false },
+    { name: "curated day keeps its authoritative names", posts: [], mode: true,
+      records: { "昼": { stores: { s2: ["かなた"] }, trainees: [] } },
+      confirmed: [["かなた"], []], unknown: [[], ["あむ", "かなた", "あらた"]] },
+    { name: "unresolved absence candidate", posts: [post("昼", ["つぽみ"])],
+      pending: [{ id: "2096000000000099999" }], mode: true,
+      confirmed: [["つぼみ"], []], unknown: [["かなた", "まこっちゃん", "わたげ"], ["あむ", "かなた", "あらた"]] }
+  ];
+  const namesIn = block => withClass(block, "maid-name").map(node => node.textContent).sort();
+  try {
+    for (const fixture of cases) {
+      schedule.schedule[key] = fixture.plans ?? plansByShift;
+      insights.actualRoster[key] = fixture.records ?? {};
+      if (fixture.storeOnly) {
+        insights.actual[key] = { "昼": ["s1"] };
+        insights.actualWithoutRoster[key] = { "昼": ["s1"] };
+      } else {
+        delete insights.actual[key];
+        delete insights.actualWithoutRoster[key];
+      }
+      snapshot.posts = fixture.posts;
+      snapshot.pending = fixture.pending ?? [];
+      const preserved = JSON.stringify([schedule.schedule[key], snapshot]);
+      dispatch("reset-filters", "click");
+      selectViewMode("calendar");
+      const button = withClass(calendar, "day-button").find(node => node.dataset.date === key);
+      const handler = listeners.find(entry => entry.element === button && entry.type === "click");
+      assert.ok(handler);
+      handler.fn({ target: button });
+      const sections = withClass(elementById("day-dialog-content"), "shift-section");
+      assert.equal(sections.length, 2);
+      for (const [index, section] of sections.entries()) {
+        const unknown = withClass(section, "unmatched-roster");
+        const confirmed = withClass(section, "recorded-roster");
+        if (!fixture.mode) {
+          assert.equal(unknown.length, 0, fixture.name);
+          assert.equal(confirmed.length, 0, fixture.name);
+          if (fixture.storeOnly && index === 0) {
+            assert.ok(withClass(section, "shift-evidence")[0].textContent.includes("店舗のみ実績"));
+          }
+          continue;
+        }
+        assert.deepEqual(confirmed.flatMap(namesIn).sort(), [...fixture.confirmed[index]].sort(), fixture.name);
+        assert.deepEqual(unknown.flatMap(namesIn).sort(), [...fixture.unknown[index]].sort(), fixture.name);
+        assert.equal(unknown.length, fixture.unknown[index].length ? 1 : 0, "no empty or duplicate unknown frame");
+        assert.equal(confirmed.length, fixture.confirmed[index].length ? 1 : 0, "no empty confirmed roster");
+        for (const frame of unknown) {
+          assert.equal(withClass(frame, "unmatched-heading")[0].textContent, "店舗未定");
+          assert.ok(frame.getAttribute("aria-label").includes(["昼", "夜"][index]));
+          assert.equal(withClass(frame, "maid-group-label").length, 0);
+          const members = withClass(frame, "maid-entry");
+          assert.ok(members.every(entry => entry.dataset.evidence === "scheduled" && !entry.dataset.store));
+          assertDisplayOrder(members, fixture.name);
+        }
+        for (const redundant of ["store-outlook", "store-status-badge", "maid-store-chip", "is-trainee-guess"]) {
+          assert.equal(withClass(section, redundant).length, 0, `${fixture.name}: no guessed stores or people`);
+        }
+        const names = namesIn(section);
+        assert.equal(new Set(names).size, names.length, `${fixture.name}: no confirmed/unknown duplicates`);
+      }
+      assert.equal(JSON.stringify([schedule.schedule[key], snapshot]), preserved, "the display never edits plans or evidence");
+      dispatch("close-day-dialog", "click");
+    }
+  } finally {
+    schedule.schedule[key] = originalPlans;
+    if (originalRecord) insights.actualRoster[key] = originalRecord;
+    else delete insights.actualRoster[key];
+    if (originalActual) insights.actual[key] = originalActual;
+    else delete insights.actual[key];
+    if (originalStoreOnly) insights.actualWithoutRoster[key] = originalStoreOnly;
+    else delete insights.actualWithoutRoster[key];
+    snapshot.posts = [];
+    snapshot.pending = [];
   }
 }
 

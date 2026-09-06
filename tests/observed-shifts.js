@@ -101,6 +101,33 @@ assert.equal(api.observedShift(fixture, curated, "2026-09-05", "昼").posts.leng
 assert.equal(JSON.stringify(insights), before, "observations must not train or mutate historical tables");
 assert.deepEqual(api.getStoreOutlook({ insights, dateKey: "2026-09-05", shift: "昼" }), baseOutlook);
 
+const storesOnly = {
+  stores: insights.stores,
+  actual: { "2026-09-05": { "昼": ["s1"] } },
+  actualWithoutRoster: { "2026-09-05": { "昼": ["s1"] } }
+};
+assert.equal(api.dayHasPersonStoreEvidence(storesOnly, null, "2026-09-05"), false);
+assert.equal(api.dayHasPersonStoreEvidence(storesOnly, { ...fixture, posts: [] }, "2026-09-05"), false);
+assert.equal(api.dayHasPersonStoreEvidence(insights, fixture, "2026-09-05"), true);
+assert.equal(api.dayHasPersonStoreEvidence(insights, fixture, "2026-09-06"), false);
+for (const shift of ["昼", "夜"]) {
+  const onePerson = { ...fixture, posts: [{ ...fixture.posts[0], shift, names: ["あむ"] }] };
+  assert.equal(api.dayHasPersonStoreEvidence(storesOnly, onePerson, "2026-09-05"), true,
+    "one person on either shift switches the whole day");
+  const recordedPerson = {
+    ...storesOnly, actualRoster: { "2026-09-05": { [shift]: { stores: { s2: ["あむ"] } } } }
+  };
+  assert.equal(api.dayHasPersonStoreEvidence(recordedPerson, null, "2026-09-05"), true);
+}
+assert.equal(api.dayHasPersonStoreEvidence({
+  ...storesOnly, actualRoster: { "2026-09-05": { "昼": { stores: { s1: [] } } } }
+}, null, "2026-09-05"), false, "an empty roster is not person/store evidence");
+const pendingChange = { ...fixture, pending: [{ id: "2096000000000099999" }] };
+assert.equal(api.dayHasPersonStoreEvidence(storesOnly, pendingChange, "2026-09-05"), true,
+  "unresolved change candidates do not erase retained person/store evidence");
+assert.equal(api.dayHasPersonStoreEvidence(storesOnly, { ...pendingChange, posts: [] }, "2026-09-05"), false,
+  "a pending candidate alone cannot confirm a placement");
+
 const orderingInput = [
   { name: "あらた", trainee: true }, { name: "わたげ", trainee: true },
   { name: "もち" }, { name: "あむ" }, { name: "あるか", trainee: true },

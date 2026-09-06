@@ -177,6 +177,16 @@
     return key >= period.from && key <= period.to;
   }
 
+  function dayHasPersonStoreEvidence(insights, observations, key) {
+    if (SHIFT_NAMES.some((shift) => recordedAssignment(insights, key, shift))) return true;
+    const stores = new Set(storesOf(insights).map((store) => store.id));
+    // Read retained source history, not filtered/current placements: a later
+    // cancellation must not send the remaining people back into guessed shops.
+    return (observations?.posts ?? []).some((post) =>
+      post.date === key && SHIFT_NAMES.includes(post.shift) &&
+      stores.has(post.storeId) && post.names.length > 0);
+  }
+
   function observationEntries(planned, observed, roster) {
     const entries = new Map(planned.map((entry) => [entry.name, { ...entry }]));
     for (const name of observed.byMaid.keys()) {
@@ -2004,6 +2014,7 @@
       monthCells,
       observedShift,
       observedTrainee,
+      dayHasPersonStoreEvidence,
       observationEntries,
       orderRosterEntries,
       nearMissNote,
@@ -2470,16 +2481,35 @@
   function createUnmatchedNames(entries, key, shift) {
     const block = document.createElement("section");
     block.className = "unmatched-roster";
+    block.setAttribute("aria-label", `${key} ${shift}の店舗未定`);
     const heading = document.createElement("h5");
     heading.className = "unmatched-heading";
-    heading.textContent = "予定（未確認）";
+    heading.textContent = "店舗未定";
     block.append(heading);
     appendRosterGroup(block, null, entries, (entry) => createRosterEntry({
       ...entry, trainee: observedTrainee(insights, entry.name, key)
     }, key, shift, {
-      evidence: "scheduled", note: "公開予定。お給仕投稿とは未照合です。"
+      evidence: "scheduled", note: "公開予定。店舗を確認できる人物ごとの根拠はまだありません。"
     }));
     return block;
+  }
+
+  function appendEmptyShift(section, hasEntries) {
+    const empty = document.createElement("p");
+    section.classList.add("is-empty");
+    empty.className = "empty-shift";
+    if (hasEntries) {
+      const mark = document.createElement("span");
+      mark.setAttribute("aria-hidden", "true");
+      mark.textContent = "-";
+      const description = document.createElement("span");
+      description.className = "visually-hidden";
+      description.textContent = "該当なし";
+      empty.append(mark, description);
+    } else {
+      empty.textContent = "確認情報なし";
+    }
+    section.append(empty);
   }
 
   function renderObservationStatus() {
@@ -2536,14 +2566,14 @@
     }
   }
 
-  function createShiftSection(key, date, shift, showForecast = state.viewMode === "forecast") {
+  function createShiftSection(key, date, shift, showForecast = state.viewMode === "forecast", confirmedOnly = false) {
     const section = document.createElement("section");
     section.className = `shift-section ${shiftDetails[shift].className}`;
     section.setAttribute("aria-label", `${shift}のお給仕`);
 
     const roster = shiftRoster(key, shift);
     const partial = roster.observed.posts.length > 0;
-    const forecasting = showForecast;
+    const forecasting = showForecast && !confirmedOnly;
     const { outlook, pins } = forecasting && !partial && !roster.assignment?.recorded
       ? getShiftOutlook(key, shift)
       : { outlook: null, pins: new Map() };
@@ -2561,7 +2591,7 @@
     }
     section.append(title);
 
-    if (partial || roster.assignment?.recorded) {
+    if (partial || roster.assignment?.recorded || confirmedOnly) {
       const type = partial ? "observed" : "recorded";
       const groups = storeList.map((store) => ({
         store,
@@ -2572,11 +2602,14 @@
             nameCorrections: (roster.observed.byMaid.get(name)?.nameCorrections ?? [])
               .filter((entry) => sources.some((source) => source.id === entry.postId))
           }))
-          : roster.entries.filter((entry) => insights.actualRoster[key][shift].stores[store.id]?.includes(entry.name))
+          : roster.entries.filter((entry) => insights.actualRoster?.[key]?.[shift]?.stores[store.id]?.includes(entry.name))
       }));
-      section.append(createRecordedRoster({ type, groups, posts: roster.observed.posts }, key, shift));
+      const hasConfirmed = groups.some(({ entries }) => entries.some((entry) => isVisibleMaid(entry.name)));
+      if (hasConfirmed) section.append(createRecordedRoster({ type, groups, posts: roster.observed.posts }, key, shift));
       const unmatched = roster.entries.filter((entry) => !entry.observed && isVisibleMaid(entry.name));
-      if (partial && unmatched.length) section.append(createUnmatchedNames(unmatched, key, shift));
+      const hasUnmatched = !roster.assignment?.recorded && unmatched.length > 0;
+      if (hasUnmatched) section.append(createUnmatchedNames(unmatched, key, shift));
+      if (!hasConfirmed && !hasUnmatched) appendEmptyShift(section, roster.entries.length > 0);
       return section;
     }
     // 同じ日の昼に誰がどこにいたか。記録があるときだけ、夜の割り振りに使う。
@@ -2779,21 +2812,7 @@
       return section;
     }
 
-    const empty = document.createElement("p");
-    section.classList.add("is-empty");
-    empty.className = "empty-shift";
-    if (allEntries.length > 0) {
-      const mark = document.createElement("span");
-      mark.setAttribute("aria-hidden", "true");
-      mark.textContent = "-";
-      const description = document.createElement("span");
-      description.className = "visually-hidden";
-      description.textContent = "該当なし";
-      empty.append(mark, description);
-    } else {
-      empty.textContent = "確認情報なし";
-    }
-    section.append(empty);
+    appendEmptyShift(section, allEntries.length > 0);
     return section;
   }
 
@@ -2995,8 +3014,9 @@
     elements.dialogEvents.textContent = events.length > 0
       ? events.map((event) => `${event.name} ${event.labels.join("・")}`).join(" ／ ")
       : "";
+    const confirmedOnly = dayHasPersonStoreEvidence(insights, observations, key);
     elements.dialogContent.replaceChildren(...shifts.map((shift, index) => {
-      const section = createShiftSection(key, date, shift, true);
+      const section = createShiftSection(key, date, shift, true, confirmedOnly);
       section.id = index === 0 ? "dialog-day" : "dialog-night";
       section.tabIndex = -1;
       return section;
