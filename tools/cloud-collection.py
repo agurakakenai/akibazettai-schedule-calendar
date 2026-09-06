@@ -92,15 +92,21 @@ def load_personal_collector():
     return module
 
 
-def safe_environment(environment, *, credentials=False):
+def safe_environment(environment, *, credentials=False, azure=False):
     result = {
         key: value for key, value in environment.items()
         if not key.upper().startswith(('GIT_', 'GCM_', 'GH_DEBUG'))
         and key.upper() not in ('GH_HOST', 'GH_FORCE_TTY', 'GITHUB_TOKEN')
+        and not key.upper().startswith('AZURE_OPENAI_')
+        and key.upper() != 'PERSONAL_ANALYSIS_BACKEND'
     }
     if not credentials:
         result.pop('GH_TOKEN', None)
         result.pop('GITHUB_OUTPUT', None)
+    if azure:
+        for key in ('AZURE_OPENAI_API_KEY', 'AZURE_OPENAI_ENDPOINT', 'AZURE_OPENAI_DEPLOYMENT'):
+            if key in environment:
+                result[key] = environment[key]
     result.update(
         GIT_TERMINAL_PROMPT='0', GCM_INTERACTIVE='Never', GH_PROMPT_DISABLED='1',
         GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GH_HOST='github.com')
@@ -266,7 +272,7 @@ def validate_personal(path, personal=None, *, private=True):
     private_fields = ('pending', 'resolved', 'budgets', 'paused', 'identityBindings',
                       'originalTargets', 'lastRequests')
     fields = (*public_fields, *private_fields) if private else public_fields
-    keys(state, fields, fields)
+    keys(state, (*fields, 'azureAnalysis') if private else fields, fields)
     official = personal.official
 
     def name(value):
@@ -637,14 +643,17 @@ def invoke_collector(root, state, report, environment):
 
 
 def invoke_personal_collector(root, state, report, environment):
+    backend = environment.get('PERSONAL_ANALYSIS_BACKEND', 'rules')
+    require(backend in ('rules', 'azure'), 'invalid_analysis_backend')
     try:
         process = child_process(
             [sys.executable, '-I', '-B', str(root / 'tools' / 'collect-personal-shifts.py'),
              '--once', '--snapshot', str(state / PERSONAL),
              '--http-state', str(state / HTTP_STATE),
              '--seed', str(state.parent / 'personal-seed.json'),
+             '--analysis-backend', backend,
              '--max-searches', '3', '--max-posts', '3', '--report', str(report)],
-            cwd=root, environment=safe_environment(environment), timeout=600)
+            cwd=root, environment=safe_environment(environment, azure=backend == 'azure'), timeout=600)
     except (OSError, subprocess.SubprocessError):
         raise CloudError('personal_process_failed') from None
     return process.returncode

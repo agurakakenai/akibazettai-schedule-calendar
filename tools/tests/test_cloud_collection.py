@@ -1152,6 +1152,72 @@ class CloudTests(unittest.TestCase):
         self.assertNotIn('GITHUB_TOKEN', child.call_args.kwargs['environment'])
         self.assertEqual(logged.getvalue(), '')
 
+    def test_azure_credentials_only_reach_explicit_personal_backend(self):
+        environment = {**self.environment, 'PERSONAL_ANALYSIS_BACKEND': 'azure',
+                       'AZURE_OPENAI_API_KEY': 'OFFLINE_AZURE_SENTINEL',
+                       'AZURE_OPENAI_ENDPOINT': 'https://offline.openai.azure.com/',
+                       'AZURE_OPENAI_DEPLOYMENT': 'gpt-5.6-luna',
+                       'AZURE_OPENAI_UNEXPECTED': 'not-forwarded'}
+        completed = subprocess.CompletedProcess([], 0, b'', b'')
+        with mock.patch.object(cloud, 'child_process', return_value=completed) as child:
+            cloud.invoke_personal_collector(self.root, self.root, self.root / 'report.json', environment)
+            argv = child.call_args.args[0]
+            self.assertEqual(argv[argv.index('--analysis-backend') + 1], 'azure')
+            self.assertEqual(child.call_args.kwargs['environment']['AZURE_OPENAI_API_KEY'],
+                             'OFFLINE_AZURE_SENTINEL')
+            self.assertEqual(child.call_args.kwargs['environment']['AZURE_OPENAI_DEPLOYMENT'],
+                             'gpt-5.6-luna')
+            self.assertNotIn('GH_TOKEN', child.call_args.kwargs['environment'])
+            self.assertNotIn('AZURE_OPENAI_UNEXPECTED', child.call_args.kwargs['environment'])
+            cloud.invoke_collector(self.root, self.root, self.root / 'report.json', environment)
+            self.assertFalse(any(key.startswith('AZURE_OPENAI_')
+                                 for key in child.call_args.kwargs['environment']))
+        for credentials in (False, True):
+            self.assertNotIn('AZURE_OPENAI_API_KEY',
+                             cloud.safe_environment(environment, credentials=credentials))
+
+    def test_private_azure_state_survives_restore_and_never_enters_public_projection(self):
+        module, seed = self.personal_seed()
+        state = module.empty_state()
+        module.merge_seed(state, seed)
+        ai = module.azure.empty_state()
+        ai['budgets'] = {'2026-09-06': 3}
+        ai['nextRequestAt'] = '2026-09-06T05:00:00Z'
+        ai['paused'] = {'reason': 'azure_auth_stopped', 'httpStatus': 401,
+                        'at': '2026-09-06T04:00:00Z'}
+        ai['review'] = {seed['posts'][0]['id']: 'azure_saved_body_required'}
+        ai['history'] = [copy.deepcopy(seed['posts'][0])]
+        ai['cache']['a' * 64] = {
+            'postId': seed['posts'][0]['id'], 'bodyHash': 'b' * 64, 'versionHash': 'c' * 64,
+            'at': '2026-09-06T04:00:00Z', 'reason': 'azure_refused', 'events': []}
+        state['azureAnalysis'] = ai
+        self.seed_branch()
+        self.bare_commit({cloud.PERSONAL: state})
+        before = self.remote_json(cloud.PERSONAL)[1]
+        self.args.mode = 'restore'
+        with mock.patch.object(cloud, 'invoke_personal_collector') as personal_run, \
+                mock.patch.object(cloud, 'invoke_collector') as official_run:
+            self.run_cloud()
+            personal_run.assert_not_called()
+            official_run.assert_not_called()
+        path = self.output.parent / cloud.PERSONAL
+        self.assertEqual(path.read_bytes(), before)
+        restored, _ = cloud.validate_personal(path, module)
+        self.assertEqual(restored['azureAnalysis'], ai)
+        spec = importlib.util.spec_from_file_location('azure_pages_test', ROOT / 'tools' / 'pages.py')
+        pages = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pages)
+        public = pages.load_public_personal_snapshot(path)
+        self.assertEqual(public['posts'], pages.personal_projection(seed)['posts'])
+        for field in ('azureAnalysis', 'bodyHash', 'versionHash', 'azure_auth_stopped', 'azure_refused'):
+            self.assertNotIn(field, json.dumps(public))
+        for field in ('apiKey', 'endpoint', 'text'):
+            bad = copy.deepcopy(restored)
+            bad['azureAnalysis'][field] = 'must-not-persist'
+            collector.atomic_json(self.root / 'bad-azure.json', bad)
+            with self.assertRaises((ValueError, cloud.CloudError)):
+                cloud.validate_personal(self.root / 'bad-azure.json', module)
+
     def test_personal_entrypoint_respects_the_official_canonical_lock_before_any_work(self):
         module, seed = self.personal_seed()
         workspace = self.base / 'shared-lock'

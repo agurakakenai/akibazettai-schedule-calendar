@@ -120,6 +120,19 @@ class RoutingTests(unittest.TestCase):
 
 
 class ProductionWorkflowTests(unittest.TestCase):
+    def test_azure_backend_and_credentials_are_scoped_to_manual_personal_collection(self):
+        collect = job_block('collect')
+        for name in ('PERSONAL_ANALYSIS_BACKEND', 'AZURE_OPENAI_API_KEY',
+                     'AZURE_OPENAI_ENDPOINT', 'AZURE_OPENAI_DEPLOYMENT'):
+            line = re.search(r'^          ' + name + r': (.+)$', collect, re.M).group(1)
+            self.assertIn("steps.route.outputs.collectionMode == 'personal'", line)
+            self.assertIn("steps.route.outputs.collectionMode == 'both'", line)
+            self.assertEqual(WORKFLOW.count(name + ':'), 1)
+        self.assertIn("&& 'azure' || 'rules'", collect)
+        for job in ('validate', 'probe', 'build', 'deploy'):
+            self.assertNotIn('AZURE_OPENAI_', job_block(job))
+            self.assertNotIn('PERSONAL_ANALYSIS_BACKEND', job_block(job))
+
     def test_only_legacy_cron_is_enabled_and_manual_modes_are_explicit(self):
         enabled = re.findall(r'^\s+- cron: "([^"]+)"$', WORKFLOW, re.M)
         self.assertEqual(enabled, [routing.LEGACY_SCHEDULE])

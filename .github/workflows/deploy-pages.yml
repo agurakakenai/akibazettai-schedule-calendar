@@ -82,6 +82,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_PROMPT_DISABLED: "1"
           GIT_TERMINAL_PROMPT: "0"
+          # Only the personal child receives the shared production Luna configuration.
+          PERSONAL_ANALYSIS_BACKEND: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both') && 'azure' || 'rules' }}
+          AZURE_OPENAI_API_KEY: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both') && secrets.AZURE_OPENAI_API_KEY || '' }}
+          AZURE_OPENAI_ENDPOINT: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both') && vars.AZURE_OPENAI_ENDPOINT || '' }}
+          AZURE_OPENAI_DEPLOYMENT: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both') && vars.AZURE_OPENAI_DEPLOYMENT || '' }}
         run: python tools/cloud-collection.py --mode "${{ steps.route.outputs.collectionMode }}" --output data/observed-shifts.json --recovery-dir _recovery-state
       - name: Warn when verified data is published with incomplete collection
         if: >-
