@@ -1574,6 +1574,7 @@ summary:focus-visible { outline: 3px solid var(--cp-accent); outline-offset: 2px
 .entry-evidence { margin-left: auto; color: var(--cp-text-muted); font-size: 0.6rem; font-weight: 400; }
 .maid-plan-evidence { grid-column: 2; color: var(--cp-text-muted); font-size: 0.65rem; }
 .recorded-roster { margin: 12px 0 0; }
+.unmatched-roster { min-width: 0; margin-top: 12px; padding: 12px; border: 1px solid var(--cp-border-strong); border-radius: 8px; background: var(--cp-surface); }
 .recorded-roster + .unmatched-roster { margin-top: 16px; }
 .unmatched-heading { margin: 0 0 8px; font-size: 0.85rem; }
 .recorded-roster .maid-group-label { margin: 14px 0 6px; padding-bottom: 5px; }

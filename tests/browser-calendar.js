@@ -393,16 +393,26 @@ async function main() {
     await click("#close-day-dialog");
     await wait('!document.querySelector("#day-dialog").open');
 
-    // Actual store evidence alone must never become recorded person evidence.
+    // A person record on the opposite shift switches the entire popup, but
+    // actual store evidence alone still uses the existing unconfirmed view.
+    const originalRecordedDay = await evaluate('window.STORE_INSIGHTS.actualRoster["2026-09-03"]');
     await evaluate(`delete window.STORE_INSIGHTS.actualRoster["2026-09-03"]["昼"];
       window.STORE_INSIGHTS.actualWithoutRoster["2026-09-03"] = {"昼": [...window.STORE_INSIGHTS.actual["2026-09-03"]["昼"]]};`);
     await click('[data-date="2026-09-03"]');
-    assert.ok(await evaluate('document.querySelector("#day-dialog .shift-day .shift-evidence").textContent.includes("店舗のみ実績")'));
+    assert.ok(await evaluate('document.querySelector("#dialog-day .unmatched-roster").textContent.includes("店舗未定")'));
+    assert.equal(await evaluate('document.querySelectorAll("#dialog-day .store-outlook, #dialog-day .maid-group-label").length'), 0);
     assert.equal(await evaluate('document.querySelectorAll("#day-dialog .shift-day [data-evidence=recorded]").length'), 0);
     assert.equal(await evaluate('[...document.querySelectorAll("#day-dialog .shift-day .maid-entry")].some(row => /にいた記録/.test(row.title))'), false);
     assert.ok(await evaluate('document.querySelectorAll("#day-dialog .shift-night [data-evidence=recorded]").length > 0'));
     await click("#close-day-dialog");
     await wait('!document.querySelector("#day-dialog").open');
+    await evaluate('delete window.STORE_INSIGHTS.actualRoster["2026-09-03"]["夜"]');
+    await click('[data-date="2026-09-03"]');
+    assert.ok(await evaluate('document.querySelector("#dialog-day .shift-evidence").textContent.includes("店舗のみ実績")'));
+    assert.equal(await evaluate('document.querySelectorAll("#day-dialog .unmatched-roster, #day-dialog [data-evidence=recorded]").length'), 0);
+    await click("#close-day-dialog");
+    await wait('!document.querySelector("#day-dialog").open');
+    await evaluate(`window.STORE_INSIGHTS.actualRoster["2026-09-03"] = ${JSON.stringify(originalRecordedDay)}`);
 
     for (const width of [390, 320]) {
       await call("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: true });
@@ -488,13 +498,90 @@ async function main() {
     assert.ok(await evaluate('document.querySelector("#day-dialog .observation-details").open === false'));
     assert.ok(await evaluate('!document.querySelector("#day-dialog").textContent.includes("部分観測")'));
     assert.equal(await evaluate('document.querySelectorAll("#day-dialog .shift-night [data-evidence=observed]").length'), 0);
-    assert.ok(await evaluate('document.querySelector("#day-dialog .shift-day").textContent.includes("予定（未確認）")'));
+    assert.ok(await evaluate('document.querySelector("#day-dialog .shift-day").textContent.includes("店舗未定")'));
+    assert.ok(await evaluate('document.querySelector("#dialog-night .unmatched-roster").textContent.includes("店舗未定")'));
     assert.ok(await evaluate('document.querySelectorAll("#day-dialog .shift-day [data-evidence=scheduled]").length > 0'));
     assert.equal(await evaluate('document.querySelectorAll("#day-dialog .shift-day [data-evidence=recorded]").length'), 0);
+    const assertDailyUnknown = async (observedByShift) => {
+      const results = await evaluate(`["昼", "夜"].map((shift, index) => {
+        const section = document.querySelector(index ? "#dialog-night" : "#dialog-day");
+        const confirmed = ${JSON.stringify(observedByShift)}[index];
+        const planned = window.SCHEDULE_DATA.schedule["2026-09-05"]?.[shift] ?? [];
+        const expected = planned.map(entry => entry.name).filter(name => !confirmed.includes(name)).sort();
+        const frames = [...section.querySelectorAll(".unmatched-roster")];
+        const names = frames.flatMap(frame => [...frame.querySelectorAll(".maid-name")].map(node => node.textContent));
+        const styles = frames.map(frame => {
+          const style = getComputedStyle(frame);
+          return {width:style.borderTopWidth,style:style.borderTopStyle,color:style.borderTopColor,
+            neutral:getComputedStyle(document.documentElement).getPropertyValue("--cp-border-strong").trim(),
+            padding:style.paddingTop};
+        });
+        return {expected, names:names.sort(), frames:frames.length, styles,
+          placed:[...section.querySelectorAll(".recorded-roster .maid-name")].map(node => node.textContent).sort(),
+          guesses:section.querySelectorAll(".store-outlook, .store-status-badge, .maid-store-chip, .is-trainee-guess").length,
+          unknownStores:frames.flatMap(frame => [...frame.querySelectorAll("[data-store]")]).length};
+      })`);
+      for (const [index, result] of results.entries()) {
+        assert.deepEqual(result.names, result.expected, "preserve this shift's planned names without confirmed duplicates");
+        assert.deepEqual(result.placed, [...observedByShift[index]].sort());
+        assert.equal(result.frames, result.expected.length ? 1 : 0, "one nonempty unknown frame per shift");
+        assert.equal(result.guesses, 0, "no forecast stores, odds or unnamed trainees once any person is confirmed");
+        assert.equal(result.unknownStores, 0, "unknown people do not inherit a store");
+        for (const style of result.styles) {
+          assert.equal(style.width, "1px");
+          assert.equal(style.style, "solid");
+          assert.equal(style.color, "rgb(145, 145, 145)", "neutral border, not one of the four store colors");
+          assert.ok(parseFloat(style.padding) >= 12);
+        }
+      }
+    };
+    await assertDailyUnknown([["あむ", "もな"], []]);
     assert.ok(await noOverflow());
     await capture("popup-partial-observation-fixture");
+    const captureDailyFrame = async (name) => {
+      for (const width of [1280, 390, 320]) {
+        await call("Emulation.setDeviceMetricsOverride", {
+          width, height: width === 1280 ? 960 : 844, deviceScaleFactor: 1, mobile: width !== 1280
+        });
+        await click("#jump-day");
+        await evaluate('document.querySelector("#close-day-dialog").focus({preventScroll:true})');
+        assert.ok(await noOverflow());
+        assert.ok(await evaluate('document.querySelector("#day-dialog-content").scrollWidth <= document.querySelector("#day-dialog-content").clientWidth'));
+        await capture(`${name}-${width}`);
+      }
+    };
+    await captureDailyFrame("popup-daily-day-only");
     await click("#close-day-dialog");
     await wait('!document.querySelector("#day-dialog").open');
+    const dayOnly = JSON.parse(JSON.stringify(observationResponse));
+    observationResponse.posts[0].shift = "夜";
+    observationResponse.posts[0].names = ["あむ"];
+    await click("#refresh-observations");
+    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await click('[data-date="2026-09-05"]');
+    await assertDailyUnknown([[], ["あむ"]]);
+    await captureDailyFrame("popup-daily-night-only");
+    await click("#close-day-dialog");
+    await wait('!document.querySelector("#day-dialog").open');
+    observationResponse = dayOnly;
+    await click("#refresh-observations");
+    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await click("#clear-all");
+    await evaluate(`(() => { const selected = [...document.querySelectorAll("#maid-checkboxes input")]
+      .find(input => input.value === "かなた"); selected.checked = true; selected.dispatchEvent(new Event("change")); })()`);
+    await click('[data-date="2026-09-05"]');
+    assert.equal(await evaluate('document.querySelectorAll("#day-dialog .recorded-roster, #day-dialog .store-outlook, #day-dialog .maid-group-label").length'), 0,
+      "hiding the sole confirmed group must not bring guesses back");
+    assert.ok(await evaluate('document.querySelectorAll("#day-dialog .unmatched-roster .maid-name").length > 0'));
+    await click("#close-day-dialog");
+    await wait('!document.querySelector("#day-dialog").open');
+    await click("#clear-all");
+    await click('[data-date="2026-09-05"]');
+    assert.equal(await evaluate('document.querySelectorAll("#day-dialog .recorded-roster, #day-dialog .unmatched-roster, #day-dialog .maid-name").length'), 0,
+      "an empty filter must not leave an empty frame or source disclosure");
+    await click("#close-day-dialog");
+    await wait('!document.querySelector("#day-dialog").open');
+    await click("#reset-filters");
     holdObservation = true;
     await click("#refresh-observations");
     await wait('document.querySelector("#observation-status").dataset.loaded === "false"');
