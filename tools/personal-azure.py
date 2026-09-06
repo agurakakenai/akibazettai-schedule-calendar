@@ -7,24 +7,30 @@ import copy
 import datetime as dt
 import email.utils
 import hashlib
-import http.client
+import importlib.util
 import json
+from pathlib import Path
 import re
 import time
 import unicodedata
-import urllib.error
-import urllib.parse
-import urllib.request
 
 
-VERSION = 'personal-nano-v4-gpt-5.4-nano-2026-03-17'
+SPEC = importlib.util.spec_from_file_location('personal_azure_transport',
+                                             Path(__file__).with_name('azure-openai.py'))
+transport = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(transport)
+AnalysisFailure = transport.AzureFailure
+strict_json = transport.strict_json
+NoRedirect = transport.NoRedirect
+
+VERSION = 'personal-line-ids-v4'
 MAX_INPUT_BYTES = 6000
 MAX_SOURCE_LINES = 128
 MAX_EVIDENCE_LINES = 16
 MAX_OUTPUT_TOKENS = 1200
-MAX_RESPONSE_BYTES = 24000
+MAX_RESPONSE_BYTES = transport.MAX_RESPONSE_BYTES
 RUN_LIMIT, DAY_LIMIT = 3, 30
-TIMEOUT = 30
+TIMEOUT = transport.TIMEOUT
 # At most one bounded request per minute, below both 10 RPM and 10k TPM.
 SPACING_SECONDS = 60
 PROMPT = """Extract the author's current work announcements for the supplied JST
@@ -73,37 +79,8 @@ PUBLIC_ANCHORS = ('お休み', 'おやすみ', '欠勤', '休み', '遅刻', '�
 HEX = re.compile(r'[0-9a-f]{64}\Z')
 
 
-class AnalysisFailure(Exception):
-    def __init__(self, reason, status=None, retry_at=None):
-        super().__init__(reason)
-        self.reason, self.status, self.retry_at = reason, status, retry_at
-
-    def facts(self):
-        value = {'reason': self.reason}
-        if self.status is not None:
-            value['httpStatus'] = self.status
-        if self.retry_at is not None:
-            value['retryAt'] = self.retry_at
-        return value
-
-
 def digest(value):
     return hashlib.sha256(value.encode('utf-8')).hexdigest()
-
-
-def strict_json(raw):
-    def pairs(items):
-        value = {}
-        for key, child in items:
-            if key in value:
-                raise ValueError('duplicate_key')
-            value[key] = child
-        return value
-
-    def invalid(_):
-        raise ValueError('invalid_constant')
-
-    return json.loads(raw, object_pairs_hook=pairs, parse_constant=invalid)
 
 
 def empty_state():
@@ -157,6 +134,7 @@ CACHE_REASONS = {
     'events', 'no_event', 'azure_pending', 'azure_invalid_output', 'azure_refused',
     'azure_timeout', 'azure_network_error', 'azure_http_error', 'azure_rate_limited',
     'azure_auth_stopped', 'azure_interrupted', 'azure_input_limit', 'azure_ungrounded',
+    'azure_model_mismatch',
 }
 
 
@@ -268,28 +246,15 @@ def grounded_events(result, text, date, shifts, personal, lines=None):
     return events, 'events' if events else 'no_event'
 
 
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise AnalysisFailure('azure_http_error')
-
-
 class AzureAnalyzer:
     def __init__(self, state, save, personal, environment, *, clock, sleep=time.sleep, opener=None):
-        endpoint = environment.get('AZURE_OPENAI_ENDPOINT', '').rstrip('/')
-        deployment = environment.get('AZURE_OPENAI_DEPLOYMENT', '')
-        key = environment.get('AZURE_OPENAI_API_KEY', '')
-        if (not re.fullmatch(r'https://[a-z0-9-]+\.openai\.azure\.com', endpoint)
-                or deployment != 'gpt-5.4-nano' or not key or re.search(r'[\r\n]', key)):
-            raise ValueError('invalid_azure_configuration')
-        self.url = endpoint + '/openai/v1/chat/completions'
-        self.deployment, self._key = deployment, key
+        self.client = transport.AzureOpenAI(environment, on_http_failure=self.http_failure, opener=opener)
         self.state = state.setdefault('azureAnalysis', empty_state())
         self.save, self.personal, self.clock, self.sleep = save, personal, clock, sleep
-        self.opener = opener or urllib.request.build_opener(NoRedirect())
         self.used = 0
         self.spacing_at = None
         self.version = digest(json.dumps([VERSION, PROMPT, SCHEMA, MAX_SOURCE_LINES,
-                                          endpoint, deployment], sort_keys=True))
+                                          self.client.identity], sort_keys=True))
         known = {entry['postId'] for entry in self.state['cache'].values()}
         for item in state['resolved']:
             if item['id'] not in known:
@@ -376,51 +341,9 @@ class AzureAnalyzer:
         raise AnalysisFailure('azure_http_error', status)
 
     def request(self, lines, created, date, shifts, name):
-        payload = {
-            'model': self.deployment, 'reasoning_effort': 'none',
-            'max_completion_tokens': MAX_OUTPUT_TOKENS,
-            'messages': [{'role': 'system', 'content': PROMPT},
-                         {'role': 'user', 'content': json.dumps(
-                             {'bodyLines': [{key: line[key] for key in ('id', 'text')} for line in lines],
-                              'postedAt': self.personal.stamp(created),
-                              'date': date.isoformat(), 'author': name, 'allowedShifts': list(shifts)},
-                             ensure_ascii=False)}],
-            'response_format': {'type': 'json_schema', 'json_schema': {
-                'name': 'personal_announcements', 'strict': True, 'schema': response_schema(lines)}},
-        }
-        request = urllib.request.Request(self.url, data=json.dumps(payload).encode('utf-8'),
-                                         headers={'Content-Type': 'application/json', 'api-key': self._key})
-        try:
-            with self.opener.open(request, timeout=TIMEOUT) as response:
-                if response.getcode() != 200:
-                    self.http_failure(response.getcode(), response.headers.get('Retry-After'))
-                raw = response.read(MAX_RESPONSE_BYTES + 1)
-                if len(raw) > MAX_RESPONSE_BYTES:
-                    raise AnalysisFailure('azure_invalid_output')
-        except urllib.error.HTTPError as exc:
-            status, retry = exc.code, exc.headers.get('Retry-After') if exc.headers else None
-            exc.close()
-            self.http_failure(status, retry)
-        except TimeoutError:
-            raise AnalysisFailure('azure_timeout') from None
-        except (OSError, http.client.HTTPException):
-            raise AnalysisFailure('azure_network_error') from None
-        try:
-            envelope = strict_json(raw)
-            choices = envelope['choices']
-            if not isinstance(choices, list) or len(choices) != 1:
-                raise ValueError
-            choice = choices[0]
-            if not isinstance(choice, dict):
-                raise ValueError
-            message = choice['message']
-            if not isinstance(message, dict):
-                raise ValueError
-            if message.get('refusal'):
-                raise AnalysisFailure('azure_refused')
-            if (choice['finish_reason'] != 'stop' or message.get('tool_calls')
-                    or message.get('function_call') or not isinstance(message['content'], str)):
-                raise ValueError
-            return strict_json(message['content'])
-        except (KeyError, TypeError, ValueError, UnicodeError, RecursionError):
-            raise AnalysisFailure('azure_invalid_output') from None
+        messages = [{'role': 'system', 'content': PROMPT}, {'role': 'user', 'content': json.dumps(
+            {'bodyLines': [{key: line[key] for key in ('id', 'text')} for line in lines],
+             'postedAt': self.personal.stamp(created), 'date': date.isoformat(),
+             'author': name, 'allowedShifts': list(shifts)}, ensure_ascii=False)}]
+        return self.client.structured(messages, response_schema(lines), name='personal_announcements',
+                                       max_completion_tokens=MAX_OUTPUT_TOKENS)

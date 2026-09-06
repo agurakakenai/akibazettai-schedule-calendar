@@ -1074,7 +1074,7 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 
 初期pilotの固定回帰は `tools/tests/fixtures/personal-pilot.json` を使います。配信準備中の `data/personal-shifts.json` はstate branchから復元される可変のsnapshotなので、公開形式や初期2投稿に固定したテスト入力としては使いません。private形式・追加投稿を含む復元後にも、通常の検証と公開projectionが通ることを確認します。
 
-#### Azure nanoによる本人本文解析
+#### 共通Luna設定と本人本文解析
 
 解析v4は **metadata照合 → 行ID付き原文と最小contextをnanoへ1回 → 選択ID・対象範囲・元行の数値を確認 → 既存履歴** に分けます。勤務と余談、昼夜、訂正・否定・不確実さ、他人や引用の意味はAIの担当です。コードで「かも」「明日」等を再解釈する前処理・節解析は行いません。投稿日時/JST対象日・本人名・対象shiftだけを本文に添え、名簿全体や履歴はモデルへ送りません。
 
@@ -1082,11 +1082,13 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 
 コードは選択IDから元行/元範囲を直接参照し、型・allowlist・対象日/shift・event重複・指定店舗/時刻の直接数値整合を確認します。選択行を連結して架空の引用や数値を作りません。元行・選択行は内部のみで、公開抜粋は従来の小さい原文アンカーだけです。**行ID参照で引用の転記ミスはなくなりますが、行の選択や意味の誤読は残り得ます。** 意味・参照ID・コード採否を分けて評価します。pending/refusal/不正schemaは保留し、`no_event`も既存案内の削除命令にはしません。
 
-v1〜v3のcache・履歴は保持し、v4の契約/解析versionとは分離します。旧応答の引用を新しい行ID応答へ変換して再利用しません。既知投稿の自動再GET・一括再解析も追加せず、再確認には保存payloadによる明示操作が必要です。
+旧nano/miniや比較用deploymentのcache・履歴は保持し、本番Lunaのprovider/endpoint/deployment/model/versionとv4契約・入力contextを含む別のcache識別に分離します。旧応答を新版のモデル応答へ変換して再利用しません。既知投稿の自動再GET・一括再解析も追加せず、再確認には保存payloadによる明示操作が必要です。
 
-ローカルCLIは無設定なら従来の`--analysis-backend rules`です。`--analysis-backend azure`を明示すると、検証済みの新規本人本文**全体**をAzure OpenAI `gpt-5.4-nano`（2026-03-17）へ送り、Chat Completions v1・structured outputs・`reasoning_effort=none`で解析します。ルールが一部の時間帯を拾ってもAzureを省略せず、Azure失敗をルールで成功扱いにもしません。作者・投稿ID・日時・実際のretweet等のmetadata制約は既存コードで照合します。公式rules parser、本人rules既定、取得・予算・cronは変更しません。
+ローカルCLIは無設定なら従来の`--analysis-backend rules`です。`--analysis-backend azure`を明示すると、検証済みの新規本人本文**全体**をAzure OpenAI `gpt-5.6-luna`（2026-07-09）へ送り、Chat Completions v1・structured outputs・`reasoning_effort=none`で解析します。共通の設定/HTTP transportは`tools/azure-openai.py`、本人用prompt/schema・予算・履歴は`tools/personal-azure.py`に分離しています。本番安定名`gpt-5.6-luna`だけを受理し、providerの返却modelも照合します。ルールが一部を拾ってもAzureを省略せず、nano/mini・別model・rulesへの成功fallbackは行いません。
 
-Actionsでは手動`personal` / `both`時だけAzureを選択します。必要な設定はsecret `AZURE_OPENAI_API_KEY`とvariables `AZURE_OPENAI_ENDPOINT`（`https://<resource>.openai.azure.com/`）、`AZURE_OPENAI_DEPLOYMENT`（`gpt-5.4-nano`）です。collectステップの本人子プロセスだけに渡し、公式のみの収集・restore・build・frontendには不要です。設定不備は明示エラーになり、高価なモデルへの自動切替はありません。
+Actionsでは手動`personal` / `both`時だけAzureを選択します。必要な設定はsecret `AZURE_OPENAI_API_KEY`とvariables `AZURE_OPENAI_ENDPOINT`（`https://<resource>.openai.azure.com/`）、`AZURE_OPENAI_DEPLOYMENT`（`gpt-5.6-luna`）です。collectステップの本人子プロセスだけに渡し、公式のみの収集・restore・build・frontendには不要です。設定不備は明示エラーになります。ローカルでdeployment変数自体を省略した場合も、既定値は同じ本番Lunaです。
+
+今後のX関連AIは共通Luna設定を使い、用途ごとのprompt/schemaを渡す方針です。**現在接続済みなのは本人本文v4経路**で、公式定型取得/解析は既存rulesのままです。画像はprivateな読取試験のみで、半月予定表の自動取得/取込、追加の公式AI解析、10〜18時訂正巡回、本人定期枠はこの変更では実装・有効化しません。取得・本人確認・型・出典・原投稿順の履歴はコードの責務として維持します。
 
 AIは最大3回/run・30回/JST日、本文UTF-8 6,000 bytes・出力1,200 tokens・応答24,000 bytes・timeout 30秒に制限します。要求は原則60秒以上離し、途中runをまたぐ待機は保留します。429は少なくとも5分と`Retry-After`の長い方を待ち、401/403はAIだけを永続停止します。Yahoo/Xの共有cooldown・予算とは別です。本文hash・モデル/プロンプト/schema版・検証contextを含むprivate cacheへ通信前に予約し、同じ入力の成功・拒否・失敗・中断を自動で再課金しません。障害後の再試行は運用者が該当cacheと停止状態を確認した上で行う明示的な復旧で、自動解除はありません。
 

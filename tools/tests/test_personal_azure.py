@@ -18,7 +18,7 @@ import test_collect_personal_shifts as base
 
 personal, azure = base.personal, base.personal.azure
 ENV = {'AZURE_OPENAI_ENDPOINT': 'https://offline.openai.azure.com/',
-       'AZURE_OPENAI_DEPLOYMENT': 'gpt-5.4-nano',
+       'AZURE_OPENAI_DEPLOYMENT': 'gpt-5.6-luna',
        'AZURE_OPENAI_API_KEY': 'OFFLINE_AZURE_SENTINEL'}
 
 
@@ -32,7 +32,7 @@ def result(*events, decision=None):
 
 
 def response(value=None, *, content=None, refusal=None, finish='stop'):
-    envelope = {'choices': [{'finish_reason': finish, 'message': {
+    envelope = {'model': 'gpt-5.6-luna-2026-07-09', 'choices': [{'finish_reason': finish, 'message': {
         'content': json.dumps(value) if content is None else content, 'refusal': refusal}}]}
     reply = mock.MagicMock()
     reply.getcode.return_value = 200
@@ -117,6 +117,7 @@ class AzureTests(base.Offline):
             'bodyLines': [{'id': 1, 'text': text}], 'postedAt': base.CREATED, 'date': '2026-09-06',
             'author': 'あむ', 'allowedShifts': ['昼', '夜']})
         self.assertEqual(sent['reasoning_effort'], 'none')
+        self.assertEqual(sent['model'], 'gpt-5.6-luna')
         self.assertEqual(sent['max_completion_tokens'], 1200)
         self.assertNotIn('tools', sent)
         self.assertNotIn(ENV['AZURE_OPENAI_API_KEY'], json.dumps(sent))
@@ -407,6 +408,9 @@ class AzureTests(base.Offline):
 
     def test_bad_configuration_never_falls_back_or_persists_credentials(self):
         for env in ({}, {**ENV, 'AZURE_OPENAI_DEPLOYMENT': 'expensive-model'},
+                    {**ENV, 'AZURE_OPENAI_DEPLOYMENT': 'gpt-5.4-nano'},
+                    {**ENV, 'AZURE_OPENAI_DEPLOYMENT': 'gpt-5.4-mini-compare'},
+                    {**ENV, 'AZURE_OPENAI_DEPLOYMENT': 'gpt-5.6-luna-compare'},
                     {**ENV, 'AZURE_OPENAI_ENDPOINT': 'https://example.com/'}):
             with self.assertRaisesRegex(ValueError, 'invalid_azure_configuration'):
                 self.make_analyzer(env)
@@ -414,6 +418,14 @@ class AzureTests(base.Offline):
         self.assertNotIn('azureAnalysis', personal.public_state(self.state))
         self.assertNotIn(ENV['AZURE_OPENAI_API_KEY'], self.snapshot.read_text(encoding='utf-8'))
         self.assertNotIn('offline.openai.azure.com', self.snapshot.read_text(encoding='utf-8'))
+
+    def test_production_model_identity_is_part_of_the_private_cache_namespace(self):
+        self.assertEqual(self.analyzer.client.identity, {
+            'provider': 'azure_openai', 'endpoint': 'https://offline.openai.azure.com',
+            'deployment': 'gpt-5.6-luna', 'model': 'gpt-5.6-luna', 'modelVersion': '2026-07-09'})
+        with mock.patch.object(azure.transport, 'MODEL_VERSION', '2026-07-10'):
+            other = self.make_analyzer()
+        self.assertNotEqual(self.analyzer.version, other.version)
 
     def test_saved_cli_uses_no_source_client_and_validates_identity(self):
         self.known()

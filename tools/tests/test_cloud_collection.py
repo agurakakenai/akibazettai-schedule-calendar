@@ -1156,7 +1156,7 @@ class CloudTests(unittest.TestCase):
         environment = {**self.environment, 'PERSONAL_ANALYSIS_BACKEND': 'azure',
                        'AZURE_OPENAI_API_KEY': 'OFFLINE_AZURE_SENTINEL',
                        'AZURE_OPENAI_ENDPOINT': 'https://offline.openai.azure.com/',
-                       'AZURE_OPENAI_DEPLOYMENT': 'gpt-5.4-nano',
+                       'AZURE_OPENAI_DEPLOYMENT': 'gpt-5.6-luna',
                        'AZURE_OPENAI_UNEXPECTED': 'not-forwarded'}
         completed = subprocess.CompletedProcess([], 0, b'', b'')
         with mock.patch.object(cloud, 'child_process', return_value=completed) as child:
@@ -1165,6 +1165,8 @@ class CloudTests(unittest.TestCase):
             self.assertEqual(argv[argv.index('--analysis-backend') + 1], 'azure')
             self.assertEqual(child.call_args.kwargs['environment']['AZURE_OPENAI_API_KEY'],
                              'OFFLINE_AZURE_SENTINEL')
+            self.assertEqual(child.call_args.kwargs['environment']['AZURE_OPENAI_DEPLOYMENT'],
+                             'gpt-5.6-luna')
             self.assertNotIn('GH_TOKEN', child.call_args.kwargs['environment'])
             self.assertNotIn('AZURE_OPENAI_UNEXPECTED', child.call_args.kwargs['environment'])
             cloud.invoke_collector(self.root, self.root, self.root / 'report.json', environment)
