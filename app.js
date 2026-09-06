@@ -111,6 +111,16 @@
     posts: [], lastRun: { status: "never" }
   };
 
+  function validPersonalLinks(links) {
+    return Array.isArray(links) && links.length <= 3 &&
+      links.every((link) => link && Object.keys(link).length === 2 &&
+        Object.hasOwn(link, "scope") && Object.hasOwn(link, "status") &&
+        ["昼", "夜", "unspecified"].includes(link.scope) &&
+        ["work", "withdrawn", "conflict"].includes(link.status) &&
+        (link.scope !== "unspecified" || link.status === "work")) &&
+      new Set(links.map((link) => link.scope)).size === links.length;
+  }
+
   function validatePersonalShifts(value) {
     const statuses = ["never", "ok", "partial", "unavailable", "no-new", "no-results",
       "paused", "budget-exhausted", "outside-window"];
@@ -131,7 +141,8 @@
           !isoTime(post.createdAt) || !isoTime(post.observedAt) ||
           !/^\d{4}-\d{2}-\d{2}$/.test(post.date) || !Number.isFinite(Date.parse(`${post.date}T00:00:00Z`)) ||
           new Date(`${post.date}T00:00:00Z`).toISOString().slice(0, 10) !== post.date ||
-          !Array.isArray(post.events) || !post.events.length ||
+          (Object.hasOwn(post, "links") && !validPersonalLinks(post.links)) ||
+          !Array.isArray(post.events) || (!post.events.length && !post.links?.length) ||
           post.events.some((event) => !event || !["昼", "夜"].includes(event.shift) ||
             !["placement", "absence", "late", "return", "uncertain"].includes(event.kind) ||
             (event.kind === "placement" && !event.storeId) ||
@@ -296,6 +307,13 @@
       });
       if (!extra.length) return post;
       const amended = { ...post, events: [...post.events, ...extra] };
+      if (Object.hasOwn(post, "links") && validPersonalLinks(post.links)) {
+        // Preserve reviewed view-only scopes when a partial analysis supplies only the other shift.
+        const supplied = new Set(post.links.map((link) => link.scope));
+        amended.links = [...post.links, ...extra
+          .filter((event) => ["placement", "late", "return"].includes(event.kind) && !supplied.has(event.shift))
+          .map((event) => ({ scope: event.shift, status: "work" }))];
+      }
       try {
         validatePersonalShifts({ ...EMPTY_PERSONAL_SHIFTS, posts: [amended] });
         return amended;
@@ -303,6 +321,74 @@
         return post;
       }
     });
+  }
+
+  function personalPostLink({ personal, insights, observations, dateKey, shift, name,
+    nameCorrections, personalEventAdditions }) {
+    if (!SHIFT_NAMES.includes(shift)) return null;
+    const aliases = displayAliases(insights);
+    const canonical = aliases.get(name) ?? name;
+    const account = insights?.maidTendency?.[canonical]?.x;
+    const posts = personalPostsForView(personal, personalEventAdditions).filter((post) => {
+      if (post.date !== dateKey || (aliases.get(post.name) ?? post.name) !== canonical) return false;
+      try {
+        validatePersonalShifts({ ...EMPTY_PERSONAL_SHIFTS, posts: [post] });
+        return tokyoToday(new Date(post.createdAt)) === dateKey &&
+          (!account || post.authorScreenName.toLowerCase() === account.toLowerCase());
+      } catch {
+        return false;
+      }
+    });
+    if (!posts.length) return null;
+    // Curated placement wins the roster, but does not replace same-day link history.
+    const official = observedShift(observations, { ...insights, actualRoster: null },
+      dateKey, shift, nameCorrections);
+    const notice = official.notices.get(canonical);
+    const history = [
+      ...posts.map((post) => ({ post })),
+      ...(official.byMaid.get(canonical)?.sources ?? []).map((post) => ({ post, official: true })),
+      ...(notice?.sources ?? []).map((post) => ({ post, official: true, time: notice.time }))
+    ].sort((left, right) => comparePosts(left.post, right.post));
+    let source = null;
+    let absent = false;
+    let held = false;
+    const confirmedEvents = (post) => post.events.filter((event) =>
+      event.shift === shift && event.kind !== "uncertain");
+    const contradicts = (events, storeId, time) => events.some((event) =>
+      (storeId && event.storeId && event.storeId !== storeId) ||
+      (time && event.time && event.time !== time));
+    for (const item of history) {
+      const { post } = item;
+      if (item.official) {
+        if (source && contradicts(confirmedEvents(source), post.storeId, item.time)) source = null;
+        continue;
+      }
+      const events = confirmedEvents(post);
+      const cancelled = events.some((event) => event.kind === "absence");
+      const returned = events.some((event) => event.kind === "return");
+      const conflicting = (cancelled && events.some((event) => event.kind !== "absence")) ||
+        new Set(events.map((event) => event.storeId).filter(Boolean)).size > 1;
+      if (cancelled || returned) {
+        absent = cancelled;
+        source = null;
+        if (returned && !cancelled) held = false;
+      }
+      if (source && events.some((event) =>
+        contradicts(confirmedEvents(source), event.storeId, event.time))) source = null;
+      const links = Object.hasOwn(post, "links") ? post.links : events.map((event) => ({
+        scope: event.shift, status: event.kind === "absence" ? "withdrawn" : "work"
+      }));
+      const link = links.find((link) => link.scope === shift) ??
+        links.find((link) => link.scope === "unspecified");
+      if (conflicting || link?.status === "withdrawn" || link?.status === "conflict") {
+        held = true;
+        source = null;
+      } else if (link?.status === "work" && !absent && !(held && link.scope === "unspecified")) {
+        held = false;
+        source = post;
+      }
+    }
+    return source;
   }
 
   function observedTrainee(insights, name, key) {
@@ -2337,6 +2423,7 @@
       observedTrainee,
       personalShift,
       personalPostsForView,
+      personalPostLink,
       resolveShiftRoster,
       validatePersonalShifts,
       dayHasPersonStoreEvidence,
@@ -2807,19 +2894,15 @@
   }
 
   function createRosterEntry(entry, key, shift, {
-    evidence, storeId, note = "", profileLink = true
+    evidence, storeId, note = ""
   } = {}) {
     const item = document.createElement("li");
     item.className = "maid-entry";
     item.dataset.name = entry.name;
     item.dataset.evidence = evidence;
     if (storeId) item.dataset.store = storeId;
-    const person = entry.personalNotice;
-    const arrival = entry.officialNotice?.arrivalSource;
-    const source = arrival ?? (storeId && person?.storeId === storeId && !person.absent && !person.conflict
-      ? person.placementSource : null);
-    const account = profileLink && insights?.maidTendency?.[entry.name]?.x;
-    const href = source?.url ?? (account ? `https://x.com/${account}` : null);
+    const source = sameDayPersonalPost(entry.name, key, shift);
+    const href = source?.url;
     const name = document.createElement(href ? "a" : "span");
     name.className = "maid-name";
     name.textContent = displayName(entry.name);
@@ -2829,7 +2912,8 @@
       name.href = href;
       name.target = "_blank";
       name.rel = "noopener noreferrer";
-      name.title = source ? `${displayName(entry.name)}のお給仕予定を開く` : `${displayName(entry.name)}のXを開く`;
+      name.title = `${displayName(entry.name)}：本人の当日投稿を開く`;
+      name.setAttribute("aria-label", name.title);
     } else {
       name.tabIndex = -1;
     }
@@ -2915,7 +2999,7 @@
       if (!shown.length) continue;
       appendRosterGroup(block, store, shown, (entry) => createRosterEntry(entry, key, shift, {
         evidence: entry.officialPlacement ? "official-announced" : entry.personalPlacement ? "personal" : type === "recorded" ? "recorded" : "observed",
-        storeId: store.id, profileLink: !entry.observed,
+        storeId: store.id,
         note: entry.personalPlacement || entry.officialPlacement ? `${store.short}のお給仕予定` : type !== "recorded"
           ? `${store.short}のお給仕投稿で確認`
           : `${shift}は${store.short}にいた記録があります`
@@ -3027,9 +3111,14 @@
       posts: activeObservationPosts(observations).filter((post) => (!key || post.date === key) && (!shift || post.shift === shift))
         .map(({ id, url, date, shift, createdAt, names, notices, storeId }) => ({ id, url, date, shift, createdAt, names, notices, storeId })),
       personal: personalPostsForView(personalShifts, data.personalEventAdditions)
-        .filter((post) => (!key || post.date === key) && (!shift || post.events.some((event) => event.shift === shift)))
-        .map(({ id, url, date, createdAt, name, events }) => ({
-          id, url, date, createdAt, name, events: events.filter((event) => !shift || event.shift === shift)
+        .filter((post) => (!key || post.date === key) && (!shift ||
+          post.events.some((event) => event.shift === shift) ||
+          post.links?.some((link) => link.scope === shift || link.scope === "unspecified")))
+        .map(({ id, url, date, createdAt, name, authorId, authorScreenName, events, links }) => ({
+          id, url, date, createdAt, name, authorId, authorScreenName,
+          events: events.filter((event) => !shift || event.shift === shift),
+          ...(links !== undefined ? { links: links.filter((link) =>
+            !shift || link.scope === shift || link.scope === "unspecified") } : {})
         }))
     };
   }
@@ -3896,7 +3985,7 @@
 
     const list = document.createElement("ol");
     list.className = "maid-plan-stops";
-    plan.stops.forEach((stop) => list.append(createMaidStop(stop)));
+    plan.stops.forEach((stop) => list.append(createMaidStop(stop, plan.name)));
     block.append(list);
     for (const change of plan.changes) {
       block.append(createChangeNotice(change.personalNotice, `${change.dateKey} ${change.shift} `));
@@ -3904,16 +3993,32 @@
     return block;
   }
 
-  function createMaidStop(stop) {
+  function sameDayPersonalPost(name, key, shift) {
+    return personalPostLink({
+      personal: personalShifts, insights, observations, dateKey: key, shift, name,
+      nameCorrections: data.observationNameCorrections,
+      personalEventAdditions: data.personalEventAdditions
+    });
+  }
+
+  function createMaidStop(stop, name) {
     const item = document.createElement("li");
     item.className = `maid-plan-stop is-${stop.state ?? "unknown"}`;
     item.dataset.date = stop.dateKey;
-    const when = document.createElement("span");
+    const source = sameDayPersonalPost(name, stop.dateKey, stop.shift);
+    const when = document.createElement(source ? "a" : "span");
     when.className = "maid-plan-when";
     const [, month, date] = stop.dateKey.split("-").map(Number);
     // 曜日はカレンダーと同じ書き方で添える。「9/3」だけでは何曜日か分からない。
     const weekday = weekdays[new Date(`${stop.dateKey}T00:00:00`).getDay()];
     when.textContent = `${month}/${date}(${weekday}) ${stop.shift}`;
+    if (source) {
+      when.href = source.url;
+      when.target = "_blank";
+      when.rel = "noopener noreferrer";
+      when.title = `${displayName(name)}：本人の当日投稿を開く`;
+      when.setAttribute("aria-label", `${when.textContent} ${when.title}`);
+    }
     const where = document.createElement("span");
     where.className = "maid-plan-where";
     where.dataset.store = stop.storeId ?? "";

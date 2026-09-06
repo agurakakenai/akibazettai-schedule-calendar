@@ -278,6 +278,25 @@ def personal_projection(state, *, collector=None):
                         raise ValueError
                     public_event['time'] = when
                 item['events'].append(public_event)
+            if 'links' in post:
+                links = post['links']
+                if not isinstance(links, list) or len(links) > 3:
+                    raise ValueError
+                seen_scopes = set()
+                item['links'] = []
+                for link in links:
+                    if (not isinstance(link, dict) or set(link) != {'scope', 'status'}
+                            or not isinstance(link['scope'], str)
+                            or link['scope'] not in ('昼', '夜', 'unspecified')
+                            or not isinstance(link['status'], str)
+                            or link['status'] not in ('work', 'withdrawn', 'conflict')
+                            or (link['scope'] == 'unspecified' and link['status'] != 'work')
+                            or link['scope'] in seen_scopes):
+                        raise ValueError
+                    seen_scopes.add(link['scope'])
+                    item['links'].append({'scope': link['scope'], 'status': link['status']})
+            if not item['events'] and not item.get('links'):
+                raise ValueError
             ids.add(tid)
             result['posts'].append(item)
         run = state['lastRun']

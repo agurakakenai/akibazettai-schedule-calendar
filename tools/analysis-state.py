@@ -20,7 +20,7 @@ JST = dt.timezone(dt.timedelta(hours=9))
 HEX = re.compile(r'[0-9a-f]{64}\Z')
 TOKEN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}\Z')
 REASONS = {
-    'events', 'no_event', 'azure_pending', 'azure_invalid_output', 'azure_refused',
+    'events', 'links', 'no_event', 'azure_pending', 'azure_invalid_output', 'azure_refused',
     'azure_timeout', 'azure_network_error', 'azure_http_error', 'azure_rate_limited',
     'azure_auth_stopped', 'azure_interrupted', 'azure_input_limit', 'azure_ungrounded',
     'azure_model_mismatch', 'azure_deadline', 'azure_budget_exhausted', 'azure_backoff',
@@ -211,7 +211,7 @@ def validate_state(value):
                 raise ValueError
             if completed is None and receipt['reason'] != 'azure_interrupted':
                 raise ValueError
-            if receipt['reason'] in ('events', 'no_event') and issued is None:
+            if receipt['reason'] in ('events', 'links', 'no_event') and issued is None:
                 raise ValueError
             status = receipt['httpStatus']
             if status is not None and (type(status) is not int or not 100 <= status <= 599):
@@ -501,7 +501,7 @@ class SharedUsage:
         receipt_id = _receipt_id(self.component, key)
         if receipt_id in self.state['receipts']:
             previous = self.state['receipts'][receipt_id]
-            reason = previous['reason'] if previous['reason'] not in ('events', 'no_event') else 'azure_already_analyzed'
+            reason = previous['reason'] if previous['reason'] not in ('events', 'links', 'no_event') else 'azure_already_analyzed'
             raise UsageFailure(reason, previous['httpStatus'], previous['retryAt'])
         self._allowed()
         if self._active is not None:
@@ -573,7 +573,7 @@ class SharedUsage:
             if receipt['reason'] == reason:
                 return
             raise UsageFailure('azure_interrupted')
-        if reason in ('events', 'no_event') and receipt['issuedAt'] is None:
+        if reason in ('events', 'links', 'no_event') and receipt['issuedAt'] is None:
             raise UsageFailure('azure_interrupted')
         receipt['reason'] = reason
         receipt['completedAt'] = _stamp(max(_now(self.clock()), _time(receipt['issuedAt'] or receipt['reservedAt'])))

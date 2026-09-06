@@ -327,6 +327,62 @@ class UsageTests(unittest.TestCase):
                 ledger.reserve(key, IDENTITY)
             self.assertEqual(ledger.used, 0)
 
+    def test_link_success_is_durable_idempotent_and_never_reserved_again(self):
+        key = digest('link-only')
+        with self.shared('personal') as ledger:
+            ledger.reserve(key, IDENTITY)
+            ledger.issued(key)
+            issued = next(iter(usage.load_state(self.path)['receipts'].values()))
+            self.assertIsNotNone(issued['issuedAt'])
+            self.assertIsNone(issued['completedAt'])
+            self.assertEqual(issued['reason'], 'azure_interrupted')
+            ledger.finish(key, 'links')
+            completed = self.path.read_bytes()
+            ledger.finish(key, 'links')
+            self.assertEqual(self.path.read_bytes(), completed)
+            with self.assertRaisesRegex(usage.UsageFailure, 'azure_interrupted'):
+                ledger.issued(key)
+            with self.assertRaisesRegex(usage.UsageFailure, 'azure_interrupted'):
+                ledger.finish(key, 'no_event')
+            with self.assertRaisesRegex(usage.UsageFailure, 'azure_already_analyzed'):
+                ledger.reserve(key, IDENTITY)
+            self.assertEqual(self.path.read_bytes(), completed)
+            self.assertEqual(ledger.used, 1)
+        state = usage.load_state(self.path)
+        receipt = next(iter(state['receipts'].values()))
+        self.assertEqual(receipt['reason'], 'links')
+        self.assertEqual(receipt['issuedAt'], issued['issuedAt'])
+        self.assertIsNotNone(receipt['completedAt'])
+        self.assertEqual(set(receipt), set(issued))
+        self.assertEqual(state['schemaVersion'], 1)
+        with self.shared('personal', run_id='run-2') as ledger:
+            with self.assertRaisesRegex(usage.UsageFailure, 'azure_already_analyzed'):
+                ledger.reserve(key, IDENTITY)
+            self.assertEqual(ledger.used, 0)
+            self.assertEqual(usage.usage_counts(ledger.state, 'run-2', self.clock),
+                             {'run': 0, 'day': 1, 'remaining': 3})
+        self.assertEqual(self.path.read_bytes(), completed)
+        self.assertEqual(self.sleeps, [])
+
+    def test_link_success_requires_issued_and_completed_receipt(self):
+        key = digest('link-only')
+        with self.shared('personal') as ledger:
+            ledger.reserve(key, IDENTITY)
+            original = self.path.read_bytes()
+            with self.assertRaisesRegex(usage.UsageFailure, 'azure_interrupted'):
+                ledger.finish(key, 'links')
+            self.assertEqual(self.path.read_bytes(), original)
+            self.assertEqual(ledger.used, 1)
+            ledger.issued(key)
+            ledger.finish(key, 'links')
+        original = usage.load_state(self.path)
+        for field in ('issuedAt', 'completedAt'):
+            invalid = copy.deepcopy(original)
+            next(iter(invalid['receipts'].values()))[field] = None
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'invalid_ai_usage'):
+                usage.validate_state(invalid)
+        self.assertEqual(usage.load_state(self.path), original)
+
     def test_same_key_in_other_component_is_a_distinct_request(self):
         with self.shared() as ledger:
             self.completed(ledger, 'same')
