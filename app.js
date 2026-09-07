@@ -110,6 +110,167 @@
     schemaVersion: 1, complete: false, checkedAt: null, lastSuccessAt: null,
     posts: [], lastRun: { status: "never" }
   };
+  const EMPTY_HALF_MONTH_SCHEDULES = {
+    schemaVersion: 1, complete: false, checkedAt: null, lastSuccessAt: null,
+    schedules: [], lastRun: { status: "never" }
+  };
+
+  function validDateKey(key) {
+    return typeof key === "string" && /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(key) &&
+      Number(key.slice(0, 4)) > 0 &&
+      Number.isFinite(Date.parse(`${key}T00:00:00Z`)) &&
+      new Date(`${key}T00:00:00Z`).toISOString().slice(0, 10) === key;
+  }
+
+  function halfMonthPeriod(key) {
+    if (!validDateKey(key)) return null;
+    const prefix = key.slice(0, 7);
+    if (Number(key.slice(8)) <= 15) return { from: `${prefix}-01`, to: `${prefix}-15` };
+    const nextMonth = new Date(`${prefix}-01T00:00:00Z`);
+    nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1);
+    nextMonth.setUTCDate(0);
+    return { from: `${prefix}-16`, to: nextMonth.toISOString().slice(0, 10) };
+  }
+
+  function validateHalfMonthSchedules(value, { roster, insights, previous, personal } = {}) {
+    const fields = (object, keys) => object && typeof object === "object" && !Array.isArray(object) &&
+      Object.keys(object).length === keys.length && keys.every((key) => Object.hasOwn(object, key));
+    const utcTime = (time) => typeof time === "string" &&
+      /^[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{1,6})?Z$/.test(time) &&
+      validDateKey(time.slice(0, 10)) && Number.isFinite(Date.parse(time));
+    const statuses = ["never", "ok", "partial", "unavailable", "no-new", "no-results",
+      "paused", "budget-exhausted", "outside-window"];
+    if (!fields(value, ["schemaVersion", "complete", "checkedAt", "lastSuccessAt", "schedules", "lastRun"]) ||
+        value.schemaVersion !== 1 || value.complete !== false || !Array.isArray(value.schedules) ||
+        !fields(value.lastRun, ["status"]) || !statuses.includes(value.lastRun.status) ||
+        [value.checkedAt, value.lastSuccessAt].some((time) => time !== null && !utcTime(time)) ||
+        (value.lastSuccessAt && (!value.checkedAt || Date.parse(value.lastSuccessAt) > Date.parse(value.checkedAt)))) {
+      throw new Error("半月予定データの形式が対応していません");
+    }
+    const winners = new Set();
+    const posts = new Map();
+    const identities = new Map();
+    const handles = new Map();
+    const authors = new Map();
+    const known = [...(previous?.schedules ?? []), ...(personal?.posts ?? [])];
+    for (const source of value.schedules) {
+      if (!fields(source, ["id", "url", "name", "authorId", "authorScreenName", "createdAt",
+        "observedAt", "sourceKind", "period", "days"]) ||
+          typeof source.id !== "string" || !/^[1-9][0-9]{9,24}$/.test(source.id) ||
+          typeof source.authorId !== "string" || !/^[1-9][0-9]{0,24}$/.test(source.authorId) ||
+          typeof source.authorScreenName !== "string" || !/^[A-Za-z0-9_]{1,15}$/.test(source.authorScreenName) ||
+          source.url !== `https://x.com/${source.authorScreenName}/status/${source.id}` ||
+          typeof source.name !== "string" || !source.name || source.name.trim() !== source.name ||
+          /[\u0000-\u001f\u007f\u2028\u2029]/.test(source.name) ||
+          (roster && !roster.includes(source.name)) || source.sourceKind !== "half-month-schedule" ||
+          !utcTime(source.createdAt) || !utcTime(source.observedAt) ||
+          Date.parse(source.observedAt) < Date.parse(source.createdAt) ||
+          Math.abs(Number((BigInt(source.id) >> 22n) + 1288834974657n) - Date.parse(source.createdAt)) >= 2000) {
+        throw new Error("半月予定の投稿・本人確認情報が不正です");
+      }
+      const handle = source.authorScreenName.toLowerCase();
+      const expectedHandle = insights?.maidTendency?.[source.name]?.x;
+      const identity = `${source.authorId}|${handle}`;
+      if ((expectedHandle && expectedHandle.toLowerCase() !== handle) ||
+          (identities.has(source.name) && identities.get(source.name) !== identity) ||
+          (handles.has(handle) && handles.get(handle) !== source.name) ||
+          (authors.has(source.authorId) && authors.get(source.authorId) !== source.name) ||
+          known.some((post) => post.name === source.name &&
+            (post.authorId !== source.authorId || post.authorScreenName.toLowerCase() !== handle))) {
+        throw new Error("半月予定の本人情報が保存済み情報と一致しません");
+      }
+      identities.set(source.name, identity);
+      handles.set(handle, source.name);
+      authors.set(source.authorId, source.name);
+      const period = source.period;
+      const boundary = halfMonthPeriod(period?.from);
+      if (!fields(period, ["from", "to", "printedYear", "yearBasis"]) || !boundary ||
+          period.from !== boundary.from || period.to !== boundary.to ||
+          !["printed", "text", "post-context"].includes(period.yearBasis) ||
+          (period.yearBasis === "printed"
+            ? !Number.isInteger(period.printedYear) || period.printedYear !== Number(period.from.slice(0, 4))
+            : period.printedYear !== null)) {
+        throw new Error("半月予定の対象期間・年の根拠が不正です");
+      }
+      const postDate = new Date(Date.parse(source.createdAt) + 9 * 3600000).toISOString().slice(0, 10);
+      const monthNumber = (key) => Number(key.slice(0, 4)) * 12 + Number(key.slice(5, 7));
+      if (period.yearBasis === "post-context" && Math.abs(monthNumber(postDate) - monthNumber(period.from)) > 1) {
+        throw new Error("半月予定の対象年が投稿時期と一致しません");
+      }
+      const winner = `${source.name}|${period.from}`;
+      const versions = posts.get(source.id) ?? [];
+      if (winners.has(winner) || versions.length >= 2 || versions.some((other) =>
+        other.name !== source.name || other.authorId !== source.authorId ||
+        other.authorScreenName !== source.authorScreenName || other.createdAt !== source.createdAt ||
+        (other.period.from <= period.to && period.from <= other.period.to))) {
+        throw new Error("半月予定の人物・期間・投稿が重複しています");
+      }
+      winners.add(winner);
+      posts.set(source.id, [...versions, source]);
+      const dates = new Set();
+      if (!Array.isArray(source.days) || source.days.length < 1 || source.days.length > 16) {
+        throw new Error("半月予定の勤務日が不正です");
+      }
+      for (const day of source.days) {
+        if (!fields(day, ["date", "shifts"]) || !validDateKey(day.date) ||
+            day.date < period.from || day.date > period.to || dates.has(day.date) ||
+            !Array.isArray(day.shifts) || day.shifts.length < 1 || day.shifts.length > 2 ||
+            day.shifts.some((shift) => !["昼", "夜"].includes(shift)) ||
+            new Set(day.shifts).size !== day.shifts.length) {
+          throw new Error("半月予定の勤務日・昼夜が不正です");
+        }
+        dates.add(day.date);
+      }
+    }
+    return value;
+  }
+
+  function halfMonthProvenance(source) {
+    return Object.freeze({
+      id: source.id, url: source.url, name: source.name,
+      authorId: source.authorId, authorScreenName: source.authorScreenName,
+      createdAt: source.createdAt, sourceKind: source.sourceKind,
+      period: Object.freeze({
+        from: source.period.from, to: source.period.to,
+        printedYear: source.period.printedYear, yearBasis: source.period.yearBasis
+      })
+    });
+  }
+
+  function buildEffectiveSchedule(manual, snapshot = EMPTY_HALF_MONTH_SCHEDULES) {
+    const result = {};
+    for (const [key, day] of Object.entries(manual ?? {})) {
+      result[key] = Object.fromEntries(Object.entries(day).map(([shift, entries]) =>
+        [shift, entries.map((entry) => ({ ...entry }))]));
+    }
+    const sources = snapshot.schedules.slice().sort((a, b) =>
+      `${a.name}|${a.period.from}`.localeCompare(`${b.name}|${b.period.from}`));
+    for (const source of sources) {
+      const provenance = halfMonthProvenance(source);
+      for (const day of source.days.slice().sort((a, b) => a.date.localeCompare(b.date))) {
+        for (const shift of ["昼", "夜"].filter((item) => day.shifts.includes(item))) {
+          const entries = (result[day.date] ??= {})[shift] ??= [];
+          let entry = entries.find((item) => item.name === source.name);
+          if (!entry) {
+            entry = { name: source.name };
+            entries.push(entry);
+          }
+          entry.halfMonthSources = [...(entry.halfMonthSources ?? []), provenance];
+        }
+      }
+    }
+    for (const day of Object.values(result)) {
+      for (const entries of Object.values(day)) {
+        for (const entry of entries) {
+          if (entry.halfMonthSources) Object.freeze(entry.halfMonthSources);
+          Object.freeze(entry);
+        }
+        Object.freeze(entries);
+      }
+      Object.freeze(day);
+    }
+    return Object.freeze(result);
+  }
 
   function validPersonalLinks(links) {
     return Array.isArray(links) && links.length <= 3 &&
@@ -641,7 +802,7 @@
     return keys.length > 0 ? keys.sort().at(-1) : null;
   }
 
-  // 2026-09-01 の制度変更（上旬・下旬をまとめて事前公開）直後は、まだ提出していない
+  // 2026-09-01 の制度変更（上旬・下旬をまとめて事前公開）直後は、予定が未確認の
   // メイドさんがいて予定表が薄い。移行が落ち着けば不要になる注意書きなので、
   // 変更日から一定期間だけ出して自動で消えるようにする。
   const SCHEDULE_NOTE_DAYS = 60;
@@ -657,40 +818,57 @@
     const [year, month] = changedAt.split("-");
     return (
       `お給仕予定は${year}年${Number(month)}月から、上旬・下旬をまとめて公開する方式になりました。` +
-      "まだ提出していないメイドさんは、この表に出ていないことがあります。"
+      "予定が未確認のメイドさんは、この表に出ていないことがあります。"
     );
   }
-  // 予定表をまだ出していない在籍者。揃うまで、画面の顔ぶれは実際より薄い。
+  // 予定表が未確認の在籍者。揃うまで、画面の顔ぶれは実際より薄い。
   // 人数から店舗数を決めているので、開く店も少なめに出ることがある。
   //
   // 「何人ぶん薄いか」は windowShifts で割って出す。この分母はデータに入って
   // いるので推測にならない。入っていないときは書かない。推測した分母で割った
   // 数字は、測った数字の顔をしてしまう。
-  function schedulePendingNote(insights) {
+  function schedulePendingNote(insights, snapshot = EMPTY_HALF_MONTH_SCHEDULES, { dateFrom, dateTo } = {}) {
     const pending = insights?.schedulePending;
-    const names = pending?.pending;
-    if (!Array.isArray(names) || names.length === 0) {
+    const legacyNames = pending?.pending;
+    if (!Array.isArray(legacyNames) || legacyNames.length === 0) {
       return null;
     }
+    const periods = [];
+    if (validDateKey(dateFrom) && validDateKey(dateTo) && dateFrom <= dateTo) {
+      let period = halfMonthPeriod(dateFrom);
+      while (period && period.from <= dateTo) {
+        periods.push(period);
+        period = halfMonthPeriod(addDays(period.to, 1));
+      }
+    }
+    const missing = new Map(legacyNames.map((name) => [name, periods.filter((period) =>
+      !snapshot.schedules.some((source) => source.name === name &&
+        source.period.from === period.from && source.period.to === period.to))]));
+    const names = legacyNames.filter((name) => !periods.length || missing.get(name).length);
+    if (!names.length) return null;
+    const partlyConfirmed = names.filter((name) => periods.length > missing.get(name).length).length;
     const counts = pending.recentShifts ?? {};
     const busiest = [...names].sort((a, b) => (counts[b] ?? 0) - (counts[a] ?? 0));
     const named = busiest
-      .map((name) => (counts[name] > 0 ? `${name}（最近${counts[name]}回）` : name))
+      .map((name) => (counts[name] > 0 ? `${name}（最近${counts[name]}回）` : name) +
+        (partlyConfirmed && periods.length > missing.get(name).length
+          ? `［${missing.get(name).map((period) => `${period.from}〜${period.to}`).join("・")} 未確認］` : ""))
       .join("・");
     const total = pending.rostered;
     const window = pending.windowShifts;
     const worked = names.reduce((sum, name) => sum + (counts[name] ?? 0), 0);
-    const perShift = window > 0 && worked > 0
+    const perShift = !partlyConfirmed && window > 0 && worked > 0
       ? `同じペースなら1シフトあたり${(worked / window).toFixed(1)}人ぶんです。`
       : "";
-    const head = `${total > 0 ? `在籍${total}名のうち` : ""}${names.length}名が、まだ予定を出していません`;
+    const head = `${total > 0 ? `在籍${total}名のうち` : ""}${names.length}名の${periods.length ? "対象期間の" : ""}予定が未確認です` +
+      (partlyConfirmed ? `（うち${partlyConfirmed}名は一部の半月を確認済み）` : "");
     return {
       short: head,
       long:
         `${head}：${named}。` +
-        `この方たちは表に出ていないので、顔ぶれは実際より少なめです。${perShift}` +
+        `未確認の期間があるため、顔ぶれは実際より少なめになることがあります。${perShift}` +
         "人数から開く店の数を決めているぶん、店も少なめに出ることがあります。" +
-        "提出が揃えばこの注意書きは消えます"
+        "未確認は未投稿・欠勤を意味しません。対象の半月すべてを確認できれば、この注意書きは消えます"
     };
   }
 
@@ -849,7 +1027,7 @@
     const period = months ? `直近${months}か月` : "この集計期間";
     return (
       `予定表の掲載対象外の方（見習いとは限りません）の集計です。${period}では、この店の` +
-      `${toPercent(withAny)}の店舗枠に1人以上いました。未提出の人数とは別です`
+      `${toPercent(withAny)}の店舗枠に1人以上いました。予定が未確認の人数とは別です`
     );
   }
 
@@ -2337,6 +2515,7 @@
           forecast,
           storeIds: observation?.storeIds ?? (announced ? [storeId] : []),
           sourcePosts: observation?.sources ?? officialNotice?.sources ?? [],
+          halfMonthSources: schedule?.[key]?.[shift]?.find((entry) => entry.name === name)?.halfMonthSources ?? [],
           nameCorrections: observation?.nameCorrections ?? officialNotice?.nameCorrections ?? [],
           host,
           settled,
@@ -2426,6 +2605,9 @@
       personalPostLink,
       resolveShiftRoster,
       validatePersonalShifts,
+      validateHalfMonthSchedules,
+      buildEffectiveSchedule,
+      halfMonthPeriod,
       dayHasPersonStoreEvidence,
       observationEntries,
       orderRosterEntries,
@@ -2500,12 +2682,22 @@
   } catch (error) {
     personalLoadError = error.message;
   }
+  let halfMonthSchedules = EMPTY_HALF_MONTH_SCHEDULES;
+  let halfMonthLoadError = null;
+  let halfMonthLoading = false;
+  try {
+    halfMonthSchedules = validateHalfMonthSchedules(window.HALF_MONTH_SCHEDULES ?? EMPTY_HALF_MONTH_SCHEDULES,
+      { roster: data.roster, insights, personal: personalShifts });
+  } catch (error) {
+    halfMonthLoadError = error.message;
+  }
+  let effectiveSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules);
   const storeList = storesOf(insights);
   const lastActualKey = lastActualDateOf(insights);
   const hasInsights = Boolean(insights) && storeList.length > 0;
 
   function getShiftOutlook(key, shift) {
-    const entries = data.schedule[key]?.[shift] ?? [];
+    const entries = effectiveSchedule[key]?.[shift] ?? [];
     const pins = eventStorePins({
       insights,
       entries,
@@ -2729,6 +2921,8 @@
     refreshObservations: document.querySelector("#refresh-observations"),
     personalStatus: document.querySelector("#personal-status"),
     refreshPersonal: document.querySelector("#refresh-personal"),
+    halfMonthStatus: document.querySelector("#half-month-status"),
+    refreshHalfMonth: document.querySelector("#refresh-half-month"),
     selectAll: document.querySelector("#select-all"),
     clearAll: document.querySelector("#clear-all"),
     hideKitchen: document.querySelector("#hide-kitchen"),
@@ -2756,7 +2950,7 @@
   function shiftRoster(key, shift) {
     return resolveShiftRoster({
       insights, observations, personal: personalShifts, dateKey: key, shift,
-      schedule: data.schedule, roster: data.roster, nameCorrections: data.observationNameCorrections,
+      schedule: effectiveSchedule, roster: data.roster, nameCorrections: data.observationNameCorrections,
       personalEventAdditions: data.personalEventAdditions
     });
   }
@@ -2781,6 +2975,25 @@
     link.textContent = label ?? `公式投稿 ${observationTime(post.createdAt)}`;
     link.title = `@${post.authorScreenName} / ${post.id}`;
     return link;
+  }
+
+  function appendHalfMonthSources(target, sources, key, shift, name) {
+    for (const source of sources ?? []) {
+      const link = document.createElement("a");
+      link.className = "half-month-source";
+      link.href = source.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = "予定の出典";
+      link.dataset.sourceKind = source.sourceKind;
+      link.dataset.name = name;
+      link.dataset.date = key;
+      link.dataset.shift = shift;
+      link.dataset.focusKey = `${key}|${shift}|${name}|half-month`;
+      link.title = `${displayName(name)}：${key} ${shift}の半月予定表（${source.period.from}〜${source.period.to}）を開く。当日の出勤確認ではありません`;
+      link.setAttribute("aria-label", link.title);
+      target.append(link);
+    }
   }
 
   function personalNoticeLabel(person) {
@@ -2918,6 +3131,7 @@
       name.tabIndex = -1;
     }
     item.append(name);
+    appendHalfMonthSources(item, entry.halfMonthSources, key, shift, entry.name);
     const descriptions = note ? [note] : [];
     if (kitchenStaff.has(entry.name)) {
       item.classList.add("is-kitchen");
@@ -3119,7 +3333,16 @@
           events: events.filter((event) => !shift || event.shift === shift),
           ...(links !== undefined ? { links: links.filter((link) =>
             !shift || link.scope === shift || link.scope === "unspecified") } : {})
+        })),
+      halfMonth: halfMonthSchedules.schedules
+        .map((source) => ({
+          ...halfMonthProvenance(source), days: source.days.filter((day) => (!key || day.date === key) &&
+            (!shift || day.shifts.includes(shift))).map((day) => ({
+            date: day.date, shifts: day.shifts.filter((item) => !shift || item === shift).slice().sort()
+          })).sort((a, b) => a.date.localeCompare(b.date))
         }))
+        .filter((source) => !key || source.days.length)
+        .sort((a, b) => `${a.name}|${a.period.from}`.localeCompare(`${b.name}|${b.period.from}`))
     };
   }
 
@@ -3129,13 +3352,23 @@
     const presentation = JSON.stringify(sourceFacts());
     if (lastSourcePresentation === presentation) return;
     lastSourcePresentation = presentation;
+    renderSchedulePendingNote();
     if (elements.dayDialog.open) {
       observationsChangedInDialog = true;
       openDayDialog(state.selectedDate, dialogOrigin, true);
     } else {
-      const focusedDate = document.activeElement?.dataset?.date;
+      const focused = document.activeElement;
+      const focusedDate = focused?.dataset?.date;
+      const focusedKey = focused?.dataset?.focusKey;
+      const scroll = [elements.calendar.scrollTop, elements.calendar.scrollLeft];
+      const pageScroll = [window.scrollX, window.scrollY];
       renderCalendar();
-      if (focusedDate) dayButtons.get(focusedDate)?.focus({ preventScroll: true });
+      const target = focusedKey
+        ? [...elements.calendar.querySelectorAll("[data-focus-key]")].find((item) => item.dataset.focusKey === focusedKey)
+        : focusedDate ? dayButtons.get(focusedDate) : null;
+      (target ?? (focusedKey ? elements.calendar : null))?.focus({ preventScroll: true });
+      [elements.calendar.scrollTop, elements.calendar.scrollLeft] = scroll;
+      if (typeof window.scrollTo === "function") window.scrollTo(...pageScroll);
     }
   }
 
@@ -3179,6 +3412,61 @@
       elements.refreshPersonal.disabled = false;
       renderPersonalStatus();
     }
+  }
+
+  function renderHalfMonthStatus() {
+    const status = elements.halfMonthStatus;
+    status.dataset.loaded = halfMonthLoading ? "false" : "true";
+    status.dataset.error = halfMonthLoadError ? "true" : "false";
+    if (halfMonthLoadError) {
+      status.textContent = `半月予定の読込に失敗しました：${halfMonthLoadError}。保存済みの表示は維持します。再読込で確認できます。`;
+      return;
+    }
+    if (halfMonthLoading) {
+      status.textContent = "半月予定を読み込み中…";
+      return;
+    }
+    const labels = { never: "未実行", ok: "更新", partial: "一部失敗あり", unavailable: "取得不能",
+      "no-new": "新規追加なし", "no-results": "候補なし", paused: "一時停止",
+      "budget-exhausted": "取得予算待ち", "outside-window": "対象時間外" };
+    status.textContent = `半月予定：${labels[halfMonthSchedules.lastRun.status]}` +
+      `${halfMonthSchedules.checkedAt ? `・確認 ${observationTime(halfMonthSchedules.checkedAt)}` : ""}。未確認は未投稿・欠勤を意味しません。`;
+  }
+
+  async function refreshHalfMonthData() {
+    if (halfMonthLoading) return;
+    halfMonthLoading = true;
+    elements.refreshHalfMonth.disabled = true;
+    renderHalfMonthStatus();
+    try {
+      const response = await window.fetch("data/half-month-schedules.json", { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const next = validateHalfMonthSchedules(await response.json(),
+        { roster: data.roster, insights, previous: halfMonthSchedules, personal: personalShifts });
+      halfMonthSchedules = next;
+      halfMonthLoadError = null;
+      effectiveSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules);
+      rerenderSourceUpdate();
+    } catch (error) {
+      halfMonthLoadError = error instanceof Error ? error.message : "読込エラー";
+      console.error("Half-month snapshot load failed", error);
+    } finally {
+      halfMonthLoading = false;
+      elements.refreshHalfMonth.disabled = false;
+      renderHalfMonthStatus();
+    }
+  }
+
+  function renderSchedulePendingNote() {
+    const year = state.visibleMonth.getFullYear();
+    const month = state.visibleMonth.getMonth();
+    const dates = getVisibleMonthDates(year, month, state.dateFrom, state.dateTo).map(dateKey);
+    const note = dates.length ? schedulePendingNote(insights, halfMonthSchedules,
+      { dateFrom: dates[0], dateTo: dates.at(-1) }) : null;
+    elements.schedulePendingNote.hidden = !note;
+    elements.schedulePendingNote.textContent = note?.short ?? "";
+    elements.schedulePendingNote.title = displayText(note?.long ?? "");
+    elements.schedulePendingNote.setAttribute("aria-label", displayText(note?.long ?? ""));
   }
 
   function createShiftSection(key, date, shift, showForecast = state.viewMode === "forecast", confirmedOnly = false) {
@@ -3239,7 +3527,7 @@
     const movedFrom = earlierShiftPlaces(insights, key, shift);
     // 見込みの計算には予定表の顔ぶれを使う。記録のある日は使われないが、
     // 記録の顔ぶれを入れると「答えを見て予測する」ことになる。
-    const postedNames = (data.schedule[key]?.[shift] ?? []).map((entry) => entry.name);
+    const postedNames = (effectiveSchedule[key]?.[shift] ?? []).map((entry) => entry.name);
     if (outlook) {
       section.append(createStoreOutlook(outlook, shift, postedNames));
     }
@@ -3269,7 +3557,7 @@
         ? "以下は投稿と未照合の予定です。店舗は推測で、不在・出勤確認ではありません。"
       : outlook?.basis === "actual"
         ? "店舗のみ実績 ／ 人物は公開予定・行き先は推測です。"
-        : !(data.schedule[key]?.[shift]?.length > 0)
+        : !(effectiveSchedule[key]?.[shift]?.length > 0)
           ? "お給仕の公開予定・人物の記録は未確認です。休業や不在の確定ではありません。"
         : "公開予定 ／ 店舗の割り振りは推測です。イベント主役は別表示。";
     evidence.classList.add("visually-hidden");
@@ -3616,6 +3904,7 @@
       elements.resultSummary.textContent = "選択した期間の外です。表示条件で期間を変更してください。";
       return;
     }
+    effectiveSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules);
     const focused = preserveInteraction ? document.activeElement : null;
     const focusedId = focused?.id;
     const focusedKey = focused?.dataset?.focusKey;
@@ -3640,7 +3929,7 @@
     shifts.forEach((shift, index) => {
       const renderKey = JSON.stringify({
         key, shift, confirmedOnly, today: tokyoToday(), selected: [...state.selectedMaids], kitchen: state.hideKitchen,
-        schedule: data.schedule[key]?.[shift], recorded: insights.actualRoster?.[key]?.[shift],
+        schedule: effectiveSchedule[key]?.[shift], recorded: insights.actualRoster?.[key]?.[shift],
         stores: insights.actual?.[key]?.[shift], displayNames: data.displayNames,
         ...sourceFacts(key, shift)
       });
@@ -3773,6 +4062,8 @@
   }
 
   function renderCalendar() {
+    effectiveSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules);
+    renderSchedulePendingNote();
     closeDayDialog();
     const year = state.visibleMonth.getFullYear();
     const monthIndex = state.visibleMonth.getMonth();
@@ -3874,7 +4165,7 @@
         const { outlook, pins } = confirmedOnly ? { outlook: null, pins: new Map() } : getShiftOutlook(key, shift);
         // 記録のある日は記録の割り振りを使う。カレンダーと同じものを引かないと、
         // 同じ人・同じ日で別の店を出してしまう。
-        const members = (data.schedule[key]?.[shift] ?? []).map((entry) => entry.name);
+        const members = (effectiveSchedule[key]?.[shift] ?? []).map((entry) => entry.name);
         shiftCache.set(id, {
           outlook,
           observed: roster.observed,
@@ -3918,7 +4209,7 @@
 
     shown.forEach((name) => {
       const plan = maidItinerary({
-        schedule: data.schedule,
+        schedule: effectiveSchedule,
         name,
         dates,
         shifts,
@@ -3959,6 +4250,7 @@
     nameLabel.className = "maid-name";
     nameLabel.textContent = displayName(plan.name);
     nameLabel.dataset.name = plan.name;
+    nameLabel.dataset.focusKey = `${plan.name}|profile`;
     if (account) {
       nameLabel.href = `https://x.com/${account}`;
       nameLabel.target = "_blank";
@@ -4005,9 +4297,11 @@
     const item = document.createElement("li");
     item.className = `maid-plan-stop is-${stop.state ?? "unknown"}`;
     item.dataset.date = stop.dateKey;
+    item.dataset.shift = stop.shift;
     const source = sameDayPersonalPost(name, stop.dateKey, stop.shift);
     const when = document.createElement(source ? "a" : "span");
     when.className = "maid-plan-when";
+    when.dataset.focusKey = `${stop.dateKey}|${stop.shift}|${name}|when`;
     const [, month, date] = stop.dateKey.split("-").map(Number);
     // 曜日はカレンダーと同じ書き方で添える。「9/3」だけでは何曜日か分からない。
     const weekday = weekdays[new Date(`${stop.dateKey}T00:00:00`).getDay()];
@@ -4026,6 +4320,7 @@
       ? stop.storeIds.map((id) => storeShort(insights, id)).join("・")
       : stop.storeId ? storeShort(insights, stop.storeId) : "未発表";
     item.append(when, where);
+    appendHalfMonthSources(item, stop.halfMonthSources, stop.dateKey, stop.shift, name);
     const evidence = document.createElement("span");
     evidence.className = "maid-plan-evidence";
     evidence.textContent = stop.observed ? "記録" : stop.recorded ? "実績"
@@ -4037,7 +4332,11 @@
       : stop.officialNotice ? (stop.officialNotice.conflict ? "pending" : "official-announced")
       : stop.personal ? "personal" : stop.personalNotice?.conflict ? "pending" : stop.host ? "event" : "scheduled";
     item.append(evidence);
-    for (const post of stop.sourcePosts) item.append(createObservationLink(post));
+    for (const post of stop.sourcePosts) {
+      const link = createObservationLink(post);
+      link.dataset.focusKey = `${stop.dateKey}|${stop.shift}|${name}|official|${post.id}`;
+      item.append(link);
+    }
     // 見習いにゃんこ。判定できた日だけ印を付ける。null は「まだ判定していない」。
     if (stop.trainee === true) {
       const mark = document.createElement("span");
@@ -4306,6 +4605,7 @@
   elements.closeDialog.addEventListener("click", closeDayDialog);
   elements.refreshObservations.addEventListener("click", refreshObservedData);
   elements.refreshPersonal.addEventListener("click", refreshPersonalData);
+  elements.refreshHalfMonth.addEventListener("click", refreshHalfMonthData);
   elements.dayDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
     closeDayDialog();
@@ -4346,16 +4646,6 @@
     elements.scheduleSystemNote.textContent = systemNote;
     elements.scheduleSystemNote.hidden = false;
   }
-  // 制度変更の説明は「出していない人がいることがある」までしか言えない。
-  // 実際に誰が出していないかは分かっているので、分かるほうを出す。
-  // 提出が揃えば pending が空になり、この一文は自分で消える。
-  const pendingNote = schedulePendingNote(insights);
-  if (pendingNote && elements.schedulePendingNote) {
-    elements.schedulePendingNote.textContent = pendingNote.short;
-    elements.schedulePendingNote.title = displayText(pendingNote.long);
-    elements.schedulePendingNote.setAttribute("aria-label", displayText(pendingNote.long));
-    elements.schedulePendingNote.hidden = false;
-  }
   elements.maidFilterDetails.open =
     !window.matchMedia("(max-width: 45rem)").matches;
   syncViewMode();
@@ -4363,6 +4653,7 @@
   renderCalendar();
   renderObservationStatus();
   renderPersonalStatus();
+  renderHalfMonthStatus();
   if (!window.OBSERVED_SHIFTS) {
     refreshObservedData();
     window.setInterval(() => {
@@ -4373,6 +4664,12 @@
     refreshPersonalData();
     window.setInterval(() => {
       if (!document.hidden && !elements.dayDialog.open) refreshPersonalData();
+    }, 60000);
+  }
+  if (!window.HALF_MONTH_SCHEDULES && typeof window.fetch === "function") {
+    refreshHalfMonthData();
+    window.setInterval(() => {
+      if (!document.hidden && !elements.dayDialog.open) refreshHalfMonthData();
     }, 60000);
   }
 })();

@@ -13,6 +13,230 @@ for (const file of ["schedule.js", "store-insights.js"]) {
 const insights = context.window.STORE_INSIGHTS;
 const schedule = context.window.SCHEDULE_DATA;
 const before = JSON.stringify(insights);
+const halfDays = [
+  ["2026-09-02", "夜"], ["2026-09-05", "昼"], ["2026-09-07", "昼"],
+  ["2026-09-10", "夜"], ["2026-09-12", "昼"], ["2026-09-14", "昼"]
+];
+const copyOf = (value) => JSON.parse(JSON.stringify(value));
+function halfSource(name = "いと", overrides = {}) {
+  const createdAt = "2026-09-06T11:57:53Z";
+  const id = (((BigInt(Date.parse(createdAt)) - 1288834974657n) << 22n) + 1n).toString();
+  const handle = insights.maidTendency[name]?.x ?? "half_fixture";
+  return {
+    id, url: `https://x.com/${handle}/status/${id}`, name, authorId: "123456789",
+    authorScreenName: handle, createdAt, observedAt: "2026-09-06T12:00:00Z",
+    sourceKind: "half-month-schedule",
+    period: { from: "2026-09-01", to: "2026-09-15", printedYear: null, yearBasis: "post-context" },
+    days: halfDays.map(([date, shift]) => ({ date, shifts: [shift] })),
+    ...overrides
+  };
+}
+const halfFeed = (sources = [halfSource()]) => ({
+  schemaVersion: 1, complete: false, checkedAt: "2026-09-06T12:00:00Z",
+  lastSuccessAt: "2026-09-06T12:00:00Z", schedules: sources, lastRun: { status: "ok" }
+});
+
+test("half-month feed strictly validates the public-only contract and calendar", () => {
+  const snapshot = halfFeed();
+  assert.equal(api.validateHalfMonthSchedules(snapshot, { roster: schedule.roster, insights }), snapshot);
+  const empty = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "data", "half-month-schedules.json"), "utf8"));
+  assert.equal(api.validateHalfMonthSchedules(empty), empty);
+  assert.deepEqual(empty, { schemaVersion: 1, complete: false, checkedAt: null, lastSuccessAt: null,
+    schedules: [], lastRun: { status: "never" } }, "the public feed starts never/empty, not seeded facts");
+  for (const status of ["never", "ok", "partial", "unavailable", "no-new", "no-results",
+    "paused", "budget-exhausted", "outside-window"]) {
+    assert.ok(api.validateHalfMonthSchedules({ ...snapshot, lastRun: { status } }));
+  }
+  const invalid = [
+    x => { x.extra = {}; }, x => { delete x.complete; }, x => { x.complete = true; },
+    x => { x.schemaVersion = "1"; }, x => { x.lastRun.raw = "not public"; },
+    x => { x.lastRun.status = "success"; }, x => { x.schedules = {}; },
+    x => { x.checkedAt = "2026-09-06T21:00:00+09:00"; },
+    x => { x.checkedAt = "2026-02-30T12:00:00Z"; },
+    x => { x.lastSuccessAt = "2026-09-07T00:00:00Z"; },
+    x => { x.schedules[0].id = Number(x.schedules[0].id); },
+    x => { x.schedules[0].id = `0${x.schedules[0].id}`; },
+    x => { x.schedules[0].id = "9".repeat(26); },
+    x => { x.schedules[0].authorId = "0"; },
+    x => { x.schedules[0].authorId = 123456789; },
+    x => { x.schedules[0].authorScreenName = "someone/else"; },
+    x => { x.schedules[0].url += "?tracking=1"; },
+    x => { x.schedules[0].url = "javascript:alert(1)"; },
+    x => { x.schedules[0].url = x.schedules[0].url.replace("https:", "http:"); },
+    x => { x.schedules[0].name = "unknown"; }, x => { x.schedules[0].name += "\n"; },
+    x => { x.schedules[0].name = null; },
+    x => { x.schedules[0].createdAt = "2026-09-06T11:58:00Z"; },
+    x => { x.schedules[0].createdAt = "2026-09-06T11:57:53"; },
+    x => { x.schedules[0].observedAt = "2026-09-06T11:00:00Z"; },
+    x => { x.schedules[0].sourceKind = "personal"; },
+    x => { x.schedules[0].raw = "private"; },
+    x => { x.schedules[0].imageUrl = "https://pbs.twimg.com/media/fixture.jpg"; },
+    x => { x.schedules[0].analysisCache = {}; },
+    x => { x.schedules[0].excerpt = "invented"; },
+    x => { x.schedules[0].period.from = "2026-09-02"; },
+    x => { x.schedules[0].period.to = "2026-09-14"; },
+    x => { x.schedules[0].period.to = "2026-09-31"; },
+    x => { x.schedules[0].period.from = "2026-02-30"; },
+    x => { x.schedules[0].period.printedYear = 2026; },
+    x => { x.schedules[0].period.yearBasis = "inferred"; },
+    x => { x.schedules[0].period = { from: "2026-07-01", to: "2026-07-15", printedYear: null, yearBasis: "post-context" }; },
+    x => { x.schedules[0].period.yearBasis = "printed"; },
+    x => { x.schedules[0].period.lineId = "fabricated"; },
+    x => { x.schedules[0].days = null; },
+    x => { x.schedules[0].days = []; },
+    x => { x.schedules[0].days[0].date = "2026-09-16"; },
+    x => { x.schedules[0].days[0].date = "2026-09-01T00:00:00Z"; },
+    x => { x.schedules[0].days.push(x.schedules[0].days[0]); },
+    x => { x.schedules[0].days[0].shifts = []; },
+    x => { x.schedules[0].days[0].shifts = ["昼", "昼"]; },
+    x => { x.schedules[0].days[0].shifts = ["昼", "夜", "昼"]; },
+    x => { x.schedules[0].days[0].shifts = ["長め昼"]; },
+    x => { x.schedules[0].days[0].shifts = "昼"; },
+    x => { x.schedules[0].days[0].storeId = "s1"; },
+    x => { x.schedules.push(copyOf(x.schedules[0])); }
+  ];
+  for (const mutate of invalid) {
+    const bad = copyOf(snapshot);
+    mutate(bad);
+    assert.throws(() => api.validateHalfMonthSchedules(bad, { roster: schedule.roster, insights }), mutate.toString());
+  }
+  const printed = copyOf(snapshot);
+  printed.schedules[0].period = { from: "2024-02-16", to: "2024-02-29", printedYear: 2024, yearBasis: "printed" };
+  printed.schedules[0].days = [{ date: "2024-02-29", shifts: ["昼", "夜"] }];
+  assert.ok(api.validateHalfMonthSchedules(printed));
+  printed.schedules[0].period.printedYear = 2023;
+  assert.throws(() => api.validateHalfMonthSchedules(printed));
+  printed.schedules[0].period = { from: "2023-02-16", to: "2023-02-29", printedYear: 2023, yearBasis: "printed" };
+  assert.throws(() => api.validateHalfMonthSchedules(printed), "non-leap dates never roll forward");
+  assert.deepEqual(api.halfMonthPeriod("2026-12-31"), { from: "2026-12-16", to: "2026-12-31" });
+  assert.deepEqual(api.halfMonthPeriod("2024-02-29"), { from: "2024-02-16", to: "2024-02-29" });
+  assert.equal(api.halfMonthPeriod("2023-02-29"), null);
+  assert.equal(api.halfMonthPeriod("0000-01-01"), null);
+  const fullMonth = copyOf(snapshot);
+  fullMonth.schedules.push(halfSource("いと", {
+    period: { from: "2026-09-16", to: "2026-09-30", printedYear: null, yearBasis: "text" },
+    days: [{ date: "2026-09-30", shifts: ["昼", "夜"] }]
+  }));
+  assert.ok(api.validateHalfMonthSchedules(fullMonth), "one original post can cover two disjoint half-months");
+  const separatelyObserved = copyOf(fullMonth);
+  separatelyObserved.checkedAt = separatelyObserved.schedules[1].observedAt = "2026-09-07T00:00:00Z";
+  assert.ok(api.validateHalfMonthSchedules(separatelyObserved),
+    "separately verified halves retain their own observation times, not a new post identity");
+  fullMonth.schedules[1].authorId = "987654321";
+  assert.throws(() => api.validateHalfMonthSchedules(fullMonth), "split periods cannot rebind the author");
+  assert.throws(() => api.validateHalfMonthSchedules(snapshot, {
+    previous: halfFeed([halfSource("いと", { authorId: "987654321" })])
+  }));
+  assert.throws(() => api.validateHalfMonthSchedules(snapshot, {
+    personal: { posts: [halfSource("いと", { authorId: "987654321" })] }
+  }));
+  assert.throws(() => api.validateHalfMonthSchedules(snapshot, {
+    insights: { maidTendency: { "いと": { x: "different" } } }
+  }));
+  for (const [createdAt, from, to] of [
+    ["2026-12-31T15:05:00Z", "2026-12-16", "2026-12-31"],
+    ["2026-12-31T14:55:00Z", "2027-01-01", "2027-01-15"],
+    ["2026-09-15T03:00:00Z", "2026-09-16", "2026-09-30"]
+  ]) {
+    const id = ((BigInt(Date.parse(createdAt)) - 1288834974657n) << 22n).toString();
+    const source = halfSource("いと", { createdAt, observedAt: createdAt, id,
+      url: `https://x.com/${halfSource().authorScreenName}/status/${id}`,
+      period: { from, to, printedYear: null, yearBasis: "post-context" },
+      days: [{ date: from, shifts: ["昼"] }] });
+    assert.ok(api.validateHalfMonthSchedules({ ...halfFeed([source]), checkedAt: createdAt, lastSuccessAt: createdAt }));
+  }
+});
+
+test("effective plans are an immutable manual/half union, never event or attendance evidence", () => {
+  const snapshot = halfFeed();
+  const manual = { "2026-09-07": {
+    "昼": [{ name: "いと", featured: true, eventLabel: "手動の記念日" }, { name: "あむ" }],
+    "夜": [{ name: "いと" }]
+  }};
+  const beforeInputs = JSON.stringify([manual, snapshot, schedule, insights]);
+  const effective = api.buildEffectiveSchedule(manual, snapshot);
+  assert.ok(Object.isFrozen(effective));
+  assert.ok(Object.isFrozen(effective["2026-09-07"]["昼"]));
+  const ito = effective["2026-09-07"]["昼"].find(entry => entry.name === "いと");
+  assert.equal(effective["2026-09-07"]["昼"].filter(entry => entry.name === "いと").length, 1);
+  assert.equal(ito.featured, true);
+  assert.equal(ito.eventLabel, "手動の記念日");
+  assert.equal(ito.halfMonthSources[0].sourceKind, "half-month-schedule");
+  assert.ok(Object.isFrozen(ito.halfMonthSources[0].period));
+  assert.throws(() => { ito.name = "changed"; });
+  assert.equal(effective["2026-09-07"]["夜"][0].name, "いと", "opposite manual shift is never deleted");
+  assert.equal(effective["2026-09-07"]["夜"][0].halfMonthSources, undefined, "no counterpart provenance");
+  assert.equal(effective["2026-09-10"]["夜"][0].featured, undefined);
+  assert.deepEqual(api.dayEvents({ ...schedule, schedule: manual }, insights, "2026-09-07")
+    .map(event => event.name), ["いと"], "only manual event metadata is used");
+  const pureHalf = api.buildEffectiveSchedule({}, snapshot);
+  assert.deepEqual(Object.entries(pureHalf).flatMap(([date, day]) => Object.keys(day).map(shift => [date, shift])), halfDays);
+  assert.equal(api.dayHasPersonStoreEvidence(insights, null, "2026-09-07"), false);
+  assert.equal(api.personalPostLink({ personal: { posts: [] }, insights, observations: null,
+    dateKey: "2026-09-07", shift: "昼", name: "いと" }), null, "a half source never becomes a same-day link");
+  const replaced = halfFeed([halfSource("いと", { days: [{ date: "2026-09-08", shifts: ["昼"] }] })]);
+  const changed = api.buildEffectiveSchedule(manual, replaced);
+  assert.equal(changed["2026-09-10"], undefined, "producer's current winner replaces only automatic facts");
+  assert.equal(changed["2026-09-07"]["夜"][0].name, "いと");
+  assert.equal(JSON.stringify([manual, snapshot, schedule, insights]), beforeInputs);
+});
+
+test("half union preserves curated, official, personal absence/return and kitchen semantics", () => {
+  const publicObserved = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "data", "observed-shifts.json"), "utf8"));
+  const publicPersonal = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "data", "personal-shifts.json"), "utf8"));
+  const inputBefore = JSON.stringify([schedule, insights, publicObserved, publicPersonal]);
+  const effective = api.buildEffectiveSchedule(schedule.schedule, halfFeed());
+  const resolve = (dateKey, shift, planned = effective, personal = publicPersonal) => api.resolveShiftRoster({
+    insights, observations: publicObserved, personal, dateKey, shift, schedule: planned,
+    roster: schedule.roster, nameCorrections: schedule.observationNameCorrections,
+    personalEventAdditions: schedule.personalEventAdditions
+  });
+  for (const [date, shift, store] of [["2026-09-02", "昼", "s2"], ["2026-09-02", "夜", "s1"], ["2026-09-05", "昼", "s1"]]) {
+    const old = resolve(date, shift, schedule.schedule);
+    const current = resolve(date, shift);
+    assert.deepEqual(current.entries.map(({ halfMonthSources, ...entry }) => entry), old.entries,
+      `${date} ${shift}: automatic union does not change the existing roster/count`);
+    const entry = current.entries.find(entry => entry.name === "いと");
+    assert.ok(entry, `${date} ${shift} retains Ito from its own evidence`);
+    assert.equal(current.assignment?.byMaid.get("いと")?.storeId ?? current.observed.byMaid.get("いと")?.storeIds[0], store);
+    assert.equal(entry.halfMonthSources?.length ?? 0, date === "2026-09-02" && shift === "昼" ? 0 : 1);
+  }
+  for (const [date, shift] of halfDays) {
+    assert.equal(effective[date][shift].filter(entry => entry.name === "いと").length, 1);
+    const result = resolve(date, shift);
+    assert.equal(result.entries.filter(entry => entry.name === "いと").length, 1);
+  }
+  const key = "2026-09-07";
+  const post = { id: "2097000000000000001", url: "https://x.com/half_fixture/status/2097000000000000001",
+    name: "いと", authorId: "123456789", authorScreenName: "half_fixture", date: key,
+    createdAt: `${key}T02:00:00Z`, observedAt: `${key}T03:00:00Z`,
+    events: [{ kind: "absence", shift: "昼", excerpt: "synthetic cancellation" }] };
+  const cancelled = { posts: [post] };
+  assert.equal(resolve(key, "昼", effective, cancelled).entries.some(entry => entry.name === "いと"), false);
+  const returnPost = { ...post, id: "2097000000000000002", createdAt: `${key}T04:00:00Z`,
+    events: [{ kind: "return", shift: "昼", excerpt: "synthetic return" }] };
+  const returned = resolve(key, "昼", effective, { posts: [post, returnPost] });
+  assert.equal(returned.entries.filter(entry => entry.name === "いと").length, 1);
+  assert.equal(returned.entries.find(entry => entry.name === "いと").halfMonthSources.length, 1);
+  const kitchens = schedule.kitchenStaff;
+  assert.equal(kitchens.length, 5);
+  const allCooks = halfFeed(kitchens.map((name, index) => {
+    const original = halfSource(name);
+    const id = (BigInt(original.id) + BigInt(index)).toString();
+    return { ...original, id, authorId: String(100 + index),
+      url: `https://x.com/${original.authorScreenName}/status/${id}`,
+      days: [{ date: key, shifts: ["昼"] }] };
+  }));
+  api.validateHalfMonthSchedules(allCooks, { roster: schedule.roster, insights });
+  const cookPlans = api.buildEffectiveSchedule({}, allCooks);
+  const outlook = api.getStoreOutlook({ insights, dateKey: key, shift: "昼" });
+  const cookOutlook = api.applyHomeStaff(insights, outlook, cookPlans[key]["昼"].map(entry => entry.name),
+    schedule.homeStore, kitchens);
+  assert.deepEqual(cookOutlook.entries, api.applyHomeStaff(insights, outlook, [], schedule.homeStore, kitchens).entries,
+  "all five kitchen members remain excluded from floor headcounts");
+  assert.match(cookOutlook.summary, /キッチンにゃんこ5人.*この数に入れていません/);
+  assert.equal(JSON.stringify([schedule, insights, publicObserved, publicPersonal]), inputBefore);
+});
 const makePost = (id, storeId, names) => ({
   id, url: `https://x.com/akibazettai/status/${id}`,
   authorId: "822429861218131969", authorScreenName: "akibazettai",

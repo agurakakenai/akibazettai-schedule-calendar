@@ -78,6 +78,25 @@ def personal_snapshot():
     return value
 
 
+def half_month_snapshot():
+    created = '2026-09-05T10:00:00Z'
+    tid = make_id(created)
+    return {
+        'schemaVersion': 1, 'complete': False,
+        'checkedAt': collector.iso(NOW), 'lastSuccessAt': collector.iso(NOW),
+        'schedules': [{
+            'id': tid, 'url': f'https://x.com/ito_zettai/status/{tid}',
+            'name': 'いと', 'authorId': '2080944098043977728',
+            'authorScreenName': 'ito_zettai', 'createdAt': created,
+            'observedAt': collector.iso(NOW), 'sourceKind': 'half-month-schedule',
+            'period': {'from': '2026-09-01', 'to': '2026-09-15',
+                       'printedYear': None, 'yearBasis': 'post-context'},
+            'days': [{'date': '2026-09-07', 'shifts': ['昼']}],
+        }],
+        'lastRun': {'status': 'ok'},
+    }
+
+
 def payload(tid=TID, created=CREATED, text=None):
     return {
         'id_str': tid, 'user': {'id_str': collector.AUTHOR_ID, 'screen_name': collector.AUTHOR},
@@ -150,6 +169,7 @@ class WorkspaceTests(unittest.TestCase):
         self.write('data/store-insights.js', b'window.STORE_INSIGHTS = {};\r\n')
         self.write('data/observed-shifts.json', pages.json_bytes(snapshot()))
         self.write('data/personal-shifts.json', pages.json_bytes(personal_snapshot()))
+        self.write('data/half-month-schedules.json', pages.json_bytes(half_month_snapshot()))
         self.write('assets/events/flower.svg', b'<svg xmlns="http://www.w3.org/2000/svg"/>\r\n')
         self.write('tools/data/shifts.csv', ('tweet_id,maid\n' + CURATED + ',あむ\n').encode('utf-8'))
 
@@ -176,6 +196,32 @@ class WorkspaceTests(unittest.TestCase):
 
 
 class ProjectionTests(WorkspaceTests):
+    def test_half_month_projection_is_separate_from_same_day_evidence(self):
+        value = half_month_snapshot()
+        projected = pages.half_month_projection(value)
+        self.assertEqual(projected, value)
+        self.assertNotIn('events', projected['schedules'][0])
+        self.assertNotIn('links', projected['schedules'][0])
+        self.assertNotIn('storeId', projected['schedules'][0])
+        self.assertEqual(value['schedules'][0]['period']['printedYear'], None)
+
+    def test_half_month_projection_rejects_bad_dates_and_invented_source(self):
+        for field, replacement in (
+                ('sourceKind', 'personal'), ('url', 'https://example.com/'),
+                ('days', [{'date': '2026-09-16', 'shifts': ['昼']}]),
+                ('period', {'from': '2026-09-01', 'to': '2026-09-14',
+                            'printedYear': None, 'yearBasis': 'post-context'})):
+            value = half_month_snapshot()
+            value['schedules'][0][field] = replacement
+            with self.subTest(field=field), self.assertRaises(pages.PagesError):
+                pages.half_month_projection(value)
+
+    def test_half_month_duplicate_json_field_is_rejected_before_projection(self):
+        source = self.write('data/half-month-schedules.json',
+                            b'{"schemaVersion":1,"schemaVersion":1}')
+        with self.assertRaisesRegex(pages.PagesError, 'invalid_half_month_snapshot'):
+            pages.load_public_half_month_snapshot(source)
+
     def test_official_notices_are_short_public_guidance_not_roster_facts(self):
         state = snapshot()
         post = state['posts'][0]

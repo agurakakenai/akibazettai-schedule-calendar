@@ -1323,7 +1323,7 @@ assert.equal(
   const onTheDay = scheduleSystemNote(insights, changedAt);
   assert.ok(onTheDay, "the note must show on the day the system changed");
   assert.ok(
-    onTheDay.includes("提出していない"),
+    onTheDay.includes("予定が未確認"),
     "the note must explain why some maids are missing"
   );
   assert.ok(onTheDay.includes("9月"), "the note must name the month it changed");
@@ -1415,6 +1415,38 @@ assert.equal(
   assert.ok(sparse, "a name with no recent count is still worth reporting");
   assert.ok(sparse.long.includes("だれか"), "the name must survive a missing count");
   assert.doesNotMatch(sparse.long, /だれか（最近/, "a missing count must not print as blank");
+}
+
+{
+  const before = JSON.stringify(insights.schedulePending);
+  const first = { name: "いと", period: { from: "2026-09-01", to: "2026-09-15" } };
+  const snapshot = { schedules: [first] };
+  const scope = (dateFrom, dateTo) => ({ dateFrom, dateTo });
+  const firstNote = schedulePendingNote(insights, snapshot, scope("2026-09-01", "2026-09-15"));
+  assert.ok(firstNote.short.includes("7名"));
+  assert.ok(!firstNote.long.includes("いと"), "only a confirmed source for this very half clears a pending name");
+  const secondNote = schedulePendingNote(insights, snapshot, scope("2026-09-16", "2026-09-30"));
+  assert.ok(secondNote.short.includes("8名"));
+  assert.ok(secondNote.long.includes("いと"), "first-half proof says nothing about the second half");
+  const monthNote = schedulePendingNote(insights, snapshot, scope("2026-09-01", "2026-09-30"));
+  assert.ok(monthNote.short.includes("一部の半月を確認済み"));
+  assert.ok(monthNote.long.includes("2026-09-16〜2026-09-30 未確認"));
+  assert.doesNotMatch(monthNote.long, /1シフトあたり/, "partial coverage must not repeat an overcounted deficit");
+  snapshot.schedules.push({ name: "いと", period: { from: "2026-09-16", to: "2026-09-30" } });
+  assert.ok(!schedulePendingNote(insights, snapshot, scope("2026-09-01", "2026-09-30")).long.includes("いと"));
+  assert.ok(schedulePendingNote(insights, snapshot, scope("2026-10-01", "2026-10-15")).long.includes("いと"));
+  assert.ok(schedulePendingNote(insights, snapshot, scope("2025-09-01", "2025-09-15")).long.includes("いと"));
+  const one = { schedulePending: { ...insights.schedulePending, pending: ["いと"] } };
+  assert.equal(schedulePendingNote(one, snapshot, scope("2026-09-02", "2026-09-14")), null,
+    "a filtered subset still uses its complete half's proof");
+  assert.equal(schedulePendingNote(one, snapshot, scope("2026-09-01", "2026-09-30")), null);
+  assert.ok(schedulePendingNote(one, snapshot, scope("2026-09-30", "2026-10-01")));
+  assert.ok(schedulePendingNote(one, snapshot), "without a date scope old evidence cannot clear pendingness");
+  for (const note of [firstNote, secondNote, monthNote]) {
+    assert.match(note.short, /未確認/);
+    assert.doesNotMatch(note.short, /未投稿|未提出|出していません/);
+  }
+  assert.equal(JSON.stringify(insights.schedulePending), before, "the historical deficit table remains untouched");
 }
 
 // 店舗ごとにまとめる。店は店舗の並び順、店の中はサイト掲載順（渡した順）のまま。
@@ -1674,7 +1706,7 @@ assert.equal(
     const measured = coverage.byStore[store.id];
     assert.ok(note.includes("掲載対象外"), `${store.id}: coverage measures unlisted members`);
     assert.ok(note.includes("見習いとは限りません"), "unlisted members must not be called trainees");
-    assert.ok(note.includes("未提出の人数とは別"), "pending submissions are another population");
+    assert.ok(note.includes("予定が未確認の人数とは別"), "unconfirmed schedules are another population");
     assert.ok(
       note.includes(`${Math.round(measured.cellsWithUnlistedRate * 100)}%の店舗枠`),
       `${store.id}: the share must come from rosterCoverage, not from prose`

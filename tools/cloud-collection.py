@@ -29,6 +29,7 @@ repository are never artifacts.
 """
 import argparse
 import copy
+import csv
 import datetime as dt
 import hashlib
 import importlib.util
@@ -53,10 +54,12 @@ SNAPSHOT = 'observed-shifts.json'
 HTTP_STATE = 'observed-shifts.http-state.json'
 PERSONAL = 'personal-shifts.json'
 AI_USAGE = 'ai-usage.json'
+HALF_MONTH = 'half-month-schedules.json'
+SOURCE_USAGE = 'source-usage.json'
 ANALYSIS_BUFFER = 'official-analysis-buffer.json'
 LEASE = 'lease.json'
 OWNER_FILE = 'state-owner.json'
-FILES = {SNAPSHOT, HTTP_STATE, PERSONAL, AI_USAGE, OWNER_FILE, LEASE}
+FILES = {SNAPSHOT, HTTP_STATE, PERSONAL, AI_USAGE, HALF_MONTH, SOURCE_USAGE, OWNER_FILE, LEASE}
 DAILY_SCHEDULE = '30 3-6,8-11 * * *'
 JST = dt.timezone(dt.timedelta(hours=9))
 MANAGER = 'cloud-collection/v1'
@@ -110,6 +113,30 @@ def load_analysis_state():
 def load_personal_saved():
     spec = importlib.util.spec_from_file_location(
         'cloud_personal_saved', ROOT / 'tools' / 'personal-saved.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_half_month_state():
+    spec = importlib.util.spec_from_file_location(
+        'cloud_half_month_state', ROOT / 'tools' / 'half-month-schedules.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_half_month_saved():
+    spec = importlib.util.spec_from_file_location(
+        'cloud_half_month_saved', ROOT / 'tools' / 'half-month-saved.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_source_state():
+    spec = importlib.util.spec_from_file_location(
+        'cloud_source_state', ROOT / 'tools' / 'source-state.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -192,7 +219,7 @@ def integer(value, minimum=0, maximum=10**9):
 
 
 def validate_limits(value, collector):
-    keys(value, ('search.yahoo.co.jp', collector.POST_HOST))
+    keys(value, ('search.yahoo.co.jp', collector.POST_HOST, 'pbs.twimg.com'))
     for until in value.values():
         collector.timestamp(until)
 
@@ -299,6 +326,29 @@ def validate_ai_usage(path):
     state, raw = read_json(path)
     load_analysis_state().validate_state(state)
     return state, raw
+
+
+def validate_half_month(path):
+    state, raw = read_json(path)
+    scan_private(state)
+    load_half_month_state().validate_state(state, private=True)
+    return state, raw
+
+
+def validate_source_usage(path):
+    state, raw = read_json(path)
+    scan_private(state)
+    load_source_state().validate_state(state)
+    return state, raw
+
+
+def validate_half_month_links(half_month, source_usage, usage, personal):
+    if half_month is not None:
+        require(source_usage is not None and usage is not None, 'missing_half_month_accounting')
+        load_half_month_saved().validate_accounting(half_month, usage, load_half_month_state())
+    if source_usage is not None:
+        require(personal is not None, 'missing_source_personal_baseline')
+        load_source_state().validate_legacy(source_usage, personal, usage)
 
 
 def validate_usage_links(usage, personal, personal_collector=None):
@@ -657,6 +707,12 @@ class StateRepository:
         if has_ai:
             usage, _ = validate_ai_usage(self.path / AI_USAGE)
         validate_usage_links(usage, personal_state, personal)
+        extra_states = {}
+        for name, validate in ((HALF_MONTH, validate_half_month), (SOURCE_USAGE, validate_source_usage)):
+            if (self.path / name).exists():
+                extra_states[name] = validate(self.path / name)[0]
+        validate_half_month_links(extra_states.get(HALF_MONTH), extra_states.get(SOURCE_USAGE),
+                                  usage, personal_state)
         if leased:
             validate_lease(self.path / LEASE, collector)
         else:
@@ -669,6 +725,9 @@ class StateRepository:
             self.git('add', '--', PERSONAL, reason='state_stage_failed')
         if has_ai:
             self.git('add', '--', AI_USAGE, reason='state_stage_failed')
+        for name in (HALF_MONTH, SOURCE_USAGE):
+            if (self.path / name).exists():
+                self.git('add', '--', name, reason='state_stage_failed')
         if leased:
             self.git('add', '--', LEASE, reason='state_stage_failed')
         else:
@@ -701,18 +760,25 @@ def checked_paths(root, output, recovery):
         require(not path.is_symlink(), 'unsafe_recovery_path')
     if recovery.exists():
         require(recovery.is_dir() and {p.name for p in recovery.iterdir()} <= {
-            SNAPSHOT, HTTP_STATE, PERSONAL, AI_USAGE},
+            SNAPSHOT, HTTP_STATE, PERSONAL, AI_USAGE, HALF_MONTH, SOURCE_USAGE},
                 'unsafe_recovery_path')
     return output, recovery
 
 
 def copy_pair(source, destination, collector, *, include_personal=False, personal=None,
-              include_ai=False):
+              include_ai=False, include_half_month=False, include_source=False):
     _, canonical = validate_snapshot(source / SNAPSHOT, collector)
     _, transport = validate_transport(source / HTTP_STATE, collector)
     personal_state, extra = validate_personal(source / PERSONAL, personal) if include_personal else (None, None)
     usage, ai = validate_ai_usage(source / AI_USAGE) if include_ai else (None, None)
     validate_usage_links(usage, personal_state, personal)
+    extra_states = {}
+    half_month_state = source_state = None
+    if include_half_month:
+        half_month_state, extra_states[HALF_MONTH] = validate_half_month(source / HALF_MONTH)
+    if include_source:
+        source_state, extra_states[SOURCE_USAGE] = validate_source_usage(source / SOURCE_USAGE)
+    validate_half_month_links(half_month_state, source_state, usage, personal_state)
     atomic_bytes(destination / SNAPSHOT, canonical)
     atomic_bytes(destination / HTTP_STATE, transport)
     if extra is not None:
@@ -721,10 +787,12 @@ def copy_pair(source, destination, collector, *, include_personal=False, persona
         atomic_bytes(destination / AI_USAGE, ai)
     else:
         (destination / AI_USAGE).unlink(missing_ok=True)
+    for name, raw in extra_states.items():
+        atomic_bytes(destination / name, raw)
 
 
 def save_recovery(source, destination, collector, *, include_personal=False, personal=None,
-                  include_ai=False):
+                  include_ai=False, include_half_month=False, include_source=False):
     invalid = False
     validators = [(SNAPSHOT, validate_snapshot), (HTTP_STATE, validate_transport)]
     if include_personal:
@@ -736,6 +804,10 @@ def save_recovery(source, destination, collector, *, include_personal=False, per
             validate_usage_links(usage, personal_state)
             return usage, raw
         validators.append((AI_USAGE, checked_usage))
+    if include_half_month:
+        validators.append((HALF_MONTH, lambda path, _: validate_half_month(path)))
+    if include_source:
+        validators.append((SOURCE_USAGE, lambda path, _: validate_source_usage(path)))
     for name, validate in validators:
         try:
             _, raw = validate(source / name, collector)
@@ -753,6 +825,7 @@ def invoke_collector(root, state, report, environment):
     argv = [sys.executable, '-I', '-B', str(root / 'tools' / 'collect-shifts.py'),
             '--once', '--days', '2', '--max-posts', '20',
             '--snapshot', str(state / SNAPSHOT), '--report', str(report)]
+    argv.extend(source_arguments(state, environment))
     if azure:
         argv.extend(['--analysis-backend', 'azure',
                      *analysis_arguments(state, environment, allow_zero=True)])
@@ -776,13 +849,18 @@ def invoke_personal_collector(root, state, report, environment):
     require(backend in ('rules', 'azure'), 'invalid_analysis_backend')
     max_posts = environment.get('CLOUD_COLLECTION_PERSONAL_POSTS', '3')
     require(max_posts in ('0', '1', '2', '3'), 'invalid_source_limit')
+    max_searches = environment.get('CLOUD_COLLECTION_PERSONAL_SEARCHES', '3')
+    require(max_searches in ('0', '1', '2', '3'), 'invalid_source_limit')
     argv = [sys.executable, '-I', '-B', str(root / 'tools' / 'collect-personal-shifts.py'),
             '--once', '--snapshot', str(state / PERSONAL),
             '--observations', str(state / SNAPSHOT),
             '--http-state', str(state / HTTP_STATE),
             '--seed', str(state.parent / 'personal-seed.json'),
             '--analysis-backend', backend,
-            '--max-searches', '3', '--max-posts', max_posts, '--report', str(report)]
+            '--max-searches', max_searches, '--max-posts', max_posts, '--report', str(report)]
+    argv.extend(source_arguments(state, environment))
+    if environment.get('CLOUD_COLLECTION_HALF_MONTH_PRESENT') == 'true':
+        argv.extend(['--half-month-snapshot', str(state / HALF_MONTH)])
     if environment.get('CLOUD_COLLECTION_SCHEDULED') == 'true':
         argv.append('--scheduled')
     if backend == 'azure':
@@ -794,6 +872,36 @@ def invoke_personal_collector(root, state, report, environment):
             cwd=root, environment=safe_environment(environment, azure=backend == 'azure'), timeout=600)
     except (OSError, subprocess.SubprocessError):
         raise CloudError('personal_process_failed') from None
+    return process.returncode
+
+
+def source_arguments(state, environment):
+    if environment.get('CLOUD_COLLECTION_SOURCE_ENABLED') != 'true':
+        return []
+    run_id = environment.get('CLOUD_COLLECTION_RUN_ID', '')
+    require(bool(re.fullmatch(r'[1-9][0-9]{0,19}-[1-9][0-9]{0,19}', run_id)),
+            'invalid_source_run_id')
+    return ['--source-state', str(state / SOURCE_USAGE), '--source-run-id', run_id]
+
+
+def invoke_half_month_collector(root, state, report, environment):
+    require(environment.get('CLOUD_COLLECTION_SOURCE_ENABLED') == 'true'
+            and environment.get('CLOUD_COLLECTION_SHARED') == 'true',
+            'missing_half_month_accounting')
+    argv = [sys.executable, '-I', '-B', str(root / 'tools' / 'collect-half-month-schedules.py'),
+            '--once', '--snapshot', str(state / HALF_MONTH),
+            '--personal-snapshot', str(state / PERSONAL),
+            '--http-state', str(state / HTTP_STATE),
+            *source_arguments(state, environment),
+            '--ai-state', str(state / AI_USAGE),
+            '--analysis-run-id', environment['CLOUD_COLLECTION_RUN_ID'],
+            '--analysis-limit', '1', '--max-searches', '1', '--max-posts', '1',
+            '--max-images', '4', '--report', str(report)]
+    try:
+        process = child_process(
+            argv, cwd=root, environment=safe_environment(environment, azure=True), timeout=900)
+    except (OSError, subprocess.SubprocessError):
+        raise CloudError('half_month_process_failed') from None
     return process.returncode
 
 
@@ -846,7 +954,7 @@ def official_allocation(path, run_id, now, personal_active, scheduled):
         return min(3, used + remaining)
     previous = {}
     for receipt in state['receipts'].values():
-        if receipt['runId'] == run_id:
+        if receipt['runId'] == run_id or receipt['component'] not in ('official', 'personal'):
             continue
         run = previous.setdefault(receipt['runId'], {'official': 0, 'personal': 0, 'at': ''})
         run[receipt['component']] += 1
@@ -866,6 +974,40 @@ def official_allocation(path, run_id, now, personal_active, scheduled):
     else:
         extra = 1 if prefer_personal or near_deadline else 2
     return min(3, used + extra)
+
+
+def personal_deadline_near(now, *, scheduled):
+    local = now.astimezone(JST).replace(tzinfo=None)
+    cutoffs = (dt.time(13, 30), dt.time(18) if scheduled else dt.time(19, 30))
+    return any(dt.timedelta(0) <= dt.datetime.combine(local.date(), cutoff) - local
+               <= dt.timedelta(minutes=3) for cutoff in cutoffs)
+
+
+def half_month_official_allocation(path, run_id, now, *, personal_active, scheduled):
+    if personal_active and personal_deadline_near(now, scheduled=scheduled):
+        return official_allocation(path, run_id, now, True, scheduled)
+    usage, _ = validate_ai_usage(path)
+    remaining = load_analysis_state().remaining(usage, run_id, now)
+    prior = {'official': '', 'schedule': ''}
+    for receipt in usage['receipts'].values():
+        if receipt['runId'] != run_id and receipt['component'] in prior:
+            component = receipt['component']
+            prior[component] = max(prior[component], receipt['reservedAt'])
+    if personal_active and personal_window_open(now, scheduled=scheduled):
+        remaining = max(0, remaining - 1)
+    if remaining >= 2:
+        return remaining - 1
+    if remaining == 1:
+        return int(prior['official'] <= prior['schedule'])
+    return 0
+
+
+def half_month_personal_allocation(path, run_id, now, *, scheduled):
+    usage, _ = validate_ai_usage(path)
+    remaining = load_analysis_state().remaining(usage, run_id, now)
+    if personal_deadline_near(now, scheduled=scheduled):
+        return 3
+    return max(1, remaining - 1)
 
 
 def aggregate_official_resume(initial, resumed, resumed_ids, requests, collector):
@@ -930,7 +1072,7 @@ def read_saved_manifest(environment):
         scan_private(value)
         fields = ('schemaVersion', 'expectedMainSHA', 'expectedStateSHA',
                   'officialAmendments', 'usageImports', 'sourceReceipts')
-        keys(value, (*fields, 'personalAmendments'), fields)
+        keys(value, (*fields, 'personalAmendments', 'halfMonthAmendments', 'sourceMigration'), fields)
         require(type(value['schemaVersion']) is int and value['schemaVersion'] == 1)
         for field in ('expectedMainSHA', 'expectedStateSHA'):
             require(isinstance(value[field], str) and SHA_RE.fullmatch(value[field]))
@@ -938,8 +1080,20 @@ def read_saved_manifest(environment):
             require(isinstance(value[field], list) and len(value[field]) <= maximum)
         require(isinstance(value.get('personalAmendments', []), list)
                 and len(value.get('personalAmendments', [])) <= 3)
+        require(isinstance(value.get('halfMonthAmendments', []), list)
+                and len(value.get('halfMonthAmendments', [])) <= 1)
+        if 'sourceMigration' in value:
+            migration = value['sourceMigration']
+            keys(migration, ('expectedPersonalBudgetsHash', 'sourceHash', 'historicalImages'),
+                 ('expectedPersonalBudgetsHash', 'sourceHash', 'historicalImages'))
+            for field in ('expectedPersonalBudgetsHash', 'sourceHash'):
+                require(isinstance(migration[field], str)
+                        and re.fullmatch(r'[a-f0-9]{64}', migration[field]))
+            require(isinstance(migration['historicalImages'], list)
+                    and len(migration['historicalImages']) <= 10)
         require(any(value.get(field) for field in (
-            'officialAmendments', 'usageImports', 'sourceReceipts', 'personalAmendments')))
+            'officialAmendments', 'usageImports', 'sourceReceipts', 'personalAmendments',
+            'halfMonthAmendments', 'sourceMigration')))
         for entry in value['officialAmendments']:
             keys(entry, ('expectedPostHash', 'amendment'), ('expectedPostHash', 'amendment'))
             require(isinstance(entry['expectedPostHash'], str)
@@ -1016,6 +1170,55 @@ def prepare_saved(manifest, canonical, personal_state, usage, collector, persona
     return official_result, personal_result, usage_result
 
 
+def source_baseline_hash(personal, usage, transport):
+    return data_hash({'personal': personal, 'sourceImports': usage.get('sourceImports', {}),
+                      'cooldowns': transport['cooldowns']})
+
+
+def prepare_half_month_saved(manifest, half_state, source_state, personal, usage, transport,
+                            *, root=ROOT, personal_collector=None, now=None, accounting_usage=None):
+    reconciled_usage = usage if accounting_usage is None else accounting_usage
+    entries = manifest.get('halfMonthAmendments', [])
+    migration = manifest.get('sourceMigration')
+    if not entries and migration is None:
+        validate_half_month_links(half_state, source_state, reconciled_usage, personal)
+        return copy.deepcopy(half_state), copy.deepcopy(source_state)
+    require(usage is not None, 'missing_half_month_accounting')
+    now = now or load_collector().utc_now()
+    ledger = load_source_state()
+    sources = copy.deepcopy(source_state)
+    if migration is not None:
+        if sources is None:
+            require(migration['expectedPersonalBudgetsHash'] == data_hash(personal['budgets'])
+                    and migration['sourceHash'] == source_baseline_hash(personal, reconciled_usage, transport),
+                    'source_migration_baseline_changed')
+            sources = ledger.baseline_state(
+                personal, source_hash=migration['sourceHash'], at=now,
+                source_imports=reconciled_usage.get('sourceImports', {}),
+                historical_images=migration['historicalImages'], cooldowns=transport['cooldowns'])
+        else:
+            baseline = sources['baseline']
+            require(baseline['sourceHash'] == migration['sourceHash']
+                    and data_hash(baseline['personalBudgets']) == migration['expectedPersonalBudgetsHash']
+                    and baseline['historicalImages'] == migration['historicalImages'],
+                    'source_migration_already_exists')
+    require(sources is not None, 'missing_half_month_source_usage')
+    module = load_half_month_state()
+    if entries:
+        personal_collector = personal_collector or load_personal_collector()
+        schedule = personal_collector.read_js(root / 'data' / 'schedule.js', 'SCHEDULE_DATA')
+        insights = personal_collector.read_js(root / 'data' / 'store-insights.js', 'STORE_INSIGHTS')
+        with (root / 'tools' / 'data' / 'accounts.csv').open(encoding='utf-8-sig', newline='') as stream:
+            accounts = list(csv.DictReader(stream))
+        half_state = load_half_month_saved().apply_amendments(
+            half_state, entries, usage, module, schedule=schedule, insights=insights,
+            accounts=accounts, personal_state=personal, now=now)
+    elif half_state is None:
+        half_state = module.empty_state()
+    validate_half_month_links(half_state, sources, reconciled_usage, personal)
+    return half_state, sources
+
+
 def combined_status(official, personal):
     incomplete = {'partial', 'unavailable', 'paused', 'budget-exhausted'}
     if official in incomplete or personal in incomplete:
@@ -1049,11 +1252,14 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
     environment = {key: value for key, value in environment.items()
                    if not key.startswith('CLOUD_COLLECTION_')}
     enabled = environment.get('DAILY_GUIDANCE_ENABLED', 'false') == 'true'
+    half_enabled = environment.get('HALF_MONTH_SCHEDULE_ENABLED', 'false') == 'true'
     scheduled = args.mode == 'daily-guidance'
     applying = args.mode == 'apply-saved'
     writing = args.mode != 'restore'
     collect_official = args.mode in ('collect', 'both', 'daily-guidance')
     collect_personal = args.mode in ('personal', 'both', 'daily-guidance')
+    collect_half_month = half_enabled and args.mode in ('both', 'daily-guidance')
+    require(not collect_half_month or enabled, 'half_month_requires_daily_guidance')
     personal_backend = environment.get('PERSONAL_ANALYSIS_BACKEND', 'rules')
     if collect_personal:
         require(personal_backend in ('rules', 'azure'), 'invalid_analysis_backend')
@@ -1098,6 +1304,16 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
         require(not authoritative_usage or applying or bool(usage_state['imports']),
                 'missing_initial_usage_import')
         has_personal = (state_dir / PERSONAL).exists()
+        has_half_month = (state_dir / HALF_MONTH).exists()
+        has_source = (state_dir / SOURCE_USAGE).exists()
+        half_month_state = source_usage_state = None
+        if has_half_month:
+            half_month_state, _ = validate_half_month(state_dir / HALF_MONTH)
+        if has_source:
+            source_usage_state, _ = validate_source_usage(state_dir / SOURCE_USAGE)
+        require(not has_half_month or has_source, 'missing_half_month_source_usage')
+        require(not half_enabled or applying or (has_half_month and has_source),
+                'missing_half_month_state')
         personal_seed = output.parent / PERSONAL
         personal_state = None
         personal_source = 'absent'
@@ -1120,6 +1336,7 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
             personal_source = 'branch' if has_personal else 'seed'
         if authoritative_usage and not applying:
             validate_reconciled_usage(usage_state, personal_state, collector)
+        validate_half_month_links(half_month_state, source_usage_state, usage_state, personal_state)
         if collect_personal:
             require(personal_state is not None, 'missing_personal_seed')
             if not has_personal:
@@ -1127,7 +1344,8 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 # The first explicit manual run from merged main owns migration.
                 atomic_bytes(state_dir / PERSONAL, personal_raw)
                 has_personal = True
-        bundle = {'include_personal': has_personal, 'personal': personal, 'include_ai': has_ai}
+        bundle = {'include_personal': has_personal, 'personal': personal, 'include_ai': has_ai,
+                  'include_half_month': has_half_month, 'include_source': has_source}
         result = {
             'sourceCodeSHA': source, 'stateCommit': repo.head,
             'stateSource': 'branch' if repo.head else 'seed',
@@ -1138,6 +1356,8 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
             'officialCollectionCode': -1,
             'personalCollectionStatus': personal_state['lastRun']['status'] if personal_state else 'never',
             'personalCollectionCode': -1, 'personalStateSource': personal_source,
+            'halfMonthCollectionStatus': half_month_state['lastRun']['status'] if half_month_state else 'never',
+            'halfMonthCollectionCode': -1,
         }
         if args.mode == 'restore':
             # Byte-exact state handoff, and no seed replacement with an empty file.
@@ -1152,6 +1372,17 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
             try:
                 prepared = prepare_saved(manifest, canonical, personal_state, usage_state,
                                          collector, personal)
+                reconciled_source = source_usage_state
+                if source_usage_state is not None and manifest['sourceReceipts']:
+                    reconciled_source = load_source_state().apply_source_imports(
+                        source_usage_state, manifest['sourceReceipts'],
+                        personal_before=personal_state, personal_after=prepared[1],
+                        analysis_before=usage_state, analysis_after=prepared[2])
+                transport, _ = validate_transport(state_dir / HTTP_STATE, collector)
+                prepared_half_month, prepared_source = prepare_half_month_saved(
+                    manifest, half_month_state, reconciled_source, prepared[1],
+                    usage_state, transport, root=root, personal_collector=personal,
+                    now=collector.utc_now(), accounting_usage=prepared[2])
             except (ValueError, TypeError, KeyError, OverflowError):
                 raise CloudError('saved_manifest_rejected') from None
         if repo.head and output.exists() and not applying:
@@ -1199,19 +1430,33 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 collector.atomic_json(collected / PERSONAL, personal_state)
                 collector.atomic_json(collected / AI_USAGE, usage)
                 bundle['include_ai'] = True
+                if prepared_half_month is not None:
+                    collector.atomic_json(collected / HALF_MONTH, prepared_half_month)
+                    bundle['include_half_month'] = True
+                if prepared_source is not None:
+                    collector.atomic_json(collected / SOURCE_USAGE, prepared_source)
+                    bundle['include_source'] = True
             environment.update(
                 CLOUD_COLLECTION_SHARED='true' if has_ai else 'false',
                 CLOUD_COLLECTION_RUN_ID=environment['GITHUB_RUN_ID'] + '-' + environment['GITHUB_RUN_ATTEMPT'],
                 CLOUD_COLLECTION_SCHEDULED='true' if scheduled else 'false',
-                CLOUD_COLLECTION_OFFICIAL_AZURE='true' if enabled else 'false')
+                CLOUD_COLLECTION_OFFICIAL_AZURE='true' if enabled else 'false',
+                CLOUD_COLLECTION_SOURCE_ENABLED='true' if has_source else 'false',
+                CLOUD_COLLECTION_HALF_MONTH_PRESENT='true' if has_half_month else 'false')
             if enabled:
                 environment['PERSONAL_ANALYSIS_BACKEND'] = 'azure'
             if enabled and collect_official:
-                environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = str(
-                    official_allocation(collected / AI_USAGE, environment['CLOUD_COLLECTION_RUN_ID'],
-                                        collector.utc_now(),
-                                        collect_personal and not personal_state.get('paused'),
-                                        scheduled))
+                source_paused = has_source and source_usage_state.get('paused') is not None
+                personal_active = collect_personal and not personal_state.get('paused') and not source_paused
+                if collect_half_month and not half_month_state.get('paused') and not source_paused:
+                    allocation = half_month_official_allocation(
+                        collected / AI_USAGE, environment['CLOUD_COLLECTION_RUN_ID'],
+                        collector.utc_now(), personal_active=personal_active, scheduled=scheduled)
+                else:
+                    allocation = official_allocation(
+                        collected / AI_USAGE, environment['CLOUD_COLLECTION_RUN_ID'],
+                        collector.utc_now(), personal_active, scheduled)
+                environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = str(allocation)
                 if collect_personal:
                     environment['CLOUD_COLLECTION_BUFFER_MODE'] = 'write'
             if collect_official:
@@ -1231,6 +1476,11 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 if environment.get('CLOUD_COLLECTION_BUFFER_MODE') == 'write':
                     buffered = load_official_buffer(
                         root, collected, canonical, environment['CLOUD_COLLECTION_RUN_ID'], collector)
+                    if collect_half_month and len(buffered['items']) > 2:
+                        buffered = collector.make_analysis_buffer(
+                            canonical, buffered['runId'], buffered['versionHash'],
+                            buffered['items'][:2], collector.utc_now())
+                        collector.atomic_json(analysis_buffer_path(root, collected), buffered)
                     initial_official, initial_requests = copy.deepcopy(canonical), dict(requests)
             if collect_personal and scheduled and not personal_window_open(
                     collector.utc_now(), scheduled=True):
@@ -1248,7 +1498,15 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 result.update(personalCollectionStatus='outside-window', personalCollectionCode=0)
                 collect_personal = False
             if collect_personal:
-                environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = '3'
+                if (collect_half_month and not half_month_state.get('paused')
+                        and not personal_deadline_near(collector.utc_now(), scheduled=scheduled)):
+                    environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = str(
+                        half_month_personal_allocation(
+                            collected / AI_USAGE, environment['CLOUD_COLLECTION_RUN_ID'],
+                            collector.utc_now(), scheduled=scheduled))
+                    environment['CLOUD_COLLECTION_PERSONAL_SEARCHES'] = '2'
+                else:
+                    environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = '3'
                 collector.atomic_json(work / 'personal-seed.json', personal.public_state(personal_state))
                 code = invoke_personal_collector(
                     root, collected, work / 'personal-report.json', environment)
@@ -1263,6 +1521,28 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                         'personal_status_mismatch')
                 validate_personal_completion(work / 'personal-report.json', status, code)
                 result.update(personalCollectionStatus=status, personalCollectionCode=code)
+            if collect_half_month:
+                code = invoke_half_month_collector(
+                    root, collected, work / 'half-month-report.json', environment)
+                require(code in (0, 2, 3), 'half_month_local_failure')
+                half_month_state, _ = validate_half_month(collected / HALF_MONTH)
+                status = half_month_state['lastRun']['status']
+                require(status in ('ok', 'partial', 'unavailable', 'no-new', 'no-results',
+                                   'paused', 'budget-exhausted', 'outside-window'),
+                        'half_month_status_mismatch')
+                require(code == (3 if status in ('unavailable', 'paused') else
+                                 2 if status in ('partial', 'budget-exhausted') else 0),
+                        'half_month_status_mismatch')
+                report = validate_completion(
+                    work / 'half-month-report.json', status, code, 'schedule')
+                keys(report.get('requests'), ('searches', 'posts', 'images', 'analysis'),
+                     ('searches', 'posts', 'images'))
+                for kind, maximum in (('searches', 1), ('posts', 1), ('images', 4)):
+                    integer(report['requests'][kind], 0, maximum)
+                if 'analysis' in report['requests']:
+                    integer(report['requests']['analysis'], 0, 1)
+                validate_source_usage(collected / SOURCE_USAGE)
+                result.update(halfMonthCollectionStatus=status, halfMonthCollectionCode=code)
             if buffered and buffered['items']:
                 usage, _ = validate_ai_usage(collected / AI_USAGE)
                 now = collector.utc_now()
@@ -1316,6 +1596,8 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
         if args.mode in ('both', 'daily-guidance'):
             status = combined_status(
                 result['officialCollectionStatus'], result['personalCollectionStatus'])
+            if collect_half_month:
+                status = combined_status(status, result['halfMonthCollectionStatus'])
             code = {'partial': 2, 'unavailable': 3}.get(status, 0)
         elif applying:
             status, code = 'applied-saved', 0
@@ -1343,6 +1625,7 @@ def emit(result, environment):
                    'collectionCode', 'persistenceStatus', 'collectionMode',
                    'officialCollectionStatus', 'officialCollectionCode',
                    'personalCollectionStatus', 'personalCollectionCode', 'personalStateSource',
+                   'halfMonthCollectionStatus', 'halfMonthCollectionCode',
                    'reason')
         lines = []
         for key in allowed:

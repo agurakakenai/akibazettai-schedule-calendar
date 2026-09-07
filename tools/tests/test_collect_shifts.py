@@ -73,6 +73,128 @@ class FakeClient:
         return result
 
 
+class SharedSourceTransportTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = TOOLS / 'tests' / ('source-transport-' + uuid.uuid4().hex)
+        self.folder.mkdir()
+        self.addCleanup(lambda: shutil.rmtree(self.folder))
+        self.path = self.folder / 'source-usage.json'
+        self.source = collector.source_module()
+        self.clock = NOW
+        self.source.initialize(self.path, {'budgets': {}, 'paused': None},
+                               source_hash='a' * 64, at=NOW)
+        self.live = mock.patch.object(urllib.request.OpenerDirector, 'open',
+                                     side_effect=AssertionError('No live source'))
+        self.live.start()
+        self.addCleanup(self.live.stop)
+
+    def sleep(self, seconds):
+        self.clock += dt.timedelta(seconds=seconds)
+
+    def shared(self, component='official'):
+        return self.source.SharedSource(self.path, run_id='shared-offline', component=component,
+                                        clock=lambda: self.clock, sleep=self.sleep)
+
+    def client(self, ledger):
+        client = collector.PublicClient(clock=lambda: self.clock, sleep=self.sleep,
+                                       monotonic=lambda: self.clock.timestamp())
+        client.shared_source = ledger
+        response = mock.Mock()
+        response.getcode.return_value = 200
+        response.headers = {}
+        response.read.return_value = b'{}'
+        client.opener = mock.Mock()
+        client.opener.open.return_value = response
+        return client
+
+    def test_reservation_and_issue_persist_before_http_and_duplicate_is_not_get(self):
+        with self.shared() as ledger:
+            client = self.client(ledger)
+            response = client.opener.open.return_value
+
+            def open_mock(*args, **kwargs):
+                item = next(iter(self.source.load_state(self.path)['receipts'].values()))
+                self.assertEqual((item['kind'], item['status']), ('posts', 'issued'))
+                return response
+
+            client.opener.open.side_effect = open_mock
+            client.fetch_post(TID)
+            with self.assertRaisesRegex(collector.FetchFailure, 'source_already_requested'):
+                client.fetch_post(TID)
+            self.assertEqual(client.opener.open.call_count, 1)
+            self.assertEqual(client.requests, {'searches': 0, 'posts': 1})
+            self.assertEqual(next(iter(ledger.state['receipts'].values()))['status'], 'ok')
+        self.assertNotIn('https:', self.path.read_text())
+
+    def test_opt_in_transient_cache_reuses_exact_post_without_new_get(self):
+        with self.source.TransientSourceCache('shared-offline') as cache:
+            with self.source.SharedSource(self.path, run_id='shared-offline', component='official',
+                                          clock=lambda: self.clock, sleep=self.sleep, cache=cache) as ledger:
+                client = self.client(ledger)
+                client.opener.open.return_value.read.return_value = json.dumps(payload()).encode()
+                first = client.fetch_post(TID)
+                second = client.fetch_post(TID)
+                self.assertEqual(first, second)
+                self.assertEqual(client.opener.open.call_count, 1)
+                self.assertEqual(client.requests['posts'], 1)
+                self.assertEqual(cache.counts()['posts'], 1)
+            self.assertEqual(len(self.source.load_state(self.path)['receipts']), 1)
+        self.assertEqual(cache.counts()['posts'], 0)
+
+    def test_shared_twenty_cap_does_not_relabel_images_or_issue_a_twenty_first_get(self):
+        with self.shared('schedule') as ledger:
+            for index in range(4):
+                receipt = ledger.reserve('images', f'https://pbs.twimg.com/media/sample{index}.jpg')
+                ledger.issued(receipt)
+                ledger.finish(receipt)
+        with self.shared() as ledger:
+            client = self.client(ledger)
+            for index in range(16):
+                client.fetch_post(str(int(TID) + index))
+            with self.assertRaisesRegex(collector.FetchFailure, 'source_budget_exhausted'):
+                client.fetch_post(str(int(TID) + 20))
+            self.assertEqual(client.opener.open.call_count, 16)
+            self.assertEqual(ledger.report()['run']['schedule']['images'], 4)
+            self.assertEqual(ledger.report()['run']['official']['posts'], 16)
+
+    def test_shared_http_failure_is_spent_and_preserves_cooldown(self):
+        with self.shared() as ledger:
+            client = self.client(ledger)
+            client.opener.open.side_effect = urllib.error.HTTPError(
+                collector.SEARCH_URLS[0], 429, 'offline', {'Retry-After': '7200'}, io.BytesIO())
+            with self.assertRaises(collector.FetchFailure):
+                client.search(collector.SEARCH_URLS[0])
+            item = next(iter(ledger.state['receipts'].values()))
+            self.assertEqual((item['status'], item['httpStatus']), ('failed', 429))
+            self.assertEqual(ledger.state['cooldowns']['search.yahoo.co.jp'],
+                             self.source.usage._stamp(self.clock + dt.timedelta(hours=2)))
+            self.assertEqual(client.opener.open.call_count, 1)
+
+    def test_pbs_cooldown_is_allowed_but_image_http_route_is_not(self):
+        path = self.folder / 'shared.http-state.json'
+        collector.atomic_json(path, {'schemaVersion': 1, 'cooldowns': {'pbs.twimg.com': collector.iso(NOW)}})
+        self.assertEqual(collector.load_transport(path), {'pbs.twimg.com': collector.iso(NOW)})
+        with self.shared() as ledger:
+            client = self.client(ledger)
+            with self.assertRaisesRegex(collector.FetchFailure, 'route_refused'):
+                client.open(urllib.request.Request('https://pbs.twimg.com/media/sample.jpg'))
+            client.opener.open.assert_not_called()
+            self.assertEqual(ledger.state['receipts'], {})
+
+    def test_enabled_missing_ledger_stops_before_client_creation(self):
+        self.path.unlink()
+        snapshot, curated = self.folder / 'observed.json', self.folder / 'curated.csv'
+        curated.write_text('date,shift,store,names,source\n', encoding='utf-8')
+        args = collector.argument_parser().parse_args([
+            '--snapshot', str(snapshot), '--source-state', str(self.path),
+            '--source-run-id', 'missing', '--date-from', START.isoformat(), '--date-to', END.isoformat()])
+        with mock.patch.object(collector, 'PublicClient') as factory:
+            with self.assertRaisesRegex(ValueError, 'missing_source_usage'):
+                collector.run(args, curated=curated, clock=lambda: NOW)
+            factory.assert_not_called()
+        self.assertFalse(self.path.exists())
+
+
 def collect(client=None, state=None, known=None, max_posts=20):
     return collector.collect(
         state or collector.empty_snapshot(), known or set(), client or FakeClient(),

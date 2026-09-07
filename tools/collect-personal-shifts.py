@@ -392,12 +392,12 @@ def read_state(path, private=True):
             if value['paused'] is not None:
                 require_keys(value['paused'], ('reason', 'host', 'at', 'retryAt'), ('httpStatus',))
                 if (not isinstance(value['paused'], dict)
-                        or value['paused']['host'] not in (SEARCH_HOST, POST_HOST)):
+                        or value['paused']['host'] not in (SEARCH_HOST, POST_HOST, 'pbs.twimg.com')):
                     raise ValueError
                 official.timestamp(value['paused']['at'])
                 validate_failure(value['paused'])
             for host, at in value['lastRequests'].items():
-                if host not in (SEARCH_HOST, POST_HOST):
+                if host not in (SEARCH_HOST, POST_HOST, 'pbs.twimg.com'):
                     raise ValueError
                 official.timestamp(at)
         return value
@@ -1015,7 +1015,7 @@ def validate_post(candidate, payload, target, now, binding=None, roster=(), anal
 
 class DurableHttp:
     def __init__(self, state, snapshot, http_state, date, targets, max_searches, max_posts,
-                 clock=official.utc_now, sleep=time.sleep, *, scheduled=False):
+                 clock=official.utc_now, sleep=time.sleep, *, scheduled=False, shared_source=None):
         self.state, self.snapshot, self.http_state = state, snapshot, http_state
         self.date, self.targets = date, targets
         self.clock, self.sleep = clock, sleep
@@ -1025,6 +1025,7 @@ class DurableHttp:
         self.cooldowns = official.load_transport(http_state)
         self.post_target = None
         self.scheduled = scheduled
+        self.shared_source = shared_source
 
     def save(self):
         official.atomic_json(self.snapshot, self.state)
@@ -1034,6 +1035,12 @@ class DurableHttp:
         for host, until in latest.items():
             if host not in self.cooldowns or official.timestamp(until) > official.timestamp(self.cooldowns[host]):
                 self.cooldowns[host] = until
+        if self.shared_source is not None:
+            for host, until in self.shared_source.state['cooldowns'].items():
+                if host not in self.cooldowns or official.timestamp(until) > official.timestamp(self.cooldowns[host]):
+                    self.cooldowns[host] = until
+            for host, until in self.cooldowns.items():
+                official.source_call(self.shared_source, 'set_cooldown', host, official.timestamp(until))
         official.atomic_json(self.http_state, {'schemaVersion': 1, 'cooldowns': self.cooldowns})
 
     def preflight(self):
@@ -1049,7 +1056,7 @@ class DurableHttp:
         active = active_targets(self.targets, self.date, self.clock(), scheduled=self.scheduled)
         return bool(active) and (self.post_target is None or self.post_target in active)
 
-    def reserve(self, host, kind, target_name=None):
+    def reserve(self, host, kind, target_name=None, url=None):
         if self.state['paused']:
             raise Failure('paused')
         target_name = target_name or (self.post_target if kind == 'posts' else None)
@@ -1057,7 +1064,10 @@ class DurableHttp:
         self.cooldowns = official.load_transport(self.http_state)
         if host in self.cooldowns and official.timestamp(self.cooldowns[host]) > self.clock():
             raise Failure('shared_host_cooldown', retry_at=official.timestamp(self.cooldowns[host]))
-        budget = self.state['budgets'].setdefault(self.date.isoformat(), {'searches': 0, 'posts': 0})
+        if self.shared_source is None:
+            budget = self.state['budgets'].setdefault(self.date.isoformat(), {'searches': 0, 'posts': 0})
+        else:
+            budget = self.state['budgets'].get(self.date.isoformat(), {'searches': 0, 'posts': 0})
         if self.used[kind] >= self.caps[kind] or budget[kind] >= DAILY_LIMITS[kind]:
             raise Failure('budget_exhausted')
         previous = official.timestamp(self.state['lastRequests'][host]) if host in self.state['lastRequests'] else self.started
@@ -1067,11 +1077,20 @@ class DurableHttp:
         self.save_http()
         if host in self.cooldowns and official.timestamp(self.cooldowns[host]) > self.clock():
             raise Failure('shared_host_cooldown', retry_at=official.timestamp(self.cooldowns[host]))
+        receipt = None
+        if self.shared_source is not None:
+            self.check_window(target_name)
+            receipt = official.source_call(self.shared_source, 'reserve', kind, url)
+        budget = self.state['budgets'].setdefault(self.date.isoformat(), {'searches': 0, 'posts': 0})
         budget[kind] += 1
         self.used[kind] += 1
         self.state['lastRequests'][host] = stamp(self.clock())
         self.save()
         self.check_window(target_name)
+        if receipt is not None:
+            official.source_call(self.shared_source, 'issued', receipt)
+            self.check_window(target_name)
+        return receipt
 
     def deny(self, host, reason, status=None, retry_after=None):
         now = self.clock()
@@ -1094,6 +1113,8 @@ class DurableHttp:
                                 'retryAt': stamp(until)}
         if status is not None:
             self.state['paused']['httpStatus'] = status
+        if self.shared_source is not None:
+            official.source_call(self.shared_source, 'set_cooldown', host, until, paused=self.state['paused'])
         errors = []
         for save in (self.save, self.save_http):
             try:
@@ -1137,11 +1158,19 @@ class PersonalClient(official.PublicClient):
                                     if item['id'] == tid), None)
             if target_name is None:
                 raise Failure('missing_post_target')
-        self.durable.reserve(host, kind, target_name=target_name)
+        if self.durable.shared_source is not None:
+            self.durable.check_window(target_name)
+            cached = official.source_call(self.durable.shared_source, 'cached', kind, url)
+            if cached is not None:
+                return io.BytesIO(cached['body'])
+        receipt = self.durable.reserve(host, kind, target_name=target_name, url=url)
+        finished = False
+        response_status = None
         try:
             self.durable.check_window(target_name)
             with self.opener.open(urllib.request.Request(url), timeout=min(timeout, 35)) as response:
                 status = response.getcode()
+                response_status = status
                 headers = response.headers
                 if status in (401, 403, 429):
                     self.durable.deny(host, 'access_denied', status, headers.get('Retry-After'))
@@ -1172,9 +1201,14 @@ class PersonalClient(official.PublicClient):
                         challenge |= bool(DENIAL.search(text))
                 if challenge:
                     self.durable.deny(host, 'access_denied', status, headers.get('Retry-After'))
+                if receipt is not None:
+                    official.source_call(self.durable.shared_source, 'finish', receipt, http_status=status)
+                    finished = True
+                    official.source_call(self.durable.shared_source, 'remember', receipt, body)
                 return io.BytesIO(body)
         except urllib.error.HTTPError as exc:
             status, retry = exc.code, exc.headers.get('Retry-After') if exc.headers else None
+            response_status = status
             exc.close()
             if status in (401, 403, 429):
                 self.durable.deny(host, 'access_denied', status, retry)
@@ -1185,6 +1219,10 @@ class PersonalClient(official.PublicClient):
             raise
         except (OSError, http.client.HTTPException, UnicodeError):
             raise Failure('network_error') from None
+        finally:
+            if receipt is not None and not finished:
+                official.source_call(self.durable.shared_source, 'finish', receipt, 'failed',
+                                     http_status=response_status)
 
     def search(self, url, targets, date, now, bindings):
         with self.open(urllib.request.Request(url)) as response:
@@ -1331,7 +1369,8 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         except Failure as exc:
             sources.append({'url': url, 'status': 'failed', **exc.facts()})
             failures.append(exc.facts())
-            if exc.reason in ('budget_exhausted', 'outside_window', 'shared_host_cooldown') or state['paused']:
+            if exc.reason in ('budget_exhausted', 'outside_window', 'shared_host_cooldown',
+                              'source_budget_exhausted', 'source_paused', 'source_host_cooldown') or state['paused']:
                 break
         finally:
             if durable.used['searches'] > before:
@@ -1458,11 +1497,11 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         state['pending'] = list(pending.values())
         durable.save()
     codes = {failure['reason'] for failure in failures}
-    if state['paused'] or 'shared_host_cooldown' in codes:
+    if state['paused'] or codes & {'shared_host_cooldown', 'source_paused', 'source_host_cooldown'}:
         status = 'paused'
     elif early_status:
         status = early_status
-    elif codes & {'budget_exhausted', 'azure_budget_exhausted'}:
+    elif codes & {'budget_exhausted', 'azure_budget_exhausted', 'source_budget_exhausted'}:
         status = 'budget-exhausted'
     elif failures:
         status = 'partial' if any(source['status'] == 'ok' for source in sources) or new_posts else 'unavailable'
@@ -1502,18 +1541,21 @@ def argument_parser():
     parser.add_argument('--report', type=Path, help='fact-only component report')
     parser.add_argument('--seed', type=Path, default=ROOT / 'data' / 'personal-shifts.json')
     parser.add_argument('--schedule', type=Path, default=ROOT / 'data' / 'schedule.js')
+    parser.add_argument('--half-month-snapshot', type=Path, help='validated effective half-month public feed')
     parser.add_argument('--insights', type=Path, default=ROOT / 'data' / 'store-insights.js')
     parser.add_argument('--accounts', type=Path, default=ROOT / 'tools' / 'data' / 'accounts.csv')
     parser.add_argument('--observations', type=Path, default=ROOT / 'data' / 'observed-shifts.json',
                         help='validated official names/notices for the same-run target population')
     parser.add_argument('--node', type=Path, help='existing Node executable for the local schedule JS')
     parser.add_argument('--date', help='JST calendar date; only today may make requests')
-    parser.add_argument('--max-searches', type=int, default=2, help='maximum 1..3 pages/run')
+    parser.add_argument('--max-searches', type=int, default=2, help='maximum 0..3 pages/run')
     parser.add_argument('--max-posts', type=int, default=3, help='maximum 0..3 new individual GETs/run')
     parser.add_argument('--dry-run', action='store_true', help='persist private safety/facts, do not publish')
     parser.add_argument('--analysis-backend', choices=('rules', 'azure'), default='rules')
     parser.add_argument('--ai-state', type=Path, help='existing shared AI usage ledger')
     parser.add_argument('--analysis-run-id', help='shared official/personal run identity')
+    parser.add_argument('--source-state', type=Path, help='existing shared source reservation ledger')
+    parser.add_argument('--source-run-id', help='shared official/personal/schedule source run identity')
     parser.add_argument('--analysis-limit', type=int, default=3, help='personal AI allocation, 1..3')
     parser.add_argument('--scheduled', action='store_true', help='also stop personal requests after 18:00 JST')
     parser.add_argument('--analyze-saved', type=Path,
@@ -1527,6 +1569,11 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
     publish = args.publish.resolve() if args.publish else None
     report_path = args.report.resolve() if args.report else None
     writes = [path for path in (snapshot, http_state, publish, report_path) if path]
+    source_path = args.source_state.resolve() if args.source_state else None
+    if bool(source_path) != bool(args.source_run_id):
+        raise ValueError('invalid_source_configuration')
+    if source_path:
+        writes.append(source_path)
     if args.ai_state:
         writes.append(args.ai_state.resolve())
         if args.analysis_backend != 'azure' or not args.analysis_run_id:
@@ -1536,6 +1583,8 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
     if args.scheduled and (args.analyze_saved or (args.analysis_backend == 'azure' and not args.ai_state)):
         raise ValueError('invalid_scheduled_analysis_configuration')
     inputs = {path.resolve() for path in (args.schedule, args.insights, args.accounts, args.observations)}
+    if args.half_month_snapshot:
+        inputs.add(args.half_month_snapshot.resolve())
     if args.analyze_saved:
         if args.analysis_backend != 'azure':
             raise ValueError('saved_analysis_requires_azure')
@@ -1560,15 +1609,33 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
             locks.enter_context(official.ProcessLock(path))
         state = read_state(snapshot)
         merge_seed(state, read_state(args.seed, private=False))
+        shared_source = None
+        if source_path:
+            source_usage = official.source_module()
+            try:
+                shared_source = locks.enter_context(source_usage.SharedSource(
+                    source_path, run_id=args.source_run_id, component='personal',
+                    clock=clock, sleep=sleep, personal_path=snapshot))
+            except source_usage.SourceFailure as exc:
+                raise InfrastructureFailure(exc.reason) from None
         date = dt.date.fromisoformat(args.date) if args.date else calendar_day(clock())
         schedule = read_js(args.schedule, 'SCHEDULE_DATA', args.node)
+        if args.half_month_snapshot:
+            spec = importlib.util.spec_from_file_location(
+                'personal_half_month_schedule', ROOT / 'tools' / 'half-month-schedules.py')
+            half_month = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(half_month)
+            feed = azure.strict_json(args.half_month_snapshot.read_text(encoding='utf-8-sig'))
+            feed = half_month.public_state(feed)
+            schedule = {**schedule, 'schedule': half_month.effective_schedule(schedule.get('schedule', {}), feed)}
         insights = read_js(args.insights, 'STORE_INSIGHTS', args.node)
         with args.accounts.open(encoding='utf-8-sig', newline='') as source:
             accounts = list(csv.DictReader(source))
         observations = official.load_snapshot(args.observations)
         targets = select_targets(schedule, insights, accounts, date, state, observations)
         durable = DurableHttp(state, snapshot, http_state, date, targets,
-                              args.max_searches, args.max_posts, clock, sleep, scheduled=args.scheduled)
+                              args.max_searches, args.max_posts, clock, sleep, scheduled=args.scheduled,
+                              shared_source=shared_source)
         durable.preflight()
         analyzer = None
         if args.analysis_backend == 'azure':
@@ -1603,6 +1670,8 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
                                args.max_searches, args.max_posts, clock, schedule['roster'],
                                analyzer, payloads)
         report.update(dryRun=args.dry_run, published=False, exitCode=code)
+        if shared_source is not None:
+            report['sourceUsage'] = shared_source.report()
         if publish and not args.dry_run:
             official.atomic_json(publish, public_state(state))
             report['published'] = True
@@ -1614,9 +1683,9 @@ def main(argv=None):
     parser = argument_parser()
     try:
         args = parser.parse_args(argv)
-        if (not 1 <= args.max_searches <= 3 or not 0 <= args.max_posts <= 3
+        if (not 0 <= args.max_searches <= 3 or not 0 <= args.max_posts <= 3
                 or not 1 <= args.analysis_limit <= 3):
-            parser.error('--max-searches/--analysis-limit must be 1..3; --max-posts must be 0..3')
+            parser.error('--max-searches/--max-posts must be 0..3; --analysis-limit must be 1..3')
     except SystemExit as exc:
         if exc.code != 2:
             raise

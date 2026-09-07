@@ -1106,7 +1106,7 @@ private cacheの`channels`は対象日の確認・該当なし・保留を区別
 
 Actionsでは手動`personal` / `both`と、有効化された当日案内の公式・本人解析でAzureを選択します。必要な設定はsecret `AZURE_OPENAI_API_KEY`とvariables `AZURE_OPENAI_ENDPOINT`（`https://<resource>.openai.azure.com/`）、`AZURE_OPENAI_DEPLOYMENT`（`gpt-5.6-luna`）です。必要なcollector子だけに渡し、Git・Node入力読取・restore・stage/build・保存根拠の適用・frontendへは渡しません。無効時の公式定期は既存rulesのままです。
 
-公式補足と本人本文v7は共通Luna transportを使い、用途別prompt/schemaを分けます。画像・半月予定表の自動取得/取込や10時からの巡回は含みません。取得・本人確認・型・出典・原投稿順の履歴はコードの責務です。公式の未発行補足だけは別のbounded queueへ残し、次枠のAI容量がある場合に既知IDをsource上限内で確認できます。全既知投稿の編集巡回ではなく、拒否・失敗済みの再推論や結果合わせの再取得はしません。
+公式補足と本人本文v7は共通Luna transportを使い、用途別prompt/schemaを分けます。下記の半月予定表は独立した画像用途で、本人v7の本文契約へ画像を混ぜません。10時からの巡回や新cronは追加しません。取得・本人確認・型・出典・原投稿順の履歴はコードの責務です。公式の未発行補足だけは別のbounded queueへ残し、次枠のAI容量がある場合に既知IDをsource上限内で確認できます。全既知投稿の編集巡回ではなく、拒否・失敗済みの再推論や結果合わせの再取得はしません。
 
 cloudのAI（手動`personal/both`を含む）は**公式＋本人合算3回/run・実発行日のJST暦日30回**です。data-onlyの`ai-usage.json`へ発行前予約を永続化し、同じrun ID/attemptを子間で共有します。旧モデル・外部/画像使用も承認済みreceiptで同じ日予算へ算入します。cache hitは追加発行ではなく、中断予約は保守的に消費済みです。公式source/rulesを先行しても、両用途に枠がある本人受付中は公式AIを1〜2枠に制限し、過去の追加枠配分・締切で3枠目を配分します。残り1枠を本人の締切へ優先する場合や共有予算が尽きた場合は公式AIを0枠にでき、公式名簿の収集を維持して未発行補足を保留します。本人は公式の実使用後の残枠を利用し、容量がなければ本文GETを始めません。本文UTF-8 6,000 bytes・出力1,200 tokens・応答24,000 bytes・timeout 30秒、retry0・原則60秒以上の間隔を維持します。待機後は実日と締切を再確認し、429は少なくとも5分と`Retry-After`の長い方、401/403はAIだけを永続停止します。Yahoo/Xの共有cooldown・予算とは別です。同じ入力の成功・拒否・失敗・中断は自動再課金せず、復旧には運用者の明示照合が必要です。
 
@@ -1121,6 +1121,38 @@ cloudのAI（手動`personal/both`を含む）は**公式＋本人合算3回/run
 **有効化は別の承認ゲートです。**`DAILY_GUIDANCE_ENABLED`は未設定/既定`false`で、公式の従来定期を維持します。先に互換コードを公開し、承認済みの使用量receiptを適用・本番表示を確認した後だけ`true`にします。有効化時に共有台帳が欠けていればrestore/収集を停止し、ゼロ台帳を生成して進みません。
 
 手動`personal/both`のAzure経路にも、flagの値にかかわらず照合済みの共有台帳が必要です。台帳欠落・初回importなし・旧AI予算や停止状態が未移行の場合はlease/収集前に停止し、本人専用のゼロ予算へfallbackしません。手動19:30は受付締切の互換性であり、合算日予算の例外ではありません。従来rules CLIの既定値と、flag無効時のlegacy stateの読取・restoreは維持します。
+
+### 本人の半月予定表
+
+`data/half-month-schedules.json` は本人の**事前の予定**を保存する独立feedです。`collect-half-month-schedules.py` が保存rosterの公式由来・本人確認済みaccountから公開postを探し、元postの作者・日時・mediaを照合して、共通Lunaの半月専用契約で対象期間・日付・昼夜を読み取ります。当日本人の`events/links`や勤務実績へは入れません。長め昼は昼だけにまとめ、画像から店舗・数値時刻・イベント主役を生成しません。
+
+当日の予定者だけではなく、保存roster全体を対象にします。厨房も取得対象ですが既存の厨房区分を維持します。既存author bindingや`maidTendency.x`がある場合は一致が必要で、初回bindingは真正な元postのmetadataで確認します。未取得と不一致を区別し、未知accountを推測しません。推計の昇格日・見習い期間を理由に、確認済みの本人公開予定から日付を削除しません。roster外の在籍者や新accountの探索は行いません。
+
+前半は1〜15日、後半は16日〜月末です。投稿日や最後の勤務日から対象期間を作らず、本文/画像の対象月・前後半を確認します。年が画像に無い場合は`printedYear: null`を保ち、本文の明示年または元postのJST投稿月±1か月と印字曜日で一意に解決できた年を区別して保存します。不明な期間・日付・昼夜は保留です。15日の後半先行や遅延投稿も同じ契約で扱い、古い表を現在へ読み替えません。複数半月の表は全体を検証してから対象期間へ絞るため、有効な前半が過去になったことだけでは現在の後半を棄却しません。
+
+手動予定と有効な自動予定は日付・人物・昼夜で合わせ、重複する手動`featured`等は保持します。新しい完全な表が置換できるのは**同一人物・同一半月の旧自動予定だけ**です。取得順ではなく元投稿日時・ID順で決め、以前のrevision/出典を残します。元postのidentityと投稿時刻は共通でも、半月ごとの確認時刻・元payload hashは各revisionへ保持します。画像不足、partial、不明、非予定、解析失敗は旧有効予定を消しません。表に無い日を欠勤にはしません。curated名簿・観測・当日取消/訂正は既存resolverで優先します。
+
+日付詳細と人物別行の小さい「予定の出典」リンクで確認できます。**名前chipは引き続き確認済み当日本人post専用**で、半月postを代用しません。たとえば半月表が夜予定だけでも、別のcurated根拠で昼勤務がある場合は昼の記録を維持し、半月sourceは夜だけに付きます。予定人数と実績人数は別で、CSVや統計モデルを更新しません。
+
+現在と次の半月を、人物ごとのbounded queueで再確認します。通常は前回検索から24時間以降、予定者0人の日がある半月は未確認者の優先度を上げて最短6時間です。0人を休業や全員欠勤とせず、同じ条件でcacheを消したり全員を毎run取り直したりしません。期間ごとの未検索・候補なし・元post未確認・解析保留・予算待ち等を区別します。検索に無いことは未投稿の証明ではありません。
+
+`HALF_MONTH_SCHEDULE_ENABLED`は既定falseです。互換コード、照合済みsource会計と半月state、承認された初回factsの順で公開し、別承認で有効化します。既存8枠のscheduled/手動`both`に接続し、新cronを追加しません。当日本人の締切は変更せず、18:30以降は公式と半月だけを処理できます。停止しても既存有効feedを消しません。
+
+| 上限 | 半月有効時の共有範囲 |
+|---|---|
+| AI 3/run・30/実JST日 | 公式＋当日本人＋半月。半月は最大1/run、余りは返却 |
+| 検索5/run | 公式2＋当日本人/半月合算3。半月は最大1人/run |
+| 個別post＋画像20/run | 全用途合算。半月は元post最大1/run |
+| 検索60/日・post＋画像30/日 | 当日本人＋半月の合算。公式へ新しい日上限を課すものではない |
+| 画像4/run・8/日 | 同じpostの最大4枚。画像はpostと別kindで記録 |
+
+共有`source-usage.json`は既存日予算をbaselineで引き継ぎ、HTTP前の一意予約を保存します。移行後の承認済みsource receipt追加も元baselineを変えず追記し、本人予算・共有台帳・適用receiptを同じtransactionで照合します。画像を個別postとして偽装せず、既存import・保存画像の過去取得・今回の新規発行を重複計上しません。未使用の割当と発行済み予約は別です。発行後の失敗や中断で消費を取り消さず、同runの同一URLを再GETしません。AIは既存の60秒以上の間隔、retry0、共有pause/Retry-Afterを維持し、mini/nano fallbackや失敗済み入力の自動再推論はしません。
+
+画像は元postが持つ`pbs.twimg.com/media/`のJPEG/PNGだけで、redirectは追従しません。timeout35秒、8MiB/枚・12MiB/post、長辺8192px・20MP/枚・40MP/post、総request17MiBまでです。実bytesのtype/寸法を確認し、metadataのoriginal寸法と取得variantの寸法を分けます。必要な全画像のsource/AI枠を先に確認し、不足が分かっていれば部分downloadを始めません。4枚超や途中失敗で完全な表を装いません。
+
+このrepositoryはpublicなので、collector-stateも秘密の保管先ではありません。**原文・画像bytes・data URI・raw model応答はGit、logs、recovery、upload artifactへ残しません。**同runのtransient原文は最大3post、画像は1post分で終了時に削除し、跨runは検証済みmetadata/hash/facts/処理fingerprintだけを再利用します。Pagesはさらにwhitelistでqueue/会計/fingerprintを除外します。本人画像をブラウザーから自動取得・embedする機能は追加しません。
+
+保存原典の初回反映も限定data-only manifestで行います。新しい実推論のusageを実JST日に一度だけ精算し、そのcanonical receiptを参照する別manifestで真正な本人・半月だけを適用します。各段階で最新main/state SHA、owner、対象hash、lease/CASを照合し、前段成功・後段失敗を完了扱いしません。画像1件の成功やbounded queueの実装は、全員分の発見済み・全画像の精度保証とは別です。
 
 ### GitHub Actionsから収集・公開する構成
 

@@ -416,6 +416,16 @@ class MetadataTests(Offline):
 
 
 class CliTests(Offline):
+    def test_zero_search_allocation_is_accepted_without_changing_post_or_deadline_flags(self):
+        with mock.patch.object(personal, 'run', return_value=0) as run:
+            self.assertEqual(personal.main([
+                '--snapshot', 'private.json', '--http-state', 'observed-shifts.http-state.json',
+                '--max-searches', '0', '--scheduled']), 0)
+            args = run.call_args.args[0]
+            self.assertEqual(args.max_searches, 0)
+            self.assertEqual(args.max_posts, 3)
+            self.assertTrue(args.scheduled)
+
     def test_local_failures_are_exit_four_not_http_unavailable_three(self):
         for error in (OSError('disk failure'), ValueError('collector_locked'),
                       ValueError('invalid_personal_state'),
@@ -914,6 +924,171 @@ class StateTests(Offline):
         self.assertEqual(set(projected), {'schemaVersion', 'complete', 'checkedAt',
                                           'lastSuccessAt', 'posts', 'lastRun'})
         self.assertNotIn('text', json.dumps(projected))
+
+    def test_zero_search_allocation_does_not_invoke_search(self):
+        durable = self.durable(searches=0)
+        client = self.fake_client(durable)
+        report, code = self.collect(client, durable)
+        client.search.assert_not_called()
+        client.fetch_post.assert_not_called()
+        self.assertEqual(report['requests'], {'searches': 0, 'posts': 0})
+        self.assertEqual(code, 0)
+
+    def test_shared_source_hooks_real_client_before_get_and_counts_once_with_legacy(self):
+        source = personal.official.source_module()
+        ledger_path = self.folder / 'source-usage.json'
+        personal.official.atomic_json(self.snapshot, self.state)
+        source.initialize(ledger_path, self.state, source_hash='b' * 64, at=NOW)
+        current = [NOW]
+
+        def sleep(seconds):
+            current[0] += dt.timedelta(seconds=seconds)
+
+        with source.SharedSource(ledger_path, run_id='personal-shared', component='personal',
+                                 clock=lambda: current[0], sleep=sleep,
+                                 personal_path=self.snapshot) as shared:
+            durable = personal.DurableHttp(self.state, self.snapshot, self.http, DATE, self.targets,
+                                           3, 3, clock=lambda: current[0], sleep=sleep,
+                                           shared_source=shared)
+            durable.preflight()
+            client = personal.PersonalClient(durable)
+            response = mock.MagicMock()
+            response.__enter__.return_value = response
+            response.getcode.return_value = 200
+            response.headers = {}
+            response.read.return_value = page([]).encode()
+
+            def open_mock(*args, **kwargs):
+                state = source.load_state(ledger_path, required=True)
+                source.validate_legacy(state, personal.read_state(self.snapshot))
+                self.assertEqual(next(iter(state['receipts'].values()))['status'], 'issued')
+                return response
+
+            client.opener = mock.Mock()
+            client.opener.open.side_effect = open_mock
+            url = personal.account_search_url(AMU['handle'])
+            client.search(url, self.targets, DATE, current[0], {})
+            with self.assertRaisesRegex(personal.Failure, 'source_already_requested'):
+                client.search(url, self.targets, DATE, current[0], {})
+            self.assertEqual(client.opener.open.call_count, 1)
+            self.assertEqual(durable.used, {'searches': 1, 'posts': 0})
+            self.assertEqual(shared.report()['run']['personal']['searches'], 1)
+            source.validate_legacy(shared.state, self.state)
+        saved = source.load_state(ledger_path)
+        self.assertEqual(saved['baseline']['personalBudgets'], {})
+        self.assertEqual(self.state['budgets'][DATE.isoformat()], {'searches': 1, 'posts': 0})
+
+    def test_shared_source_capacity_is_denied_before_personal_get_without_legacy_delta(self):
+        source = personal.official.source_module()
+        ledger_path = self.folder / 'source-usage.json'
+        personal.official.atomic_json(self.snapshot, self.state)
+        source.initialize(ledger_path, self.state, source_hash='b' * 64, at=NOW)
+        current = [NOW]
+
+        def sleep(seconds):
+            current[0] += dt.timedelta(seconds=seconds)
+
+        with source.SharedSource(ledger_path, run_id='full', component='official',
+                                 clock=lambda: current[0], sleep=sleep) as shared:
+            for index in range(20):
+                shared.reserve('posts', f'https://x.com/akibazettai/status/{int(TID) + index}')
+        with source.SharedSource(ledger_path, run_id='full', component='personal',
+                                 clock=lambda: current[0], sleep=sleep,
+                                 personal_path=self.snapshot) as shared:
+            durable = personal.DurableHttp(self.state, self.snapshot, self.http, DATE, self.targets,
+                                           3, 3, clock=lambda: current[0], sleep=sleep,
+                                           shared_source=shared)
+            durable.post_target = AMU['name']
+            durable.preflight()
+            client = personal.PersonalClient(durable)
+            client.opener = mock.Mock()
+            with self.assertRaisesRegex(personal.Failure, 'source_budget_exhausted'):
+                client.fetch_post(str(int(TID) + 99))
+            client.opener.open.assert_not_called()
+            self.assertEqual(self.state['budgets'], {})
+            self.assertEqual(durable.used, {'searches': 0, 'posts': 0})
+            source.validate_legacy(shared.state, self.state)
+
+    def test_opt_in_cache_reuses_personal_post_but_never_extends_deadline(self):
+        source = personal.official.source_module()
+        ledger_path = self.folder / 'source-usage.json'
+        personal.official.atomic_json(self.snapshot, self.state)
+        source.initialize(ledger_path, self.state, source_hash='c' * 64, at=NOW)
+        current = [NOW]
+
+        def sleep(seconds):
+            current[0] += dt.timedelta(seconds=seconds)
+
+        with source.TransientSourceCache('cached-personal') as cache:
+            with source.SharedSource(ledger_path, run_id='cached-personal', component='personal',
+                                     clock=lambda: current[0], sleep=sleep,
+                                     personal_path=self.snapshot, cache=cache) as shared:
+                targets = {'あむ': {**AMU, 'shifts': ['昼']}}
+                durable = personal.DurableHttp(self.state, self.snapshot, self.http, DATE, targets,
+                                               0, 3, clock=lambda: current[0], sleep=sleep,
+                                               shared_source=shared, scheduled=True)
+                durable.post_target = AMU['name']
+                durable.preflight()
+                client = personal.PersonalClient(durable)
+                response = mock.MagicMock()
+                response.__enter__.return_value = response
+                response.getcode.return_value = 200
+                response.headers = {}
+                response.read.return_value = json.dumps(post()).encode()
+                client.opener = mock.Mock()
+                client.opener.open.return_value = response
+                self.assertEqual(client.fetch_post(TID), client.fetch_post(TID))
+                self.assertEqual(client.opener.open.call_count, 1)
+                self.assertEqual(durable.used, {'searches': 0, 'posts': 1})
+                self.assertEqual(cache.counts()['posts'], 1)
+                current[0] = NOW.replace(hour=4, minute=31)
+                with self.assertRaisesRegex(personal.Failure, 'outside_window'):
+                    client.fetch_post(TID)
+                self.assertEqual(client.opener.open.call_count, 1)
+        self.assertEqual(cache.counts()['posts'], 0)
+
+    def test_half_month_input_introduces_today_target_without_personal_post_or_deadline_extension(self):
+        feed = {'schemaVersion': 1, 'complete': False, 'checkedAt': personal.stamp(NOW),
+                'lastSuccessAt': personal.stamp(NOW), 'lastRun': {'status': 'ok'}, 'schedules': [{
+                    'id': TID, 'url': personal.public_url(AMU['handle'], TID),
+                    'name': AMU['name'], 'authorId': UID, 'authorScreenName': AMU['handle'],
+                    'createdAt': CREATED, 'observedAt': personal.stamp(NOW),
+                    'sourceKind': 'half-month-schedule',
+                    'period': {'from': '2026-09-01', 'to': '2026-09-15',
+                               'printedYear': None, 'yearBasis': 'post-context'},
+                    'days': [{'date': DATE.isoformat(), 'shifts': ['昼']}]}]}
+        feed_path = self.folder / 'half-month.json'
+        personal.official.atomic_json(feed_path, feed)
+        self.schedule['schedule'] = {}
+        args = self.args(['--half-month-snapshot', str(feed_path), '--scheduled'])
+        observations = self.folder / 'observations.json'
+        personal.official.atomic_json(observations, personal.official.empty_snapshot())
+        args.observations = observations
+        actual_targets = []
+
+        def collect(state, durable, client, targets, *args, **kwargs):
+            actual_targets.append(targets)
+            self.assertEqual(state['posts'], [])
+            self.assertEqual(targets, {'あむ': {**AMU, 'shifts': ['昼']}})
+            self.assertEqual(personal.active_targets(
+                targets, DATE, NOW.replace(hour=4, minute=31), scheduled=True), {})
+            return {'component': 'personal'}, 0
+
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(
+                personal, 'collect', side_effect=collect):
+            personal.run(args, clock=lambda: NOW, sleep=self.sleeps.append,
+                         client_factory=lambda durable: None)
+        self.assertEqual(len(actual_targets), 1)
+        self.assertEqual(json.loads(feed_path.read_text(encoding='utf-8')), feed)
+        self.assertEqual(personal.read_state(self.snapshot)['posts'], [])
+
+    def test_required_shared_source_missing_stops_before_client_creation(self):
+        path = self.folder / 'missing-source.json'
+        args = self.args(['--source-state', str(path), '--source-run-id', 'missing'])
+        with self.assertRaisesRegex(ValueError, 'missing_source_usage'):
+            personal.run(args, clock=lambda: NOW,
+                         client_factory=lambda durable: self.fail('must not construct client'))
+        self.assertFalse(path.exists())
 
     def args(self, extra=()):
         schedule = self.folder / 'schedule.js'

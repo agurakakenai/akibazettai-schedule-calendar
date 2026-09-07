@@ -17,6 +17,7 @@ import html
 from html.parser import HTMLParser
 import http.client
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -74,6 +75,23 @@ def analysis_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@functools.lru_cache(maxsize=1)
+def source_module():
+    spec = importlib.util.spec_from_file_location('shared_source_accounting',
+                                                 ROOT / 'tools' / 'source-state.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def source_call(source, method, *args, **kwargs):
+    try:
+        return getattr(source, method)(*args, **kwargs)
+    except source.failure_type as exc:
+        retry = timestamp(exc.retry_at) if exc.retry_at else None
+        raise FetchFailure(exc.reason, exc.status, retry) from None
 
 
 def analysis_context():
@@ -296,19 +314,28 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class LimitedResponse:
-    def __init__(self, response):
+    def __init__(self, response, source=None, receipt=None):
         self.response = response
+        self.source, self.receipt, self.finished = source, receipt, False
 
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
-        self.response.close()
+        try:
+            self.response.close()
+        finally:
+            if self.source is not None and not self.finished:
+                source_call(self.source, 'finish', self.receipt, 'failed')
 
     def read(self):
         body = self.response.read(MAX_BODY + 1)
         if len(body) > MAX_BODY:
             raise FetchFailure('response_too_large')
+        if self.source is not None and not self.finished:
+            source_call(self.source, 'finish', self.receipt, http_status=200)
+            self.finished = True
+            source_call(self.source, 'remember', self.receipt, body)
         return body
 
 
@@ -323,6 +350,7 @@ class PublicClient:
         self.blocked = set()
         self.last_request = {}
         self.requests = {'searches': 0, 'posts': 0}
+        self.shared_source = None
         self.importer = load_importer()
         # Reuse fetch unchanged, but capture HTTP safety metadata before it parses
         # the response. Do not replace urllib's process-global urlopen.
@@ -343,6 +371,10 @@ class PublicClient:
                    and not parsed.username and not parsed.port)
         if url not in SEARCH_URLS and not is_post:
             raise FetchFailure('route_refused')
+        if self.shared_source is not None:
+            cached = source_call(self.shared_source, 'cached', 'posts' if is_post else 'searches', url)
+            if cached is not None:
+                return io.BytesIO(cached['body'])
         now = self.clock()
         retry_at = self.cooldowns.get(host)
         if host in self.blocked or (retry_at is not None and now < retry_at):
@@ -350,6 +382,11 @@ class PublicClient:
         if host in self.last_request:
             self.sleep(max(0, 2 - (self.monotonic() - self.last_request[host])))
         self.last_request[host] = self.monotonic()
+        receipt = None
+        if self.shared_source is not None:
+            receipt = source_call(self.shared_source, 'reserve', 'posts' if is_post else 'searches', url)
+            source_call(self.shared_source, 'issued', receipt)
+            now = self.clock()
         try:
             # Use an ordinary unauthenticated GET, including when the reused
             # importer supplies browser-like headers. No cookies or identity spoof.
@@ -370,17 +407,29 @@ class PublicClient:
                             pass
                 self.cooldowns[host] = max(now, retry_at)
                 self.blocked.add(host)
+                if self.shared_source is not None:
+                    source_call(self.shared_source, 'set_cooldown', host, self.cooldowns[host])
             exc.close()
+            if receipt is not None:
+                source_call(self.shared_source, 'finish', receipt, 'failed', http_status=exc.code)
             raise FetchFailure('http_error', exc.code, retry_at) from None
         except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException):
+            if receipt is not None:
+                source_call(self.shared_source, 'finish', receipt, 'failed')
             raise FetchFailure('network_error') from None
+        except FetchFailure as exc:
+            if receipt is not None:
+                source_call(self.shared_source, 'finish', receipt, 'failed', http_status=exc.status)
+            raise
         try:
             if response.getcode() != 200:
                 raise FetchFailure('unexpected_http_status', response.getcode())
             check_http_metadata(response.headers, self.clock())
-            return LimitedResponse(response)
+            return LimitedResponse(response, self.shared_source, receipt)
         except BaseException:
             response.close()
+            if receipt is not None:
+                source_call(self.shared_source, 'finish', receipt, 'failed')
             raise
 
     def search(self, url):
@@ -475,7 +524,7 @@ def load_snapshot(path):
         if not isinstance(cooldowns, dict):
             raise ValueError
         for host, until in cooldowns.items():
-            if host not in ('search.yahoo.co.jp', POST_HOST):
+            if host not in ('search.yahoo.co.jp', POST_HOST, 'pbs.twimg.com'):
                 raise ValueError
             timestamp(until)
         ids = set()
@@ -554,7 +603,7 @@ def load_transport(path):
         if value['schemaVersion'] != 1 or not isinstance(value['cooldowns'], dict):
             raise ValueError
         for host, until in value['cooldowns'].items():
-            if host not in ('search.yahoo.co.jp', POST_HOST):
+            if host not in ('search.yahoo.co.jp', POST_HOST, 'pbs.twimg.com'):
                 raise ValueError
             timestamp(until)
         return value['cooldowns']
@@ -892,7 +941,8 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
             candidates.update(ids)
             sources.append({'url': url, 'status': 'ok', 'candidateCount': len(ids)})
         except FetchFailure as exc:
-            if called and exc.reason in ('host_rate_limited', 'route_refused'):
+            if called and (exc.reason in ('host_rate_limited', 'route_refused')
+                           or exc.reason.startswith('source_')):
                 search_attempted -= 1
             remember_limit(host, exc)
             sources.append({'url': url, 'status': 'failed', **exc.facts()})
@@ -1038,7 +1088,8 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
                                 'id': tid, 'fetchedAt': acquired_at,
                                 'bodyHash': analysis.digest(value['text']), 'payload': copy.deepcopy(value)})
         except FetchFailure as exc:
-            if saved_payloads is None and exc.reason in ('host_rate_limited', 'route_refused'):
+            if saved_payloads is None and (exc.reason in ('host_rate_limited', 'route_refused')
+                                           or exc.reason.startswith('source_')):
                 post_issued -= 1
             if analyzer is not None and tid in analyzer.state['queue']:
                 analyzer.state['queue'].pop(tid, None)
@@ -1146,6 +1197,8 @@ def argument_parser():
     parser.add_argument('--analysis-backend', choices=('rules', 'azure'), default='rules')
     parser.add_argument('--ai-state', type=Path, help='existing private shared AI usage ledger')
     parser.add_argument('--analysis-run-id', help='shared official/personal run identifier')
+    parser.add_argument('--source-state', type=Path, help='existing shared source reservation ledger')
+    parser.add_argument('--source-run-id', help='shared official/personal/schedule source run identity')
     parser.add_argument('--analysis-limit', type=int, default=3, help='AI request allocation, 0..3')
     parser.add_argument('--analyze-saved', type=Path, help='known post ID to saved source payload JSON')
     parser.add_argument('--source-fetched-at', help='actual UTC raw acquisition time; required with saved input')
@@ -1170,6 +1223,9 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
     if snapshot.suffix.lower() != '.json' or (publish and publish.suffix.lower() != '.json'):
         raise ValueError('json_snapshot_required')
     paths = {snapshot}
+    source_path = args.source_state.resolve() if args.source_state else None
+    if bool(source_path) != bool(args.source_run_id) or source_path and args.watch:
+        raise ValueError('invalid_source_configuration')
     if publish:
         paths.add(publish)
     if not 0 <= args.analysis_limit <= 3:
@@ -1208,6 +1264,13 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
             raise ValueError('overlapping_storage_paths')
     if args.analyze_saved and args.analyze_saved.resolve() in paths | transport_paths:
         raise ValueError('overlapping_storage_paths')
+    if source_path:
+        protected_source = paths | transport_paths | {curated.resolve()}
+        protected_source.update(path.with_suffix('.lock') for path in paths)
+        protected_source.update(path.resolve() for path in (
+            args.ai_state, args.analyze_saved, buffer_output, replay_path) if path is not None)
+        if source_path.suffix != '.json' or source_path in protected_source:
+            raise ValueError('overlapping_storage_paths')
     for buffer_path in (buffer_output, replay_path):
         if buffer_path and (buffer_path in paths | transport_paths
                             or args.ai_state and buffer_path == args.ai_state.resolve()):
@@ -1219,6 +1282,8 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
         protected.update(transport_paths)
         if args.ai_state:
             protected.update((args.ai_state.resolve(), Path(str(args.ai_state.resolve()) + '.lock')))
+        if source_path:
+            protected.update((source_path, Path(str(source_path) + '.lock')))
         if args.analyze_saved:
             protected.add(args.analyze_saved.resolve())
         protected.update(path for path in (buffer_output, replay_path) if path is not None)
@@ -1233,8 +1298,13 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
     with ExitStack() as locks:
         for path in sorted(paths, key=lambda item: str(item).casefold()):
             locks.enter_context(ProcessLock(path.with_suffix('.lock')))
+        shared_source = None
+        if source_path:
+            shared_source = locks.enter_context(source_module().SharedSource(
+                source_path, run_id=args.source_run_id, component='official', clock=clock, sleep=sleep))
         if saved_payloads is None and replay_path is None:
             client = client or PublicClient(clock=clock, sleep=sleep)
+            client.shared_source = shared_source
         while True:
             state = load_snapshot(snapshot)
             if publish and publish != snapshot and publish.exists():
@@ -1246,12 +1316,20 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
                 for host, until in load_transport(path).items():
                     if host not in limits or timestamp(until) > timestamp(limits[host]):
                         limits[host] = until
+            if shared_source is not None:
+                for host, until in shared_source.state['cooldowns'].items():
+                    if host not in limits or timestamp(until) > timestamp(limits[host]):
+                        limits[host] = until
+                for host, until in limits.items():
+                    source_call(shared_source, 'set_cooldown', host, timestamp(until))
 
             def persist_limits(host=None, until=None):
                 if host is not None:
                     value = iso(until)
                     if host not in limits or timestamp(value) > timestamp(limits[host]):
                         limits[host] = value
+                    if shared_source is not None:
+                        source_call(shared_source, 'set_cooldown', host, until)
                 payload = {'schemaVersion': 1, 'cooldowns': dict(limits)}
                 for path in sorted(transport_paths):
                     atomic_json(path, payload)
@@ -1303,6 +1381,8 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
                 if analyzer is not None:
                     report['analysisBackend'] = 'azure'
                     report['analysisRequests'] = usage.used
+            if shared_source is not None:
+                report['sourceUsage'] = shared_source.report()
             report['dryRun'] = args.dry_run
             report['saved'] = not args.dry_run
             report['processId'] = os.getpid()
@@ -1348,7 +1428,8 @@ def main(argv=None):
         return run(args)
     except KeyboardInterrupt:
         return 130
-    except (OSError, ValueError, analysis_module().ledger.UsageFailure) as exc:
+    except (OSError, ValueError, FetchFailure, source_module().SourceFailure,
+            analysis_module().ledger.UsageFailure) as exc:
         reason = 'local_io_error' if isinstance(exc, OSError) else str(exc)
         if not re.fullmatch(r'[a-z_]+', reason):
             reason = 'invalid_local_data'

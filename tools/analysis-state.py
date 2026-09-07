@@ -1,4 +1,4 @@
-"""Private, locked AI accounting shared by the official and personal collectors.
+"""Private, locked AI accounting shared by official, personal and schedule collectors.
 
 Reservations are spent even without an issue/completion marker. Nothing retries a
 receipt. Imports are explicit approved historical totals, never inferred from an
@@ -20,11 +20,13 @@ JST = dt.timezone(dt.timedelta(hours=9))
 HEX = re.compile(r'[0-9a-f]{64}\Z')
 TOKEN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}\Z')
 REASONS = {
-    'events', 'links', 'no_event', 'azure_pending', 'azure_invalid_output', 'azure_refused',
+    'events', 'links', 'no_event', 'schedule', 'not_schedule',
+    'azure_pending', 'azure_invalid_output', 'azure_refused',
     'azure_timeout', 'azure_network_error', 'azure_http_error', 'azure_rate_limited',
     'azure_auth_stopped', 'azure_interrupted', 'azure_input_limit', 'azure_ungrounded',
     'azure_model_mismatch', 'azure_deadline', 'azure_budget_exhausted', 'azure_backoff',
 }
+SUCCESS_REASONS = {'events', 'links', 'no_event', 'schedule', 'not_schedule'}
 
 
 class UsageFailure(Exception):
@@ -150,7 +152,7 @@ def _validate_import(receipt):
         for field in ('deployment', 'modelVersion'):
             if field in item:
                 _token(item[field])
-        if 'component' in item and item['component'] not in ('official', 'personal', 'external'):
+        if 'component' in item and item['component'] not in ('official', 'personal', 'schedule', 'external'):
             raise ValueError('invalid_ai_usage')
         _count(item['count'])
         identity = (item['model'], item['kind'], *(item.get(field) for field in optional))
@@ -190,7 +192,7 @@ def validate_state(value):
                             'reservedAt', 'issuedAt', 'completedAt', 'reason',
                             'httpStatus', 'retryAt'))
             _token(receipt['runId'])
-            if receipt['component'] not in ('official', 'personal'):
+            if receipt['component'] not in ('official', 'personal', 'schedule'):
                 raise ValueError
             _hash(receipt['requestHash'])
             if key != _receipt_id(receipt['component'], receipt['requestHash']):
@@ -211,7 +213,7 @@ def validate_state(value):
                 raise ValueError
             if completed is None and receipt['reason'] != 'azure_interrupted':
                 raise ValueError
-            if receipt['reason'] in ('events', 'links', 'no_event') and issued is None:
+            if receipt['reason'] in SUCCESS_REASONS and issued is None:
                 raise ValueError
             status = receipt['httpStatus']
             if status is not None and (type(status) is not int or not 100 <= status <= 599):
@@ -402,12 +404,13 @@ class SharedUsage:
     def __init__(self, path, *, run_id, component, clock, sleep,
                  request_limit=RUN_LIMIT, deadline=None, create=False):
         _token(run_id)
-        if (component not in ('official', 'personal') or type(request_limit) is not int
+        if (component not in ('official', 'personal', 'schedule') or type(request_limit) is not int
                 or not 0 <= request_limit <= RUN_LIMIT
                 or deadline is not None and not callable(deadline)):
             raise ValueError('invalid_ai_usage_configuration')
         self.path, self.run_id, self.component = Path(path), run_id, component
-        self.clock, self.sleep, self.request_limit = clock, sleep, request_limit
+        self.clock, self.sleep = clock, sleep
+        self.request_limit = min(request_limit, 1) if component == 'schedule' else request_limit
         self.deadline, self.create = deadline, create
         self.state, self._lock = None, None
         self._owned, self._active = set(), None
@@ -501,7 +504,7 @@ class SharedUsage:
         receipt_id = _receipt_id(self.component, key)
         if receipt_id in self.state['receipts']:
             previous = self.state['receipts'][receipt_id]
-            reason = previous['reason'] if previous['reason'] not in ('events', 'links', 'no_event') else 'azure_already_analyzed'
+            reason = previous['reason'] if previous['reason'] not in SUCCESS_REASONS else 'azure_already_analyzed'
             raise UsageFailure(reason, previous['httpStatus'], previous['retryAt'])
         self._allowed()
         if self._active is not None:
@@ -573,7 +576,7 @@ class SharedUsage:
             if receipt['reason'] == reason:
                 return
             raise UsageFailure('azure_interrupted')
-        if reason in ('events', 'links', 'no_event') and receipt['issuedAt'] is None:
+        if reason in SUCCESS_REASONS and receipt['issuedAt'] is None:
             raise UsageFailure('azure_interrupted')
         receipt['reason'] = reason
         receipt['completedAt'] = _stamp(max(_now(self.clock()), _time(receipt['issuedAt'] or receipt['reservedAt'])))
