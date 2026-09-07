@@ -1,8 +1,845 @@
 {
-  "candidateHistory": {},
-  "checkedAt": "2026-09-07T01:17:33.785207Z",
+  "candidateHistory": {
+    "c8aba1e1fd94e5192bdefce7fb25f8471c4e0def2e79607d61f333d86b6721cf": {
+      "candidate": {
+        "authorId": "1954467457902809088",
+        "authorScreenName": "akubi_zettai",
+        "discoveredAt": "2026-09-07T08:31:44.304527Z",
+        "discoveryHash": "8c69acc0749beae0d2ff5d5ad19317deac8a845a7038a083dacc86845a81a842",
+        "id": "2096673261031711157",
+        "lastAttemptAt": "2026-09-07T08:31:44.331150Z",
+        "name": "あくび",
+        "nextAttemptAt": null,
+        "priority": 1,
+        "searchCreatedAt": "2026-09-06T18:53:54Z",
+        "url": "https://x.com/akubi_zettai/status/2096673261031711157"
+      },
+      "checkedAt": "2026-09-07T08:31:54.531554Z",
+      "reason": "source_failed"
+    }
+  },
+  "checkedAt": "2026-09-07T08:31:54.533044Z",
   "complete": false,
-  "coverage": {},
+  "coverage": {
+    "2026-09-01": {
+      "あくび": {
+        "candidateIds": [
+          "2096646065768583294",
+          "2096641101172269085",
+          "2096565249105404343",
+          "2096545528297492701",
+          "2096437301509513578"
+        ],
+        "confirmedIds": [],
+        "handle": "akubi_zettai",
+        "lastSearchedAt": "2026-09-07T08:31:42.715152Z",
+        "name": "あくび",
+        "nextCheckAt": "2026-09-08T08:31:42.715152Z",
+        "reason": "source_failed",
+        "to": "2026-09-15"
+      },
+      "あむ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "amu_zettai",
+        "lastSearchedAt": null,
+        "name": "あむ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "あめる": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "ameru_zettai",
+        "lastSearchedAt": null,
+        "name": "あめる",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "あらた": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "arata_zettai",
+        "lastSearchedAt": null,
+        "name": "あらた",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "いと": {
+        "candidateIds": [],
+        "confirmedIds": [
+          "2096568567798128871"
+        ],
+        "handle": "ito_zettai",
+        "lastSearchedAt": null,
+        "name": "いと",
+        "nextCheckAt": null,
+        "reason": "valid_schedule",
+        "to": "2026-09-15"
+      },
+      "うな": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "una_zettai",
+        "lastSearchedAt": null,
+        "name": "うな",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "うる": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "uru_zettai",
+        "lastSearchedAt": null,
+        "name": "うる",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "えみ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "emi_zettai",
+        "lastSearchedAt": null,
+        "name": "えみ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "える": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "eru_zettai",
+        "lastSearchedAt": null,
+        "name": "える",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "かなた": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "kanata2_zettai",
+        "lastSearchedAt": null,
+        "name": "かなた",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "きらり": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "kirari_zettai",
+        "lastSearchedAt": null,
+        "name": "きらり",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "けだま": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "kedama_zettai",
+        "lastSearchedAt": null,
+        "name": "けだま",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "こい": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "koi_zettai",
+        "lastSearchedAt": null,
+        "name": "こい",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "こえび": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "koebi_zettai",
+        "lastSearchedAt": null,
+        "name": "こえび",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "こん": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "kon1_zettai",
+        "lastSearchedAt": null,
+        "name": "こん",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "しゃち": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "shachi_zettai",
+        "lastSearchedAt": null,
+        "name": "しゃち",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "すくい": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "sukui_zettai",
+        "lastSearchedAt": null,
+        "name": "すくい",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "ちぇる": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "cheru2_zettai",
+        "lastSearchedAt": null,
+        "name": "ちぇる",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "ちさと": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "chisato_zettai",
+        "lastSearchedAt": null,
+        "name": "ちさと",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "ちま": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "chima_zettai",
+        "lastSearchedAt": null,
+        "name": "ちま",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "ちゆ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "chiyu_zettai",
+        "lastSearchedAt": null,
+        "name": "ちゆ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "ちょこ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "choko_zettai",
+        "lastSearchedAt": null,
+        "name": "ちょこ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "つぼみ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "tsubomi_zettai",
+        "lastSearchedAt": null,
+        "name": "つぼみ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "にゃな": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "nyana_zettai",
+        "lastSearchedAt": null,
+        "name": "にゃな",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "ねむり": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "nemuri_zettai",
+        "lastSearchedAt": null,
+        "name": "ねむり",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "のの": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "nono_zettai",
+        "lastSearchedAt": null,
+        "name": "のの",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "はぴる": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "hapiru_zettai",
+        "lastSearchedAt": null,
+        "name": "はぴる",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "ひかり": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "hikari_zettai",
+        "lastSearchedAt": null,
+        "name": "ひかり",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "ひなり": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "hinari_zettai",
+        "lastSearchedAt": null,
+        "name": "ひなり",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "ぴあの": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "piano1_zettai",
+        "lastSearchedAt": null,
+        "name": "ぴあの",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "まこっちゃん": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "makoto2_zettai",
+        "lastSearchedAt": null,
+        "name": "まこっちゃん",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "まひろ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "mahiro1_zettai",
+        "lastSearchedAt": null,
+        "name": "まひろ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "みえる": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "mieru_zettai",
+        "lastSearchedAt": null,
+        "name": "みえる",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "みりあ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "miria_zettai",
+        "lastSearchedAt": null,
+        "name": "みりあ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "みりん": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "mirin_zettai",
+        "lastSearchedAt": null,
+        "name": "みりん",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "もち": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "mochi1_zettai",
+        "lastSearchedAt": null,
+        "name": "もち",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "もなか": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "monaka_zettai",
+        "lastSearchedAt": null,
+        "name": "もなか",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "ゆめ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "yume1_zettai",
+        "lastSearchedAt": null,
+        "name": "ゆめ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "ららこ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "rarako_zettai",
+        "lastSearchedAt": null,
+        "name": "ららこ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      },
+      "るるか": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "ruruka_zettai",
+        "lastSearchedAt": null,
+        "name": "るるか",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-15"
+      }
+    },
+    "2026-09-16": {
+      "あくび": {
+        "candidateIds": [
+          "2096646065768583294",
+          "2096641101172269085",
+          "2096565249105404343",
+          "2096545528297492701",
+          "2096437301509513578"
+        ],
+        "confirmedIds": [],
+        "handle": "akubi_zettai",
+        "lastSearchedAt": "2026-09-07T08:31:42.715162Z",
+        "name": "あくび",
+        "nextCheckAt": "2026-09-07T14:31:42.715162Z",
+        "reason": "source_failed",
+        "to": "2026-09-30"
+      },
+      "あむ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "amu_zettai",
+        "lastSearchedAt": null,
+        "name": "あむ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "あめる": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "ameru_zettai",
+        "lastSearchedAt": null,
+        "name": "あめる",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "あらた": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "arata_zettai",
+        "lastSearchedAt": null,
+        "name": "あらた",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "いと": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "ito_zettai",
+        "lastSearchedAt": null,
+        "name": "いと",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "うな": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "una_zettai",
+        "lastSearchedAt": null,
+        "name": "うな",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "うる": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "uru_zettai",
+        "lastSearchedAt": null,
+        "name": "うる",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "えみ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "emi_zettai",
+        "lastSearchedAt": null,
+        "name": "えみ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "える": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "eru_zettai",
+        "lastSearchedAt": null,
+        "name": "える",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "かなた": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "kanata2_zettai",
+        "lastSearchedAt": null,
+        "name": "かなた",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "きらり": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "kirari_zettai",
+        "lastSearchedAt": null,
+        "name": "きらり",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "けだま": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "kedama_zettai",
+        "lastSearchedAt": null,
+        "name": "けだま",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "こい": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "koi_zettai",
+        "lastSearchedAt": null,
+        "name": "こい",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "こえび": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "koebi_zettai",
+        "lastSearchedAt": null,
+        "name": "こえび",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "こん": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "kon1_zettai",
+        "lastSearchedAt": null,
+        "name": "こん",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "しゃち": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "shachi_zettai",
+        "lastSearchedAt": null,
+        "name": "しゃち",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "すくい": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "sukui_zettai",
+        "lastSearchedAt": null,
+        "name": "すくい",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "ちぇる": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "cheru2_zettai",
+        "lastSearchedAt": null,
+        "name": "ちぇる",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "ちさと": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "chisato_zettai",
+        "lastSearchedAt": null,
+        "name": "ちさと",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "ちま": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "chima_zettai",
+        "lastSearchedAt": null,
+        "name": "ちま",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "ちゆ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "chiyu_zettai",
+        "lastSearchedAt": null,
+        "name": "ちゆ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "ちょこ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "choko_zettai",
+        "lastSearchedAt": null,
+        "name": "ちょこ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "つぼみ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "tsubomi_zettai",
+        "lastSearchedAt": null,
+        "name": "つぼみ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "にゃな": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "nyana_zettai",
+        "lastSearchedAt": null,
+        "name": "にゃな",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "ねむり": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "nemuri_zettai",
+        "lastSearchedAt": null,
+        "name": "ねむり",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "のの": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "nono_zettai",
+        "lastSearchedAt": null,
+        "name": "のの",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "はぴる": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "hapiru_zettai",
+        "lastSearchedAt": null,
+        "name": "はぴる",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "ひかり": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "hikari_zettai",
+        "lastSearchedAt": null,
+        "name": "ひかり",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "ひなり": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "hinari_zettai",
+        "lastSearchedAt": null,
+        "name": "ひなり",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "ぴあの": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "piano1_zettai",
+        "lastSearchedAt": null,
+        "name": "ぴあの",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "まこっちゃん": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "makoto2_zettai",
+        "lastSearchedAt": null,
+        "name": "まこっちゃん",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "まひろ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "mahiro1_zettai",
+        "lastSearchedAt": null,
+        "name": "まひろ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "みえる": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "mieru_zettai",
+        "lastSearchedAt": null,
+        "name": "みえる",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "みりあ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "miria_zettai",
+        "lastSearchedAt": null,
+        "name": "みりあ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "みりん": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "mirin_zettai",
+        "lastSearchedAt": null,
+        "name": "みりん",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "もち": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "mochi1_zettai",
+        "lastSearchedAt": null,
+        "name": "もち",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "もなか": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "monaka_zettai",
+        "lastSearchedAt": null,
+        "name": "もなか",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "ゆめ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "yume1_zettai",
+        "lastSearchedAt": null,
+        "name": "ゆめ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "ららこ": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "rarako_zettai",
+        "lastSearchedAt": null,
+        "name": "ららこ",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      },
+      "るるか": {
+        "candidateIds": [],
+        "confirmedIds": [],
+        "handle": "ruruka_zettai",
+        "lastSearchedAt": null,
+        "name": "るるか",
+        "nextCheckAt": null,
+        "reason": "not_searched",
+        "to": "2026-09-30"
+      }
+    }
+  },
   "identityBindings": {
     "いと": {
       "authorId": "2080944098043977728",
@@ -11,10 +848,76 @@
     }
   },
   "lastRun": {
-    "status": "ok"
+    "status": "partial"
   },
   "lastSuccessAt": "2026-09-07T01:17:33.785207Z",
-  "pending": [],
+  "pending": [
+    {
+      "authorId": "1954467457902809088",
+      "authorScreenName": "akubi_zettai",
+      "discoveredAt": "2026-09-07T08:31:44.304527Z",
+      "discoveryHash": "8c69acc0749beae0d2ff5d5ad19317deac8a845a7038a083dacc86845a81a842",
+      "id": "2096646065768583294",
+      "lastAttemptAt": null,
+      "name": "あくび",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-06T17:05:50Z",
+      "url": "https://x.com/akubi_zettai/status/2096646065768583294"
+    },
+    {
+      "authorId": "1954467457902809088",
+      "authorScreenName": "akubi_zettai",
+      "discoveredAt": "2026-09-07T08:31:44.304527Z",
+      "discoveryHash": "8c69acc0749beae0d2ff5d5ad19317deac8a845a7038a083dacc86845a81a842",
+      "id": "2096641101172269085",
+      "lastAttemptAt": null,
+      "name": "あくび",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-06T16:46:06Z",
+      "url": "https://x.com/akubi_zettai/status/2096641101172269085"
+    },
+    {
+      "authorId": "1954467457902809088",
+      "authorScreenName": "akubi_zettai",
+      "discoveredAt": "2026-09-07T08:31:44.304527Z",
+      "discoveryHash": "8c69acc0749beae0d2ff5d5ad19317deac8a845a7038a083dacc86845a81a842",
+      "id": "2096565249105404343",
+      "lastAttemptAt": null,
+      "name": "あくび",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-06T11:44:42Z",
+      "url": "https://x.com/akubi_zettai/status/2096565249105404343"
+    },
+    {
+      "authorId": "1954467457902809088",
+      "authorScreenName": "akubi_zettai",
+      "discoveredAt": "2026-09-07T08:31:44.304527Z",
+      "discoveryHash": "8c69acc0749beae0d2ff5d5ad19317deac8a845a7038a083dacc86845a81a842",
+      "id": "2096545528297492701",
+      "lastAttemptAt": null,
+      "name": "あくび",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-06T10:26:20Z",
+      "url": "https://x.com/akubi_zettai/status/2096545528297492701"
+    },
+    {
+      "authorId": "1954467457902809088",
+      "authorScreenName": "akubi_zettai",
+      "discoveredAt": "2026-09-07T08:31:44.304527Z",
+      "discoveryHash": "8c69acc0749beae0d2ff5d5ad19317deac8a845a7038a083dacc86845a81a842",
+      "id": "2096437301509513578",
+      "lastAttemptAt": null,
+      "name": "あくび",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-06T03:16:17Z",
+      "url": "https://x.com/akubi_zettai/status/2096437301509513578"
+    }
+  ],
   "receipts": {
     "164ee226a4e28cd184bbfdfe8b388da30290ad15a490a938a30211bef63e90dd": [
       "6d4e1f153ca586f7904dd58bc9b98b459973c3eedd444c4125ebbb170e8aee28"
