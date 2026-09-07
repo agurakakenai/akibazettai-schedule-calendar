@@ -7,6 +7,51 @@ PROOF_HASHES = ('usageReceiptId', 'usageSourceHash', 'sourceManifestHash',
                 'analysisResultHash', 'analysisReceiptHash')
 
 
+def validate_timing_accounting(usage, proof, analysis, half_month):
+    """New-purpose accounting is explicit: never fall back between native and imported usage."""
+    half_month.load_module('analysis-state.py', 'half_timing_accounting').validate_state(usage)
+    half_month.require_keys(proof, (*PROOF_HASHES, 'issuedAt', 'searchCreatedAt', 'accountingKind'))
+    for field in PROOF_HASHES:
+        half_month.valid_hash(proof[field])
+    for field in ('issuedAt', 'searchCreatedAt'):
+        half_month.timestamp(proof[field])
+    _require(analysis['contract'] == half_month.TIMING_VERSION, 'saved_half_month_accounting_kind')
+    _require(proof['analysisResultHash'] == analysis['resultHash']
+             and proof['analysisReceiptHash'] == half_month.digest(analysis),
+             'saved_half_month_result_attestation')
+    attestation = {
+        'contract': half_month.TIMING_VERSION, 'requestHash': analysis['requestHash'],
+        'resultHash': analysis['resultHash'], 'semanticResultHash': analysis['timingOnly']['semanticResultHash'],
+        'analysisHash': half_month.digest(analysis), 'consumed': 1}
+    native_id = half_month.digest(('schedule:' + analysis['requestHash']).encode('utf-8'))
+    if proof['accountingKind'] == 'native':
+        receipt = usage['receipts'].get(proof['usageReceiptId'])
+        _require(proof['usageReceiptId'] == analysis['receiptId'] == native_id
+                 and isinstance(receipt, dict), 'saved_half_month_native_missing')
+        _require(receipt['component'] == 'schedule' and receipt['requestHash'] == analysis['requestHash']
+                 and receipt['issuedAt'] == proof['issuedAt'] and receipt['completedAt'] is not None
+                 and receipt['reason'] in ('events', 'no_event', 'azure_pending')
+                 and receipt['httpStatus'] is None and receipt['retryAt'] is None,
+                 'saved_half_month_native_phase')
+        _require(half_month.timestamp(receipt['issuedAt']) <= half_month.timestamp(analysis['analyzedAt'])
+                 <= half_month.timestamp(receipt['completedAt']), 'saved_half_month_native_chronology')
+        _require(all(receipt['identity'][key] == value for key, value in (
+            ('model', half_month.MODEL), ('deployment', half_month.MODEL),
+            ('modelVersion', half_month.MODEL_VERSION))), 'half_month_usage_model_mismatch')
+        _require(proof['usageSourceHash'] == half_month.digest(receipt)
+                 and proof['sourceManifestHash'] == analysis['timingOnly']['sourceHash'],
+                 'saved_half_month_native_source_hash')
+    elif proof['accountingKind'] == 'imported':
+        _require(native_id not in usage['receipts'] and analysis['receiptId'] not in usage['receipts'],
+                 'saved_half_month_timing_usage_reused')
+        _require(_import_capacity(usage, proof, analysis, half_month) == 1, 'saved_half_month_usage_model')
+        receipt = usage['imports'][proof['usageReceiptId']]
+    else:
+        raise ValueError('saved_half_month_accounting_kind')
+    _require(receipt.get('resultAttestation') == attestation, 'saved_half_month_result_attestation')
+    return 1
+
+
 def _require(condition, reason='invalid_saved_half_month'):
     if not condition:
         raise ValueError(reason)
@@ -46,7 +91,14 @@ def validate_accounting(state, usage, half_month):
     for proof in state.get('savedImports', {}).values():
         analysis = _analysis_for_receipt(state, proof['receiptId'])
         _require(analysis['requestHash'] == proof['requestHash'], 'saved_half_month_request_mismatch')
-        capacity = _import_capacity(usage, proof, analysis, half_month)
+        if analysis['contract'] == half_month.TIMING_VERSION:
+            revision = state['revisions'][state['receipts'][proof['receiptId']][0]]
+            source = revision.get('source', state['sources'][revision['sourceKey']]['source'])
+            capacity = validate_timing_accounting(usage, {
+                **{field: proof[field] for field in (*PROOF_HASHES, 'issuedAt', 'accountingKind')},
+                'searchCreatedAt': source['createdAt']}, analysis, half_month)
+        else:
+            capacity = _import_capacity(usage, proof, analysis, half_month)
         key = (proof['usageReceiptId'], bool(analysis['images']))
         used = attributed.setdefault(key, set())
         used.add(proof['receiptId'])
@@ -59,7 +111,8 @@ def validate_accounting(state, usage, half_month):
         _require(sum(item['usageReceiptId'] == proof['usageReceiptId']
                      for item in state['savedImports'].values()) == 1,
                  'saved_half_month_timing_usage_reused')
-        _require(proof['usageReceiptId'] not in (usage or {}).get('receipts', {}),
+        _require(proof.get('accountingKind') == 'native'
+                 or proof['usageReceiptId'] not in (usage or {}).get('receipts', {}),
                  'saved_half_month_timing_usage_reused')
     for receipt_id in state['receipts']:
         if receipt_id in imported:
@@ -75,6 +128,57 @@ def validate_accounting(state, usage, half_month):
                  and identity['modelVersion'] == half_month.MODEL_VERSION
                  and identity['deployment'] == half_month.MODEL,
                  'half_month_usage_model_mismatch')
+
+
+def validate_reanalysis_basis(state, authorization, source, images, half_month):
+    """Shared pre-issue/apply checks against the authoritative predecessor, not caller-supplied core."""
+    half_month.validate_state(state)
+    half_month.validate_timing_authorization(authorization, with_import=False)
+    half_month.validate_source(source)
+    _require(authorization['expectedSubjectHash'] == subject_hash(state, half_month),
+             'saved_half_month_subject_changed')
+    prior = authorization['previous']
+    selected = half_month.select_revisions(state)
+    current_keys = {key for key, revision in selected if any(
+        table['id'] == revision['schedule']['id']
+        and table['period']['from'] == revision['schedule']['period']['from']
+        and table['name'] == revision['schedule']['name'] for table in state['schedules'])}
+    prior_keys = state['receipts'].get(prior['analysisReceiptId'], [])
+    _require(bool(prior_keys) and set(prior_keys) <= current_keys, 'saved_half_month_timing_parent_stale')
+    _require(authorization['basisRevisionKeys'] == half_month.projection_basis(state, prior['analysisReceiptId']),
+             'saved_half_month_timing_basis_stale')
+    analysis = _analysis_for_receipt(state, prior['analysisReceiptId'])
+    _require(prior['contractVersion'] == analysis['contract']
+             and prior['contractHash'] == half_month.contract_hash(analysis),
+             'saved_half_month_timing_contract_lineage')
+    imported = state.get('savedImports', {})
+    if prior.get('kind') == 'native':
+        _require(all(item['receiptId'] != prior['analysisReceiptId'] for item in imported.values()),
+                 'saved_half_month_timing_native_lineage')
+    else:
+        _require(imported.get(prior['importId'], {}).get('receiptId') == prior['analysisReceiptId'],
+                 'saved_half_month_timing_import_lineage')
+    previous_rows = [state['revisions'][key]['schedule'] for key in prior_keys]
+    for key in prior_keys:
+        revision = state['revisions'][key]
+        previous_source = revision.get('source', state['sources'][revision['sourceKey']]['source'])
+        _require(all(source[field] == previous_source[field] for field in (
+            'id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt',
+            'bodyHash', 'media', 'editTweetIds')), 'schedule_timing_source_changed')
+    _require([item['sha256'] for item in images] == [item['sha256'] for item in analysis['images']],
+             'schedule_timing_source_changed')
+    current = [row for row in state['schedules'] if any(
+        half_month._pair(row) == half_month._pair(previous) for previous in previous_rows)]
+    _require(half_month.core_hash(current) == authorization['expectedCoreHash'],
+             'saved_half_month_timing_core_changed')
+    _require(half_month.timing_hash(current) == authorization['expectedTimingHash'],
+             'saved_half_month_timing_stale_hash')
+    allowed = half_month.validate_timing_authorization(authorization, with_import=False)
+    for name, date, shift, _ in allowed:
+        _require(any(row['name'] == name and any(
+            item['date'] == date and shift in item['shifts'] for item in row['days']) for row in previous_rows),
+            'schedule_timing_scope_changed')
+    return copy.deepcopy(previous_rows)
 
 
 def apply_amendments(state, entries, usage, half_month, *, schedule, insights, accounts,
@@ -94,7 +198,11 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
         source, analysis, proof = (amendment[key] for key in ('source', 'analysis', 'proof'))
         half_month.validate_source(source)
         half_month.validate_analysis(analysis)
-        half_month.require_keys(proof, (*PROOF_HASHES, 'issuedAt', 'searchCreatedAt'))
+        _require(analysis['contract'] != half_month.TIMING_VERSION or timing_only,
+                 'schedule_timing_authorization_required')
+        timing_contract = analysis['contract'] == half_month.TIMING_VERSION
+        half_month.require_keys(proof, (*PROOF_HASHES, 'issuedAt', 'searchCreatedAt',
+                                       *(('accountingKind',) if timing_contract else ())))
         for field in PROOF_HASHES:
             half_month.valid_hash(proof[field])
         issued, searched = (half_month.timestamp(proof[field]) for field in ('issuedAt', 'searchCreatedAt'))
@@ -128,7 +236,9 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
                 _require(source['authorId'] != bound['authorId']
                          and source['authorScreenName'].casefold() != bound['authorScreenName'].casefold(),
                          'saved_half_month_binding_ambiguous')
-        _require(_import_capacity(usage, proof, analysis, half_month) > 0,
+        capacity = (validate_timing_accounting(usage, proof, analysis, half_month) if timing_contract
+                    else _import_capacity(usage, proof, analysis, half_month))
+        _require(capacity > 0,
                  'saved_half_month_usage_model')
         key = half_month.digest(amendment)
         if key in result.get('savedImports', {}):
@@ -149,6 +259,8 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
                              for field in half_month.TIMING_AMENDMENT_FIELDS}
             authorization.update(expectedSubjectHash=entry['expectedSubjectHash'], importId=key)
             half_month.validate_timing_authorization(authorization)
+            validate_reanalysis_basis(result, {field: value for field, value in authorization.items()
+                                              if field != 'importId'}, source, analysis['images'], half_month)
             prior = authorization['previous']
             selected = half_month.select_revisions(result)
             current_keys = {revision_key for revision_key, revision in selected
@@ -175,6 +287,7 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
                      'saved_half_month_timing_stale_hash')
         imported = {
             **{field: proof[field] for field in PROOF_HASHES},
+            **({'accountingKind': proof['accountingKind']} if timing_contract else {}),
             'receiptId': analysis['receiptId'], 'requestHash': analysis['requestHash'],
             'issuedAt': proof['issuedAt'], 'importedAt': half_month.stamp(now),
         }
@@ -186,8 +299,10 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
             continue
         result = working
         result['checkedAt'] = half_month.stamp(now)
-        result['lastSuccessAt'] = half_month.stamp(now)
-        result['lastRun'] = {'status': 'ok'}
+        pending = analysis.get('timingOnly', {}).get('pendingSlotIds', [])
+        if not pending:
+            result['lastSuccessAt'] = half_month.stamp(now)
+        result['lastRun'] = {'status': 'partial' if pending else 'ok'}
     half_month.validate_state(result)
     validate_accounting(result, usage, half_month)
     return result

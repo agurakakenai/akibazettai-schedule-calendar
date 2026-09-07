@@ -413,6 +413,39 @@ class HalfMonthCloudTests(unittest.TestCase):
         self.assertEqual(len(self.half_state['revisions']), 2)
         self.assert_restored_public_site()
 
+    def test_bound_timing_only_contract_survives_restore_without_public_core_reinterpretation(self):
+        timing_fixture = load('half_cloud_bound_timing_fixture', Path(__file__).with_name('test_half_month_timing.py'))
+        helper = timing_fixture.TimingOnlyTests(methodName='runTest')
+        self.addCleanup(helper.doCleanups)
+        helper.setUp()
+        self.half_state, _ = helper.apply(helper.packet())
+        self.now = NOW + dt.timedelta(hours=1)
+        for receipt in helper.usage['imports'].values():
+            self.ai.apply_import(self.usage, receipt)
+        self.source_state = self.baseline()
+        self.assertEqual(len(self.half_state['revisions']), 2)
+        self.assertEqual({row['analysis']['contract'] for row in self.half_state['revisions'].values()},
+                         {'half-month-schedule-v1', 'half-month-timing-v1'})
+        self.assert_restored_public_site()
+
+    def test_native_timing_attestation_restores_without_duplicate_usage_import(self):
+        timing_fixture = load('half_cloud_native_timing_fixture', Path(__file__).with_name('test_half_month_timing.py'))
+        helper = timing_fixture.TimingOnlyTests(methodName='runTest')
+        self.addCleanup(helper.doCleanups)
+        helper.setUp()
+        packet, proof = helper.native_packet()
+        entry = timing_fixture.timing.to_amendment(packet, proof, helper.usage)
+        self.half_state = helper.fx.apply_timing(helper.state, entry)
+        self.now = NOW + dt.timedelta(hours=1)
+        for receipt in helper.usage['imports'].values():
+            self.ai.apply_import(self.usage, receipt)
+        self.usage['receipts'].update(copy.deepcopy(helper.usage['receipts']))
+        self.usage['nextRequestAt'] = helper.usage['nextRequestAt']
+        self.source_state = self.baseline()
+        self.assertEqual(len(self.usage['receipts']), 1)
+        self.assertEqual(self.half_state['savedImports'][self.half.digest(entry['amendment'])]['accountingKind'], 'native')
+        self.assert_restored_public_site()
+
     def assert_restored_public_site(self):
         self.seed()
         self.fx.bare_commit({
@@ -449,7 +482,9 @@ class HalfMonthCloudTests(unittest.TestCase):
             'assets/events/' + path.name for path in (TOOLS.parent / 'assets' / 'events').glob('*.svg')})
         for name in (cloud.SOURCE_USAGE, cloud.AI_USAGE, 'raw-sentinel.json'):
             self.assertFalse((output / 'data' / name).exists())
-        for forbidden in ('savedImports', 'revisions', 'timingAmendment', 'requestHash', 'bodyHash', 'payloadHash', RAW):
+        for forbidden in ('savedImports', 'revisions', 'timingAmendment', 'timingOnly', 'authorizationHash',
+                          'semanticResultHash', 'resultAttestation', 'accountingKind',
+                          'coreHash', 'slotId', 'pendingSlotIds', 'requestHash', 'bodyHash', 'payloadHash', RAW):
             self.assertNotIn(forbidden, json.dumps(public))
         script = """
 const assert = require('node:assert/strict');

@@ -6,6 +6,7 @@ or a vision-token estimator. Re-measure before changing a pinned contract.
 """
 import hashlib
 import json
+import re
 
 
 LIMIT = 10000
@@ -20,6 +21,11 @@ HALF_MONTH = {
     "promptHash": "5f789845d7a1f90f8795f0d50e5e910891324daf6b0e4a77c62e578ffb62b41d",
     "schemaHash": "daa559fb7b9a86d39fc91c1c9626adb9aa9cd182cb49bc065220be40ccec9e20",
     "output": 3840, "system": 1024, "schemaBase": 640,
+}
+HALF_MONTH_TIMING = {
+    "promptHash": "8d81c76bd9eb3f2b4f3933b645b8b7a8c57d638f4ade39c1c5fdb5e510f5a62c",
+    "schemaHash": "0ab820201bc4ba539055c733081a93f6b17c9fcd82edd4ddfca6c8ca070ab81b",
+    "output": 3584, "system": 768, "schemaBase": 256, "schemaPerSlot": 14, "maxSlots": 64,
 }
 
 
@@ -80,4 +86,26 @@ def half_month(user_text, prompt, schema, output):
     if not isinstance(user_text, str):
         raise CapacityHold()
     return _admit(HALF_MONTH["system"] + HALF_MONTH["schemaBase"]
+                  + len(user_text.encode("utf-8")) + output + FRAMING_RESERVE)
+
+
+def half_month_timing(user_text, prompt, schema, output):
+    try:
+        template = json.loads(json.dumps(schema))
+        properties = template["properties"]["slots"]["items"]["properties"]
+        slot_id = properties["slotId"]
+        ids = slot_id["enum"]
+        if (set(slot_id) != {"type", "enum"} or slot_id["type"] != "string"
+                or not isinstance(ids, list) or not 1 <= len(ids) <= HALF_MONTH_TIMING["maxSlots"]
+                or any(not isinstance(value, str) or not re.fullmatch(r"s[a-f0-9]{10}", value) for value in ids)
+                or len(set(ids)) != len(ids)):
+            raise CapacityHold("azure_capacity_profile_stale")
+        properties["slotId"] = {"type": "string", "pattern": r"^s[a-f0-9]{10}$"}
+    except (KeyError, TypeError):
+        raise CapacityHold("azure_capacity_profile_stale") from None
+    _profile(HALF_MONTH_TIMING, prompt, template, output)
+    if not isinstance(user_text, str):
+        raise CapacityHold()
+    return _admit(HALF_MONTH_TIMING["system"] + HALF_MONTH_TIMING["schemaBase"]
+                  + HALF_MONTH_TIMING["schemaPerSlot"] * len(ids)
                   + len(user_text.encode("utf-8")) + output + FRAMING_RESERVE)

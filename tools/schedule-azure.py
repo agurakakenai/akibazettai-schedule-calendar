@@ -302,6 +302,18 @@ def _year_candidates(month, printed, text_year, created):
                    if (index + offset) % 12 + 1 == month})
 
 
+def validate_clock_text(text, explicit_time):
+    hour, minute = explicit_time.split(':')
+    clock = r'(?<!\d)0?' + str(int(hour)) + r'(?::|：)' + minute + r'(?!\d)'
+    japanese = r'(?<!\d)0?' + str(int(hour)) + r'時' + (
+        r'(?:00分)?' if minute == '00' else minute + r'分')
+    numeric_text = unicodedata.normalize('NFKC', text)
+    ranges = (r'|(?<!\d)0?' + str(int(hour)) + r'(?=\s*[-〜~])'
+              + r'|(?<=[-〜~])\s*0?' + str(int(hour)) + r'(?!\d)' if minute == '00' else '')
+    if not re.search(clock + '|' + japanese + ranges, numeric_text):
+        raise ValueError('schedule_timing_clock_ungrounded')
+
+
 def normalize_result(result, source, text, image_count, allowed_periods=None, *, contract_version=VERSION):
     """Resolve calendar from source evidence, never the collector's target year."""
     facts.require_keys(result, ('periods',))
@@ -386,16 +398,7 @@ def normalize_result(result, source, text, image_count, allowed_periods=None, *,
                         raise ValueError('invalid_schedule_timing_shift')
                     seen_timing_facts.add(fact_key)
                     if not indexes and fact['explicitTime'] is not None:
-                        hour, minute = fact['explicitTime'].split(':')
-                        clock = (r'(?<!\d)0?' + str(int(hour)) + r'(?::|：)' + minute + r'(?!\d)')
-                        japanese = r'(?<!\d)0?' + str(int(hour)) + r'時' + (
-                            r'(?:00分)?' if minute == '00' else minute + r'分')
-                        numeric_text = unicodedata.normalize('NFKC', text)
-                        ranges = (r'|(?<!\d)0?' + str(int(hour)) + r'(?=\s*[-〜~])'
-                                  + r'|(?<=[-〜~])\s*0?' + str(int(hour)) + r'(?!\d)'
-                                  if minute == '00' else '')
-                        if not re.search(clock + '|' + japanese + ranges, numeric_text):
-                            raise ValueError('schedule_timing_clock_ungrounded')
+                        validate_clock_text(text, fact['explicitTime'])
                     notes.setdefault((first, last), []).append(fact)
         for (first, last), days in sorted(groups.items()):
             if first in seen_periods:

@@ -37,6 +37,11 @@ def source_receipt(date='2026-09-06', searches=8, posts=6, label='approved-sourc
             'sourceHash': digest('source-provenance:' + label)}
 
 
+def result_attestation(key):
+    return {'contract': 'half-month-timing-v1', 'requestHash': key, 'resultHash': digest('raw-result'),
+            'semanticResultHash': digest('normalized-result'), 'analysisHash': digest('analysis'), 'consumed': 1}
+
+
 class UsageTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory(dir=TOOLS / 'tests', prefix='usage-test-')
@@ -86,6 +91,91 @@ class UsageTests(unittest.TestCase):
         spec.loader.exec_module(other)
         self.assertIs(other.SharedUsage.failure_type, other.UsageFailure)
         self.assertIsNot(other.SharedUsage.failure_type, usage.UsageFailure)
+
+    def test_optional_result_attestation_is_single_consumption_immutable_and_phase_checked(self):
+        key = digest('attested')
+        attestation = result_attestation(key)
+        with self.shared('schedule') as ledger:
+            ledger.reserve(key, IDENTITY)
+            before = copy.deepcopy(ledger.state)
+            with self.assertRaisesRegex(usage.UsageFailure, 'azure_interrupted'):
+                ledger.finish(key, 'azure_pending', result_attestation=attestation)
+            self.assertEqual(ledger.state, before)
+            ledger.issued(key)
+            ledger.finish(key, 'events', result_attestation=attestation)
+            frozen = self.path.read_bytes()
+            ledger.finish(key, 'events', result_attestation=copy.deepcopy(attestation))
+            ledger.finish(key, 'events')
+            self.assertEqual(self.path.read_bytes(), frozen)
+            for change in ('analysisHash', 'consumed', 'contract', 'requestHash'):
+                altered = copy.deepcopy(attestation)
+                altered[change] = 2 if change == 'consumed' else digest('other')
+                with self.subTest(change=change), self.assertRaises((ValueError, usage.UsageFailure)):
+                    ledger.finish(key, 'events', result_attestation=altered)
+                self.assertEqual(self.path.read_bytes(), frozen)
+            self.assertEqual(usage.usage_counts(ledger.state, 'run-1', self.clock)['run'], 1)
+            self.assertEqual(ledger.state['imports'], {})
+            receipt = next(iter(ledger.state['receipts'].values()))
+            attestation['analysisHash'] = digest('mutated-caller')
+            self.assertNotEqual(receipt['resultAttestation'], attestation)
+
+    def test_attested_external_receipt_blocks_second_import_and_native_reservation(self):
+        key = digest('approved-external-result')
+        receipt = historical(count=1, breakdown=[{'model': IDENTITY['model'], 'kind': 'image',
+                                                 'component': 'schedule', 'count': 1}])
+        receipt['resultAttestation'] = result_attestation(key)
+        state = usage.empty_state()
+        usage.apply_import(state, receipt)
+        before = copy.deepcopy(state)
+        usage.apply_import(state, copy.deepcopy(receipt))
+        self.assertEqual(state, before)
+        duplicate = copy.deepcopy(receipt)
+        duplicate.update(receiptId=digest('second-import'), sourceHash=digest('second-source'))
+        with self.assertRaisesRegex(ValueError, 'duplicate_ai_usage_result'):
+            usage.apply_import(state, duplicate)
+        self.assertEqual(state, before)
+        usage.atomic_json(self.path, state)
+        with self.shared('schedule') as ledger:
+            with self.assertRaisesRegex(usage.UsageFailure, 'azure_already_analyzed'):
+                ledger.reserve(key, IDENTITY)
+            self.assertEqual(ledger.state, before)
+            self.assertEqual(ledger.used, 0)
+            self.assertEqual(usage.usage_counts(ledger.state, 'run-1', self.clock)['day'], 1)
+
+    def test_attestation_rejects_native_import_double_count_and_invalid_private_shapes(self):
+        key = digest('native-result')
+        with self.shared('schedule') as ledger:
+            ledger.reserve(key, IDENTITY)
+            ledger.issued(key)
+            ledger.finish(key, 'no_event', result_attestation=result_attestation(key))
+            before = copy.deepcopy(ledger.state)
+            receipt = historical(count=1, breakdown=[{'model': IDENTITY['model'], 'kind': 'image',
+                                                     'component': 'schedule', 'count': 1}])
+            receipt['resultAttestation'] = result_attestation(key)
+            with self.assertRaisesRegex(ValueError, 'duplicate_ai_usage_result'):
+                usage.apply_import(ledger.state, receipt)
+            self.assertEqual(ledger.state, before)
+            invalid = copy.deepcopy(before)
+            invalid['imports'][receipt['receiptId']] = receipt
+            with self.assertRaises(ValueError):
+                usage.validate_state(invalid)
+            native_id = usage._receipt_id('schedule', key)
+            for change in ('boolConsumption', 'rawResponse', 'unissued', 'uncompleted', 'failure'):
+                invalid = copy.deepcopy(before)
+                native = invalid['receipts'][native_id]
+                if change == 'boolConsumption':
+                    native['resultAttestation']['consumed'] = True
+                elif change == 'rawResponse':
+                    native['resultAttestation']['rawResponse'] = {'slots': None}
+                elif change == 'unissued':
+                    native['issuedAt'] = None
+                elif change == 'uncompleted':
+                    native['completedAt'] = None
+                    native['reason'] = 'azure_interrupted'
+                else:
+                    native['reason'] = 'azure_invalid_output'
+                with self.subTest(change=change), self.assertRaises(ValueError):
+                    usage.validate_state(invalid)
 
     def test_preflight_never_saves_spends_or_waits_even_when_spacing_is_pending(self):
         with self.shared() as ledger:

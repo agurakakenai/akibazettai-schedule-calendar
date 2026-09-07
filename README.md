@@ -1170,6 +1170,18 @@ wireでは昼終了／夜開始に絞り、本人は最大8 facts、半月は1�
 
 新v8/v2の実際の解析経路には、`request-capacity.py`による追加の保守的admission guardがあります。実測済みprompt/schemaのhashに固定したprefix予約、JSON escape後の可変本文のUTF-8 byte上界、構造・出力・framingの予約で大入力を発行前に保留し、本文を切り捨てたり、別モデルへfallbackしたりしません。入力6000 bytes／128行は取得・形式の上限であり、すべての組合せの発行を保証するものではありません。guard失敗はusage予約・HTTP発行より前に記録し、既存factsを維持します。profile変更時も再計測なしに発行しません。runtime/CIにtokenizer依存は追加せず、このguardを正確なservice TPM計数や画像token換算とは扱いません。画像込みの固定liveは別の容量確認・承認を必要とし、公式と旧半月v1にはこの新guardを適用しません。
 
+### 確定済みの同一半月sourceに勤務時間だけを補う
+
+明示的な再解析には、独立した製品契約`half-month-timing-v1`（`tools/half-month-timing.py`）を使えます。`prepare_request()`は保存済みcanonicalとusageを検証し、元sourceのID・作者・本文hash・順序付き画像hash、旧import/receipt、basis、subject/core/timing hashを発行前に照合します。単に呼出し元が渡した表を「確定済み」とは扱いません。`AzureAnalyzer.analyze()`も同じ認可・shared usage・容量guardを通り、既存の`half-month-saved`による`work-timing-only`適用へ接続します。自動collectorの初回・新sourceは従来のv2契約と厳格な暦検証のままで、この限定経路へ自動fallbackしません。
+
+モデルに渡す既存slotの日付・昼夜は、**検証済みの更新可能範囲**だけです。旧補足の答え・goldは渡しません。opaqueな`slotId`はコードの参照IDで、画像に印字された行番号や位置ではありません。モデルは全slotの`workTiming`だけを返し、年・月・曜日・勤務日・昼夜・coreの再出力はできません。コードは元coreの値・配列順・文字列を保持して補足を接続し、未知・重複・欠落slot、別source、改変core、境界越えを拒否します。
+
+通常の製品結果は`ok/partial/pending/no-new`を区別し、`slots:null`やslotの`workTiming:null`は保留、空配列は新しい補足なしです。どちらも旧factsの削除命令ではありません。限定liveで完全な受入を主張する場合は`require_complete()`に加えて独立goldとの一致が必要です。過去の失敗応答をこの別契約へ読み替えたり、誤曜日を補正して成功扱いしたりはしません。
+
+新契約も最大64slot・64notes・元勤務日あたり2notes、出力3584 tokensで、コード参照とnullable情報を含む出力を制限します。専用のhash固定admission profileは既存v1/v2/本人のprofileとは別です。原画像や旧coreが変わった場合、既存coreを再利用して不足を埋めずに拒否します。`saved_result()`によるAPI0再生にも同じ認可が必要で、実推論や本番反映の承認を代替しません。
+
+完全性・正規化した補足・元のresult hashは`semanticResultHash`と信頼済み会計receiptのhash-only `resultAttestation`へ結合します。呼出側がpending/statusや補足を書き換え、再hashしただけでは完全受入へ昇格できません。native経路は`native_proof(packet, usage_state)`を使い、既に消費したnative1件を再import・再計上せず適用できます。別環境で発行した実解析は、独立承認されたusage importの同じattestationを`imported_proof()`で照合します。`require_complete(packet, proof, usage_state)`と`to_amendment(packet, proof, usage_state)`はこの証拠も検証します。raw応答・gold・本文・画像を公開stateへ格納する方式ではなく、旧receiptの値や過去の失敗記録も書き換えません。
+
 ### GitHub Actionsから収集・公開する構成
 
 本番の継続更新は、標準のGitHub-hosted runnerで**収集→状態保存→検証→frontend限定staging→同じworkflowでPages公開**する構成です。X用APIキーやCookieは使いません。GitHubへの状態保存には、そのrunの既存`GITHUB_TOKEN`を使います。tokenを公開HTTPへ送ったり、stateやartifactへ保存したりしません。

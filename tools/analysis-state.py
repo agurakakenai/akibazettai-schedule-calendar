@@ -131,8 +131,17 @@ def _validate_source_import(receipt):
         raise ValueError('invalid_ai_usage')
 
 
+def validate_result_attestation(value):
+    _keys(value, ('contract', 'requestHash', 'resultHash', 'semanticResultHash', 'analysisHash', 'consumed'))
+    if value['contract'] != 'half-month-timing-v1' or type(value['consumed']) is not int or value['consumed'] != 1:
+        raise ValueError('invalid_ai_usage')
+    for field in ('requestHash', 'resultHash', 'semanticResultHash', 'analysisHash'):
+        _hash(value[field])
+
+
 def _validate_import(receipt):
-    _keys(receipt, ('receiptId', 'date', 'counts', 'modelBreakdown', 'sourceHash'))
+    _keys(receipt, ('receiptId', 'date', 'counts', 'modelBreakdown', 'sourceHash',
+                    *(('resultAttestation',) if 'resultAttestation' in receipt else ())))
     _hash(receipt['receiptId'])
     _hash(receipt['sourceHash'])
     _day(receipt['date'])
@@ -162,6 +171,11 @@ def _validate_import(receipt):
         total += item['count']
     if total != receipt['counts']['requests']:
         raise ValueError('invalid_ai_usage')
+    if 'resultAttestation' in receipt:
+        validate_result_attestation(receipt['resultAttestation'])
+        if total != 1 or any(item.get('component') not in ('schedule', 'external')
+                             for item in receipt['modelBreakdown']):
+            raise ValueError('invalid_ai_usage')
 
 
 def validate_state(value):
@@ -190,7 +204,8 @@ def validate_state(value):
             _hash(key)
             _keys(receipt, ('runId', 'component', 'requestHash', 'identity', 'date',
                             'reservedAt', 'issuedAt', 'completedAt', 'reason',
-                            'httpStatus', 'retryAt'))
+                            'httpStatus', 'retryAt',
+                            *(('resultAttestation',) if 'resultAttestation' in receipt else ())))
             _token(receipt['runId'])
             if receipt['component'] not in ('official', 'personal', 'schedule'):
                 raise ValueError
@@ -227,10 +242,17 @@ def validate_state(value):
                 if (status != 429 or receipt['retryAt'] is None or value['retryAt'] is None
                         or _time(value['retryAt']) < _time(receipt['retryAt'])):
                     raise ValueError
+            if 'resultAttestation' in receipt:
+                validate_result_attestation(receipt['resultAttestation'])
+                if (receipt['component'] != 'schedule' or issued is None or completed is None
+                        or receipt['reason'] not in ('events', 'no_event', 'azure_pending')
+                        or receipt['httpStatus'] is not None or receipt['retryAt'] is not None
+                        or receipt['resultAttestation']['requestHash'] != receipt['requestHash']):
+                    raise ValueError
         if minimum_next is not None:
             if value['nextRequestAt'] is None or _time(value['nextRequestAt']) < minimum_next:
                 raise ValueError
-        provenance = set()
+        provenance, attested_requests = set(), set()
         for key, receipt in value['imports'].items():
             _validate_import(receipt)
             if key != receipt['receiptId']:
@@ -239,6 +261,11 @@ def validate_state(value):
             if source in provenance:
                 raise ValueError
             provenance.add(source)
+            if 'resultAttestation' in receipt:
+                request = receipt['resultAttestation']['requestHash']
+                if request in attested_requests or _receipt_id('schedule', request) in value['receipts']:
+                    raise ValueError
+                attested_requests.add(request)
         source_imports = value.get('sourceImports', {})
         if not isinstance(source_imports, dict):
             raise ValueError
@@ -349,6 +376,12 @@ def apply_import(state, receipt):
     if any(item['sourceHash'] == receipt['sourceHash'] and item['date'] == receipt['date']
            for item in state['imports'].values()):
         raise ValueError('duplicate_ai_usage_provenance')
+    if 'resultAttestation' in receipt:
+        request = receipt['resultAttestation']['requestHash']
+        if (_receipt_id('schedule', request) in state['receipts']
+                or any(item.get('resultAttestation', {}).get('requestHash') == request
+                       for item in state['imports'].values())):
+            raise ValueError('duplicate_ai_usage_result')
     state['imports'][receipt['receiptId']] = copy.deepcopy(receipt)
     return state
 
@@ -506,6 +539,10 @@ class SharedUsage:
             previous = self.state['receipts'][receipt_id]
             reason = previous['reason'] if previous['reason'] not in SUCCESS_REASONS else 'azure_already_analyzed'
             raise UsageFailure(reason, previous['httpStatus'], previous['retryAt'])
+        if self.component == 'schedule' and any(
+                item.get('resultAttestation', {}).get('requestHash') == key
+                for item in self.state['imports'].values()):
+            raise UsageFailure('azure_already_analyzed')
         self._allowed()
         if self._active is not None:
             raise UsageFailure('azure_interrupted')
@@ -563,21 +600,29 @@ class SharedUsage:
         if after_save < now or after_save.astimezone(JST).date().isoformat() != day:
             raise UsageFailure('azure_interrupted')
 
-    def finish(self, key, reason):
+    def finish(self, key, reason, *, result_attestation=None):
         self._require_open()
         _hash(key)
         if not isinstance(reason, str) or reason not in REASONS:
             raise ValueError('invalid_ai_usage_reason')
+        if result_attestation is not None:
+            validate_result_attestation(result_attestation)
+            if (self.component != 'schedule' or result_attestation['requestHash'] != key
+                    or reason not in ('events', 'no_event', 'azure_pending') or self._http != (None, None)):
+                raise ValueError('invalid_ai_usage')
         receipt_id = _receipt_id(self.component, key)
         if receipt_id not in self._owned:
             raise UsageFailure('azure_interrupted')
         receipt = self.state['receipts'][receipt_id]
         if receipt['completedAt'] is not None:
-            if receipt['reason'] == reason:
+            if (receipt['reason'] == reason and (result_attestation is None
+                    or receipt.get('resultAttestation') == result_attestation)):
                 return
             raise UsageFailure('azure_interrupted')
-        if reason in SUCCESS_REASONS and receipt['issuedAt'] is None:
+        if (reason in SUCCESS_REASONS or result_attestation is not None) and receipt['issuedAt'] is None:
             raise UsageFailure('azure_interrupted')
+        if result_attestation is not None:
+            receipt['resultAttestation'] = copy.deepcopy(result_attestation)
         receipt['reason'] = reason
         receipt['completedAt'] = _stamp(max(_now(self.clock()), _time(receipt['issuedAt'] or receipt['reservedAt'])))
         receipt['httpStatus'], receipt['retryAt'] = self._http
