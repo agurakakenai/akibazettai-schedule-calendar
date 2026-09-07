@@ -268,7 +268,8 @@ async function main() {
             store: maid ? row.querySelector(".maid-plan-where").dataset.store : row.dataset.store ?? "",
             nameHref: label?.getAttribute("href") ?? null,
             updates: [...row.querySelectorAll(".entry-update")].map(item => item.textContent),
-            sources: [...row.querySelectorAll(".half-month-source")].map(link => ({
+            extraSourceCount: row.querySelectorAll(".half-month-source").length,
+            sources: (label?.dataset.sourceKind === "half-month-schedule" ? [label] : []).map(link => ({
               url: link.href, kind: link.dataset.sourceKind, name: link.dataset.name,
               date: link.dataset.date, shift: link.dataset.shift, label: link.textContent,
               title: link.title, aria: link.getAttribute("aria-label"), target: link.target, rel: link.rel
@@ -347,13 +348,16 @@ async function main() {
           "only the source's six date/shift contributions, not the whole resolved roster, are the core gold");
       }
       const effective = api.buildEffectiveSchedule(data.schedule, feed);
+      const linkOptions = { insights, observations: savedOfficial, personal: savedPersonal,
+        schedule: effective, nameCorrections: data.observationNameCorrections,
+        personalEventAdditions: data.personalEventAdditions };
       const expectedSources = sampleDates.flatMap(dateKey => ["昼", "夜"].flatMap(shift =>
-        api.resolveShiftRoster({ insights, observations: savedOfficial, personal: savedPersonal,
-          dateKey, shift, schedule: effective, roster: data.roster,
-          nameCorrections: data.observationNameCorrections, personalEventAdditions: data.personalEventAdditions
-        }).entries.flatMap(entry => (entry.halfMonthSources ?? []).map(source =>
-          `${dateKey}|${shift}|${entry.name}|${source.url}`)))).sort();
-      const noSource = ({ sources, ...row }) => row;
+        api.resolveShiftRoster({ ...linkOptions, dateKey, shift, roster: data.roster }).entries.flatMap(entry => {
+          const source = api.rosterPostLink({ ...linkOptions, dateKey, shift, name: entry.name });
+          return source?.kind === "half-month-schedule"
+            ? [`${dateKey}|${shift}|${entry.name}|${source.post.url}`] : [];
+        }))).sort();
+      const noSource = ({ sources, nameHref, ...row }) => row;
       for (const width of [1280, 320]) {
         await call("Emulation.setDeviceMetricsOverride", {
           width, height: width === 1280 ? 960 : 844, deviceScaleFactor: 1, mobile: width !== 1280
@@ -361,14 +365,15 @@ async function main() {
         const faces = [];
         for (const mode of ["calendar", "roster", "forecast", "maid"]) {
           const rows = await collect(mode);
+          assert.ok(rows.every(row => row.extraSourceCount === 0), "no independent source labels in any view");
           const sources = rows.flatMap(row => row.sources);
           assert.deepEqual([...new Set(sources.map(link => `${link.date}|${link.shift}|${link.name}|${link.url}`))].sort(),
-            expectedSources, `${width}/${mode}: exact, separately labelled half-month provenance`);
+            expectedSources, `${width}/${mode}: exact scoped half-post fallback on the existing name/date link`);
           for (const link of sources) {
             assert.equal(link.kind, "half-month-schedule");
-            assert.equal(link.label, "予定の出典");
-            assert.match(link.title, /半月予定表.*当日の出勤確認ではありません/);
-            assert.equal(link.aria, link.title);
+            assert.notEqual(link.label, "予定の出典");
+            assert.match(link.title, /予定表の投稿.*当日の出勤確認ではありません/);
+            assert.ok(link.aria.endsWith(link.title));
             assert.equal(link.target, "_blank");
             assert.equal(link.rel, "noopener noreferrer");
           }
@@ -377,14 +382,17 @@ async function main() {
               const current = rows.find(row => row.name === old.name && row.date === old.date && row.shift === old.shift && row.store === old.store);
               assert.ok(current, `${width}/${mode}: retain ${old.name}/${old.date}/${old.shift}/${old.store}`);
               assert.deepEqual(noSource(current), noSource(old), "existing facts, same-day URLs and arrival notices are unchanged");
+              if (old.nameHref && !old.sources.length) assert.equal(current.nameHref, old.nameHref, "day post stays preferred");
             }
-            assert.equal(rows.flatMap(row => row.sources).length, 6, "synthetic half feed contributes six sources only");
+            assert.equal(rows.flatMap(row => row.sources).length, expectedSources.length);
             for (const row of rows.filter(row => row.name === "いと")) {
-              assert.equal(row.nameHref, null, "half-month source never substitutes for a same-day name/date link");
+              assert.equal(row.nameHref, api.rosterPostLink({ ...linkOptions,
+                dateKey: row.date, shift: row.shift, name: row.name })?.post.url ?? null);
               if (row.date === "2026-09-02" && row.shift === "昼") {
                 assert.equal(row.store, "s2");
                 assert.equal(row.evidence, "recorded");
                 assert.equal(row.sources.length, 0, "curated opposite shift has no fabricated half source");
+                assert.notEqual(row.nameHref, ito.url);
               }
             }
           }
@@ -398,7 +406,7 @@ async function main() {
         faces.slice(1).forEach(names => assert.deepEqual(names, faces[0], "all four views resolve the same people/date/shift"));
         halfMonthReport.widths.push(width);
       }
-      halfMonthReport.checks.push("four-mode-exact-provenance", "curated-observed-preserved", "same-day-links-separate", "no-overflow-1280-320");
+      halfMonthReport.checks.push("four-mode-scoped-name-links", "curated-observed-preserved", "same-day-links-preferred", "no-overflow-1280-320");
       if (halfMonthMock) {
         const personalId = "2097000000000000099";
         const sameDay = { id: personalId, url: `https://x.com/${ito.authorScreenName}/status/${personalId}`,
@@ -410,15 +418,15 @@ async function main() {
         for (const mode of ["calendar", "roster", "forecast", "maid"]) {
           const row = (await collect(mode, ["2026-09-07"])).find(row => row.name === "いと" && row.shift === "昼");
           assert.equal(row.nameHref, sameDay.url);
-          assert.equal(row.sources[0].url, ito.url);
-          assert.notEqual(row.nameHref, row.sources[0].url);
+          assert.equal(row.sources.length, 0, "the preferred day post replaces the plan link");
+          assert.equal(row.extraSourceCount, 0);
         }
         await click("#reset-filters");
         await evaluate('document.querySelector("#date-to").value = "2026-09-15"; document.querySelector("#date-to").dispatchEvent(new Event("change"))');
         assert.ok(!(await evaluate('document.querySelector("#schedule-pending-note").title')).includes("いと"));
         await click('.day-button[data-date="2026-09-05"]');
         await wait('document.querySelector("#day-dialog").open');
-        await evaluate(`window.__halfSource = document.querySelector('#dialog-day .half-month-source');
+        await evaluate(`window.__halfSource = document.querySelector('#dialog-day .maid-name[data-source-kind="half-month-schedule"]');
           window.__halfSection = document.querySelector("#dialog-day");
           window.__halfSource.focus({preventScroll:true});
           document.querySelector("#day-dialog-content").scrollTop = 80; true;`);

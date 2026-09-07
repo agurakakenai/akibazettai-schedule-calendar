@@ -178,12 +178,90 @@ test("effective plans are an immutable manual/half union, never event or attenda
   assert.deepEqual(Object.entries(pureHalf).flatMap(([date, day]) => Object.keys(day).map(shift => [date, shift])), halfDays);
   assert.equal(api.dayHasPersonStoreEvidence(insights, null, "2026-09-07"), false);
   assert.equal(api.personalPostLink({ personal: { posts: [] }, insights, observations: null,
-    dateKey: "2026-09-07", shift: "昼", name: "いと" }), null, "a half source never becomes a same-day link");
+    dateKey: "2026-09-07", shift: "昼", name: "いと" }), null, "a plan is not promoted to same-day evidence");
+  assert.equal(api.rosterPostLink({ schedule: effective, personal: { posts: [] }, insights,
+    dateKey: "2026-09-07", shift: "昼", name: "いと" }).kind, "half-month-schedule");
   const replaced = halfFeed([halfSource("いと", { days: [{ date: "2026-09-08", shifts: ["昼"] }] })]);
   const changed = api.buildEffectiveSchedule(manual, replaced);
   assert.equal(changed["2026-09-10"], undefined, "producer's current winner replaces only automatic facts");
   assert.equal(changed["2026-09-07"]["夜"][0].name, "いと");
   assert.equal(JSON.stringify([manual, snapshot, schedule, insights]), beforeInputs);
+});
+
+test("roster post links prefer verified own day posts without weakening same-day history", () => {
+  const source = halfSource();
+  const effective = api.buildEffectiveSchedule(schedule.schedule, halfFeed([source]));
+  const post = {
+    id: "2097000000000000099", url: `https://x.com/${source.authorScreenName}/status/2097000000000000099`,
+    name: source.name, authorId: source.authorId, authorScreenName: source.authorScreenName,
+    date: "2026-09-07", createdAt: "2026-09-07T02:00:00Z", observedAt: "2026-09-07T03:00:00Z",
+    events: [], links: [{ scope: "昼", status: "work" }]
+  };
+  const options = { schedule: effective, insights, dateKey: post.date, shift: "昼", name: source.name };
+  const before = JSON.stringify([effective, post]);
+  const select = (posts, extra = {}) => api.rosterPostLink({ ...options, personal: { posts }, ...extra });
+  assert.deepEqual(select([post]), { post, kind: "personal" });
+  for (const change of [
+    { date: "2026-09-06" },
+    { name: "あむ" },
+    { authorScreenName: "someone_else", url: "https://x.com/someone_else/status/2097000000000000099" },
+    { url: `https://x.com/${source.authorScreenName}` },
+    { url: "https://x.com/search?q=work" },
+    { links: [{ scope: "夜", status: "work" }] }
+  ]) {
+    const selected = select([{ ...post, ...change }]);
+    assert.equal(selected.kind, "half-month-schedule", JSON.stringify(change));
+    assert.equal(selected.post.url, source.url);
+  }
+  for (const status of ["withdrawn", "conflict"]) {
+    const later = { ...post, id: "2097000000000000100",
+      url: `https://x.com/${source.authorScreenName}/status/2097000000000000100`,
+      createdAt: "2026-09-07T04:00:00Z", observedAt: "2026-09-07T05:00:00Z",
+      links: [{ scope: "昼", status }]
+    };
+    assert.equal(api.personalPostLink({ ...options, personal: { posts: [post, later] } }), null);
+    assert.equal(select([post, later]).kind, "half-month-schedule", "never revive the superseded day post");
+    assert.equal(select([post, later], { schedule: {} }), null, "no profile fallback after withdrawal/conflict");
+  }
+  const placement = { ...post, events: [{ kind: "placement", shift: "昼", storeId: "s2", excerpt: "synthetic placement" }] };
+  const { official } = halfMonthEvidence({ observedSameDay: true });
+  assert.equal(select([placement], { observations: official }).kind, "half-month-schedule",
+    "a later contradictory official post still suppresses stale personal guidance");
+  assert.equal(JSON.stringify([effective, post]), before);
+});
+
+test("half-post fallback is person/date/shift-bound, never a profile, search or another author's post", () => {
+  for (const name of ["いと", "あむ", ...schedule.kitchenStaff]) {
+    const source = halfSource(name);
+    const effective = api.buildEffectiveSchedule(schedule.schedule, halfFeed([source]));
+    const options = { schedule: effective, insights, personal: { posts: [] }, name };
+    for (const [dateKey, shift] of halfDays) {
+      const result = api.rosterPostLink({ ...options, dateKey, shift });
+      assert.equal(result.post.url, source.url);
+      assert.equal(result.kind, "half-month-schedule");
+    }
+    for (const [dateKey, shift] of [
+      ["2026-09-02", "昼"], ["2026-09-07", "夜"], ["2026-09-08", "昼"],
+      ["2026-09-17", "昼"], ["2026-09-07", "unspecified"]
+    ]) {
+      assert.equal(api.rosterPostLink({ ...options, dateKey, shift }), null, `${name} ${dateKey} ${shift}`);
+    }
+    const otherName = name === "いと" ? "あむ" : "いと";
+    for (const change of [
+      { name: otherName },
+      { sourceKind: "personal" },
+      { period: { from: "2026-09-16", to: "2026-09-30" } },
+      { id: Number(source.id) },
+      { url: `https://x.com/${source.authorScreenName}` },
+      { url: "https://x.com/search?q=work" },
+      { url: source.url + "?tracking=1" },
+      { authorScreenName: "someone_else", url: `https://x.com/someone_else/status/${source.id}` }
+    ]) {
+      const wrong = { "2026-09-07": { "昼": [{ name, halfMonthSources: [{ ...source, ...change }] }] } };
+      assert.equal(api.rosterPostLink({ ...options, schedule: wrong, dateKey: "2026-09-07", shift: "昼" }), null,
+        `${name}: ${JSON.stringify(change)}`);
+    }
+  }
 });
 
 test("half union preserves curated, official, personal absence/return and kitchen semantics", () => {
