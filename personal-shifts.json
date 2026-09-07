@@ -1182,7 +1182,29 @@
       "id": "2096254559115264361",
       "name": "しゃち",
       "observedAt": "2026-09-06T07:31:31.289Z",
-      "url": "https://x.com/shachi_zettai/status/2096254559115264361"
+      "url": "https://x.com/shachi_zettai/status/2096254559115264361",
+      "workTiming": {
+        "facts": [
+          {
+            "boundary": "start",
+            "explicitTime": null,
+            "qualifier": "early",
+            "serviceDate": "2026-09-06",
+            "shift": "夜",
+            "source": {
+              "authorId": "1937381891445075968",
+              "authorScreenName": "shachi_zettai",
+              "createdAt": "2026-09-05T15:10:08Z",
+              "id": "2096254559115264361",
+              "name": "しゃち",
+              "sourceKind": "personal-work-post",
+              "url": "https://x.com/shachi_zettai/status/2096254559115264361"
+            },
+            "status": "set"
+          }
+        ],
+        "schemaVersion": 1
+      }
     },
     {
       "authorId": "2090672918976221185",
@@ -1386,6 +1408,80 @@
         }
       },
       "expectedSubjectHash": "c1e57e3d7f9aa95d131e1c229e295a6dd671cec576d0506b2930cb4b05b11f69"
+    },
+    "98926174290ca1b65b0e3ee1b2954d4d04dde98aba1e4bc41863fcacc393445b": {
+      "amendment": {
+        "events": null,
+        "expectedCoreHash": "9441dcb9041be806eb9f711576eb7487798ec64bdc6d95924cc1aba300491a34",
+        "expectedTimingHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "id": "2096254559115264361",
+        "links": null,
+        "operation": "work-timing-only",
+        "previous": {
+          "analysisReceiptId": "c9e1a3e756ec26690fc1482bca9e5ea40a8cb68f8734dfa27a52d6aedf20a357",
+          "contractHash": "93adf39af21b0b084ea98864f8ac3e2112e84407980c7bad091706c738f8fe2a",
+          "contractVersion": "personal-line-ids-v4",
+          "importId": "61ce289470966079f25c3d2a4bcf8adf04e951799a557412164f880806f5c6c4"
+        },
+        "schemaVersion": 1,
+        "source": {
+          "analysisReceiptHash": "809d6d1e55da7dc45992a915b982e47426e9e91202a4a814c2fd462fa2c46edf",
+          "analysisResultHash": "148474b88233ddb1bd758f440f5d41ff69d7eadd3446b9a0504d3381bff1a5a0",
+          "analyzedAt": "2026-09-07T11:38:47.566044Z",
+          "authorId": "1937381891445075968",
+          "authorScreenName": "shachi_zettai",
+          "bodyHash": "cfde3ad720e8da5b499e339c4909979d630500f37661ab312b24c793a3d11f02",
+          "contractHash": "ec45c49aa773f90cd1d38a049af4904470692ecd824f5e0e20d3a685ad8e92c6",
+          "contractVersion": "personal-line-ids-v8",
+          "createdAt": "2026-09-05T15:10:08Z",
+          "date": "2026-09-06",
+          "deployment": "gpt-5.6-luna",
+          "fetchedAt": "2026-09-06T07:31:31.289Z",
+          "model": "gpt-5.6-luna",
+          "modelVersion": "2026-07-09",
+          "name": "しゃち",
+          "provenance": "direct",
+          "sourceHash": "f3d07e11dff4ef77c92b77ec0090424548d595e29069ef6cc1d6aeb2901b5a3f",
+          "sourceManifestHash": "148474b88233ddb1bd758f440f5d41ff69d7eadd3446b9a0504d3381bff1a5a0",
+          "url": "https://x.com/shachi_zettai/status/2096254559115264361",
+          "usageReceiptId": "c35b7739cfe69ea6a488813ee6acbdfe17b49a5de039b5faaa68276dc0fce6a5",
+          "usageSourceHash": "58feefce77919f31613bc74c491190de23795ad0b24a201d050fe3556f4457e0"
+        },
+        "targetScopes": [
+          {
+            "boundary": "start",
+            "name": "しゃち",
+            "serviceDate": "2026-09-06",
+            "shift": "夜"
+          }
+        ],
+        "updateChannels": [
+          "workTiming"
+        ],
+        "workTiming": {
+          "facts": [
+            {
+              "boundary": "start",
+              "explicitTime": null,
+              "qualifier": "early",
+              "serviceDate": "2026-09-06",
+              "shift": "夜",
+              "source": {
+                "authorId": "1937381891445075968",
+                "authorScreenName": "shachi_zettai",
+                "createdAt": "2026-09-05T15:10:08Z",
+                "id": "2096254559115264361",
+                "name": "しゃち",
+                "sourceKind": "personal-work-post",
+                "url": "https://x.com/shachi_zettai/status/2096254559115264361"
+              },
+              "status": "set"
+            }
+          ],
+          "schemaVersion": 1
+        }
+      },
+      "expectedSubjectHash": "bc72fc54785eff7f50240e41b4fd8b3dba144a7576537b5f5ee8a66a40c972e3"
     }
   },
   "schemaVersion": 1,

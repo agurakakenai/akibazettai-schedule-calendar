@@ -863,7 +863,7 @@
     }
   },
   "lastRun": {
-    "status": "unavailable"
+    "status": "partial"
   },
   "lastSuccessAt": "2026-09-07T01:17:33.785207Z",
   "pending": [
@@ -923,6 +923,9 @@
   "receipts": {
     "164ee226a4e28cd184bbfdfe8b388da30290ad15a490a938a30211bef63e90dd": [
       "6d4e1f153ca586f7904dd58bc9b98b459973c3eedd444c4125ebbb170e8aee28"
+    ],
+    "bed3b543ad6bd30cf9bb41fc55562d0423f951fa24b379856df285355d06f377": [
+      "a232ec26702bbfd5b7c44c2fd9d79003cd06324b0bc9a75cd9e525bc35d40f9e"
     ]
   },
   "revisions": {
@@ -1025,9 +1028,296 @@
         "url": "https://x.com/ito_zettai/status/2096568567798128871"
       },
       "sourceKey": "b5bbb70d4847a8a9248495513f020856f3fa6e97e5fa9b7d3991cfd250b94e84"
+    },
+    "a232ec26702bbfd5b7c44c2fd9d79003cd06324b0bc9a75cd9e525bc35d40f9e": {
+      "analysis": {
+        "analyzedAt": "2026-09-07T11:12:38.658681Z",
+        "contextHash": "02eeba1fc69b3f7d9b0c2e37f8f4431a451c0c46a24e3f852cb81e99a25bb85c",
+        "contract": "half-month-timing-v1",
+        "images": [
+          {
+            "bytes": 239442,
+            "height": 1200,
+            "mime": "image/jpeg",
+            "sha256": "863b6b93878144c164d51d4ddb0c581ef30eb0ceccbbc7e00597499161850df6",
+            "width": 900
+          }
+        ],
+        "model": "gpt-5.6-luna",
+        "modelVersion": "2026-07-09",
+        "promptHash": "8d81c76bd9eb3f2b4f3933b645b8b7a8c57d638f4ade39c1c5fdb5e510f5a62c",
+        "receiptId": "bed3b543ad6bd30cf9bb41fc55562d0423f951fa24b379856df285355d06f377",
+        "requestHash": "26a51aa4da35cc2ab8e41b694804ad6a81e1611fb0a2f62e17569f6a7c10a8a7",
+        "resultHash": "1e2b3db24a6ca0fcbcaee56eb1a8e99eb552ef4fa284abab1dfb033e40f5ca84",
+        "schemaHash": "73eb38f8326754bfac129672ee919a4c59c1bcfc29e2d2d4bd10148c14a1b9f9",
+        "timingOnly": {
+          "authorizationHash": "464c19357193dc53024e9a7be6fee1ad627bcdce5de5e4c4cf42065cf3f8b946",
+          "coreHash": "457d30f820bb1195c74ee90bef1a4c541e4737f42465f397a4b41c87989e4cdd",
+          "pendingSlotIds": [
+            "s5949de4747",
+            "s5a5da7e66e",
+            "s9e425d2300",
+            "sa87954c197"
+          ],
+          "semanticResultHash": "41ea844c36f981faa7b4ed2f23732d539b94a5e199067b3a3f909d7e7c682e8e",
+          "slots": [
+            {
+              "serviceDate": "2026-09-02",
+              "shift": "夜",
+              "slotId": "s5949de4747"
+            },
+            {
+              "serviceDate": "2026-09-05",
+              "shift": "昼",
+              "slotId": "s9cb09c57a0"
+            },
+            {
+              "serviceDate": "2026-09-07",
+              "shift": "昼",
+              "slotId": "s9e425d2300"
+            },
+            {
+              "serviceDate": "2026-09-10",
+              "shift": "夜",
+              "slotId": "sa87954c197"
+            },
+            {
+              "serviceDate": "2026-09-12",
+              "shift": "昼",
+              "slotId": "sc3a312bc5f"
+            },
+            {
+              "serviceDate": "2026-09-14",
+              "shift": "昼",
+              "slotId": "s5a5da7e66e"
+            }
+          ],
+          "sourceHash": "d33f7fd4d281b7ea24db02027780bd49587a00bee096e50735a8af1ca29f5675"
+        }
+      },
+      "schedule": {
+        "authorId": "2080944098043977728",
+        "authorScreenName": "ito_zettai",
+        "createdAt": "2026-09-06T11:57:53Z",
+        "days": [
+          {
+            "date": "2026-09-02",
+            "shifts": [
+              "夜"
+            ]
+          },
+          {
+            "date": "2026-09-05",
+            "shifts": [
+              "昼"
+            ]
+          },
+          {
+            "date": "2026-09-07",
+            "shifts": [
+              "昼"
+            ]
+          },
+          {
+            "date": "2026-09-10",
+            "shifts": [
+              "夜"
+            ]
+          },
+          {
+            "date": "2026-09-12",
+            "shifts": [
+              "昼"
+            ]
+          },
+          {
+            "date": "2026-09-14",
+            "shifts": [
+              "昼"
+            ]
+          }
+        ],
+        "id": "2096568567798128871",
+        "name": "いと",
+        "observedAt": "2026-09-06T14:59:10.694684Z",
+        "period": {
+          "from": "2026-09-01",
+          "printedYear": null,
+          "to": "2026-09-15",
+          "yearBasis": "post-context"
+        },
+        "sourceKind": "half-month-schedule",
+        "url": "https://x.com/ito_zettai/status/2096568567798128871",
+        "workTiming": {
+          "facts": [
+            {
+              "boundary": "end",
+              "explicitTime": null,
+              "qualifier": "long",
+              "serviceDate": "2026-09-05",
+              "shift": "昼",
+              "source": {
+                "authorId": "2080944098043977728",
+                "authorScreenName": "ito_zettai",
+                "createdAt": "2026-09-06T11:57:53Z",
+                "id": "2096568567798128871",
+                "name": "いと",
+                "sourceKind": "half-month-schedule",
+                "url": "https://x.com/ito_zettai/status/2096568567798128871"
+              },
+              "status": "set"
+            },
+            {
+              "boundary": "end",
+              "explicitTime": null,
+              "qualifier": "long",
+              "serviceDate": "2026-09-12",
+              "shift": "昼",
+              "source": {
+                "authorId": "2080944098043977728",
+                "authorScreenName": "ito_zettai",
+                "createdAt": "2026-09-06T11:57:53Z",
+                "id": "2096568567798128871",
+                "name": "いと",
+                "sourceKind": "half-month-schedule",
+                "url": "https://x.com/ito_zettai/status/2096568567798128871"
+              },
+              "status": "set"
+            }
+          ],
+          "schemaVersion": 1
+        }
+      },
+      "source": {
+        "authorId": "2080944098043977728",
+        "authorScreenName": "ito_zettai",
+        "bodyHash": "1129b4ed1401f88febb657ea03d9b7e4c697516a266a511cf1bf9f407819f31a",
+        "createdAt": "2026-09-06T11:57:53Z",
+        "discoveryHash": "5b4c44772cbcb7008a155d6f43c4fe6d54876ed01639edb3032e58f2aa6cd5b4",
+        "editTweetIds": [
+          "2096568567798128871"
+        ],
+        "id": "2096568567798128871",
+        "media": [
+          {
+            "originalHeight": 2048,
+            "originalWidth": 1536,
+            "urlHash": "49a97195521e36b96e73518bb4e20b06d3eb721b9c80c651831e7ecf4660c685"
+          }
+        ],
+        "name": "いと",
+        "observedAt": "2026-09-06T14:59:10.694684Z",
+        "payloadHash": "4780d92c1e8d2e3d90e687d2bb9f63b872d84a3a8ed4739d2d72e95506cd92bf",
+        "url": "https://x.com/ito_zettai/status/2096568567798128871"
+      },
+      "sourceKey": "b5bbb70d4847a8a9248495513f020856f3fa6e97e5fa9b7d3991cfd250b94e84",
+      "timingAmendment": {
+        "basisRevisionKeys": [
+          "6d4e1f153ca586f7904dd58bc9b98b459973c3eedd444c4125ebbb170e8aee28"
+        ],
+        "expectedCoreHash": "7f9b042dc4bbd704da55445b876d4c9d582ae549f520332ea495968d08c4e829",
+        "expectedSubjectHash": "a32e46f869ff0662d2d9297ceeec29b683f5af28e232280136109da0b9ecc879",
+        "expectedTimingHash": "b2a42f2bf3bcde2a3e62f78fb7c5c36cd803687655a5f3b7a80a870feb8ed89c",
+        "importId": "0fd38068788b08bba3212d129aefeac39cc53a4251290b1d8ab465ebc46a09b5",
+        "operation": "work-timing-only",
+        "previous": {
+          "analysisReceiptId": "164ee226a4e28cd184bbfdfe8b388da30290ad15a490a938a30211bef63e90dd",
+          "contractHash": "4e2e69b326705c922c938fe3e838b619edea97d91ce6ff913e8a3cfbbd90ef71",
+          "contractVersion": "half-month-schedule-v1",
+          "importId": "8c0428882459a4d55b8926e55eda6ea2f750d2ceb35ae38e50ba6b018a28c0a1"
+        },
+        "targetScopes": [
+          {
+            "boundary": "start",
+            "name": "いと",
+            "serviceDate": "2026-09-02",
+            "shift": "夜"
+          },
+          {
+            "boundary": "end",
+            "name": "いと",
+            "serviceDate": "2026-09-05",
+            "shift": "昼"
+          },
+          {
+            "boundary": "end",
+            "name": "いと",
+            "serviceDate": "2026-09-07",
+            "shift": "昼"
+          },
+          {
+            "boundary": "start",
+            "name": "いと",
+            "serviceDate": "2026-09-10",
+            "shift": "夜"
+          },
+          {
+            "boundary": "end",
+            "name": "いと",
+            "serviceDate": "2026-09-12",
+            "shift": "昼"
+          },
+          {
+            "boundary": "end",
+            "name": "いと",
+            "serviceDate": "2026-09-14",
+            "shift": "昼"
+          }
+        ],
+        "updateChannels": [
+          "workTiming"
+        ]
+      }
     }
   },
   "savedImports": {
+    "0fd38068788b08bba3212d129aefeac39cc53a4251290b1d8ab465ebc46a09b5": {
+      "accountingKind": "imported",
+      "analysisReceiptHash": "ff62d33071f2ed1c4e0c9d23d2c140bf645f10acde61905991b2bd1cfc2f98d4",
+      "analysisResultHash": "1e2b3db24a6ca0fcbcaee56eb1a8e99eb552ef4fa284abab1dfb033e40f5ca84",
+      "applyApproval": {
+        "entryHash": "581f718a125aa540b67e1a8b83b864b88cdba638ddde0541cff8956da4c42d12",
+        "kind": "half-month-timing-selection-apply-v1",
+        "schemaVersion": 1,
+        "selectionApprovalHash": "c902c12f305ca68d08aca445daf33e94ff27620b3cedc9a04e6eba3f25bcd429",
+        "stage": "apply-exact"
+      },
+      "expectedApplySubjectHash": "9be9c5e1c5f485faa4be2caf6d10cfacf4b4a07049394d8fed83f819f42e5c7f",
+      "importedAt": "2026-09-07T15:48:39.221994Z",
+      "issuedAt": "2026-09-07T11:12:26.843534Z",
+      "receiptId": "bed3b543ad6bd30cf9bb41fc55562d0423f951fa24b379856df285355d06f377",
+      "requestHash": "26a51aa4da35cc2ab8e41b694804ad6a81e1611fb0a2f62e17569f6a7c10a8a7",
+      "selectionProof": {
+        "approvalManifestHash": "c902c12f305ca68d08aca445daf33e94ff27620b3cedc9a04e6eba3f25bcd429",
+        "document": {
+          "independentGoldHash": "9d191843eae06b8cf02f3bce8970faeb6f3d02df30870d18b1e5a0fd44270957",
+          "kind": "half-month-timing-selection-approval-v1",
+          "mode": "confirmed-set-only",
+          "originPacketHash": "dea5e72b759117ce84c44031366c7cf844381258cf2d2a8ae7a60364c4728a4b",
+          "schemaVersion": 1,
+          "selected": [
+            {
+              "factHash": "da1bb710a5b6c0cf469930b832bd71a96063d00176d404fae1a04495db1b216c",
+              "slotId": "s9cb09c57a0"
+            },
+            {
+              "factHash": "5368a8b65968e47299b41dbfc42c756b809262e317cf8186d4848fa7689c462b",
+              "slotId": "sc3a312bc5f"
+            }
+          ],
+          "stage": "selection-only",
+          "untouchedSlotIds": [
+            "s5949de4747",
+            "s5a5da7e66e",
+            "s9e425d2300",
+            "sa87954c197"
+          ]
+        }
+      },
+      "sourceManifestHash": "c902c12f305ca68d08aca445daf33e94ff27620b3cedc9a04e6eba3f25bcd429",
+      "usageReceiptId": "b2c5c0f1344daf2c2998498be510f213b2a6c18c84e35f36ecddafb4f5267333",
+      "usageSourceHash": "8ea1540f56ac6bb98be67d7f353a5b624d2a7133f7d624e83729e27ade526cba"
+    },
     "8c0428882459a4d55b8926e55eda6ea2f750d2ceb35ae38e50ba6b018a28c0a1": {
       "analysisReceiptHash": "2f20194b6042b626b17cbee71d5fd7300b8a8b0e107311ea689b9b8ab1fbd5b8",
       "analysisResultHash": "658ed59e0055a3009b8f10481d528195461f842378fdcd73246edcea595b751a",
@@ -1093,7 +1383,46 @@
         "yearBasis": "post-context"
       },
       "sourceKind": "half-month-schedule",
-      "url": "https://x.com/ito_zettai/status/2096568567798128871"
+      "url": "https://x.com/ito_zettai/status/2096568567798128871",
+      "workTiming": {
+        "facts": [
+          {
+            "boundary": "end",
+            "explicitTime": null,
+            "qualifier": "long",
+            "serviceDate": "2026-09-05",
+            "shift": "昼",
+            "source": {
+              "authorId": "2080944098043977728",
+              "authorScreenName": "ito_zettai",
+              "createdAt": "2026-09-06T11:57:53Z",
+              "id": "2096568567798128871",
+              "name": "いと",
+              "sourceKind": "half-month-schedule",
+              "url": "https://x.com/ito_zettai/status/2096568567798128871"
+            },
+            "status": "set"
+          },
+          {
+            "boundary": "end",
+            "explicitTime": null,
+            "qualifier": "long",
+            "serviceDate": "2026-09-12",
+            "shift": "昼",
+            "source": {
+              "authorId": "2080944098043977728",
+              "authorScreenName": "ito_zettai",
+              "createdAt": "2026-09-06T11:57:53Z",
+              "id": "2096568567798128871",
+              "name": "いと",
+              "sourceKind": "half-month-schedule",
+              "url": "https://x.com/ito_zettai/status/2096568567798128871"
+            },
+            "status": "set"
+          }
+        ],
+        "schemaVersion": 1
+      }
     }
   ],
   "schemaVersion": 1,
