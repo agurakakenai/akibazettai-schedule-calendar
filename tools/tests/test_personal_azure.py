@@ -125,6 +125,95 @@ class AzureTests(base.Offline):
                                    ENV if environment is None else environment,
                                    clock=lambda: self.clock, sleep=self.sleep, opener=self.opener, usage=usage)
 
+    def test_discovery_keeps_empty_known_shifts_and_admits_grounded_explicit_event(self):
+        target = {**base.AMU, 'shifts': []}
+        parsed, reason = self.parse('今日 夜2号店', result(
+            event('夜', 'placement', [1], 's2')), target=target)
+        self.assertEqual(reason, 'events')
+        self.assertEqual([value['shift'] for value in parsed['events']], ['夜'])
+        request = self.opener.open.call_args.args[0]
+        content = json.loads(request.data)
+        payload = json.loads(content['messages'][1]['content'])
+        self.assertEqual(payload['knownShiftsByDate'], {'2026-09-06': []})
+        self.assertEqual(target['shifts'], [])
+        for text, value in (
+                ('今日 終日お休みです', result(event('昼', 'absence', [1]))),
+                ('今日 2号店です', result(event('夜', 'placement', [1], 's2'))),
+                ('今日 お給仕します', result(links=[link('夜')]))):
+            with self.subTest(text=text), self.assertRaisesRegex(azure.AnalysisFailure, 'azure_ungrounded'):
+                azure.grounded_assessment_v8(value, text, base.DATE, [], personal.azure_context())
+
+    def test_discovery_storeless_link_and_timing_only_never_create_core(self):
+        target = {**base.AMU, 'shifts': []}
+        parsed, _ = self.parse('今日 お給仕します', result(links=[link('unspecified')]), target=target)
+        self.assertEqual(parsed['events'], [])
+        self.assertNotIn('workTiming', parsed)
+        self.assertEqual(parsed['links'], [{'scope': 'unspecified', 'status': 'work'}])
+        timing_post, _ = self.parse('今日 昼は16:00までお給仕', result(
+            work_timing=[timing_fact()]), target=target)
+        self.assertEqual(timing_post['events'], [])
+        self.assertEqual(timing_post['links'], [])
+        self.assertEqual(len(timing_post['workTiming']['facts']), 1)
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_ungrounded'):
+            azure.grounded_assessment_v8(result(work_timing=[timing_fact()]),
+                                        '今日16:00', base.DATE, [], personal.azure_context())
+        self.assertEqual(azure.VERSION, 'personal-line-ids-v8')
+
+    def test_registry_change_during_ai_wait_stops_issuance_without_changing_old_cache(self):
+        registry = base.registry_fixture(base.AMU)
+        path = self.folder / 'members.json'
+        personal.official.atomic_json(path, registry)
+        self.analyzer.registry_guard = personal.members.RegistryGuard(path, bindings=({},))
+        self.parse('今日 昼1号店', result(event('昼', 'placement', [1], 's1')))
+        before = copy.deepcopy(self.analyzer.state)
+        sleep = self.analyzer.sleep
+
+        def pause(seconds):
+            sleep(seconds)
+            personal.official.atomic_json(path, personal.members.update_member(
+                registry, 'あむ', now=self.clock, collection='paused'))
+
+        self.analyzer.sleep = pause
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'registry_changed'):
+            self.parse('今日 昼2号店', result(event('昼', 'placement', [1], 's2')))
+        self.opener.open.assert_called_once()
+        self.assertEqual(self.analyzer.state, before)
+        personal.read_state(self.snapshot)
+
+    def test_registry_change_after_ai_reservation_keeps_budget_and_interrupted_receipt(self):
+        registry = base.registry_fixture(base.AMU)
+        path = self.folder / 'members.json'
+        personal.official.atomic_json(path, registry)
+        self.analyzer.registry_guard = personal.members.RegistryGuard(path, bindings=({},))
+        save = self.analyzer.save
+
+        def reserve_then_pause():
+            save()
+            if self.analyzer.state['cache']:
+                personal.official.atomic_json(path, personal.members.update_member(
+                    registry, 'あむ', now=self.clock, collection='paused'))
+
+        self.analyzer.save = reserve_then_pause
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'registry_changed'):
+            self.parse('今日 昼1号店', result(event('昼', 'placement', [1], 's1')))
+        self.opener.open.assert_not_called()
+        self.assertEqual(self.analyzer.state['budgets'], {'2026-09-06': 1})
+        self.assertEqual(next(iter(self.analyzer.state['cache'].values()))['reason'], 'azure_interrupted')
+        personal.read_state(self.snapshot)
+
+    def test_unknown_manual_ai_spacing_rechecks_deadline_without_night_inference(self):
+        target = {**base.AMU, 'shifts': []}
+        self.clock = dt.datetime.combine(base.DATE, dt.time(19, 29, 30), personal.JST)
+        self.analyzer.deadline = lambda: bool(personal.active_targets(
+            {'あむ': target}, base.DATE, self.clock))
+        self.parse('今日 夜1号店', result(event('夜', 'placement', [1], 's1')), target=target)
+        previous = copy.deepcopy(self.analyzer.state)
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_deadline'):
+            self.parse('今日 夜2号店', result(event('夜', 'placement', [1], 's2')), target=target)
+        self.opener.open.assert_called_once()
+        self.assertEqual(self.analyzer.state, previous)
+        self.assertEqual(target['shifts'], [])
+
     def shared_usage(self, **kwargs):
         path = self.folder / 'ai-usage.json'
         if not path.exists():
@@ -1990,12 +2079,15 @@ class AzureTests(base.Offline):
         insights.write_text('window.STORE_INSIGHTS=' + json.dumps({
             'maidTendency': {'あむ': {'x': 'amu_zettai'}}}) + ';', encoding='utf-8')
         accounts.write_text('name,handle,source\nあむ,amu_zettai,本人確認済み\n', encoding='utf-8')
+        registry = self.folder / 'members.json'
+        personal.official.atomic_json(registry, base.registry_fixture(base.AMU))
         personal.official.atomic_json(saved, {base.TID: base.post('今日 昼1号店')})
         self.opener.open.return_value = response(result(event('昼', 'placement', [1], 's1')))
         args = personal.argument_parser().parse_args([
             '--snapshot', str(self.snapshot), '--http-state', str(self.http),
             '--seed', str(seed), '--schedule', str(schedule), '--insights', str(insights),
-            '--accounts', str(accounts), '--analysis-backend', 'azure', '--analyze-saved', str(saved)])
+            '--accounts', str(accounts), '--members', str(registry),
+            '--analysis-backend', 'azure', '--analyze-saved', str(saved)])
         with contextlib.redirect_stdout(io.StringIO()):
             code = personal.run(args, clock=lambda: self.clock, sleep=self.sleep, environment=ENV,
                                 analyzer_factory=lambda *a, **k: azure.AzureAnalyzer(*a, **k, opener=self.opener),

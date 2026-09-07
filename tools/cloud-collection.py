@@ -102,6 +102,13 @@ def load_personal_collector():
     return module
 
 
+def load_member_registry():
+    spec = importlib.util.spec_from_file_location('cloud_member_registry', ROOT / 'tools' / 'member-registry.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def load_analysis_state():
     spec = importlib.util.spec_from_file_location(
         'cloud_analysis_state', ROOT / 'tools' / 'analysis-state.py')
@@ -853,6 +860,7 @@ def invoke_personal_collector(root, state, report, environment):
     require(max_searches in ('0', '1', '2', '3'), 'invalid_source_limit')
     argv = [sys.executable, '-I', '-B', str(root / 'tools' / 'collect-personal-shifts.py'),
             '--once', '--snapshot', str(state / PERSONAL),
+            '--members', str(root / 'data' / 'members.json'),
             '--observations', str(state / SNAPSHOT),
             '--http-state', str(state / HTTP_STATE),
             '--seed', str(state.parent / 'personal-seed.json'),
@@ -890,6 +898,7 @@ def invoke_half_month_collector(root, state, report, environment):
             'missing_half_month_accounting')
     argv = [sys.executable, '-I', '-B', str(root / 'tools' / 'collect-half-month-schedules.py'),
             '--once', '--snapshot', str(state / HALF_MONTH),
+            '--members', str(root / 'data' / 'members.json'),
             '--personal-snapshot', str(state / PERSONAL),
             '--http-state', str(state / HTTP_STATE),
             *source_arguments(state, environment),
@@ -1236,11 +1245,10 @@ def prepare_half_month_saved(manifest, half_state, source_state, personal, usage
         personal_collector = personal_collector or load_personal_collector()
         schedule = personal_collector.read_js(root / 'data' / 'schedule.js', 'SCHEDULE_DATA')
         insights = personal_collector.read_js(root / 'data' / 'store-insights.js', 'STORE_INSIGHTS')
-        with (root / 'tools' / 'data' / 'accounts.csv').open(encoding='utf-8-sig', newline='') as stream:
-            accounts = list(csv.DictReader(stream))
+        registry = load_member_registry().load_registry(root / 'data' / 'members.json')
         half_state = load_half_month_saved().apply_amendments(
             half_state, entries, usage, module, schedule=schedule, insights=insights,
-            accounts=accounts, personal_state=personal, now=now,
+            accounts=[], registry=registry, personal_state=personal, now=now,
             approved_selections={digest: {'approvalManifestHash': digest, 'document': document}
                                  for digest, document in selections.items()},
             approved_selection_apply=manifest.get('halfMonthSelectionApply'))

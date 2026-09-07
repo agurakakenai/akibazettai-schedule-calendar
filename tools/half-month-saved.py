@@ -186,9 +186,53 @@ def validate_reanalysis_basis(state, authorization, source, images, half_month, 
     return copy.deepcopy(previous_rows)
 
 
+def _registry_source(state, source, analysis, registry, personal_bindings, half_month):
+    members = half_month.member_registry()
+    maps = (personal_bindings, state['identityBindings'])
+    members.binding_index(registry, maps)
+    member = members.lookup(registry, source['name'])
+    source_owner = member['memberId'] if member else source['name']
+    identities = {}
+    for mapping in maps:
+        for name, bound in mapping.items():
+            owner = members.lookup(registry, name)
+            owner = owner['memberId'] if owner else name
+            identity = (bound['authorId'], bound['authorScreenName'].casefold())
+            _require(owner not in identities or identities[owner] == identity,
+                     'saved_half_month_binding_mismatch')
+            identities[owner] = identity
+            same_author = identity[0] == source['authorId']
+            same_handle = identity[1] == source['authorScreenName'].casefold()
+            if owner == source_owner:
+                _require(same_author and same_handle, 'saved_half_month_binding_mismatch')
+            else:
+                _require(not same_author and not same_handle, 'saved_half_month_binding_ambiguous')
+    key = half_month.source_key(source)
+    admitted = False
+    for revision in state['revisions'].values():
+        if revision['sourceKey'] != key:
+            continue
+        previous = revision.get('source', state['sources'][key]['source'])
+        if (all(previous[field] == source[field] for field in (
+                'id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt'))
+                and [image['sha256'] for image in revision['analysis']['images']]
+                == [image['sha256'] for image in analysis['images']]):
+            admitted = True
+            break
+    if not admitted:
+        targets, _ = members.collection_population(registry, *maps)
+        target = targets.get(member['memberId']) if member else None
+        _require(target is not None and target['name'] == source['name']
+                 and target['handle'].casefold() == source['authorScreenName'].casefold(),
+                 'saved_half_month_account_mismatch')
+
+
 def apply_amendments(state, entries, usage, half_month, *, schedule, insights, accounts,
-                     personal_state, now, approved_selections=None, approved_selection_apply=None):
+                     personal_state, now, approved_selections=None, approved_selection_apply=None,
+                     registry=None):
     _require(isinstance(entries, list) and len(entries) <= 1)
+    if registry is not None:
+        half_month.member_registry().validate_registry(registry)
     if state is not None:
         half_month.validate_state(state)
         validate_accounting(state, usage, half_month)
@@ -231,24 +275,27 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
             _require(all(table[key] == source[key] for key in (
                 'id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt', 'observedAt')),
                 'saved_half_month_source_mismatch')
-        bindings = copy.deepcopy(personal_state['identityBindings'])
-        for name, bound in result['identityBindings'].items():
-            previous = bindings.get(name)
-            _require(previous is None or all(previous[key] == bound[key] for key in (
-                'authorId', 'authorScreenName')), 'saved_half_month_binding_mismatch')
-            bindings[name] = bound
-        targets, _ = half_month.population(schedule, insights, accounts, bindings)
-        target = targets.get(source['name'])
-        _require(target is not None and target['handle'] == source['authorScreenName'],
-                 'saved_half_month_account_mismatch')
-        for name, bound in bindings.items():
-            if name == source['name']:
-                _require(all(source[key] == bound[key] for key in (
+        if registry is not None:
+            _registry_source(result, source, analysis, registry, personal_state['identityBindings'], half_month)
+        else:
+            bindings = copy.deepcopy(personal_state['identityBindings'])
+            for name, bound in result['identityBindings'].items():
+                previous = bindings.get(name)
+                _require(previous is None or all(previous[key] == bound[key] for key in (
                     'authorId', 'authorScreenName')), 'saved_half_month_binding_mismatch')
-            else:
-                _require(source['authorId'] != bound['authorId']
-                         and source['authorScreenName'].casefold() != bound['authorScreenName'].casefold(),
-                         'saved_half_month_binding_ambiguous')
+                bindings[name] = bound
+            targets, _ = half_month.population(schedule, insights, accounts, bindings)
+            target = targets.get(source['name'])
+            _require(target is not None and target['handle'] == source['authorScreenName'],
+                     'saved_half_month_account_mismatch')
+            for name, bound in bindings.items():
+                if name == source['name']:
+                    _require(all(source[key] == bound[key] for key in (
+                        'authorId', 'authorScreenName')), 'saved_half_month_binding_mismatch')
+                else:
+                    _require(source['authorId'] != bound['authorId']
+                             and source['authorScreenName'].casefold() != bound['authorScreenName'].casefold(),
+                             'saved_half_month_binding_ambiguous')
         capacity = (validate_timing_accounting(usage, proof, analysis, half_month) if timing_contract
                     else _import_capacity(usage, proof, analysis, half_month))
         _require(capacity > 0,

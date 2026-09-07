@@ -19,6 +19,35 @@ collector, facts, azure = base.collector, base.facts, base.azure
 
 
 class DiscoveryTests(base.Offline):
+    def test_other_name_author_or_handle_binding_rejects_first_binding_discovery(self):
+        for binding in (
+                {'authorId': base.AUTHOR, 'authorScreenName': 'different'},
+                {'authorId': '12345', 'authorScreenName': base.TARGET['handle']}):
+            with self.subTest(binding=binding):
+                rows, _ = collector.discover(
+                    base.document(base.entry()), {'あむ': base.TARGET}, base.NOW, {'別人': binding})
+                self.assertEqual(rows, [])
+
+    def test_conflicting_maps_cannot_hide_an_author_from_another_unbound_member(self):
+        registry = base.registry_fixture()
+        registry['members'].append(collector.members.new_member(
+            '新人', 'https://x.com/new_member', base.NOW, member_id='m-' + '2' * 32))
+        first = {'あむ': {'authorId': base.AUTHOR, 'authorScreenName': base.TARGET['handle'],
+                         'verifiedAt': facts.stamp(base.NOW)}}
+        second = {'あむ': {**first['あむ'], 'authorId': '12345'}}
+        for old, other in ((first, second), (second, first)):
+            state = facts.empty_state()
+            state['identityBindings'] = old
+            targets, _, bindings = collector.target_population(
+                state, {}, {}, [], other, registry=registry)
+            self.assertEqual(set(targets), {'新人'})
+            candidate = base.entry(handle='new_member')
+            candidate['userId'] = other['あむ']['authorId']
+            rows, _ = collector.discover(
+                base.document(candidate), targets, base.NOW, bindings,
+                registry=registry, other_bindings=(old, other))
+            self.assertFalse(rows)
+
     def test_best_timeline_dedup_and_query_canonicalization(self):
         value = base.entry()
         rows, limited = collector.discover(base.document(value, best=value), {'あむ': base.TARGET}, base.NOW)
@@ -132,6 +161,37 @@ class DiscoveryTests(base.Offline):
 
 
 class FetchTests(base.Offline):
+    def test_registry_change_before_each_get_or_after_reservation_never_opens_http(self):
+        for kind in ('searches', 'posts', 'images'):
+            for boundary in ('before', 'reserve', 'issued'):
+                with self.subTest(kind=kind, boundary=boundary):
+                    path = self.registry_file()
+                    guard = collector.members.RegistryGuard(path, bindings=({},))
+                    shared, opener = mock.Mock(), mock.Mock()
+                    client = collector.SourceClient(
+                        shared, clock=lambda: base.NOW, opener=opener, registry_guard=guard)
+                    client.registry_name = 'あむ'
+                    def change(*unused):
+                        registry = collector.members.load_registry(path)
+                        registry['members'][0]['collection'] = 'paused'
+                        path.write_bytes(collector.members.json_bytes(registry))
+                        return 'receipt'
+                    if boundary == 'before':
+                        change()
+                    else:
+                        getattr(shared, boundary).side_effect = change
+                    with self.assertRaisesRegex(collector.RegistryFailure, 'registry_changed'):
+                        if kind == 'searches':
+                            client.search(base.TARGET['handle'])
+                        elif kind == 'posts':
+                            client.post(base.post_id())
+                        else:
+                            client.image('https://pbs.twimg.com/media/SYNTHETIC.png')
+                    opener.open.assert_not_called()
+                    self.assertEqual(client.requests[kind], 0)
+                    if boundary != 'before':
+                        shared.finish.assert_called_once()
+
     def response(self, raw, mime='image/png', status=200, length=None):
         response = mock.MagicMock()
         response.__enter__.return_value = response
@@ -298,6 +358,128 @@ class ProducerTests(base.Offline):
         return collector.collect(self.state, base.SCHEDULE, {}, base.ACCOUNTS,
                                  self.client, self.source, self.analyzer, clock=lambda: base.NOW,
                                  save=self.save, **kwargs)
+
+    def test_inactive_paused_or_unknown_preserves_pending_and_all_historical_facts(self):
+        verified, tables, proof = base.normalized(suffix=9)
+        facts.apply_revision(self.state, tables, verified, proof)
+        self.state['pending'] = collector.discover(
+            base.document(best=base.entry()), {'あむ': base.TARGET}, base.NOW)[0]
+        before = copy.deepcopy(self.state)
+        for status in ('inactive', 'paused', 'unconfirmed', 'unknown', 'account_changed'):
+            registry = base.registry_fixture()
+            member = registry['members'][0]
+            if status in ('inactive', 'unconfirmed'):
+                member.update(membership=status, collection='paused')
+            elif status == 'paused':
+                member['collection'] = 'paused'
+            elif status == 'unknown':
+                member.update(xProfileUrl=None, accountTrust=None)
+            else:
+                member['xProfileUrl'] = 'https://x.com/review_needed'
+            with self.subTest(status=status):
+                report, _ = self.collect(registry=registry)
+                self.assertEqual(report['registry']['eligibleCount'], 0)
+                for field in ('pending', 'schedules', 'revisions', 'sources', 'receipts',
+                              'savedImports', 'identityBindings', 'candidateHistory'):
+                    self.assertEqual(self.state[field], before[field])
+                self.client.search.assert_not_called()
+                self.client.post.assert_not_called()
+                self.client.image.assert_not_called()
+                self.model.structured.assert_not_called()
+                facts.validate_state(self.state)
+
+    def test_registry_member_without_schedule_or_insights_still_collects(self):
+        report, code = collector.collect(
+            self.state, {'schedule': None}, None, None, self.client, self.source, self.analyzer,
+            clock=lambda: base.NOW, save=self.save, registry=base.registry_fixture())
+        self.assertEqual((report['status'], code), ('ok', 0))
+        self.assertEqual(len(self.state['schedules'][0]['days']), 6)
+        self.client.search.assert_called_once_with(base.TARGET['handle'])
+
+    def test_first_pass_search_progresses_while_different_member_is_pending(self):
+        registry = base.registry_fixture()
+        for index, (name, handle) in enumerate((('新人', 'new_member'), ('厨房', 'new_kitchen')), 2):
+            registry['members'].append(collector.members.new_member(
+                name, 'https://x.com/' + handle, base.NOW, role='kitchen',
+                member_id='m-' + str(index) * 32))
+        targets, reasons, _ = collector.target_population(
+            self.state, {}, {}, [], registry=registry)
+        collector.refresh_coverage(self.state, reasons, base.NOW, {})
+        self.state['pending'] = collector.discover(
+            base.document(base.entry()), {'あむ': base.TARGET}, base.NOW)[0]
+        for people in self.state['coverage'].values():
+            people['あむ']['lastSearchedAt'] = facts.stamp(base.NOW - dt.timedelta(hours=1))
+        self.client.search.return_value = base.document()
+        self.client.post.side_effect = collector.Failure('network_error')
+        report, _ = self.collect(registry=registry)
+        first_handle = self.client.search.call_args.args[0]
+        self.assertIn(first_handle, ('new_member', 'new_kitchen'))
+        self.assertEqual(report['requests']['searches'], 1)
+        self.assertEqual(report['requests']['posts'], 1)
+        self.assertEqual(self.client.post.call_args.args[0], base.post_id())
+        self.assertEqual(self.state['pending'][0]['nextAttemptAt'],
+                         facts.stamp(base.NOW + dt.timedelta(hours=6)))
+        self.collect(registry=registry)
+        self.assertNotEqual(self.client.search.call_args.args[0], first_handle)
+        for people in self.state['coverage'].values():
+            self.assertTrue(all(people[name]['lastSearchedAt'] is not None for name in targets))
+        self.assertEqual(self.client.post.call_count, 1)
+        self.model.structured.assert_not_called()
+
+    def test_pending_candidate_order_rotates_people_not_only_posts(self):
+        other_target = {'name': '新人', 'handle': 'new_member'}
+        candidates = collector.discover(
+            base.document(base.entry(suffix=1), base.entry(suffix=2),
+                          base.entry(suffix=3, handle='new_member')),
+            {'あむ': base.TARGET, '新人': other_target}, base.NOW)[0]
+        self.state['pending'] = candidates
+        attempted = next(item for item in candidates if item['name'] == 'あむ')
+        attempted['lastAttemptAt'] = facts.stamp(base.NOW)
+        attempted['nextAttemptAt'] = facts.stamp(base.NOW + dt.timedelta(hours=6))
+        waiting = collector.waiting_candidates(
+            self.state, {'あむ': base.TARGET, '新人': other_target}, base.NOW)
+        self.assertEqual([item['name'] for item in waiting], ['新人', 'あむ'])
+
+    def test_registry_change_after_search_stops_post_and_preserves_prior_facts(self):
+        path = self.registry_file()
+        guard = collector.members.RegistryGuard(path, bindings=lambda: (self.state['identityBindings'],))
+        def search(handle):
+            registry = collector.members.load_registry(path)
+            registry['members'][0]['collection'] = 'paused'
+            path.write_bytes(collector.members.json_bytes(registry))
+            return base.document(best=base.entry())
+        self.client.search.side_effect = search
+        report, code = self.collect(registry_guard=guard)
+        self.assertEqual((report['status'], code), ('paused', 3))
+        self.assertEqual(report['registry']['stopReason'], 'registry_changed')
+        self.assertFalse(self.state['schedules'])
+        self.client.post.assert_not_called()
+        self.client.image.assert_not_called()
+        self.model.structured.assert_not_called()
+
+    def test_source_cooldown_before_get_does_not_stamp_a_search(self):
+        self.source.reserve.side_effect = collector.Failure('source_host_cooldown')
+        opener = mock.Mock()
+        self.client = collector.SourceClient(self.source, clock=lambda: base.NOW, opener=opener)
+        report, code = self.collect(registry=base.registry_fixture())
+        self.assertEqual((report['status'], code), ('paused', 3))
+        self.assertEqual(report['requests'], {'searches': 0, 'posts': 0, 'images': 0})
+        self.assertEqual(report['registry']['eligibleCount'], 1)
+        self.assertTrue(all(people['あむ']['lastSearchedAt'] is None
+                            for people in self.state['coverage'].values()))
+        opener.open.assert_not_called()
+        self.model.structured.assert_not_called()
+
+    def test_default_registry_argument_and_output_path_cannot_alias_registry(self):
+        parser = collector.argument_parser()
+        argv = ['--snapshot', 'unused.json', '--source-state', 'source.json',
+                '--personal-snapshot', 'personal.json', '--http-state', 'http.json',
+                '--ai-state', 'ai.json', '--analysis-run-id', 'mock']
+        args = parser.parse_args(argv)
+        self.assertEqual(args.members, collector.ROOT / 'data' / 'members.json')
+        args.members = args.snapshot
+        with self.assertRaisesRegex(ValueError, 'unsafe_storage_paths'):
+            collector.run(args)
 
     def test_end_to_end_persistent_feed_and_source_fingerprint(self):
         report, code = self.collect()
@@ -677,10 +859,20 @@ class ProducerTests(base.Offline):
         source_module.atomic_json(source_path, source_module.baseline_state(
             personal_state, source_hash=facts.digest(b'explicit-offline-baseline'), at=base.NOW))
         usage_module.atomic_json(ai_path, usage_module.empty_state())
+        registry = base.registry_fixture()
+        registry['members'].append(collector.members.new_member(
+            '未登録', None, base.NOW, member_id='m-' + '2' * 32))
+        registry['members'].append(collector.members.new_member(
+            '休止', 'https://x.com/inactive', base.NOW, member_id='m-' + '3' * 32))
+        registry['members'][2].update(membership='inactive', collection='paused')
+        registry['unresolvedNames'].append({
+            'name': '一覧外', 'legacyAccounts': [], 'resolvedMemberId': None})
         args = collector.argument_parser().parse_args([
             '--snapshot', str(snapshot), '--source-state', str(source_path),
             '--personal-snapshot', str(personal_path), '--ai-state', str(ai_path),
             '--http-state', str(folder / 'http.json'), '--analysis-run-id', 'zero-test',
+            '--members', str(self.registry_file(registry)),
+            '--accounts', str(folder / 'absent.csv'), '--insights', str(folder / 'absent.js'),
             '--analysis-limit', '0'])
         with mock.patch.object(collector, 'SourceClient', side_effect=AssertionError('no source client')):
             report, code = collector.run(args, clock=lambda: base.NOW, environment={})
@@ -689,6 +881,24 @@ class ProducerTests(base.Offline):
         self.assertEqual(report['exitCode'], code)
         self.assertFalse(usage_module.load_state(ai_path)['receipts'])
         self.assertFalse(source_module.load_state(source_path)['receipts'])
+        self.assertEqual(report['registry']['eligibleCount'], 1)
+        self.assertEqual(report['registry']['activeKitchenCount'], 1)
+        self.assertEqual(report['registry']['unresolvedNames'], ['一覧外'])
+        self.assertFalse(report['registry']['collectionEvaluated'])
+        for people in facts.read_state(snapshot)['coverage'].values():
+            self.assertEqual(set(people), {'あむ', '未登録', '休止', '一覧外'})
+            self.assertEqual(people['休止']['reason'], 'paused')
+            self.assertEqual(people['未登録']['reason'], 'account_unknown')
+            self.assertTrue(all(row['lastSearchedAt'] is None for row in people.values()))
+        args.analysis_limit = 1
+        args.max_searches = args.max_posts = 0
+        with mock.patch.object(collector, 'SourceClient', side_effect=AssertionError('no source client')), \
+                mock.patch.object(azure, 'AzureAnalyzer', side_effect=AssertionError('no Azure client')):
+            source_zero, code = collector.run(args, clock=lambda: base.NOW, environment={})
+        self.assertEqual((source_zero['status'], code), ('budget-exhausted', 2))
+        self.assertEqual(source_zero['registry'], report['registry'])
+        self.assertTrue(all(people['あむ']['lastSearchedAt'] is None
+                            for people in facts.read_state(snapshot)['coverage'].values()))
 
     def test_full_shared_ai_budget_defers_before_any_client_or_credentials(self):
         source_module = collector._module('source-state.py', 'test_full_schedule_source')
@@ -717,6 +927,7 @@ class ProducerTests(base.Offline):
             '--personal-snapshot', str(personal_path), '--ai-state', str(ai_path),
             '--http-state', str(folder / 'http.json'), '--analysis-run-id', '12345-1',
             '--source-run-id', '12345-1', '--analysis-limit', '1',
+            '--members', str(self.registry_file()),
             '--max-searches', '1', '--max-posts', '1', '--max-images', '4', '--report', str(report_path)])
         with mock.patch.object(collector, 'SourceClient', side_effect=AssertionError('no source client')), \
                 mock.patch.object(azure, 'AzureAnalyzer', side_effect=AssertionError('no Azure client')):
@@ -749,6 +960,7 @@ class ProducerTests(base.Offline):
             '--snapshot', str(snapshot), '--source-state', str(source_path),
             '--personal-snapshot', str(personal_path), '--ai-state', str(ai_path),
             '--http-state', str(folder / 'http.json'), '--analysis-run-id', 'report-test',
+            '--members', str(self.registry_file()),
             '--report', str(report_path)])
         cloud = collector._module('cloud-collection.py', 'test_all_schedule_completions')
         for status, code in [('ok', 0), ('partial', 2), ('unavailable', 3)]:
@@ -803,7 +1015,7 @@ class ProducerTests(base.Offline):
         self.client.search.assert_not_called()
         self.client.post.assert_not_called()
 
-    def native_pipeline(self, *, start=base.NOW, model_result=None):
+    def native_pipeline(self, *, start=base.NOW, model_result=None, stop_after_wait=None):
         """Real native/ledger/transport code with synthetic HTTP responses and moving time."""
         cloud = collector._module('cloud-collection.py', 'moving_native_cloud')
         sources = collector._module('source-state.py', 'moving_native_sources')
@@ -819,7 +1031,7 @@ class ProducerTests(base.Offline):
                  'personal-snapshot': canonical / cloud.PERSONAL, 'ai-state': canonical / cloud.AI_USAGE,
                  'http-state': canonical / cloud.HTTP_STATE, 'report': root / 'report.json',
                  'schedule': inputs / 'schedule.js', 'insights': inputs / 'store-insights.js',
-                 'accounts': inputs / 'accounts.csv'}
+                 'accounts': inputs / 'accounts.csv', 'members': self.registry_file()}
         paths['schedule'].write_text('window.SCHEDULE_DATA=' + json.dumps(base.SCHEDULE) + ';', encoding='utf-8')
         paths['insights'].write_text('window.STORE_INSIGHTS={};', encoding='utf-8')
         paths['accounts'].write_text('name,handle,source\nあむ,amu_zettai,公式サイト\n', encoding='utf-8')
@@ -831,10 +1043,22 @@ class ProducerTests(base.Offline):
         sources.atomic_json(paths['source-state'], sources.baseline_state(
             personal, source_hash=facts.digest(b'advancing-clock-offline-baseline'), at=start))
         usage.atomic_json(paths['ai-state'], usage.empty_state())
+        if stop_after_wait == 'searches':
+            source_state = sources.load_state(paths['source-state'])
+            source_state['nextRequests'][collector.SEARCH_HOST] = facts.stamp(start + dt.timedelta(seconds=30))
+            sources.atomic_json(paths['source-state'], source_state)
+        elif stop_after_wait == 'analysis':
+            usage_state = usage.load_state(paths['ai-state'])
+            usage_state['nextRequestAt'] = facts.stamp(start + dt.timedelta(minutes=1))
+            usage.atomic_json(paths['ai-state'], usage_state)
         clock, sleeps = [start], []
         def sleep(seconds):
             sleeps.append(seconds)
             clock[0] += dt.timedelta(seconds=seconds)
+            if stop_after_wait and (stop_after_wait != 'analysis' or len(issued_urls) == 4):
+                registry = collector.members.load_registry(paths['members'])
+                registry['members'][0]['collection'] = 'paused'
+                paths['members'].write_bytes(collector.members.json_bytes(registry))
         value = base.result() if model_result is None else model_result
         post = base.payload(photos=2)
         if model_result is not None:
@@ -880,6 +1104,20 @@ class ProducerTests(base.Offline):
                 collector.argument_parser().parse_args(argv), clock=lambda: clock[0], sleep=sleep,
                 environment={'AZURE_OPENAI_ENDPOINT': 'https://offline.openai.azure.com',
                              'AZURE_OPENAI_API_KEY': 'SYNTHETIC_OFFLINE_ONLY'})
+        if stop_after_wait:
+            expected = {'searches': (0, 0, 0), 'images': (1, 1, 1), 'analysis': (1, 1, 2)}[stop_after_wait]
+            self.assertEqual((report['status'], code), ('paused', 3))
+            self.assertEqual(report['registry']['stopReason'], 'registry_changed')
+            self.assertEqual(report['analysisRequests'], 0)
+            self.assertEqual(report['requests'], dict(zip(('searches', 'posts', 'images'), expected)))
+            self.assertEqual(len(issued_urls), sum(expected))
+            self.assertFalse(usage.load_state(paths['ai-state'])['receipts'])
+            state = facts.read_state(paths['snapshot'])
+            if stop_after_wait == 'searches':
+                self.assertTrue(all(people['あむ']['lastSearchedAt'] is None
+                                   for people in state['coverage'].values()))
+            self.assertEqual(len(sources.load_state(paths['source-state'])['receipts']), sum(expected))
+            return root, paths, state, cloud, clock[0]
         self.assertEqual(code, 0)
         self.assertEqual(report['status'], 'ok')
         self.assertEqual(report['requests'], {'searches': 1, 'posts': 1, 'images': 2})
@@ -900,6 +1138,11 @@ class ProducerTests(base.Offline):
         self.assertEqual((data / cloud.HALF_MONTH).read_bytes(), paths['snapshot'].read_bytes())
         return root, paths, state, cloud, clock[0]
 
+    def test_registry_reload_after_real_shared_waits_stops_before_next_request(self):
+        for boundary in ('searches', 'images', 'analysis'):
+            with self.subTest(boundary=boundary):
+                self.native_pipeline(stop_after_wait=boundary)
+
     def test_advancing_native_ledgers_cloud_pages_feed_passes_actual_js_validator(self):
         root, paths, state, cloud, finished = self.native_pipeline()
         pages = collector._module('pages.py', 'advancing_native_pages')
@@ -908,6 +1151,9 @@ class ProducerTests(base.Offline):
         (root / 'styles.css').write_text('body {}', encoding='utf-8')
         shutil.copyfile(paths['schedule'], root / 'data' / 'schedule.js')
         shutil.copyfile(paths['insights'], root / 'data' / 'store-insights.js')
+        shutil.copyfile(paths['members'], root / 'data' / 'members.json')
+        (root / 'data' / 'members.js').write_bytes(
+            collector.members.javascript_bytes(collector.members.load_registry(paths['members'])))
         shutil.copytree(base.TOOLS.parent / 'assets' / 'events', root / 'assets' / 'events')
         site = root / 'site'
         pages.stage(site, 'a' * 40, root=root, clock=lambda: finished)

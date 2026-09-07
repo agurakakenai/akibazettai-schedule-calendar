@@ -94,18 +94,26 @@ def require(value, keys, optional=()):
         raise ValueError('invalid_official_analysis')
 
 
-def name_choices(schedule, insights=None):
+def name_choices(schedule, insights=None, registry=None):
+    if registry is not None:
+        helper = module('official_member_registry', 'member-registry.py')
+        projection = helper.display_projection(registry)
+        return sorted(projection['aliases'])
     roster = schedule.get('roster') if isinstance(schedule, dict) else None
     if (not isinstance(roster, list) or not roster
             or any(not isinstance(name, str) or not NAME.fullmatch(name) for name in roster)
             or len(roster) != len(set(roster))):
         raise ValueError('invalid_official_roster')
     names = set(roster)
-    tendencies = (insights or {}).get('maidTendency', {})
+    tendencies = (insights or {}).get('maidTendency')
+    if tendencies is None:
+        tendencies = {}
     if not isinstance(tendencies, dict):
         raise ValueError('invalid_official_roster')
     for name in roster:
-        row = tendencies.get(name, {})
+        row = tendencies.get(name)
+        if row is None:
+            row = {}
         if not isinstance(row, dict):
             raise ValueError('invalid_official_roster')
         alias = row.get('alias')
@@ -116,7 +124,11 @@ def name_choices(schedule, insights=None):
     return sorted(names)
 
 
-def load_names(root):
+def load_names(root, members=None):
+    if members is not None:
+        helper = module('official_member_registry_loader', 'member-registry.py')
+        registry = members if isinstance(members, dict) else helper.load_registry(members)
+        return name_choices({}, registry=registry)
     loader = module('official_roster_loader', 'collect-personal-shifts.py')
     return name_choices(loader.read_js(root / 'data' / 'schedule.js', 'SCHEDULE_DATA'),
                         loader.read_js(root / 'data' / 'store-insights.js', 'STORE_INSIGHTS'))

@@ -159,6 +159,7 @@ class WorkspaceTests(unittest.TestCase):
         self.write('index.html', (
             '<!doctype html>\r\n<link rel="stylesheet" href="styles.css?v=oldhash">\r\n'
             '<script src="data/schedule.js?v=oldhash"></script>\r\n'
+            '<script src="data/members.js?v=oldhash"></script>\r\n'
             '<script src="data/store-insights.js?v=oldhash"></script>\r\n'
             '<script src="app.js?v=oldhash"></script>\r\n'
             '<a href="#calendar">skip</a><a href="https://x.com/akibazettai">source</a>\r\n'
@@ -167,6 +168,10 @@ class WorkspaceTests(unittest.TestCase):
         self.write('styles.css', b'body { color: #123; }\r\n')
         self.write('data/schedule.js', b'window.SCHEDULE_DATA = {};\r\n')
         self.write('data/store-insights.js', b'window.STORE_INSIGHTS = {};\r\n')
+        members = pages.load_member_registry()
+        registry = members.empty_registry()
+        self.write('data/members.json', members.json_bytes(registry))
+        self.write('data/members.js', members.javascript_bytes(registry))
         self.write('data/observed-shifts.json', pages.json_bytes(snapshot()))
         self.write('data/personal-shifts.json', pages.json_bytes(personal_snapshot()))
         self.write('data/half-month-schedules.json', pages.json_bytes(half_month_snapshot()))
@@ -548,6 +553,32 @@ class ProjectionTests(WorkspaceTests):
 
 
 class StageTests(WorkspaceTests):
+    def test_member_source_is_validated_but_only_safe_javascript_is_published(self):
+        members = pages.load_member_registry()
+        value = members.add_member(members.empty_registry(), '試験新人',
+                                   'https://x.com/fixture_member', NOW)
+        self.write('data/members.json', members.json_bytes(value))
+        self.write('data/members.js', members.javascript_bytes(value))
+        manifest = self.stage()
+        self.assertIn('data/members.js', manifest['files'])
+        self.assertNotIn('data/members.json', manifest['files'])
+        script = (self.root / '_site' / 'data' / 'members.js').read_text(encoding='utf-8')
+        self.assertIn('fixture_member', script)
+        self.assertNotIn('statusHistory', script)
+        self.assertNotIn('registeredAt', script)
+
+    def test_invalid_or_stale_member_projection_blocks_publication(self):
+        self.write('data/members.js', b'window.MEMBER_REGISTRY = {};\n')
+        with self.assertRaisesRegex(pages.PagesError, 'generated_member_registry_mismatch'):
+            self.stage()
+        self.assertFalse((self.root / '_site').exists())
+        members = pages.load_member_registry()
+        value = {**members.empty_registry(), 'privatePath': SECRET}
+        self.write('data/members.json', members.json_bytes(value))
+        with self.assertRaisesRegex(pages.PagesError, 'invalid_member_registry'):
+            self.stage()
+        self.assertFalse((self.root / '_site').exists())
+
     def test_allowlist_excludes_backend_and_same_named_private_files(self):
         private_names = (
             'README.md', '.git', 'staticwebapp.config.json', 'config.json', 'logs/run.log',

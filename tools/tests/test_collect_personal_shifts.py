@@ -61,6 +61,16 @@ def page(entries=(), error='', best=None):
     }) + '</script>'
 
 
+def registry_fixture(*targets):
+    value = personal.members.empty_registry()
+    value['members'] = [
+        personal.members.new_member(
+            target['name'], 'https://x.com/' + target['handle'] if target.get('handle') else None,
+            NOW - dt.timedelta(days=10), member_id='m-' + f'{index + 1:032x}')
+        for index, target in enumerate(targets or (AMU, RARAKO))]
+    return personal.members.validate_registry(value)
+
+
 class Offline(unittest.TestCase):
     def setUp(self):
         self.net = mock.patch.object(urllib.request.OpenerDirector, 'open',
@@ -550,6 +560,294 @@ class StateTests(Offline):
         self.insights['maidTendency']['あむ']['x'] = 'amu_old'
         self.assertEqual(personal.select_targets(
             self.schedule, self.insights, self.accounts, DATE, self.state), {})
+
+    def test_registry_discovers_without_statistics_schedule_home_or_promoted_date(self):
+        registry = registry_fixture(AMU, {'name': '追加', 'handle': 'new_member'},
+                                    {'name': '不明', 'handle': None})
+        accounts = [*self.accounts, {'name': '旧名', 'handle': 'old_member', 'source': '公式サイト'}]
+        targets = personal.select_targets({}, None, accounts, DATE, self.state, registry=registry)
+        self.assertEqual(set(targets), {'あむ', '追加'})
+        self.assertEqual(targets['追加']['shifts'], [])
+        self.assertEqual(self.state['originalTargets'][DATE.isoformat()], {})
+        self.assertEqual(self.state['coverage'][DATE.isoformat()]['不明']['reason'], 'account_unknown')
+        self.assertEqual(self.state['coverage'][DATE.isoformat()]['追加']['origins'], ['registry'])
+        personal.validate_collection_coverage(self.state)
+        self.assertNotIn('旧名', targets)
+
+    def test_registry_cross_collector_raw_name_and_alias_bindings_are_not_rebound(self):
+        registry = registry_fixture(AMU)
+        registry['members'][0]['aliases'] = ['昔あむ']
+        bound = {'authorId': UID, 'authorScreenName': AMU['handle'], 'verifiedAt': CREATED}
+        other = {'旧名': bound}
+        before = copy.deepcopy(other)
+        targets = personal.select_targets({}, None, [], DATE, self.state,
+                                          registry=registry, binding_maps=(other,))
+        self.assertEqual(targets, {})
+        self.assertEqual(self.state['coverage'][DATE.isoformat()]['あむ']['reason'],
+                         'account_identity_mismatch')
+        self.assertEqual(other, before)
+        targets = personal.select_targets({}, {'maidTendency': None}, [], DATE, self.state,
+                                          registry=registry, binding_maps=({'昔あむ': bound},))
+        self.assertEqual(set(targets), {'あむ'})
+        self.assertEqual(personal.identity_bindings(registry, {'昔あむ': bound})['あむ'], bound)
+        self.assertEqual(personal.target_for_name(targets, '昔あむ')['name'], '昔あむ')
+
+    def test_registry_inactive_paused_review_override_old_targets_without_mutating_facts(self):
+        baseline = registry_fixture(AMU)
+        self.state['originalTargets'] = {DATE.isoformat(): {'あむ': copy.deepcopy(AMU)}}
+        self.state['pending'] = [{**candidate(), 'reason': 'network_error', 'firstSeenAt': CREATED,
+                                  'lastAttemptAt': CREATED, 'attempts': 1}]
+        old = copy.deepcopy(self.state)
+        for changes, reason in (({'membership': 'inactive'}, 'membership_inactive'),
+                                ({'collection': 'paused'}, 'collection_paused'),
+                                ({'collection': 'review'}, 'collection_review')):
+            with self.subTest(reason=reason):
+                self.state = copy.deepcopy(old)
+                registry = personal.members.update_member(baseline, 'あむ', now=NOW, **changes)
+                self.targets = personal.select_targets(self.schedule, self.insights, self.accounts,
+                                                       DATE, self.state, registry=registry)
+                self.assertEqual(self.targets, {})
+                durable = self.durable()
+                client = self.fake_client(durable)
+                report, _ = self.collect(client, durable)
+                client.search.assert_not_called()
+                client.fetch_post.assert_not_called()
+                for field in ('pending', 'originalTargets', 'posts', 'identityBindings', 'budgets'):
+                    self.assertEqual(self.state[field], old[field])
+                self.assertEqual(report['coverage']['あむ']['reason'], reason)
+
+    def test_unknown_discovery_uses_night_cutoff_without_asserting_night_shift(self):
+        target = {**AMU, 'shifts': []}
+        for scheduled, last in ((True, dt.time(18)), (False, dt.time(19, 30))):
+            now = dt.datetime.combine(DATE, last, personal.JST)
+            self.assertEqual(personal.active_targets({'あむ': target}, DATE, now,
+                                                     scheduled=scheduled), {'あむ': target})
+            self.assertEqual(personal.active_targets({'あむ': target}, DATE,
+                                                     now + dt.timedelta(seconds=1),
+                                                     scheduled=scheduled), {})
+        self.assertEqual(personal.active_targets({'あむ': target}, DATE,
+                         NOW + dt.timedelta(days=1)), {})
+        self.assertEqual(target['shifts'], [])
+
+    def test_unknown_rule_context_admits_only_explicit_shifts_and_never_all_day_expansion(self):
+        created = personal.official.timestamp(CREATED)
+        events, _ = personal.parse_events('今日 夜2号店', created, DATE, [], 'あむ')
+        self.assertEqual(events, [{'shift': '夜', 'kind': 'placement', 'storeId': 's2', 'excerpt': '夜2号店'}])
+        for text in ('今日 終日お休みします', '今日 お給仕します', '明日 夜2号店', '昼は短め'):
+            self.assertEqual(personal.parse_events(text, created, DATE, [], 'あむ')[0], [])
+
+    def test_registry_guard_stops_get_after_wait_and_never_refunds_reserved_budget(self):
+        registry = registry_fixture(AMU)
+        path = self.folder / 'members.json'
+        personal.official.atomic_json(path, registry)
+        self.targets = personal.select_targets({}, None, [], DATE, self.state, registry=registry)
+        for phase in ('wait', 'reserved'):
+            with self.subTest(phase=phase):
+                personal.official.atomic_json(path, registry)
+                self.state = personal.empty_state()
+                guard = personal.members.RegistryGuard(path, bindings=({},))
+                durable = self.durable(searches=1)
+                durable.registry_guard = guard
+
+                def change():
+                    personal.official.atomic_json(path, personal.members.update_member(
+                        registry, 'あむ', now=NOW, collection='paused'))
+
+                if phase == 'wait':
+                    durable.sleep = lambda _: change()
+                else:
+                    save = durable.save
+
+                    def save_and_change():
+                        save()
+                        if durable.used['searches']:
+                            change()
+
+                    durable.save = save_and_change
+                client = personal.PersonalClient(durable)
+                client.opener = mock.Mock()
+                with self.assertRaisesRegex(personal.Failure, 'registry_changed'):
+                    client.search(personal.account_search_url(AMU['handle']),
+                                  self.targets, DATE, NOW, {})
+                client.opener.open.assert_not_called()
+                self.assertEqual(durable.used['searches'], int(phase == 'reserved'))
+                saved = personal.read_state(self.snapshot)
+                self.assertEqual(saved['budgets'].get(DATE.isoformat(), {}).get('searches', 0),
+                                 int(phase == 'reserved'))
+
+    def test_search_history_is_cross_day_alias_aware_and_new_candidates_never_starve(self):
+        targets = [{'name': f'人{index}', 'handle': f'person{index}'} for index in range(6)]
+        registry = registry_fixture(*targets)
+        registry['members'][0]['aliases'] = ['古名']
+        self.targets = personal.select_targets({}, None, [], DATE, self.state, registry=registry)
+        prior_day = (DATE - dt.timedelta(days=1)).isoformat()
+        self.state['searchHistory'] = {prior_day: {
+            '古名': {'handle': 'person0', 'attemptedAt': '2026-09-05T02:00:00Z'},
+            '人1': {'handle': 'person1', 'attemptedAt': '2026-09-05T01:00:00Z'}}}
+        served, repeated = set(), set()
+        now = NOW
+        for _ in range(12):
+            searched = {name for rows in self.state['searchHistory'].values() for name in rows} | {'人0'}
+            queue = personal.target_searches(self.targets, DATE, self.state, now, 2)
+            self.assertLessEqual(len([name for name, _ in queue if name not in searched]), 1)
+            for name, _ in queue:
+                if name in served:
+                    repeated.add(name)
+                served.add(name)
+                self.state['searchHistory'].setdefault(DATE.isoformat(), {})[name] = {
+                    'handle': self.targets[name]['handle'], 'attemptedAt': personal.stamp(now)}
+            now += dt.timedelta(minutes=1)
+        self.assertEqual(served, set(self.targets))
+        self.assertEqual(repeated, set(self.targets))
+        self.assertEqual(self.state['searchHistory'][prior_day]['古名']['attemptedAt'],
+                         '2026-09-05T02:00:00Z')
+        personal.validate_collection_coverage(self.state)
+
+    def test_cli_always_requires_explicit_or_default_registry_even_with_custom_inputs(self):
+        args = self.args()
+        args.members = self.folder / 'missing-members.json'
+        with self.assertRaises(OSError):
+            personal.run(args, clock=lambda: NOW,
+                         client_factory=lambda _: self.fail('must not construct a source client'))
+        self.assertFalse(self.snapshot.exists())
+
+    def test_cli_missing_insights_and_empty_schedule_keep_registry_discovery(self):
+        self.schedule = {}
+        args = self.args(['--max-searches', '0', '--max-posts', '0'])
+        args.insights.unlink()
+        args.observations = self.folder / 'empty-observations.json'
+        personal.official.atomic_json(args.observations, personal.official.empty_snapshot())
+        client = mock.Mock()
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = personal.run(args, clock=lambda: NOW, sleep=self.sleeps.append,
+                                client_factory=lambda _: client)
+        self.assertEqual(code, 0)
+        client.search.assert_not_called()
+        client.fetch_post.assert_not_called()
+        state = personal.read_state(self.snapshot)
+        self.assertEqual(state['originalTargets'][DATE.isoformat()], {})
+        self.assertEqual(set(state['coverage'][DATE.isoformat()]), {'あむ', 'ららこ'})
+        self.assertTrue(all(row['reason'] == 'search_budget_deferred'
+                            for row in state['coverage'][DATE.isoformat()].values()))
+
+    def test_single_search_slot_does_not_let_daily_urgent_member_starve_discovery(self):
+        registry = registry_fixture(AMU, RARAKO, {'name': '追加', 'handle': 'new_member'})
+        self.state['searchHistory'] = {'2026-09-05': {
+            'あむ': {'handle': AMU['handle'], 'attemptedAt': '2026-09-05T03:00:00Z'}}}
+        served = set()
+        for offset in range(6):
+            day = DATE + dt.timedelta(days=offset)
+            schedule = {'schedule': {day.isoformat(): {'昼': [{'name': 'あむ'}]}}}
+            targets = personal.select_targets(schedule, None, [], day, self.state, registry=registry)
+            now = NOW + dt.timedelta(days=offset)
+            queue = personal.target_searches(targets, day, self.state, now, 1)
+            self.assertEqual(len(queue), 1)
+            name = queue[0][0]
+            served.add(name)
+            self.state['searchHistory'].setdefault(day.isoformat(), {})[name] = {
+                'handle': targets[name]['handle'], 'attemptedAt': personal.stamp(now)}
+        self.assertEqual(served, {'あむ', 'ららこ', '追加'})
+
+    def test_guard_change_while_fetching_keeps_old_pending_and_spent_get(self):
+        registry = registry_fixture(AMU)
+        path = self.folder / 'members.json'
+        personal.official.atomic_json(path, registry)
+        self.targets = personal.select_targets({}, None, [], DATE, self.state, registry=registry)
+        self.state['pending'] = [{**candidate(), 'reason': 'network_error', 'firstSeenAt': CREATED,
+                                  'lastAttemptAt': CREATED, 'attempts': 1}]
+        original = copy.deepcopy(self.state['pending'])
+        durable = self.durable(searches=0)
+        durable.registry_guard = personal.members.RegistryGuard(path, bindings=({},))
+        client = self.fake_client(durable)
+        original_fetch = client.fetch_post.side_effect
+
+        def fetch_then_pause(tid):
+            payload = original_fetch(tid)
+            personal.official.atomic_json(path, personal.members.update_member(
+                registry, 'あむ', now=NOW, collection='paused'))
+            return payload
+
+        client.fetch_post.side_effect = fetch_then_pause
+        report, code = self.collect(client, durable)
+        self.assertEqual(code, 3)
+        self.assertEqual(self.state['pending'], original)
+        self.assertEqual(self.state['posts'], [])
+        self.assertEqual(self.state['budgets'][DATE.isoformat()]['posts'], 1)
+        self.assertEqual(report['failures'][-1]['reason'], 'registry_changed')
+        personal.read_state(self.snapshot)
+
+    def test_unknown_link_and_timing_stay_annotations_in_coverage_and_next_population(self):
+        registry = registry_fixture(AMU)
+        parsed, _ = personal.validate_post(candidate(), post(), AMU, NOW)
+        parsed['events'] = []
+        parsed['links'] = [{'scope': 'unspecified', 'status': 'work'}]
+        self.state['posts'] = [parsed]
+        self.targets = personal.select_targets({}, None, [], DATE, self.state, registry=registry)
+        self.assertEqual(self.targets['あむ']['shifts'], [])
+        rows = personal.update_coverage(self.state, self.targets, DATE, NOW)
+        self.assertEqual(rows['あむ']['reason'], 'verified_annotation_available')
+        self.assertEqual(rows['あむ']['linkScopes'], [])
+        self.assertEqual(self.state['originalTargets'][DATE.isoformat()], {})
+        self.assertEqual(rows['あむ']['postIds'], [TID])
+        personal.validate_collection_coverage(self.state)
+
+    def test_registry_profile_case_does_not_rewrite_verified_raw_post_provenance(self):
+        registry = registry_fixture(AMU)
+        targets = personal.select_targets({}, None, [], DATE, self.state, registry=registry)
+        raw = {**AMU, 'handle': 'Amu_Zettai'}
+        original = candidate(target=raw)
+        discovered = personal.discover(page([entry(original)]), targets, DATE, NOW, {})
+        self.assertEqual(discovered, [original])
+        verified, _ = personal.validate_post(original, post(target=raw), targets['あむ'], NOW)
+        self.assertEqual(verified['authorScreenName'], 'Amu_Zettai')
+        self.assertEqual(verified['url'], original['url'])
+        personal.valid_post(verified)
+
+    def test_registry_coverage_separates_old_facts_from_new_source_failure(self):
+        registry = registry_fixture(AMU)
+        verified, _ = personal.validate_post(candidate(), post(), AMU, NOW)
+        self.state['posts'] = [verified]
+        self.targets = personal.select_targets({}, None, [], DATE, self.state, registry=registry)
+        self.state['lastRun'] = {'status': 'unavailable', 'sources': [{
+            'url': personal.account_search_url(AMU['handle']), 'status': 'failed',
+            'reason': 'network_error'}]}
+        rows = personal.update_coverage(self.state, self.targets, DATE, NOW)
+        self.assertEqual(rows['あむ']['postIds'], [TID])
+        self.assertEqual(rows['あむ']['reason'], 'network_error')
+        self.assertEqual(self.state['posts'], [verified])
+        inactive = personal.members.update_member(registry, 'あむ', now=NOW, membership='inactive')
+        self.targets = personal.select_targets({}, None, [], DATE, self.state, registry=inactive)
+        rows = personal.update_coverage(self.state, self.targets, DATE, NOW)
+        self.assertEqual(rows['あむ']['reason'], 'membership_inactive')
+        self.assertEqual(rows['あむ']['postIds'], [TID])
+        personal.validate_collection_coverage(self.state)
+
+    def test_half_month_private_binding_conflict_is_retained_and_blocks_personal_discovery(self):
+        spec = importlib.util.spec_from_file_location(
+            'personal_test_half_month', TOOLS / 'half-month-schedules.py')
+        half = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(half)
+        feed = half.empty_state()
+        feed['identityBindings']['旧名'] = {
+            'authorId': UID, 'authorScreenName': AMU['handle'], 'verifiedAt': CREATED}
+        half.validate_state(feed)
+        path = self.folder / 'half-private.json'
+        personal.official.atomic_json(path, feed)
+        args = self.args(['--half-month-snapshot', str(path)])
+        captured = []
+
+        def client_factory(durable):
+            self.assertNotIn('あむ', durable.targets)
+            self.assertEqual(durable.state['coverage'][DATE.isoformat()]['あむ']['reason'],
+                             'account_identity_mismatch')
+            captured.append(durable)
+            return self.fake_client(durable, entries=[])
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            personal.run(args, clock=lambda: NOW, sleep=self.sleeps.append,
+                         client_factory=client_factory)
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(json.loads(path.read_text(encoding='utf-8')), feed)
 
     def test_population_includes_new_official_notice_and_personal_members_without_roster_gate(self):
         for name, handle in (('追加集合', 'added_group'), ('追加補足', 'added_notice'),
@@ -1174,9 +1472,10 @@ class StateTests(Offline):
         def collect(state, durable, client, targets, *args, **kwargs):
             actual_targets.append(targets)
             self.assertEqual(state['posts'], [])
-            self.assertEqual(targets, {'あむ': {**AMU, 'shifts': ['昼']}})
-            self.assertEqual(personal.active_targets(
-                targets, DATE, NOW.replace(hour=4, minute=31), scheduled=True), {})
+            self.assertEqual(targets['あむ']['shifts'], ['昼'])
+            self.assertEqual(targets['ららこ']['shifts'], [])
+            self.assertEqual(set(personal.active_targets(
+                targets, DATE, NOW.replace(hour=4, minute=31), scheduled=True)), {'ららこ'})
             return {'component': 'personal'}, 0
 
         with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(
@@ -1199,6 +1498,8 @@ class StateTests(Offline):
         schedule = self.folder / 'schedule.js'
         insights = self.folder / 'insights.js'
         accounts = self.folder / 'accounts.csv'
+        registry = self.folder / 'members.json'
+        personal.official.atomic_json(registry, registry_fixture())
         schedule.write_text('window.SCHEDULE_DATA = ' + json.dumps(self.schedule) + ';', encoding='utf-8')
         insights.write_text('window.STORE_INSIGHTS = ' + json.dumps(self.insights) + ';', encoding='utf-8')
         accounts.write_text('name,handle,source\nあむ,amu_zettai,公式サイト\nららこ,rarako_zettai,本人確認済み\n',
@@ -1206,11 +1507,14 @@ class StateTests(Offline):
         return personal.argument_parser().parse_args([
             '--snapshot', str(self.snapshot), '--http-state', str(self.http),
             '--seed', str(self.seed), '--schedule', str(schedule), '--insights', str(insights),
-            '--accounts', str(accounts), *extra])
+            '--accounts', str(accounts), '--members', str(registry), *extra])
 
     def test_dry_run_persists_budget_and_ledger_but_does_not_publish(self):
         publish = self.folder / 'public.json'
         args = self.args(['--dry-run', '--publish', str(publish)])
+        self.state['searchHistory'] = {'2026-09-05': {
+            'ららこ': {'handle': RARAKO['handle'], 'attemptedAt': '2026-09-05T02:00:00Z'}}}
+        personal.official.atomic_json(self.snapshot, self.state)
         with contextlib.redirect_stdout(io.StringIO()):
             code = personal.run(args, clock=lambda: NOW, sleep=self.sleeps.append,
                                 client_factory=lambda durable: self.fake_client(durable))

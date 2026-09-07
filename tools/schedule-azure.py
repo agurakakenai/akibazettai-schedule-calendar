@@ -23,6 +23,20 @@ facts = _module('half-month-schedules.py', 'schedule_facts')
 transport = _module('azure-openai.py', 'schedule_transport')
 capacity = _module('request-capacity.py', 'schedule_capacity')
 AnalysisFailure = transport.AzureFailure
+
+
+class RegistryFailure(AnalysisFailure):
+    pass
+
+
+def check_registry(guard, name=None):
+    if guard is not None:
+        try:
+            return guard.check(name)
+        except ValueError as exc:
+            raise RegistryFailure(str(exc)) from None
+
+
 VERSION = facts.VERSION
 MAX_INPUT_BYTES, MAX_OUTPUT_TOKENS = 6000, 1200
 MAX_IMAGE_BYTES, MAX_POST_BYTES = 8 * 1024 * 1024, 12 * 1024 * 1024
@@ -436,26 +450,39 @@ def saved_result(source, text, images, result, *, now, receipt_id, allowed_perio
 
 
 class AzureAnalyzer:
-    def __init__(self, usage, environment=None, *, clock, client=None):
+    def __init__(self, usage, environment=None, *, clock, client=None, registry_guard=None):
         if usage is None:
             raise ValueError('shared_analysis_state_required')
         self.usage, self.clock, self.used = usage, clock, 0
+        self.registry_guard = registry_guard
         self.client = client or transport.AzureOpenAI(environment or {}, on_http_failure=usage.http_failure)
 
     def check(self):
+        check_registry(self.registry_guard)
         if self.used >= 1:
             raise AnalysisFailure('azure_budget_exhausted')
         self.usage.check()
 
     def analyze(self, source, text, images, allowed_periods, on_issued):
         self.check()
+        def guard():
+            check_registry(self.registry_guard, source['name'])
+        guard()
         messages, proof = prepare_request(source, text, images)
         key = proof['requestHash']
-        self.usage.reserve(key, self.client.identity)
         try:
+            guard()
+            self.usage.reserve(key, self.client.identity)
+        except BaseException:
+            messages.clear()
+            raise
+        try:
+            guard()
             # A durable reservation is already consumed, even if issue is interrupted.
             on_issued(key)
+            guard()
             self.usage.issued(key)
+            guard()
             self.used += 1
             result = self.client.structured(messages, SCHEMA, name='half_month_schedule',
                                             max_completion_tokens=MAX_OUTPUT_TOKENS)

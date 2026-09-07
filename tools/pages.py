@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_FILES = (
     'index.html', 'app.js', 'styles.css', 'data/schedule.js',
     'data/store-insights.js', 'data/observed-shifts.json', 'data/personal-shifts.json',
-    'data/half-month-schedules.json',
+    'data/half-month-schedules.json', 'data/members.js',
 )
 POST_FIELDS = (
     'id', 'url', 'authorId', 'authorScreenName', 'createdAt', 'date',
@@ -100,6 +100,16 @@ def load_half_month_state():
     with _no_bytecode():
         source = _source_file(ROOT, 'tools/half-month-schedules.py')
         spec = importlib.util.spec_from_file_location('pages_half_month_schedules', source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+
+@lru_cache(maxsize=1)
+def load_member_registry():
+    with _no_bytecode():
+        source = _source_file(ROOT, 'tools/member-registry.py')
+        spec = importlib.util.spec_from_file_location('pages_member_registry', source)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
@@ -501,6 +511,13 @@ def stage(output, revision, *, root=ROOT, clock=None):
     root = _plain_path(root)
     output = _destination(root, output, directory=True)
     files = {}
+    members = load_member_registry()
+    registry_source = _source_file(root, 'data/members.json')
+    try:
+        registry = members.load_registry(registry_source)
+        expected_members = members.javascript_bytes(registry)
+    except (ValueError, OSError, UnicodeError):
+        raise PagesError('invalid_member_registry') from None
     for name in PUBLIC_FILES:
         source = _source_file(root, name)
         if name == 'data/observed-shifts.json':
@@ -510,6 +527,10 @@ def stage(output, revision, *, root=ROOT, clock=None):
             files[name] = json_bytes(load_public_personal_snapshot(source))
         elif name == 'data/half-month-schedules.json':
             files[name] = json_bytes(load_public_half_month_snapshot(source))
+        elif name == 'data/members.js':
+            if source.read_bytes().replace(b'\r\n', b'\n') != expected_members:
+                raise PagesError('generated_member_registry_mismatch')
+            files[name] = expected_members
         else:
             files[name] = source.read_bytes()
     events = _plain_path(root / 'assets' / 'events')

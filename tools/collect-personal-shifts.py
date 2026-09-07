@@ -44,8 +44,16 @@ timing = work_timing = azure.timing
 SEARCH_SPEC = importlib.util.spec_from_file_location('personal_yahoo', ROOT / 'tools' / 'yahoo-search.py')
 yahoo = importlib.util.module_from_spec(SEARCH_SPEC)
 SEARCH_SPEC.loader.exec_module(yahoo)
+REGISTRY_SPEC = importlib.util.spec_from_file_location(
+    'personal_member_registry', ROOT / 'tools' / 'member-registry.py')
+members = importlib.util.module_from_spec(REGISTRY_SPEC)
+REGISTRY_SPEC.loader.exec_module(members)
 UTC, JST = official.UTC, official.JST
 Failure = official.FetchFailure
+
+
+class RegistryFailure(Failure):
+    pass
 
 
 class InfrastructureFailure(RuntimeError):
@@ -66,7 +74,8 @@ PRIVATE_FIELDS = {'pending', 'resolved', 'budgets', 'paused', 'identityBindings'
 OPTIONAL_PRIVATE_FIELDS = {'azureAnalysis', 'coverage', 'searchHistory', 'savedPersonalImports'}
 SCOPES = ('昼', '夜', 'unspecified')
 LINK_STATUSES = ('work', 'withdrawn', 'conflict')
-TARGET_ORIGINS = {'original', 'scheduled', 'official_names', 'official_notice', 'personal', 'curated'}
+TARGET_ORIGINS = {'original', 'scheduled', 'official_names', 'official_notice', 'personal', 'curated',
+                  'registry'}
 DENIAL = re.compile(
     r'captcha|access denied|アクセス.{0,12}(?:拒否|制限)|ロボットではない|'
     r'unusual traffic|verify you are human|permission denied|forbidden|unauthorized|'
@@ -80,6 +89,11 @@ NODE_FALLBACK = Path(
 
 def public_url(handle, tid):
     return f'https://x.com/{handle}/status/{tid}'
+
+
+def same_identity(binding, author_id, handle):
+    return (binding['authorId'] == author_id
+            and binding['authorScreenName'].casefold() == handle.casefold())
 
 
 def calendar_day(value):
@@ -410,7 +424,7 @@ def read_state(path, private=True):
         raise ValueError('invalid_personal_state') from None
 
 
-def merge_seed(state, seed):
+def merge_seed(state, seed, *, registry=None):
     have = {post['id'] for post in state['posts']}
     resolved = {item['id'] for item in state['resolved']}
     removed_by_analysis = (
@@ -422,21 +436,27 @@ def merge_seed(state, seed):
         binding = state['identityBindings'].get(post['name'])
         identity = {'authorId': post['authorId'],
                     'authorScreenName': post['authorScreenName']}
-        if binding and any(binding[key] != value for key, value in identity.items()):
+        if binding and not same_identity(binding, identity['authorId'], identity['authorScreenName']):
             raise ValueError('seed_identity_conflict')
         if post['id'] not in have:
             state['posts'].append(copy.deepcopy(post))
             have.add(post['id'])
-        state['identityBindings'][post['name']] = {
-            **identity, 'verifiedAt': post['observedAt']}
+        state['identityBindings'].setdefault(post['name'], {
+            **identity, 'verifiedAt': post['observedAt']})
         if post['id'] not in resolved:
             state['resolved'].append({
                 'id': post['id'], 'name': post['name'], 'url': post['url'],
                 'date': post['date'], 'reason': 'seed_confirmed',
                 'resolvedAt': post['observedAt']})
             resolved.add(post['id'])
+    eligible_names = None
+    if registry is not None:
+        eligible, _ = members.collection_population(registry, state['identityBindings'])
+        eligible_names = {name for member_id in eligible
+                          for name in members.names_of(members.lookup(registry, member_id))}
     state['pending'] = [item for item in state['pending']
-                        if item['id'] not in resolved or item['reason'].startswith('azure_')]
+                        if item['id'] not in resolved or item['reason'].startswith('azure_')
+                        or eligible_names is not None and item['name'] not in eligible_names]
     for day, floor in PILOT_BUDGETS.items():
         budget = state['budgets'].setdefault(day, {'searches': 0, 'posts': 0})
         for kind, count in floor.items():
@@ -536,12 +556,19 @@ def validate_collection_coverage(state):
 
 
 def name_aliases(insights):
-    return {entry['alias']: name for name, entry in insights.get('maidTendency', {}).items()
-            if entry.get('alias')}
+    return {entry['alias']: name for name, entry in ((insights or {}).get('maidTendency') or {}).items()
+            if isinstance(entry, dict) and entry.get('alias')}
 
 
-def select_targets(schedule, insights, accounts, date, state, observations=None):
-    aliases = name_aliases(insights)
+def select_targets(schedule, insights, accounts, date, state, observations=None, *,
+                   registry=None, binding_maps=()):
+    insights = insights or {}
+    aliases = name_aliases(insights) if registry is None else members.display_projection(registry)['aliases']
+    if registry is not None:
+        registry_targets, registry_coverage = members.collection_population(
+            registry, state['identityBindings'], *binding_maps)
+        registry_by_name = {row['name']: row for row in registry_coverage.values()}
+        eligible_by_name = {row['name']: row for row in registry_targets.values()}
     canonical = lambda name: aliases.get(name, name)
     by_name, by_handle = {}, {}
     for row in accounts:
@@ -558,14 +585,20 @@ def select_targets(schedule, insights, accounts, date, state, observations=None)
             person['shifts'].add(shift)
         person['origins'].add(origin)
 
+    if registry is not None:
+        for member in registry['members']:
+            include(member['canonicalName'], None, 'registry')
+        for row in registry['unresolvedNames']:
+            if row['resolvedMemberId'] is None:
+                include(row['name'], None, 'registry')
     for name, target in state['originalTargets'].get(day, {}).items():
         for shift in target['shifts']:
             include(name, shift, 'original')
     for shift in ('昼', '夜'):
         for person in schedule.get('schedule', {}).get(day, {}).get(shift, []):
             include(person['name'], shift, 'scheduled')
-        recorded = insights.get('actualRoster', {}).get(day, {}).get(shift, {})
-        for names in recorded.get('stores', {}).values():
+        recorded = ((insights.get('actualRoster') or {}).get(day) or {}).get(shift) or {}
+        for names in (recorded.get('stores') or {}).values():
             for name in names:
                 include(name, shift, 'curated')
     official_posts = (observations or {}).get('posts', [])
@@ -598,7 +631,13 @@ def select_targets(schedule, insights, accounts, date, state, observations=None)
     for name in sorted(population):
         rows = by_name.get(name, [])
         handle, reason = None, 'account_unknown'
-        if len(rows) > 1:
+        if registry is not None:
+            managed = registry_by_name.get(name)
+            if managed:
+                handle, reason = managed['handle'], managed['reason']
+            if name in eligible_by_name:
+                reason = 'not_searched'
+        elif len(rows) > 1:
             reason = 'account_ambiguous'
         elif rows:
             row = rows[0]
@@ -607,7 +646,7 @@ def select_targets(schedule, insights, accounts, date, state, observations=None)
                     and re.fullmatch(r'[A-Za-z0-9_]{1,15}', candidate)):
                 if len(by_handle[candidate.casefold()]) != 1:
                     reason = 'account_ambiguous'
-                elif insights.get('maidTendency', {}).get(name, {}).get('x') != candidate:
+                elif (((insights.get('maidTendency') or {}).get(name) or {}).get('x') != candidate):
                     reason = 'account_identity_mismatch'
                 else:
                     bound = state['identityBindings'].get(name)
@@ -616,7 +655,12 @@ def select_targets(schedule, insights, accounts, date, state, observations=None)
                     else:
                         handle, reason = candidate, 'not_searched'
         shifts = [shift for shift in ('昼', '夜') if shift in population[name]['shifts']]
-        if handle and not shifts:
+        if registry is not None:
+            if name in eligible_by_name:
+                eligible[name] = {**eligible_by_name[name], 'shifts': shifts,
+                                  'registeredAt': members.lookup(registry, name)['registeredAt'],
+                                  'aliases': sorted(members.names_of(members.lookup(registry, name)))}
+        elif handle and not shifts:
             reason = 'shift_unknown'
         elif handle:
             eligible[name] = {'name': name, 'handle': handle, 'shifts': shifts}
@@ -626,7 +670,7 @@ def select_targets(schedule, insights, accounts, date, state, observations=None)
             'postIds': [], 'linkScopes': [], 'searchedAt': None}
     if day not in state['originalTargets']:
         state['originalTargets'][day] = {
-            name: {**copy.deepcopy(target), 'shifts': [
+            name: {'name': target['name'], 'handle': target['handle'], 'shifts': [
                 shift for shift in target['shifts']
                 if any(canonical(person['name']) == name for person in
                        schedule.get('schedule', {}).get(day, {}).get(shift, []))]}
@@ -642,7 +686,7 @@ def active_targets(targets, date, now, *, scheduled=False):
     if scheduled and local > dt.time(18):
         return {}
     return {name: target for name, target in targets.items()
-            if local <= dt.time(19 if '夜' in target['shifts'] else 13, 30)}
+            if local <= dt.time(13 if target['shifts'] == ['昼'] else 19, 30)}
 
 
 def search_urls(date):
@@ -680,16 +724,73 @@ def valid_search_url(url):
 
 
 def target_searches(targets, date, state, now, maximum, *, scheduled=False):
-    history = state.get('searchHistory', {}).get(date.isoformat(), {})
     active = active_targets(targets, date, now, scheduled=scheduled)
+    history = {}
+    for day, rows in state.get('searchHistory', {}).items():
+        if day > date.isoformat():
+            continue
+        for name, row in rows.items():
+            target = next((target for target in active.values()
+                           if name == target['name'] or name in target.get('aliases', ())), None)
+            if target and row['handle'].casefold() == target['handle'].casefold():
+                canonical = target['name']
+                history[canonical] = max(history.get(canonical, ''), row['attemptedAt'])
 
     def priority(target):
-        previous = history.get(target['name'], {})
-        at = previous.get('attemptedAt', '') if previous.get('handle') == target['handle'] else ''
-        return '夜' in target['shifts'], at, target['name']
+        return history.get(target['name'], ''), target.get('registeredAt', ''), target['name']
 
+    if any('memberId' in target for target in active.values()):
+        fresh = sorted((target for target in active.values()
+                        if target['name'] not in history), key=priority)
+        corrections = sorted((target for target in active.values() if target not in fresh), key=priority)
+        local = now.astimezone(JST)
+        minutes = local.hour * 60 + local.minute
+
+        def age(target):
+            at = history.get(target['name']) or target.get('registeredAt')
+            return official.timestamp(at) if at else dt.datetime.min.replace(tzinfo=UTC)
+
+        oldest = min(age(target) for target in active.values())
+        near = [target for target in sorted(active.values(), key=priority) if target['shifts']
+                and target_deadline(target, scheduled=scheduled) - minutes <= 90
+                and age(target) <= oldest + dt.timedelta(minutes=90)
+                and (target['name'] not in history
+                     or official.timestamp(history[target['name']]).astimezone(JST)
+                     < local.replace(hour=0, minute=0, second=0, microsecond=0) + dt.timedelta(
+                         minutes=target_deadline(target, scheduled=scheduled) - 90))]
+        # One discovery slot is part of, never additional to, the existing cap.
+        selected = near[:1] if maximum else []
+        if fresh and len(selected) < maximum and not any(target in fresh for target in selected):
+            selected.append(fresh[0])
+        selected.extend(target for target in corrections if target not in selected)
+        return [(target['name'], account_search_url(target['handle'])) for target in selected[:maximum]]
     return [(target['name'], account_search_url(target['handle']))
-            for target in sorted(active.values(), key=priority)[:maximum]]
+            for target in sorted(active.values(), key=lambda target: (
+                target['shifts'] != ['昼'], *priority(target)))[:maximum]]
+
+
+def target_deadline(target, *, scheduled=False):
+    return 13 * 60 + 30 if target['shifts'] == ['昼'] else (
+        18 * 60 if scheduled else 19 * 60 + 30)
+
+
+def target_for_name(targets, name):
+    if name in targets:
+        return targets[name]
+    for target in targets.values():
+        if name in target.get('aliases', ()):
+            return {**target, 'name': name}
+    return None
+
+
+def identity_bindings(registry, *binding_maps):
+    bindings = {}
+    for mapping in binding_maps:
+        for name, bound in mapping.items():
+            member = members.lookup(registry, name)
+            for alias in members.names_of(member) if member else (name,):
+                bindings[alias] = bound
+    return bindings
 
 
 def search_page(document):
@@ -714,13 +815,13 @@ def discover(document, targets, date, now, bindings):
         entries = yahoo.candidate_entries(page)
     except ValueError:
         raise Failure('invalid_search_response') from None
-    handles = {target['handle']: target for target in targets.values()}
+    handles = {target['handle'].casefold(): target for target in targets.values()}
     candidates, conflicts = {}, set()
     for entry in entries:
         if not isinstance(entry, dict):
             raise Failure('invalid_search_response')
         handle = entry.get('screenName')
-        if not isinstance(handle, str) or handle not in handles:
+        if not isinstance(handle, str) or handle.casefold() not in handles:
             continue
         tid, uid = official.post_id(entry.get('id')), official.post_id(entry.get('userId'))
         epoch = entry.get('createdAt')
@@ -739,7 +840,7 @@ def discover(document, targets, date, now, bindings):
                 continue
         except (ValueError, OSError, OverflowError, TypeError):
             continue
-        target = handles[handle]
+        target = handles[handle.casefold()]
         bound = bindings.get(target['name'])
         if bound and bound['authorId'] != uid:
             continue
@@ -885,7 +986,7 @@ def parse_events(text, created, date, shifts, name='', roster=()):
         mentioned = [shift for shift in ('昼', '夜') if shift in fragment]
         if mentioned:
             inherited_shifts = mentioned
-        stated = [shift for shift in shifts if shift in mentioned]
+        stated = [shift for shift in (shifts or mentioned) if shift in mentioned]
         ambiguous = re.search(
             r'人間の姿になれませんでした|魔法がうまくかかりませんでした|'
             r'かもしれ(?:ません|ない)|かも|未定|わからない|分からない|行けるか|なら', fragment)
@@ -912,7 +1013,8 @@ def parse_events(text, created, date, shifts, name='', roster=()):
             event_shifts = stated
             if kind == 'absence' and not mentioned:
                 if inherited_shifts:
-                    event_shifts = [shift for shift in shifts if shift in inherited_shifts]
+                    event_shifts = [shift for shift in (shifts or inherited_shifts)
+                                    if shift in inherited_shifts]
                 elif re.search(r'今日|本日|終日|全日|一日', fragment) or DATE_WORD.search(fragment):
                     event_shifts = list(shifts)
             if not event_shifts:
@@ -940,11 +1042,11 @@ def parse_events(text, created, date, shifts, name='', roster=()):
                                    fragment))
         for match in matches:
             store, shift = (match[1], match[2]) if match[1] else (match[4], match[3])
-            if shift in shifts:
+            if not shifts or shift in shifts:
                 events.append({'shift': shift, 'kind': 'placement',
                                'storeId': 's' + store, 'excerpt': match.group(0)[:160]})
     unique = []
-    for shift in shifts:
+    for shift in shifts or ('昼', '夜'):
         selected = [event for event in events if event['shift'] == shift]
         stores = {event['storeId'] for event in selected if event['kind'] == 'placement'}
         kinds = {event['kind'] for event in selected}
@@ -968,10 +1070,9 @@ def validate_post(candidate, payload, target, now, binding=None, roster=(), anal
             or author.get('screen_name') != candidate['authorScreenName']
             or uid == official.AUTHOR_ID
             or candidate['name'] != target['name']
-            or candidate['authorScreenName'] != target['handle']
-            or candidate['url'] != public_url(target['handle'], tid)
-            or (binding and (binding['authorId'] != uid
-                             or binding['authorScreenName'] != target['handle']))):
+            or candidate['authorScreenName'].casefold() != target['handle'].casefold()
+            or candidate['url'] != public_url(candidate['authorScreenName'], tid)
+            or (binding and not same_identity(binding, uid, target['handle']))):
         raise Failure('author_mismatch')
     try:
         created = official.timestamp(payload.get('created_at'))
@@ -1009,8 +1110,8 @@ def validate_post(candidate, payload, target, now, binding=None, roster=(), anal
     if not events and not links and not timing_facts:
         return None, reason
     post = {
-        'id': tid, 'url': public_url(target['handle'], tid), 'name': target['name'],
-        'authorId': uid, 'authorScreenName': target['handle'], 'createdAt': stamp(created),
+        'id': tid, 'url': candidate['url'], 'name': target['name'],
+        'authorId': uid, 'authorScreenName': candidate['authorScreenName'], 'createdAt': stamp(created),
         'observedAt': stamp(now), 'date': date.isoformat(), 'events': events,
     }
     if links is not None:
@@ -1023,7 +1124,8 @@ def validate_post(candidate, payload, target, now, binding=None, roster=(), anal
 
 class DurableHttp:
     def __init__(self, state, snapshot, http_state, date, targets, max_searches, max_posts,
-                 clock=official.utc_now, sleep=time.sleep, *, scheduled=False, shared_source=None):
+                 clock=official.utc_now, sleep=time.sleep, *, scheduled=False, shared_source=None,
+                 registry_guard=None, bindings=None):
         self.state, self.snapshot, self.http_state = state, snapshot, http_state
         self.date, self.targets = date, targets
         self.clock, self.sleep = clock, sleep
@@ -1034,6 +1136,8 @@ class DurableHttp:
         self.post_target = None
         self.scheduled = scheduled
         self.shared_source = shared_source
+        self.registry_guard = registry_guard
+        self.bindings = bindings or (lambda: self.state['identityBindings'])
 
     def save(self):
         official.atomic_json(self.snapshot, self.state)
@@ -1056,13 +1160,22 @@ class DurableHttp:
         self.save_http()
 
     def check_window(self, target_name=None):
+        self.check_registry(target_name)
         active = active_targets(self.targets, self.date, self.clock(), scheduled=self.scheduled)
-        if not active or (target_name is not None and target_name not in active):
+        if not active or (target_name is not None and target_for_name(active, target_name) is None):
             raise Failure('outside_window')
 
+    def check_registry(self, target_name=None):
+        if self.registry_guard is not None:
+            try:
+                self.registry_guard.check(target_name)
+            except ValueError as exc:
+                raise RegistryFailure(str(exc)) from None
+
     def analysis_allowed(self):
+        self.check_registry(self.post_target)
         active = active_targets(self.targets, self.date, self.clock(), scheduled=self.scheduled)
-        return bool(active) and (self.post_target is None or self.post_target in active)
+        return bool(active) and (self.post_target is None or target_for_name(active, self.post_target) is not None)
 
     def reserve(self, host, kind, target_name=None, url=None):
         if self.state['paused']:
@@ -1275,22 +1388,25 @@ def saved_candidates(state, payloads, date):
     return candidates
 
 
-def update_coverage(state, targets, date, now, *, scheduled=False):
+def update_coverage(state, targets, date, now, *, scheduled=False, search_limit=None):
     day = date.isoformat()
     rows = state.get('coverage', {}).get(day, {})
     history = state.get('searchHistory', {}).get(day, {})
     active = active_targets(targets, date, now, scheduled=scheduled)
     for name, row in rows.items():
-        if name not in targets:
-            continue
-        target = targets[name]
-        prior_search = history.get(name, {})
-        row['searchedAt'] = (prior_search.get('attemptedAt')
-                             if prior_search.get('handle') == target['handle'] else None)
+        target = targets.get(name, row)
+        aliases = target.get('aliases', [name])
         posts = sorted((post for post in state['posts'] if post['date'] == day
-                        and post['authorScreenName'] == target['handle']),
+                        and post['name'] in aliases
+                        and (not target['handle']
+                             or post['authorScreenName'].casefold() == target['handle'].casefold())),
                        key=lambda post: (official.timestamp(post['createdAt']), int(post['id'])))
         row['postIds'] = [post['id'] for post in posts]
+        if name not in targets:
+            continue
+        prior_search = history.get(name, {})
+        row['searchedAt'] = (prior_search.get('attemptedAt')
+                             if prior_search.get('handle', '').casefold() == target['handle'].casefold() else None)
         scopes = {}
         for post in posts:
             links = post.get('links')
@@ -1311,22 +1427,50 @@ def update_coverage(state, targets, date, now, *, scheduled=False):
                     scopes[event['shift']] = {'id': post['id'], 'status': 'withdrawn'}
         row['linkScopes'] = [{'scope': scope, 'id': value['id']}
                              for scope, value in sorted(scopes.items()) if value['status'] == 'work']
-        pending = [item for item in state['pending'] if item['name'] == name and item['date'] == day]
-        resolved = [item for item in state['resolved'] if item['name'] == name and item['date'] == day]
-        if row['linkScopes']:
+        pending = [item for item in state['pending'] if item['name'] in aliases and item['date'] == day]
+        resolved = [item for item in state['resolved'] if item['name'] in aliases and item['date'] == day]
+        failed_source = next((source for source in state['lastRun'].get('sources', [])
+                              if source['url'] == account_search_url(target['handle'])
+                              and source['status'] == 'failed'), None)
+        authority_failure = next((failure['reason'] for failure in state['lastRun'].get('failures', [])
+                                  if failure['reason'] in ('registry_changed', 'registry_unavailable')), None)
+        pending_reason = None
+        if pending:
+            reason = pending[-1]['reason']
+            pending_reason = {'discovered': 'metadata_only',
+                              'azure_saved_body_required': 'body_unavailable',
+                              'missing_post_text': 'body_unavailable'}.get(reason, reason)
+        if authority_failure:
+            row['reason'] = authority_failure
+        elif 'registry' in row['origins'] and pending_reason:
+            row['reason'] = pending_reason
+        elif 'registry' in row['origins'] and failed_source:
+            row['reason'] = failed_source['reason']
+        elif row['linkScopes']:
             row['reason'] = 'verified_post_available'
         elif any(value['status'] == 'conflict' for value in scopes.values()):
             row['reason'] = 'conflicting_guidance'
         elif any(value['status'] == 'withdrawn' for value in scopes.values()):
             row['reason'] = 'withdrawn'
+        elif any(post['events'] for post in posts):
+            row['reason'] = 'observed_events'
+        elif any(post.get('links') for post in posts):
+            row['reason'] = 'verified_annotation_available'
+        elif any(post.get('workTiming', {}).get('facts') for post in posts):
+            row['reason'] = 'observed_timing'
         elif pending:
-            row['reason'] = pending[-1]['reason']
+            row['reason'] = pending_reason
+        elif failed_source:
+            row['reason'] = failed_source['reason']
         elif state['paused']:
             row['reason'] = 'paused'
         elif name not in active:
             row['reason'] = 'outside_window'
         elif resolved:
             row['reason'] = 'analyzed_no_link'
+        elif ('registry' in row['origins'] and search_limit is not None and not row['searchedAt']
+              and state['lastRun'].get('requests', {}).get('searches', 0) >= search_limit):
+            row['reason'] = 'search_budget_deferred'
         else:
             row['reason'] = 'no_candidate_in_checked_pages' if row['searchedAt'] else 'not_searched'
     return copy.deepcopy(rows)
@@ -1338,13 +1482,14 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
     sources, failures, new_posts = [], [], []
     resolved = {item['id'] for item in state['resolved']} | {post['id'] for post in state['posts']}
     pending = {item['id']: item for item in state['pending']
-               if item['id'] not in resolved or item['reason'].startswith('azure_')}
+               if item['id'] not in resolved or item['reason'].startswith('azure_')
+               or target_for_name(targets, item['name']) is None}
     active = active_targets(targets, date, clock(), scheduled=durable.scheduled)
     if saved_payloads is not None:
         active = targets
         for candidate in saved_candidates(state, saved_payloads, date):
-            if candidate['name'] not in targets:
-                raise ValueError('saved_post_target_required')
+            if target_for_name(targets, candidate['name']) is None:
+                continue
             pending.setdefault(candidate['id'], {
                 **candidate, 'reason': 'azure_saved_body_required',
                 'firstSeenAt': stamp(clock()), 'lastAttemptAt': None, 'attempts': 0})
@@ -1358,11 +1503,14 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
             active_now = active_targets(targets, date, clock(), scheduled=durable.scheduled)
             if name not in active_now:
                 continue
+            durable.check_registry(name)
             candidates = client.search(url, {name: active_now[name]},
-                                       date, clock(), state['identityBindings'])
+                                       date, clock(), durable.bindings())
+            durable.check_registry(name)
             sources.append({'url': url, 'status': 'ok', 'candidateCount': len(candidates)})
             for candidate in candidates:
-                if candidate['name'] != name or candidate['authorScreenName'] != targets[name]['handle']:
+                if (candidate['name'] != name
+                        or candidate['authorScreenName'].casefold() != targets[name]['handle'].casefold()):
                     continue
                 tid = candidate['id']
                 if tid in resolved:
@@ -1377,7 +1525,7 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         except Failure as exc:
             sources.append({'url': url, 'status': 'failed', **exc.facts()})
             failures.append(exc.facts())
-            if exc.reason in ('budget_exhausted', 'outside_window', 'shared_host_cooldown',
+            if isinstance(exc, RegistryFailure) or exc.reason in ('budget_exhausted', 'outside_window', 'shared_host_cooldown',
                               'source_budget_exhausted', 'source_paused', 'source_host_cooldown') or state['paused']:
                 break
         finally:
@@ -1395,11 +1543,11 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         previous_attempt[name] = max(
             [item['lastAttemptAt'] for item in items if item.get('lastAttemptAt')]
             + [item['resolvedAt'] for item in state['resolved']
-               if item['name'] == name and item['date'] == date.isoformat()] + [''])
+               if item['name'] == name] + [''])
 
     def priority(item):
-        shifts = targets.get(item['name'], {}).get('shifts', [])
-        deadline = (18 * 60 if durable.scheduled else 19 * 60 + 30) if '夜' in shifts else 13 * 60 + 30
+        target = target_for_name(targets, item['name']) or {'shifts': []}
+        deadline = target_deadline(target, scheduled=durable.scheduled)
         return deadline, positions[item['id']], previous_attempt[item['name']], -int(item['id'])
 
     for item in sorted(pending.values(), key=priority):
@@ -1407,12 +1555,17 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
             continue
         if saved_payloads is not None and item['id'] not in saved_payloads:
             continue
-        target = (targets if saved_payloads is not None else active_targets(
-            targets, date, clock(), scheduled=durable.scheduled)).get(item['name'])
-        if target is None or target['handle'] != item['authorScreenName']:
+        target = target_for_name(targets if saved_payloads is not None else active_targets(
+            targets, date, clock(), scheduled=durable.scheduled), item['name'])
+        if target is None or target['handle'].casefold() != item['authorScreenName'].casefold():
             continue
-        binding = state['identityBindings'].get(item['name'])
-        if binding and any(binding[field] != item[field] for field in ('authorId', 'authorScreenName')):
+        try:
+            durable.check_registry(item['name'])
+        except Failure as exc:
+            failures.append({'id': item['id'], **exc.facts()})
+            continue
+        binding = durable.bindings().get(item['name'])
+        if binding and not same_identity(binding, item['authorId'], item['authorScreenName']):
             item['reason'] = 'author_mismatch'
             failures.append({'id': item['id'], 'reason': item['reason']})
             continue
@@ -1432,12 +1585,14 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
             try:
                 analyzer.check_capacity()
             except azure.AnalysisFailure as exc:
-                item['reason'] = 'analysis_capacity_deferred'
+                if not isinstance(exc, azure.RegistryFailure):
+                    item['reason'] = 'analysis_capacity_deferred'
                 failures.append({'id': item['id'], **exc.facts()})
                 deferred += 1
                 continue
             finally:
                 durable.post_target = None
+        unchanged = copy.deepcopy(item)
         attempted += 1
         item['lastAttemptAt'] = stamp(clock())
         item['attempts'] += 1
@@ -1453,7 +1608,8 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                 state['pending'] = list(pending.values())
                 durable.save()
             post, reason = validate_post(
-                item, value, target, clock(), state['identityBindings'].get(item['name']), roster, analyzer)
+                item, value, target, clock(), durable.bindings().get(item['name']), roster, analyzer)
+            durable.check_registry(item['name'])
             if analyzer is not None and reason == 'quoted_or_reply':
                 raise azure.AnalysisFailure('azure_ungrounded')
             previous = next((entry for entry in state['posts'] if entry['id'] == item['id']), None)
@@ -1510,9 +1666,14 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                 failures.append({'id': item['id'], 'reason': reason})
         except (Failure, azure.AnalysisFailure) as exc:
             facts = exc.facts()
-            if saved_payloads is not None and not facts['reason'].startswith('azure_'):
+            if isinstance(exc, (RegistryFailure, azure.RegistryFailure)):
+                item.clear()
+                item.update(unchanged)
+            elif saved_payloads is not None and not facts['reason'].startswith('azure_'):
                 facts['reason'] = 'azure_saved_' + facts['reason']
-            item.update(facts)
+                item.update(facts)
+            else:
+                item.update(facts)
             failures.append({'id': item['id'], **facts})
             if exc.reason in ('budget_exhausted', 'shared_host_cooldown', 'outside_window'):
                 deferred += 1
@@ -1552,7 +1713,8 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         'newPostCount': len(new_posts), 'newEventCount': sum(len(post['events']) for post in new_posts),
         'skippedResolvedCount': skipped, 'pendingCount': len(pending), 'deferredCount': deferred,
         'failures': failures, 'finishedAt': stamp(clock()), 'complete': False}
-    coverage = update_coverage(state, targets, date, clock(), scheduled=durable.scheduled)
+    coverage = update_coverage(state, targets, date, clock(), scheduled=durable.scheduled,
+                               search_limit=max_searches)
     durable.save()
     return {'component': 'personal', **state['lastRun'], 'budgets': state['budgets'],
             'paused': state['paused'], 'coverage': coverage}, (3 if status in ('paused', 'unavailable')
@@ -1568,6 +1730,7 @@ def argument_parser():
     parser.add_argument('--report', type=Path, help='fact-only component report')
     parser.add_argument('--seed', type=Path, default=ROOT / 'data' / 'personal-shifts.json')
     parser.add_argument('--schedule', type=Path, default=ROOT / 'data' / 'schedule.js')
+    parser.add_argument('--members', type=Path, default=ROOT / 'data' / 'members.json')
     parser.add_argument('--half-month-snapshot', type=Path, help='validated effective half-month public feed')
     parser.add_argument('--insights', type=Path, default=ROOT / 'data' / 'store-insights.js')
     parser.add_argument('--accounts', type=Path, default=ROOT / 'tools' / 'data' / 'accounts.csv')
@@ -1609,7 +1772,8 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
         raise ValueError('shared_analysis_state_required')
     if args.scheduled and (args.analyze_saved or (args.analysis_backend == 'azure' and not args.ai_state)):
         raise ValueError('invalid_scheduled_analysis_configuration')
-    inputs = {path.resolve() for path in (args.schedule, args.insights, args.accounts, args.observations)}
+    inputs = {path.resolve() for path in (
+        args.schedule, args.insights, args.accounts, args.observations, args.members)}
     if args.half_month_snapshot:
         inputs.add(args.half_month_snapshot.resolve())
     if args.analyze_saved:
@@ -1634,8 +1798,9 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
     with ExitStack() as locks:
         for path in sorted(lock_paths, key=lambda item: str(item).casefold()):
             locks.enter_context(official.ProcessLock(path))
+        registry = members.load_registry(args.members)
         state = read_state(snapshot)
-        merge_seed(state, read_state(args.seed, private=False))
+        merge_seed(state, read_state(args.seed, private=False), registry=registry)
         shared_source = None
         if source_path:
             source_usage = official.source_module()
@@ -1647,26 +1812,45 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
                 raise InfrastructureFailure(exc.reason) from None
         date = dt.date.fromisoformat(args.date) if args.date else calendar_day(clock())
         schedule = read_js(args.schedule, 'SCHEDULE_DATA', args.node)
+        half_bindings = {}
         if args.half_month_snapshot:
             spec = importlib.util.spec_from_file_location(
                 'personal_half_month_schedule', ROOT / 'tools' / 'half-month-schedules.py')
             half_month = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(half_month)
             feed = azure.strict_json(args.half_month_snapshot.read_text(encoding='utf-8-sig'))
+            half_bindings = copy.deepcopy(feed.get('identityBindings', {}))
             feed = half_month.public_state(feed)
-            schedule = {**schedule, 'schedule': half_month.effective_schedule(schedule.get('schedule', {}), feed)}
-        insights = read_js(args.insights, 'STORE_INSIGHTS', args.node)
+            schedule = {**schedule, 'schedule': half_month.effective_schedule(
+                schedule.get('schedule', {}), feed, registry=registry)}
+        def current_half_bindings():
+            if not args.half_month_snapshot:
+                return {}
+            current = azure.strict_json(args.half_month_snapshot.read_text(encoding='utf-8-sig'))
+            half_month.public_state(current)
+            return current.get('identityBindings', {})
+
+        guard = members.RegistryGuard(
+            args.members, bindings=lambda: (state['identityBindings'], current_half_bindings()))
+        if guard.check() != registry:
+            raise ValueError('registry_changed')
+        insights = read_js(args.insights, 'STORE_INSIGHTS', args.node) if args.insights.exists() else None
         with args.accounts.open(encoding='utf-8-sig', newline='') as source:
             accounts = list(csv.DictReader(source))
         observations = official.load_snapshot(args.observations)
-        targets = select_targets(schedule, insights, accounts, date, state, observations)
+        targets = select_targets(schedule, insights, accounts, date, state, observations,
+                                 registry=registry, binding_maps=(half_bindings,))
         durable = DurableHttp(state, snapshot, http_state, date, targets,
                               args.max_searches, args.max_posts, clock, sleep, scheduled=args.scheduled,
-                              shared_source=shared_source)
+                              shared_source=shared_source, registry_guard=guard,
+                              bindings=lambda: identity_bindings(
+                                  registry, current_half_bindings(), state['identityBindings']))
         durable.preflight()
         analyzer = None
         if args.analysis_backend == 'azure':
-            options = {}
+            options = {'registry_guard': guard,
+                       'review_names': {name for target in targets.values() for name in target['aliases']},
+                       'deadline': None if args.analyze_saved else durable.analysis_allowed}
             if args.ai_state:
                 spec = importlib.util.spec_from_file_location(
                     'personal_shared_usage', ROOT / 'tools' / 'analysis-state.py')
@@ -1694,7 +1878,8 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
                 raise ValueError('invalid_saved_posts')
         client = client_factory(durable) if payloads is None else None
         report, code = collect(state, durable, client, targets, date,
-                               args.max_searches, args.max_posts, clock, schedule['roster'],
+                               args.max_searches, args.max_posts, clock,
+                               members.display_projection(registry)['knownNames'],
                                analyzer, payloads)
         report.update(dryRun=args.dry_run, published=False, exitCode=code)
         if shared_source is not None:

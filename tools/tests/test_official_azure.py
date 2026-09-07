@@ -999,6 +999,22 @@ class OfficialAzureTests(unittest.TestCase):
             with self.subTest(schedule=schedule), self.assertRaises(ValueError):
                 azure.name_choices(schedule)
 
+    def test_registry_names_include_historical_aliases_without_statistical_dependency(self):
+        helper = azure.module('official_test_members', 'member-registry.py')
+        registry = helper.empty_registry()
+        member = helper.new_member('追加', 'https://x.com/new_member', self.now)
+        member['displayName'] = '表示'
+        member['aliases'] = ['旧名']
+        registry['members'] = [member]
+        registry = helper.update_member(registry, '追加', now=self.now, membership='inactive')
+        self.assertEqual(azure.name_choices({}, None, registry), ['旧名', '表示', '追加'])
+        self.assertEqual(azure.load_names(self.directory, registry), ['旧名', '表示', '追加'])
+        path = self.directory / 'members.json'
+        path.write_bytes(helper.json_bytes(registry))
+        self.assertEqual(azure.load_names(self.directory, path), ['旧名', '表示', '追加'])
+        for insights in (None, {}, {'maidTendency': None}, {'maidTendency': {'あむ': None}}):
+            self.assertEqual(azure.name_choices({'roster': ['あむ']}, insights), ['あむ'])
+
     def test_shared_http_failures_remain_private_and_are_never_retried(self):
         for status in (401, 403, 429):
             with self.subTest(status=status):

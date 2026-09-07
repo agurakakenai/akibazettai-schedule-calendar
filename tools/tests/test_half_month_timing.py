@@ -17,6 +17,55 @@ IDENTITY = {'provider': 'azure_openai', 'endpoint': 'https://offline.openai.azur
 
 
 class TimingOnlyTests(base.Offline):
+    def test_registry_lifecycle_does_not_invalidate_accounted_timing_only_source(self):
+        packet = self.packet()
+        entry = self.entry(packet)
+        registry = base.registry_fixture()
+        registry['members'][0].update(membership='inactive', collection='paused',
+                                      xProfileUrl='https://x.com/review_needed')
+        before = copy.deepcopy((self.state, self.usage, packet, entry))
+        updated = self.fx.apply(self.state, [entry], registry=registry, schedule=None,
+                                insights=None, accounts=[], now=NOW)
+        self.assertEqual(facts.core_hash(updated['schedules']), facts.core_hash(self.state['schedules']))
+        for field in ('revisions', 'receipts', 'savedImports', 'identityBindings'):
+            self.assertTrue(all(updated[field][key] == value for key, value in self.state[field].items()))
+        self.assertTrue(all(updated['sources'][key]['source'] == value['source']
+                            for key, value in self.state['sources'].items()))
+        self.assertEqual((self.state, self.usage, packet, entry), before)
+        timing.saved.validate_accounting(updated, self.usage, facts)
+        self.assertEqual(self.fx.apply(updated, [entry], registry=registry, accounts=[], now=NOW), updated)
+
+    def test_registry_stops_timing_ai_without_mutating_core_or_historical_hashes(self):
+        before = copy.deepcopy(self.state)
+        for boundary in ('before', 'reserve', 'on_issued', 'issued'):
+            with self.subTest(boundary=boundary):
+                path = self.registry_file()
+                guard = base.collector.members.RegistryGuard(path, bindings=(self.state['identityBindings'],))
+                usage = mock.Mock(component='schedule', state=self.usage)
+                client, issued = mock.Mock(identity=IDENTITY), mock.Mock()
+                analyzer = timing.AzureAnalyzer(
+                    usage, clock=lambda: NOW, client=client, registry_guard=guard)
+                def change(*unused):
+                    registry = base.collector.members.load_registry(path)
+                    registry['members'][0]['collection'] = 'paused'
+                    path.write_bytes(base.collector.members.json_bytes(registry))
+                if boundary == 'before':
+                    change()
+                elif boundary == 'on_issued':
+                    issued.side_effect = change
+                else:
+                    getattr(usage, boundary).side_effect = change
+                with self.assertRaisesRegex(azure.RegistryFailure, 'registry_changed'):
+                    analyzer.analyze(self.state, self.approval, self.source,
+                                     self.text, self.images, issued)
+                client.structured.assert_not_called()
+                self.assertEqual(analyzer.used, 0)
+                self.assertEqual(self.state, before)
+                if boundary == 'before':
+                    usage.reserve.assert_not_called()
+                else:
+                    usage.finish.assert_called_once()
+
     def setUp(self):
         super().setUp()
         self.fx = saved_fixture.SavedHalfMonthTests()

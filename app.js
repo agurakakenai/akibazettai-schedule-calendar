@@ -65,6 +65,8 @@
   }
 
   function displayAliases(insights) {
+    if (insights?.memberRegistry) return insights.memberRegistry.aliases();
+    // Standalone legacy consumers may omit this context; browser bootstrap never does.
     return new Map(
       Object.entries(insights?.maidTendency ?? {})
         .filter(([, entry]) => entry?.alias)
@@ -120,6 +122,141 @@
       Number(key.slice(0, 4)) > 0 &&
       Number.isFinite(Date.parse(`${key}T00:00:00Z`)) &&
       new Date(`${key}T00:00:00Z`).toISOString().slice(0, 10) === key;
+  }
+
+  function validateMemberRegistry(value) {
+    const fields = (object, keys) => object && typeof object === "object" && !Array.isArray(object) &&
+      Object.keys(object).length === keys.length && keys.every((key) => Object.hasOwn(object, key));
+    const invalid = () => { throw new Error("メンバー名簿の形式・本人情報が不正です"); };
+    const nameOK = (name) => typeof name === "string" && name.trim() === name &&
+      /^[ぁ-んァ-ヶ一-龠ーａ-ｚA-Za-z0-9]{1,12}$/.test(name);
+    const reserved = new Set(["about", "account", "accounts", "compose", "download", "explore", "hashtag",
+      "help", "home", "i", "intent", "jobs", "login", "logout", "messages", "notifications", "privacy",
+      "search", "settings", "share", "signup", "tos", "widgets", "akibazettai"]);
+    if (!fields(value, ["schemaVersion", "members", "unresolvedNames"]) || value.schemaVersion !== 1 ||
+        !Array.isArray(value.members) || !Array.isArray(value.unresolvedNames)) invalid();
+    const ids = new Map();
+    const names = new Set();
+    const handles = new Set();
+    for (const member of value.members) {
+      if (!fields(member, ["memberId", "canonicalName", "displayName", "aliases", "role", "membership",
+        "collection", "inactiveFrom", "xProfileUrl", "homeStore", "homeStoreSource", "officialListing", "orderBefore"]) ||
+          typeof member.memberId !== "string" || member.memberId.length !== 34 ||
+          !/^m-[0-9a-f]{32}$/.test(member.memberId) || ids.has(member.memberId) ||
+          !nameOK(member.canonicalName) || !nameOK(member.displayName) ||
+          !Array.isArray(member.aliases) || Array.from(member.aliases).some((name) => !nameOK(name)) ||
+          new Set(member.aliases).size !== member.aliases.length || member.aliases.includes(member.canonicalName) ||
+          !["normal", "kitchen", "trainee", "unknown"].includes(member.role) ||
+          !["active", "inactive", "unconfirmed"].includes(member.membership) ||
+          !["enabled", "paused", "review"].includes(member.collection) ||
+          (member.membership !== "active" && member.collection === "enabled") ||
+          (member.inactiveFrom !== null && (!validDateKey(member.inactiveFrom) || member.membership !== "inactive")) ||
+          !["listed", "unlisted", "unknown"].includes(member.officialListing) ||
+          (member.homeStore === null ? member.homeStoreSource !== null
+            : !["s1", "s2", "s3", "s4"].includes(member.homeStore) ||
+              !["official", "legacy-reviewed", "user-provided"].includes(member.homeStoreSource))) invalid();
+      for (const name of new Set([member.canonicalName, member.displayName, ...member.aliases])) {
+        if (names.has(name)) invalid();
+        names.add(name);
+      }
+      if (member.xProfileUrl !== null) {
+        const match = typeof member.xProfileUrl === "string" &&
+          /^https:\/\/x\.com\/([a-z0-9_]{1,15})$/.exec(member.xProfileUrl);
+        if (!match || match[0] !== member.xProfileUrl || reserved.has(match[1]) || handles.has(match[1])) invalid();
+        handles.add(match[1]);
+      }
+      ids.set(member.memberId, member);
+    }
+    for (const member of value.members) {
+      if (member.orderBefore !== null && (typeof member.orderBefore !== "string" ||
+          member.role !== "normal" || ids.get(member.orderBefore)?.role !== "normal")) invalid();
+      const seen = new Set();
+      let current = member;
+      while (current.orderBefore !== null) {
+        if (seen.has(current.memberId)) invalid();
+        seen.add(current.memberId);
+        current = ids.get(current.orderBefore);
+        if (!current) invalid();
+      }
+    }
+    for (const name of value.unresolvedNames) {
+      if (!nameOK(name) || names.has(name)) invalid();
+      names.add(name);
+    }
+    return value;
+  }
+
+  function createMemberRegistryAdapter(value) {
+    validateMemberRegistry(value);
+    const members = Object.freeze(value.members.map((member) =>
+      Object.freeze({ ...member, aliases: Object.freeze([...member.aliases]) })));
+    const byId = new Map(members.map((member) => [member.memberId, member]));
+    const byName = new Map(members.flatMap((member) =>
+      [...new Set([member.canonicalName, member.displayName, ...member.aliases])].map((name) => [name, member])));
+    const ordered = [];
+    const append = (member) => {
+      members.filter((candidate) => candidate.orderBefore === member.memberId).forEach(append);
+      ordered.push(member);
+    };
+    members.filter((member) => member.orderBefore === null).forEach(append);
+    const names = (select) => Object.freeze(ordered.filter(select).map((member) => member.canonicalName));
+    return Object.freeze({
+      members,
+      activeNames: names((member) => member.membership === "active"),
+      knownNames: names(() => true),
+      kitchenStaff: names((member) => member.role === "kitchen"),
+      unresolvedNames: Object.freeze([...value.unresolvedNames]),
+      homeStore: Object.freeze(Object.fromEntries(members.filter((member) => member.homeStore)
+        .map((member) => [member.canonicalName, member.homeStore]))),
+      displayNames: Object.freeze(Object.fromEntries([...byName].map(([name, member]) => [name, member.displayName]))),
+      normalOrderBefore: Object.freeze(Object.fromEntries(members.filter((member) => member.orderBefore)
+        .map((member) => [member.canonicalName, byId.get(member.orderBefore).canonicalName]))),
+      member: (name) => byName.get(name) ?? null,
+      canonicalName: (name) => byName.get(name)?.canonicalName ?? name,
+      profileUrl: (name) => byName.get(name)?.xProfileUrl ?? null,
+      aliases: () => new Map([...byName].map(([name, member]) => [name, member.canonicalName]))
+    });
+  }
+
+  function profileHandleFor(insights, name) {
+    return insights?.memberRegistry
+      ? insights.memberRegistry.profileUrl(name)?.split("/").at(-1) ?? null
+      : maidTendencyFor(insights, name)?.x ?? null;
+  }
+
+  function maidTendencyFor(insights, name) {
+    return Object.hasOwn(insights?.maidTendency ?? {}, name) ? insights.maidTendency[name] : null;
+  }
+
+  function memberPlanReview(registry, name, key, today = tokyoToday()) {
+    const member = registry?.member(name);
+    return member && key >= today && member.inactiveFrom === null &&
+      member.membership !== "active"
+      ? "在籍・収集状態は要確認です。適用日が未確認のため、保存済み予定を表示しています。" : null;
+  }
+
+  function memberFilterNames(registry, { schedule, insights, observations, personal, dateFrom, dateTo,
+    nameCorrections = {} } = {}) {
+    const evidence = new Set();
+    const add = (name) => evidence.add(registry.canonicalName(name));
+    for (const [key, day] of Object.entries(schedule ?? {})) {
+      if (isDateKeyInRange(key, dateFrom, dateTo)) Object.values(day).flat().forEach((entry) => add(entry.name));
+    }
+    for (const [key, day] of Object.entries(insights?.actualRoster ?? {})) {
+      if (isDateKeyInRange(key, dateFrom, dateTo)) Object.values(day).forEach((record) =>
+        Object.values(record.stores ?? {}).flat().forEach(add));
+    }
+    for (const post of observations?.posts ?? []) {
+      if (isDateKeyInRange(post.date, dateFrom, dateTo)) {
+        [...post.names, ...(post.notices ?? []).map((notice) => notice.name)]
+          .forEach((name) => add(nameCorrections[post.id]?.[name]?.name ?? name));
+      }
+    }
+    for (const post of personal?.posts ?? []) {
+      if (isDateKeyInRange(post.date, dateFrom, dateTo)) add(post.name);
+    }
+    return [...registry.activeNames, ...[...registry.knownNames, ...registry.unresolvedNames]
+      .filter((name) => !registry.activeNames.includes(name) && evidence.has(name))];
   }
 
   function halfMonthPeriod(key) {
@@ -269,7 +406,7 @@
     });
   }
 
-  function validateHalfMonthSchedules(value, { roster, insights, previous, personal } = {}) {
+  function validateHalfMonthSchedules(value, { roster, insights, previous, personal, registry = insights?.memberRegistry } = {}) {
     const fields = (object, keys) => object && typeof object === "object" && !Array.isArray(object) &&
       Object.keys(object).length === keys.length && keys.every((key) => Object.hasOwn(object, key));
     const utcTime = (time) => typeof time === "string" &&
@@ -299,26 +436,31 @@
           source.url !== `https://x.com/${source.authorScreenName}/status/${source.id}` ||
           typeof source.name !== "string" || !source.name || source.name.trim() !== source.name ||
           /[\u0000-\u001f\u007f\u2028\u2029]/.test(source.name) ||
-          (roster && !roster.includes(source.name)) || source.sourceKind !== "half-month-schedule" ||
+          (registry ? !registry.member(source.name) : roster && !roster.includes(source.name)) ||
+          source.sourceKind !== "half-month-schedule" ||
           !utcTime(source.createdAt) || !utcTime(source.observedAt) ||
           Date.parse(source.observedAt) < Date.parse(source.createdAt) ||
           Math.abs(Number((BigInt(source.id) >> 22n) + 1288834974657n) - Date.parse(source.createdAt)) >= 2000) {
         throw new Error("半月予定の投稿・本人確認情報が不正です");
       }
       const handle = source.authorScreenName.toLowerCase();
-      const expectedHandle = insights?.maidTendency?.[source.name]?.x;
+      const canonical = registry ? registry.canonicalName(source.name) : source.name;
+      const canonicalOf = (name) => registry ? registry.canonicalName(name) : name;
+      // Published sources keep their original author binding; the current profile is not historical authority.
+      const expectedHandle = registry ? null : maidTendencyFor(insights, source.name)?.x;
       const identity = `${source.authorId}|${handle}`;
       if ((expectedHandle && expectedHandle.toLowerCase() !== handle) ||
-          (identities.has(source.name) && identities.get(source.name) !== identity) ||
-          (handles.has(handle) && handles.get(handle) !== source.name) ||
-          (authors.has(source.authorId) && authors.get(source.authorId) !== source.name) ||
-          known.some((post) => post.name === source.name &&
-            (post.authorId !== source.authorId || post.authorScreenName.toLowerCase() !== handle))) {
+          (identities.has(canonical) && identities.get(canonical) !== identity) ||
+          (handles.has(handle) && handles.get(handle) !== canonical) ||
+          (authors.has(source.authorId) && authors.get(source.authorId) !== canonical) ||
+          known.some((post) => canonicalOf(post.name) === canonical
+            ? post.authorId !== source.authorId || post.authorScreenName.toLowerCase() !== handle
+            : registry && (post.authorId === source.authorId || post.authorScreenName.toLowerCase() === handle))) {
         throw new Error("半月予定の本人情報が保存済み情報と一致しません");
       }
-      identities.set(source.name, identity);
-      handles.set(handle, source.name);
-      authors.set(source.authorId, source.name);
+      identities.set(canonical, identity);
+      handles.set(handle, canonical);
+      authors.set(source.authorId, canonical);
       const period = source.period;
       const boundary = halfMonthPeriod(period?.from);
       if (!fields(period, ["from", "to", "printedYear", "yearBasis"]) || !boundary ||
@@ -334,7 +476,7 @@
       if (period.yearBasis === "post-context" && Math.abs(monthNumber(postDate) - monthNumber(period.from)) > 1) {
         throw new Error("半月予定の対象年が投稿時期と一致しません");
       }
-      const winner = `${source.name}|${period.from}`;
+      const winner = `${canonical}|${period.from}`;
       const versions = posts.get(source.id) ?? [];
       if (winners.has(winner) || versions.length >= 2 || versions.some((other) =>
         other.name !== source.name || other.authorId !== source.authorId ||
@@ -378,22 +520,31 @@
     });
   }
 
-  function buildEffectiveSchedule(manual, snapshot = EMPTY_HALF_MONTH_SCHEDULES) {
+  function buildEffectiveSchedule(manual, snapshot = EMPTY_HALF_MONTH_SCHEDULES,
+    { registry, today = tokyoToday(), includeInactivePlans = false } = {}) {
+    const canonical = (name) => registry ? registry.canonicalName(name) : name;
+    const included = (name, key) => includeInactivePlans || !registry?.member(name)?.inactiveFrom ||
+      key < registry.member(name).inactiveFrom;
+    const projection = (entry, key) => {
+      const review = memberPlanReview(registry, entry.name, key, today);
+      return { ...entry, name: canonical(entry.name), ...(review ? { memberReview: review } : {}) };
+    };
     const result = {};
     for (const [key, day] of Object.entries(manual ?? {})) {
       result[key] = Object.fromEntries(Object.entries(day).map(([shift, entries]) =>
-        [shift, entries.map((entry) => ({ ...entry }))]));
+        [shift, entries.filter((entry) => included(entry.name, key)).map((entry) => projection(entry, key))]));
     }
     const sources = snapshot.schedules.slice().sort((a, b) =>
       `${a.name}|${a.period.from}`.localeCompare(`${b.name}|${b.period.from}`));
     for (const source of sources) {
       const provenance = halfMonthProvenance(source);
       for (const day of source.days.slice().sort((a, b) => a.date.localeCompare(b.date))) {
+        if (!included(source.name, day.date)) continue;
         for (const shift of ["昼", "夜"].filter((item) => day.shifts.includes(item))) {
           const entries = (result[day.date] ??= {})[shift] ??= [];
-          let entry = entries.find((item) => item.name === source.name);
+          let entry = entries.find((item) => item.name === canonical(source.name));
           if (!entry) {
-            entry = { name: source.name };
+            entry = projection({ name: source.name }, day.date);
             entries.push(entry);
           }
           entry.halfMonthSources = [...(entry.halfMonthSources ?? []), provenance];
@@ -638,13 +789,14 @@
     if (!SHIFT_NAMES.includes(shift)) return null;
     const aliases = displayAliases(insights);
     const canonical = aliases.get(name) ?? name;
-    const account = insights?.maidTendency?.[canonical]?.x;
+    const account = profileHandleFor(insights, canonical);
     const posts = personalPostsForView(personal, personalEventAdditions).filter((post) => {
       if (post.date !== dateKey || (aliases.get(post.name) ?? post.name) !== canonical) return false;
       try {
         validatePersonalShifts({ ...EMPTY_PERSONAL_SHIFTS, posts: [post] });
         return tokyoToday(new Date(post.createdAt)) === dateKey &&
-          (!account || post.authorScreenName.toLowerCase() === account.toLowerCase());
+          (insights?.memberRegistry ? Boolean(insights.memberRegistry.member(post.name))
+            : !account || post.authorScreenName.toLowerCase() === account.toLowerCase());
       } catch {
         return false;
       }
@@ -706,17 +858,20 @@
     if (post) return { post, kind: "personal" };
     const { insights, dateKey, shift, name } = options;
     if (!SHIFT_NAMES.includes(shift)) return null;
-    const canonical = displayAliases(insights).get(name) ?? name;
-    const account = insights?.maidTendency?.[canonical]?.x;
+    const aliases = displayAliases(insights);
+    const canonical = aliases.get(name) ?? name;
+    const account = profileHandleFor(insights, canonical);
     // Only use provenance attached to this exact person/date/shift, not a period-wide lookup.
     const source = schedule?.[dateKey]?.[shift]?.find((entry) => entry.name === canonical)
-      ?.halfMonthSources?.find((source) => source.name === canonical &&
+      ?.halfMonthSources?.find((source) => (aliases.get(source.name) ?? source.name) === canonical &&
         source.sourceKind === "half-month-schedule" &&
         source.period?.from <= dateKey && dateKey <= source.period?.to &&
         typeof source.id === "string" && /^[1-9][0-9]{9,24}$/.test(source.id) &&
         typeof source.authorScreenName === "string" && /^[A-Za-z0-9_]{1,15}$/.test(source.authorScreenName) &&
         source.url === `https://x.com/${source.authorScreenName}/status/${source.id}` &&
-        (!account || source.authorScreenName.toLowerCase() === account.toLowerCase()));
+        (insights?.memberRegistry ? Boolean(insights.memberRegistry.member(source.name)) &&
+          typeof source.authorId === "string" && /^[1-9][0-9]{0,24}$/.test(source.authorId)
+          : !account || source.authorScreenName.toLowerCase() === account.toLowerCase()));
     return source ? { post: source, kind: "half-month-schedule" } : null;
   }
 
@@ -822,11 +977,12 @@
     return result;
   }
 
-  function resolveShiftRoster({ insights, observations, personal, dateKey, shift, schedule, roster, nameCorrections, personalEventAdditions }) {
-    const timingOptions = { insights, personal, dateKey, shift, schedule, personalEventAdditions };
-    const recorded = recordedRoster({ insights, dateKey, shift, schedule, roster });
+  function resolveShiftRoster({ insights, observations, personal, dateKey, shift, schedule, sourceSchedule = schedule,
+    roster, nameCorrections, personalEventAdditions }) {
+    const timingOptions = { insights, personal, dateKey, shift, schedule: sourceSchedule, personalEventAdditions };
+    const recorded = recordedRoster({ insights, dateKey, shift, schedule: sourceSchedule, roster });
     if (recorded) return {
-      ...recorded, entries: attachWorkTiming(recorded.entries, timingOptions),
+      ...recorded, entries: attachWorkTiming(recorded.entries.map(({ memberReview, ...entry }) => entry), timingOptions),
       observed: observedShift(null, insights, dateKey, shift),
       personal: { posts: [], byMaid: new Map() }
     };
@@ -905,7 +1061,12 @@
         trainee: entry.trainee ?? official.trainee
       });
     }
-    return { assignment: null, observed, personal: notices, entries: attachWorkTiming([...entries.values()], timingOptions) };
+    return { assignment: null, observed, personal: notices, entries: attachWorkTiming([...entries.values()]
+      .map((entry) => {
+        if (!entry.observed && !entry.personalPlacement && !entry.officialPlacement) return entry;
+        const { memberReview, ...confirmed } = entry;
+        return confirmed;
+      }), timingOptions) };
   }
 
   function observationEntries(planned, observed, roster) {
@@ -997,9 +1158,10 @@
   // 「何人ぶん薄いか」は windowShifts で割って出す。この分母はデータに入って
   // いるので推測にならない。入っていないときは書かない。推測した分母で割った
   // 数字は、測った数字の顔をしてしまう。
-  function schedulePendingNote(insights, snapshot = EMPTY_HALF_MONTH_SCHEDULES, { dateFrom, dateTo } = {}) {
+  function schedulePendingNote(insights, snapshot = EMPTY_HALF_MONTH_SCHEDULES,
+    { dateFrom, dateTo, registry = insights?.memberRegistry, manual } = {}) {
     const pending = insights?.schedulePending;
-    const legacyNames = pending?.pending;
+    const legacyNames = registry ? registry.activeNames : pending?.pending;
     if (!Array.isArray(legacyNames) || legacyNames.length === 0) {
       return null;
     }
@@ -1012,25 +1174,29 @@
       }
     }
     const missing = new Map(legacyNames.map((name) => [name, periods.filter((period) =>
-      !snapshot.schedules.some((source) => source.name === name &&
+      !snapshot.schedules.some((source) => (registry ? registry.canonicalName(source.name) : source.name) === name &&
         source.period.from === period.from && source.period.to === period.to))]));
     const names = legacyNames.filter((name) => !periods.length || missing.get(name).length);
     if (!names.length) return null;
     const partlyConfirmed = names.filter((name) => periods.length > missing.get(name).length).length;
-    const counts = pending.recentShifts ?? {};
+    const counts = pending?.recentShifts ?? {};
+    const manualNames = new Set(Object.entries(manual ?? {}).filter(([key]) =>
+      isDateKeyInRange(key, dateFrom, dateTo)).flatMap(([, day]) =>
+      Object.values(day).flat().map((entry) => registry ? registry.canonicalName(entry.name) : entry.name)));
     const busiest = [...names].sort((a, b) => (counts[b] ?? 0) - (counts[a] ?? 0));
     const named = busiest
       .map((name) => (counts[name] > 0 ? `${name}（最近${counts[name]}回）` : name) +
+        (registry && manualNames.has(name) ? "［手入力の予定あり・半月全体は未確認］" : "") +
         (partlyConfirmed && periods.length > missing.get(name).length
           ? `［${missing.get(name).map((period) => `${period.from}〜${period.to}`).join("・")} 未確認］` : ""))
       .join("・");
-    const total = pending.rostered;
-    const window = pending.windowShifts;
+    const total = registry ? registry.activeNames.length : pending?.rostered;
+    const window = pending?.windowShifts;
     const worked = names.reduce((sum, name) => sum + (counts[name] ?? 0), 0);
     const perShift = !partlyConfirmed && window > 0 && worked > 0
       ? `同じペースなら1シフトあたり${(worked / window).toFixed(1)}人ぶんです。`
       : "";
-    const head = `${total > 0 ? `在籍${total}名のうち` : ""}${names.length}名の${periods.length ? "対象期間の" : ""}予定が未確認です` +
+    const head = `${total > 0 ? `${registry ? "現在の" : ""}在籍${total}名のうち` : ""}${names.length}名の${periods.length ? "対象期間の" : ""}予定が未確認です` +
       (partlyConfirmed ? `（うち${partlyConfirmed}名は一部の半月を確認済み）` : "");
     return {
       short: head,
@@ -1038,7 +1204,8 @@
         `${head}：${named}。` +
         `未確認の期間があるため、顔ぶれは実際より少なめになることがあります。${perShift}` +
         "人数から開く店の数を決めているぶん、店も少なめに出ることがあります。" +
-        "未確認は未投稿・欠勤を意味しません。対象の半月すべてを確認できれば、この注意書きは消えます"
+        (registry ? "手入力は記載された日・昼夜の根拠で、自動取得した半月予定表とは区別しています。" : "") +
+        "未確認は未投稿・未提出・欠勤を意味しません。対象の半月すべてを確認できれば、この注意書きは消えます"
     };
   }
 
@@ -1489,7 +1656,7 @@
       if (kitchen.has(name)) {
         continue;
       }
-      const home = homeStore?.[name];
+      const home = Object.hasOwn(homeStore ?? {}, name) ? homeStore[name] : null;
       if (home) {
         counts.set(home, (counts.get(home) ?? 0) + 1);
       }
@@ -1757,7 +1924,7 @@
   // （unpostedMaids）はお店からの案内による。どちらも `homeStore` に入っているので、
   // ここで分けないとツールチップが「公式サイトの配属です」と嘘をつく。
   function homeStoreSourceOf(homeStore, unpostedMaids, name) {
-    if (!homeStore?.[name]) {
+    if (!Object.hasOwn(homeStore ?? {}, name) || !homeStore[name]) {
       return null;
     }
     const unposted = unpostedMaids instanceof Set ? unpostedMaids : new Set(unpostedMaids ?? []);
@@ -1766,7 +1933,8 @@
 
   const HOME_STORE_SOURCE_LABEL = {
     site: "公式サイトの配属",
-    shop: "お店の案内による所属"
+    shop: "お店の案内による所属",
+    registered: "登録時の申告"
   };
 
   // 生誕祭・周年・卒業の主役は、その日かならず自分の所属店に立つ。
@@ -1778,16 +1946,18 @@
       if (!entry?.featured) {
         continue;
       }
-      const tendency = insights?.maidTendency?.[entry.name];
-      const declared = homeStore?.[entry.name];
-      const home = declared ?? tendency?.home;
+      const tendency = maidTendencyFor(insights, entry.name);
+      const declared = Object.hasOwn(homeStore ?? {}, entry.name) ? homeStore[entry.name] : null;
+      const home = insights?.memberRegistry ? declared : declared ?? tendency?.home;
       if (!home) {
         continue;
       }
       pins.set(entry.name, {
         storeId: home,
         label: entry.eventLabel ?? "記念日",
-        source: homeStoreSourceOf(homeStore, unpostedMaids, entry.name) ?? "record",
+        source: insights?.memberRegistry
+          ? { official: "site", "legacy-reviewed": "shop", "user-provided": "registered" }[insights.memberRegistry.member(entry.name)?.homeStoreSource]
+          : homeStoreSourceOf(homeStore, unpostedMaids, entry.name) ?? "record",
         pickRate: tendency?.pickRate?.[home] ?? null
       });
     }
@@ -1860,7 +2030,7 @@
   // 人ごとの表があればそれを使う。無ければ全体の表。人ごとは n が小さい組み
   // 合わせがあるので（あむさんの昼s4は6回）、n も返して読み手側で判断できる形。
   function sameDayMoveOdds(insights, name, fromStoreId) {
-    const perMaid = insights?.maidTendency?.[name]?.sameDayMove?.[fromStoreId];
+    const perMaid = maidTendencyFor(insights, name)?.sameDayMove?.[fromStoreId];
     if (perMaid?.to && perMaid.n > 0) {
       return { to: perMaid.to, n: perMaid.n, source: "maid" };
     }
@@ -1879,7 +2049,7 @@
   }
 
   function affinityFor(insights, name, shift, storeIds, movedFrom) {
-    const tendency = insights.maidTendency?.[name];
+    const tendency = maidTendencyFor(insights, name);
     const uniform = 1 / storeIds.length;
     if (!tendency) {
       return { scores: Object.fromEntries(storeIds.map((id) => [id, uniform])), known: false };
@@ -1913,6 +2083,9 @@
   const KITCHEN_SPREAD_PENALTY = 0.5;
 
   function assignShiftStores({ insights, members, shift, storeIds, pins, kitchenStaff, movedFrom }) {
+    if (insights?.memberRegistry && Array.isArray(members)) {
+      members = members.filter((name) => maidTendencyFor(insights, name) || pins?.has(name));
+    }
     if (!insights || !Array.isArray(members) || members.length === 0 || storeIds.length === 0) {
       return null;
     }
@@ -2068,7 +2241,7 @@
     const counts = new Map();
     let known = 0;
     for (const name of members) {
-      const posted = insights.maidTendency?.[name]?.posted;
+      const posted = maidTendencyFor(insights, name)?.posted;
       if (!posted) {
         continue;
       }
@@ -2298,7 +2471,7 @@
     if (!Array.isArray(storeIds) || storeIds.length === 0) {
       return {};
     }
-    const tendency = insights?.maidTendency?.[name];
+    const tendency = maidTendencyFor(insights, name);
     const pickRate = tendency ? tendencyTables(tendency, shift).pickRate : {};
     // 0 の店を完全に消さないよう下限を置く。低くても行かないわけではない。
     const raw = storeIds.map((id) => Math.max(pickRate[id] ?? 0, 1e-6));
@@ -2394,12 +2567,15 @@
     // trainees キーが無い日は「まだ判定していない」。全員が昇格済みという意味では
     // ないので、誰にも印を付けない。?? [] で潰すと、その区別が黙って消える。
     const judged = Array.isArray(record.trainees);
-    const trainees = new Set(judged ? record.trainees : []);
+    const aliases = insights?.memberRegistry ? displayAliases(insights) : new Map();
+    const canonical = (name) => aliases.get(name) ?? name;
+    const trainees = new Set(judged ? record.trainees.map(canonical) : []);
     const byMaid = new Map();
     const capacity = {};
     for (const id of storeIds) {
       capacity[id] = record.stores[id].length;
-      for (const name of record.stores[id]) {
+      for (const rawName of record.stores[id]) {
+        const name = canonical(rawName);
         byMaid.set(name, {
           storeId: id,
           score: 1,
@@ -2464,7 +2640,7 @@
         srText: `${shift}は${store.short}にいた記録があります`
       };
     }
-    const tendency = insights?.maidTendency?.[name];
+    const tendency = maidTendencyFor(insights, name);
     if (!tendency || !assignment) {
       return null;
     }
@@ -2574,7 +2750,7 @@
   // 全体値（accuracy.maidStoreGivenOpen）とは測り方が違うので、混ぜない。
   // 測れていない人（記録が少ない人）には、全体値で埋めずに測れていないと書く。
   function maidAccuracy(insights, name) {
-    const measured = insights?.maidTendency?.[name]?.accuracy;
+    const measured = maidTendencyFor(insights, name)?.accuracy;
     if (!measured || typeof measured.rate !== "number" || !(measured.n > 0)) {
       return null;
     }
@@ -2667,7 +2843,7 @@
         const announced = Boolean((officialNotice?.storeId || notice?.storeId) && !observation);
         const host = !observation && !notice && !officialNotice && Boolean(placed?.pin);
         const settled = recorded || host || announced;
-        const forecast = !settled && !confirmedOnly && !notice && !officialNotice;
+        const forecast = !settled && !confirmedOnly && !notice && !officialNotice && Boolean(placed);
         stops.push({
           dateKey: key,
           shift,
@@ -2687,6 +2863,7 @@
           storeIds: observation?.storeIds ?? (announced ? [storeId] : []),
           sourcePosts: observation?.sources ?? officialNotice?.sources ?? [],
           ...(resolvedEntry?.workTimingNote ? { workTimingNote: resolvedEntry.workTimingNote } : {}),
+          ...(resolvedEntry?.memberReview ? { memberReview: resolvedEntry.memberReview } : {}),
           halfMonthSources: resolvedEntry?.halfMonthSources ??
             schedule?.[key]?.[shift]?.find((entry) => entry.name === name)?.halfMonthSources ?? [],
           nameCorrections: observation?.nameCorrections ?? officialNotice?.nameCorrections ?? [],
@@ -2780,6 +2957,9 @@
       resolveShiftRoster,
       validatePersonalShifts,
       validateHalfMonthSchedules,
+      validateMemberRegistry,
+      createMemberRegistryAdapter,
+      memberFilterNames,
       validateWorkTiming,
       workTimingLabel,
       workTimingDescription,
@@ -2816,10 +2996,34 @@
     return;
   }
 
-  const data = window.SCHEDULE_DATA;
+  let registry;
+  try {
+    registry = createMemberRegistryAdapter(window.MEMBER_REGISTRY);
+  } catch {
+    const note = document.querySelector("#schedule-pending-note");
+    note.hidden = false;
+    note.textContent = "メンバー名簿を読み込めません。再読み込みして確認してください。古い名簿への切替は行いません。";
+    note.setAttribute("role", "alert");
+    document.querySelector("#maid-checkboxes").replaceChildren();
+    document.querySelector("#calendar").replaceChildren();
+    document.querySelector("#result-summary").textContent = "名簿を確認できないため表示を停止しています。";
+    return;
+  }
+  const data = {
+    ...window.SCHEDULE_DATA,
+    roster: registry.activeNames,
+    kitchenStaff: registry.kitchenStaff,
+    displayNames: registry.displayNames,
+    homeStore: registry.homeStore,
+    normalOrderBefore: registry.normalOrderBefore,
+    unpostedMaids: registry.members.filter((member) => member.officialListing === "unlisted").map((member) => member.canonicalName)
+  };
   const displayName = (name) => Object.hasOwn(data.displayNames ?? {}, name) ? data.displayNames[name] : name;
-  const displayText = (text) => Object.entries(data.displayNames ?? {}).reduce(
-    (value, [canonical, label]) => value.replaceAll(canonical, label), text);
+  const displayText = (text) => {
+    const names = Object.keys(data.displayNames).filter((name) => data.displayNames[name] !== name)
+      .sort((a, b) => b.length - a.length);
+    return names.length ? text.replace(new RegExp(names.join("|"), "g"), displayName) : text;
+  };
   const shifts = ["昼", "夜"];
   const TRAINEE_PLACEHOLDER = "見習い";
 
@@ -2839,7 +3043,8 @@
       "表示した店自体も予測なので、別の店や見習いがいない場合もあります";
   }
   const kitchenStaff = new Set(data.kitchenStaff ?? []);
-  const rosterNames = new Set(data.roster ?? []);
+  let filterNames = [...data.roster];
+  let rosterNames = new Set(filterNames);
   // 公式サイト未掲載の人。所属は分かるが出どころがサイトではないので書き分ける。
   const unpostedMaids = new Set(data.unpostedMaids ?? []);
   const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
@@ -2848,7 +3053,7 @@
     "夜": { icon: "☾", className: "shift-night" }
   };
 
-  const insights = window.STORE_INSIGHTS ?? null;
+  const insights = { ...window.STORE_INSIGHTS, memberRegistry: registry };
   let observations = validateObservations(window.OBSERVED_SHIFTS ?? EMPTY_OBSERVATIONS);
   let observationLoadError = null;
   let observationLoading = false;
@@ -2865,11 +3070,13 @@
   let halfMonthLoading = false;
   try {
     halfMonthSchedules = validateHalfMonthSchedules(window.HALF_MONTH_SCHEDULES ?? EMPTY_HALF_MONTH_SCHEDULES,
-      { roster: data.roster, insights, personal: personalShifts });
+      { registry, insights, personal: personalShifts });
   } catch (error) {
     halfMonthLoadError = error.message;
   }
-  let effectiveSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules);
+  let effectiveSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules, { registry });
+  // Retain provenance for independently evidenced rows, even when plan-only projection is excluded.
+  let sourceSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules, { registry, includeInactivePlans: true });
   const storeList = storesOf(insights);
   const lastActualKey = lastActualDateOf(insights);
   const hasInsights = Boolean(insights) && storeList.length > 0;
@@ -3062,7 +3269,7 @@
   const defaults = getTokyoDateDefaults();
   const state = {
     visibleMonth: new Date(defaults.year, defaults.month - 1, 1),
-    selectedMaids: new Set(data.roster),
+    selectedMaids: new Set([...registry.knownNames, ...registry.unresolvedNames]),
     dateFrom: defaults.dateFrom,
     dateTo: defaults.dateTo,
     customRange: false,
@@ -3119,7 +3326,7 @@
     // チェックボックスが無いので、絞り込みを始めた時点で隠す。残したままだと
     // 「1人だけ選んだのに他の名前が出る」ことになり、絞り込みが効いて見えない。
     if (!rosterNames.has(name)) {
-      return state.selectedMaids.size === data.roster.length;
+      return filterNames.every((name) => state.selectedMaids.has(name));
     }
     return state.selectedMaids.has(name);
   }
@@ -3128,7 +3335,7 @@
   function shiftRoster(key, shift) {
     return resolveShiftRoster({
       insights, observations, personal: personalShifts, dateKey: key, shift,
-      schedule: effectiveSchedule, roster: data.roster, nameCorrections: data.observationNameCorrections,
+      schedule: effectiveSchedule, sourceSchedule, roster: registry.knownNames, nameCorrections: data.observationNameCorrections,
       personalEventAdditions: data.personalEventAdditions
     });
   }
@@ -3157,7 +3364,7 @@
 
   function createRosterPostLabel(name, key, shift) {
     const source = rosterPostLink({
-      schedule: effectiveSchedule, personal: personalShifts, insights, observations,
+      schedule: sourceSchedule, personal: personalShifts, insights, observations,
       dateKey: key, shift, name, nameCorrections: data.observationNameCorrections,
       personalEventAdditions: data.personalEventAdditions
     });
@@ -3319,6 +3526,13 @@
     const timingDescription = workTimingDescription(entry.workTimingNote);
     appendWorkTiming(item, entry.workTimingNote);
     const descriptions = note ? [note] : [];
+    if (entry.memberReview) {
+      const review = document.createElement("span");
+      review.className = "entry-update";
+      review.textContent = "要確認";
+      item.append(review);
+      descriptions.push(entry.memberReview);
+    }
     if (timingDescription) {
       descriptions.push(timingDescription);
       if (name.href) {
@@ -3381,7 +3595,7 @@
     }
     const list = document.createElement("ul");
     list.className = "maid-list";
-    orderRosterEntries(members, data.roster, kitchenStaff, data.normalOrderBefore)
+    orderRosterEntries(members, registry.knownNames, kitchenStaff, data.normalOrderBefore)
       .forEach((entry) => list.append(renderEntry(entry)));
     target.append(list);
   }
@@ -3552,6 +3766,7 @@
     const presentation = JSON.stringify(sourceFacts());
     if (lastSourcePresentation === presentation) return;
     lastSourcePresentation = presentation;
+    syncMaidFilterNames();
     renderSchedulePendingNote();
     if (elements.dayDialog.open) {
       observationsChangedInDialog = true;
@@ -3642,10 +3857,11 @@
       const response = await window.fetch("data/half-month-schedules.json", { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const next = validateHalfMonthSchedules(await response.json(),
-        { roster: data.roster, insights, previous: halfMonthSchedules, personal: personalShifts });
+        { registry, insights, previous: halfMonthSchedules, personal: personalShifts });
       halfMonthSchedules = next;
       halfMonthLoadError = null;
-      effectiveSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules);
+      effectiveSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules, { registry });
+      sourceSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules, { registry, includeInactivePlans: true });
       rerenderSourceUpdate();
     } catch (error) {
       halfMonthLoadError = error instanceof Error ? error.message : "読込エラー";
@@ -3662,7 +3878,7 @@
     const month = state.visibleMonth.getMonth();
     const dates = getVisibleMonthDates(year, month, state.dateFrom, state.dateTo).map(dateKey);
     const note = dates.length ? schedulePendingNote(insights, halfMonthSchedules,
-      { dateFrom: dates[0], dateTo: dates.at(-1) }) : null;
+      { dateFrom: dates[0], dateTo: dates.at(-1), registry, manual: data.schedule }) : null;
     elements.schedulePendingNote.hidden = !note;
     elements.schedulePendingNote.textContent = note?.short ?? "";
     elements.schedulePendingNote.title = displayText(note?.long ?? "");
@@ -3702,7 +3918,7 @@
       const groups = storeList.map((store) => ({
         store,
         entries: roster.assignment?.recorded
-          ? roster.entries.filter((entry) => insights.actualRoster[key][shift].stores[store.id]?.includes(entry.name))
+          ? roster.entries.filter((entry) => roster.assignment.byMaid.get(entry.name)?.storeId === store.id)
           : roster.entries.filter((entry) => roster.observed.byStore.get(store.id)?.has(entry.name) ||
             (entry.personalPlacement && entry.personalNotice.storeId === store.id) ||
             (entry.officialPlacement && entry.officialNotice.storeId === store.id))
@@ -3808,8 +4024,8 @@
         unpostedMaids
       });
       const timingDescription = workTimingDescription(entry.workTimingNote);
-      const titles = timingDescription ? [timingDescription] : [];
-      const descriptions = timingDescription ? [timingDescription] : [];
+      const titles = [entry.memberReview, timingDescription].filter(Boolean);
+      const descriptions = [...titles];
 
       if (isKitchen) {
         titles.push("キッチンにゃんこ");
@@ -3893,7 +4109,7 @@
       const list = document.createElement("ul");
       // 店ごとの一覧（.maid-list）は「見出しと1対1」で店を名乗る約束なので混ぜない。
       list.className = "maid-kitchen-list";
-      orderRosterEntries(members, data.roster, kitchenStaff, data.normalOrderBefore).forEach((entry) => {
+      orderRosterEntries(members, registry.knownNames, kitchenStaff, data.normalOrderBefore).forEach((entry) => {
         // 店を名乗らないと決めた以上、チップで店を出しては辻褄が合わない。
         const item = createMaidEntry(entry, null, true);
         const detail = [note, workTimingDescription(entry.workTimingNote)].filter(Boolean).join("。");
@@ -4106,7 +4322,8 @@
       elements.resultSummary.textContent = "選択した期間の外です。表示条件で期間を変更してください。";
       return;
     }
-    effectiveSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules);
+    effectiveSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules, { registry });
+    sourceSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules, { registry, includeInactivePlans: true });
     const focused = preserveInteraction ? document.activeElement : null;
     const focusedId = focused?.id;
     const focusedKey = focused?.dataset?.focusKey;
@@ -4123,7 +4340,7 @@
     }
     elements.dialogTitle.textContent =
       `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日（${weekdays[date.getDay()]}）`;
-    const events = dayEvents(data, insights, key).filter((event) => isVisibleMaid(event.name));
+    const events = dayEvents({ ...data, schedule: effectiveSchedule }, insights, key).filter((event) => isVisibleMaid(event.name));
     elements.dialogEvents.textContent = events.length > 0
       ? events.map((event) => `${displayName(event.name)} ${event.labels.join("・")}`).join(" ／ ")
       : "";
@@ -4224,7 +4441,7 @@
       }
       if (key === state.selectedDate) button.classList.add("is-selected");
       const events = inRange
-        ? dayEvents(data, insights, key).filter((event) => isVisibleMaid(event.name))
+        ? dayEvents({ ...data, schedule: effectiveSchedule }, insights, key).filter((event) => isVisibleMaid(event.name))
         : [];
       if (inRange) visibleCount += 1;
       if (events.length > 0) {
@@ -4258,13 +4475,15 @@
     });
     elements.resultSummary.textContent =
       `${visibleCount}日を表示・イベント ${eventCount}日` +
-      (visibleMaidCount() !== data.roster.length ? `・${visibleMaidCount()}名で絞り込み中` : "") +
+      (visibleMaidCount() !== filterNames.length ? `・${visibleMaidCount()}名で絞り込み中` : "") +
       (state.customRange ? "（指定期間のみ開けます）" : "");
     elements.calendar.replaceChildren(grid);
   }
 
   function renderCalendar() {
-    effectiveSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules);
+    effectiveSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules, { registry });
+    sourceSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules, { registry, includeInactivePlans: true });
+    syncMaidFilterNames();
     renderSchedulePendingNote();
     closeDayDialog();
     const year = state.visibleMonth.getFullYear();
@@ -4447,14 +4666,14 @@
 
     const heading = document.createElement("h3");
     heading.className = "maid-plan-name";
-    const account = insights?.maidTendency?.[plan.name]?.x;
-    const nameLabel = document.createElement(account ? "a" : "span");
+    const profileUrl = registry.profileUrl(plan.name);
+    const nameLabel = document.createElement(profileUrl ? "a" : "span");
     nameLabel.className = "maid-name";
     nameLabel.textContent = displayName(plan.name);
     nameLabel.dataset.name = plan.name;
     nameLabel.dataset.focusKey = `${plan.name}|profile`;
-    if (account) {
-      nameLabel.href = `https://x.com/${account}`;
+    if (profileUrl) {
+      nameLabel.href = profileUrl;
       nameLabel.target = "_blank";
       nameLabel.rel = "noopener noreferrer";
       nameLabel.title = `${displayName(plan.name)}のXを開く`;
@@ -4516,11 +4735,18 @@
       : stop.officialNotice ? officialNoticeLabel(stop.officialNotice)
       : stop.personal ? personalNoticeLabel(stop.personalNotice) : stop.personalNotice?.conflict ? "案内が不一致・保留"
         : stop.personalNotice ? personalNoticeLabel(stop.personalNotice)
-        : stop.host ? "イベント主役の予定" : stop.confirmedOnly ? "公開予定・未発表" : "未照合の予定・店舗推測";
+        : stop.host ? "イベント主役の予定" : stop.confirmedOnly ? "公開予定・未発表"
+          : stop.forecast ? "未照合の予定・店舗推測" : "公開予定・店舗未確認";
     item.dataset.evidence = stop.observed ? "observed" : stop.recorded ? "recorded"
       : stop.officialNotice ? (stop.officialNotice.conflict ? "pending" : "official-announced")
       : stop.personal ? "personal" : stop.personalNotice?.conflict ? "pending" : stop.host ? "event" : "scheduled";
     item.append(evidence);
+    if (stop.memberReview) {
+      const review = document.createElement("span");
+      review.className = "entry-update";
+      review.textContent = "要確認";
+      item.append(review);
+    }
     for (const post of stop.sourcePosts) {
       const link = createObservationLink(post);
       link.dataset.focusKey = `${stop.dateKey}|${stop.shift}|${name}|official|${post.id}`;
@@ -4550,7 +4776,7 @@
       item.append(event);
     }
     const timingDescription = workTimingDescription(stop.workTimingNote);
-    const explanation = stopExplanation(stop) + (timingDescription ? `${timingDescription}。` : "");
+    const explanation = stopExplanation(stop) + (timingDescription ? `${timingDescription}。` : "") + (stop.memberReview ?? "");
     if (when.href && timingDescription) {
       when.title += `。${timingDescription}`;
       when.setAttribute("aria-label", `${when.textContent} ${when.title}`);
@@ -4662,19 +4888,34 @@
   }
 
   function visibleMaidCount() {
-    return data.roster.filter((name) => isVisibleMaid(name)).length;
+    return filterNames.filter((name) => isVisibleMaid(name)).length;
   }
 
   function updateMaidFilterSummary() {
     elements.maidFilterSummary.textContent =
-      `${visibleMaidCount()}/${data.roster.length}名を表示`;
+      `${visibleMaidCount()}/${filterNames.length}名を表示`;
+  }
+
+  function syncMaidFilterNames() {
+    const dates = getVisibleMonthDates(state.visibleMonth.getFullYear(), state.visibleMonth.getMonth(),
+      state.dateFrom, state.dateTo).map(dateKey);
+    const next = dates.length ? memberFilterNames(registry, {
+      schedule: effectiveSchedule, insights, observations, personal: personalShifts,
+      dateFrom: dates[0], dateTo: dates.at(-1), nameCorrections: data.observationNameCorrections
+    }) : [...registry.activeNames];
+    if (JSON.stringify(next) === JSON.stringify(filterNames)) return;
+    const all = filterNames.length > 0 && filterNames.every((name) => state.selectedMaids.has(name));
+    if (all) next.forEach((name) => state.selectedMaids.add(name));
+    filterNames = next;
+    rosterNames = new Set(next);
+    renderMaidFilters();
   }
 
   function renderMaidFilters() {
     const fragment = document.createDocumentFragment();
 
-    data.roster.forEach((name, index) => {
-      const label = document.createElement("label");
+    filterNames.forEach((name, index) => {
+      const label = document.createElement("div");
       label.className = "checkbox-label";
       label.dataset.name = name;
       const checkbox = document.createElement("input");
@@ -4692,7 +4933,8 @@
         renderCalendar();
       });
 
-      const text = document.createElement("span");
+      const text = document.createElement("label");
+      text.setAttribute("for", checkbox.id);
       text.textContent = displayName(name);
       label.append(checkbox, text);
 
@@ -4711,6 +4953,25 @@
         label.append(badge);
       }
 
+      const member = registry.member(name);
+      if (!member || member.membership !== "active") {
+        const history = document.createElement("span");
+        history.className = "entry-update";
+        history.textContent = "履歴";
+        history.title = member ? "現在の在籍一覧ではなく、この期間の記録・予定に掲載されています。" : "本人情報は未確認です。保存済みの名前で履歴を表示しています。";
+        label.append(history);
+      }
+      const profileUrl = registry.profileUrl(name);
+      if (profileUrl) {
+        const profile = document.createElement("a");
+        profile.href = profileUrl;
+        profile.target = "_blank";
+        profile.rel = "noopener noreferrer";
+        profile.textContent = "X";
+        profile.setAttribute("aria-label", `${displayName(name)}のXを開く`);
+        label.append(profile);
+      }
+
       fragment.append(label);
     });
     elements.maidCheckboxes.replaceChildren(fragment);
@@ -4718,7 +4979,7 @@
   }
 
   function setAllMaids(selected) {
-    state.selectedMaids = selected ? new Set(data.roster) : new Set();
+    state.selectedMaids = selected ? new Set(filterNames) : new Set();
     renderMaidFilters();
     renderCalendar();
   }
@@ -4763,7 +5024,7 @@
   function resetFilters() {
     const resetDefaults = getTokyoDateDefaults();
     state.visibleMonth = new Date(resetDefaults.year, resetDefaults.month - 1, 1);
-    state.selectedMaids = new Set(data.roster);
+    state.selectedMaids = new Set([...registry.knownNames, ...registry.unresolvedNames]);
     state.dateFrom = resetDefaults.dateFrom;
     state.dateTo = resetDefaults.dateTo;
     state.customRange = false;

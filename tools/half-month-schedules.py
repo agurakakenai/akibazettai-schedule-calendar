@@ -41,6 +41,7 @@ SCHEDULE_FIELDS = {'id', 'url', 'name', 'authorId', 'authorScreenName', 'created
                    'observedAt', 'sourceKind', 'period', 'days'}
 _CONTRACT_FINGERPRINTS = None
 _TIMING_MODULE = None
+_REGISTRY_MODULE = None
 
 
 def load_module(filename, name):
@@ -55,6 +56,13 @@ def timing():
     if _TIMING_MODULE is None:
         _TIMING_MODULE = load_module('work-timing.py', 'half_month_work_timing')
     return _TIMING_MODULE
+
+
+def member_registry():
+    global _REGISTRY_MODULE
+    if _REGISTRY_MODULE is None:
+        _REGISTRY_MODULE = load_module('member-registry.py', 'half_month_member_registry')
+    return _REGISTRY_MODULE
 
 
 def require_keys(value, fields):
@@ -923,8 +931,23 @@ def apply_revision(state, schedules, source, analysis, *, timing_amendment=None,
     return changed
 
 
-def population(schedule, insights, accounts, bindings=None):
-    """Use roster including kitchen; rank/promotion guesses never gate real days."""
+def population(schedule, insights, accounts, bindings=None, *, registry=None, other_bindings=()):
+    """Registry targets are independent of historical feeds and legacy metadata."""
+    if registry is not None:
+        members = member_registry()
+        targets, coverage = members.collection_population(registry, bindings or {}, *other_bindings)
+        reasons = {}
+        for row in coverage.values():
+            reason = row['reason']
+            eligible = reason == 'eligible_not_collected'
+            reasons[row['name']] = {
+                'handle': row['handle'] if eligible else None,
+                'reason': ('not_searched' if eligible else reason if reason in REASONS else 'paused')}
+        for row in registry['unresolvedNames']:
+            if row['resolvedMemberId'] is None:
+                reasons[row['name']] = {'handle': None, 'reason': 'account_unknown'}
+        return {target['name']: target for target in targets.values()}, reasons
+    # Explicit legacy callers retain their original input contract.
     bindings = bindings or {}
     tendencies = insights.get('maidTendency', {})
     aliases = {entry['alias']: name for name, entry in tendencies.items() if entry.get('alias')}
@@ -960,10 +983,10 @@ def population(schedule, insights, accounts, bindings=None):
     return eligible, reasons
 
 
-def effective_schedule(manual_schedule_dict, feed):
+def effective_schedule(manual_schedule_dict, feed, *, registry=None):
     """date -> shift -> entries; manual attributes win, scheduleSources accumulate."""
     validate_state(feed, private=bool(PRIVATE_FIELDS & set(feed)))
-    result = copy.deepcopy(manual_schedule_dict)
+    result = copy.deepcopy(manual_schedule_dict or {})
     for schedule in feed['schedules']:
         source = {key: copy.deepcopy(schedule[key]) for key in (
             'id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt',
@@ -978,4 +1001,19 @@ def effective_schedule(manual_schedule_dict, feed):
                 sources = person.setdefault('scheduleSources', [])
                 if source not in sources:
                     sources.append(copy.deepcopy(source))
+    if registry is not None:
+        members = member_registry()
+        members.validate_registry(registry)
+        for date, shifts in result.items():
+            for shift, rows in shifts.items():
+                retained = []
+                for person in rows:
+                    member = members.lookup(registry, person['name'])
+                    policy = members.plan_policy(member, date) if member else 'retained'
+                    if policy == 'excluded_from_plan_view':
+                        continue
+                    if policy == 'retained_requires_review':
+                        person['planPolicy'] = policy
+                    retained.append(person)
+                shifts[shift] = retained
     return result
