@@ -118,11 +118,13 @@ def _binding(core, source, authorization):
             'sourceHash': facts.digest(source), 'slots': slots_for(core, authorization)}
 
 
-def _authorize(state, authorization, source, image_metadata, usage):
+def _authorize(state, authorization, source, image_metadata, usage, *, expected_apply_subject_hash=None):
     facts.validate_state(state)
     ledger.validate_state(usage)
     saved.validate_accounting(state, usage, facts)
-    previous = saved.validate_reanalysis_basis(state, authorization, source, image_metadata, facts)
+    previous = saved.validate_reanalysis_basis(
+        state, authorization, source, image_metadata, facts,
+        expected_apply_subject_hash=expected_apply_subject_hash)
     prior_keys = state['receipts'][authorization['previous']['analysisReceiptId']]
     for key in prior_keys:
         revision = state['revisions'][key]
@@ -475,19 +477,25 @@ def validate_selection_record(analysis, authorization, source, tables, selection
     _selection_proof(packet, selection_proof)
 
 
-def to_selected_amendment(packet, accountingProof, approvedSelection, state, usage):
+def to_selected_amendment(packet, accountingProof, approvedSelection, state, usage, *,
+                          expected_apply_subject_hash=None):
     """Stage an entry from a separately approved selection document; this does not authorize applying it.
 
     approvalManifestHash hashes only approvedSelection.document. The final
     exact-entry apply approval is created afterward and is never embedded here.
+    An explicit current-state CAS never replaces the attested analysis subject.
     """
     packet, accountingProof, approvedSelection = copy.deepcopy((packet, accountingProof, approvedSelection))
     validate_packet(packet, accountingProof, usage)
     selection_proof = _selection_proof(packet, approvedSelection)
-    core = _authorize(state, packet['authorization'], packet['source'], packet['analysis']['images'], usage)
+    core = _authorize(
+        state, packet['authorization'], packet['source'], packet['analysis']['images'], usage,
+        expected_apply_subject_hash=expected_apply_subject_hash)
     _require(core_copy(packet['schedules']) == core, 'timing_immutable_core_changed')
     entry = _amendment(packet, accountingProof)
     entry['amendment']['selectionProof'] = selection_proof
+    if expected_apply_subject_hash is not None:
+        entry['expectedApplySubjectHash'] = expected_apply_subject_hash
     return entry
 
 

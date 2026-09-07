@@ -130,12 +130,17 @@ def validate_accounting(state, usage, half_month):
                  'half_month_usage_model_mismatch')
 
 
-def validate_reanalysis_basis(state, authorization, source, images, half_month):
+def validate_reanalysis_basis(state, authorization, source, images, half_month, *,
+                              expected_apply_subject_hash=None):
     """Shared pre-issue/apply checks against the authoritative predecessor, not caller-supplied core."""
     half_month.validate_state(state)
     half_month.validate_timing_authorization(authorization, with_import=False)
     half_month.validate_source(source)
-    _require(authorization['expectedSubjectHash'] == subject_hash(state, half_month),
+    expected_subject = authorization['expectedSubjectHash']
+    if expected_apply_subject_hash is not None:
+        half_month.valid_hash(expected_apply_subject_hash)
+        expected_subject = expected_apply_subject_hash
+    _require(expected_subject == subject_hash(state, half_month),
              'saved_half_month_subject_changed')
     prior = authorization['previous']
     selected = half_month.select_revisions(state)
@@ -189,11 +194,16 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
         validate_accounting(state, usage, half_month)
     result = copy.deepcopy(state) if state is not None else half_month.empty_state()
     for entry in entries:
-        half_month.require_keys(entry, ('expectedSubjectHash', 'amendment'))
+        separate_apply_cas = isinstance(entry, dict) and 'expectedApplySubjectHash' in entry
+        half_month.require_keys(entry, ('expectedSubjectHash', 'amendment',
+                                       *(('expectedApplySubjectHash',) if separate_apply_cas else ())))
         half_month.valid_hash(entry['expectedSubjectHash'])
+        if separate_apply_cas:
+            half_month.valid_hash(entry['expectedApplySubjectHash'])
         amendment = entry['amendment']
         timing_only = isinstance(amendment, dict) and 'operation' in amendment
         selected_mode = isinstance(amendment, dict) and 'selectionProof' in amendment
+        _require(not separate_apply_cas or selected_mode, 'timing_selection_apply_subject_requires_selection')
         half_month.require_keys(amendment, ('source', 'schedules', 'analysis', 'proof',
                                            *(half_month.TIMING_AMENDMENT_FIELDS if timing_only else ()),
                                            *(('selectionProof',) if selected_mode else ())))
@@ -254,6 +264,8 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
                 source, amendment['schedules'], selection)
         key = half_month.digest(amendment)
         if key in result.get('savedImports', {}):
+            _require(result['savedImports'][key].get('expectedApplySubjectHash')
+                     == entry.get('expectedApplySubjectHash'), 'saved_half_month_replay_changed')
             if timing_only:
                 prior_authorizations = [revision.get('timingAmendment') for revision in result['revisions'].values()
                                         if revision.get('timingAmendment', {}).get('importId') == key]
@@ -261,7 +273,7 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
                     authorization['expectedSubjectHash'] == entry['expectedSubjectHash']
                     for authorization in prior_authorizations), 'saved_half_month_replay_changed')
             continue
-        _require(entry['expectedSubjectHash'] == subject_hash(state, half_month),
+        _require(entry.get('expectedApplySubjectHash', entry['expectedSubjectHash']) == subject_hash(state, half_month),
                  'saved_half_month_subject_changed')
         if selected_mode:
             # The trusted dispatcher supplies approved manifests separately from untrusted amendment data.
@@ -282,11 +294,13 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
             authorization.update(expectedSubjectHash=entry['expectedSubjectHash'], importId=key)
             half_month.validate_timing_authorization(authorization)
             validate_reanalysis_basis(result, {field: value for field, value in authorization.items()
-                                              if field != 'importId'}, source, analysis['images'], half_month)
+                                              if field != 'importId'}, source, analysis['images'], half_month,
+                                      expected_apply_subject_hash=entry.get('expectedApplySubjectHash'))
             if selected_mode:
                 timing_product._authorize(
                     result, {field: value for field, value in authorization.items() if field != 'importId'},
-                    source, analysis['images'], usage)
+                    source, analysis['images'], usage,
+                    expected_apply_subject_hash=entry.get('expectedApplySubjectHash'))
             prior = authorization['previous']
             selected = half_month.select_revisions(result)
             current_keys = {revision_key for revision_key, revision in selected
@@ -316,6 +330,7 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
             **({'accountingKind': proof['accountingKind']} if timing_contract else {}),
             **({'selectionProof': copy.deepcopy(selection)} if selected_mode else {}),
             **({'applyApproval': copy.deepcopy(approved_selection_apply)} if selected_mode else {}),
+            **({'expectedApplySubjectHash': entry['expectedApplySubjectHash']} if separate_apply_cas else {}),
             'receiptId': analysis['receiptId'], 'requestHash': analysis['requestHash'],
             'issuedAt': proof['issuedAt'], 'importedAt': half_month.stamp(now),
         }
