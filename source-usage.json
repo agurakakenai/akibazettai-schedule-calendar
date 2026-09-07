@@ -330,5 +330,24 @@
       "status": "ok"
     }
   },
-  "schemaVersion": 1
+  "schemaVersion": 1,
+  "sourceImports": {
+    "fc1935dfb9108cdab60bdc3e374278d07d9a0e2ff72d917c61d57d07f6348365": {
+      "budgetAfter": {
+        "posts": 27,
+        "searches": 16
+      },
+      "budgetBefore": {
+        "posts": 1,
+        "searches": 2
+      },
+      "receipt": {
+        "date": "2026-09-08",
+        "posts": 26,
+        "receiptId": "fc1935dfb9108cdab60bdc3e374278d07d9a0e2ff72d917c61d57d07f6348365",
+        "searches": 14,
+        "sourceHash": "a143e6ff9fc538438bbb5ae76bb765ca608d77abb96c00eb0e4f4fea1526b8f5"
+      }
+    }
+  }
 }
