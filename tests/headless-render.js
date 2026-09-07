@@ -9,6 +9,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const { test } = require("node:test");
+const { emptyHalfMonthSchedules } = require("./fixtures/half-month-schedules.js");
 
 const repo = process.argv[2] || path.join(__dirname, "..");
 const { orderRosterEntries } = require(path.join(repo, "app.js"));
@@ -2222,7 +2223,7 @@ test("link-only refresh updates scoped popup links and preserves filters, focus,
 test("half-month plans reach all four views with exact source scope and retained evidence", async () => {
   const api = require(path.join(repo, "app.js"));
   const copy = value => JSON.parse(JSON.stringify(value));
-  const emptyHalf = JSON.parse(fs.readFileSync(path.join(repo, "data", "half-month-schedules.json"), "utf8"));
+  const emptyHalf = emptyHalfMonthSchedules();
   const savedOfficial = JSON.parse(fs.readFileSync(path.join(repo, "data", "observed-shifts.json"), "utf8"));
   const savedPersonal = JSON.parse(fs.readFileSync(path.join(repo, "data", "personal-shifts.json"), "utf8"));
   const savedBefore = JSON.stringify([schedule, insights, savedOfficial, savedPersonal]);
@@ -2561,7 +2562,7 @@ test("half-month plans reach all four views with exact source scope and retained
 });
 
 test("half-month initial loading shares the snapshot lifecycle without unsolicited redraws", async () => {
-  const empty = JSON.parse(fs.readFileSync(path.join(repo, "data", "half-month-schedules.json"), "utf8"));
+  const empty = emptyHalfMonthSchedules();
   const flush = () => new Promise(resolve => setImmediate(resolve));
   const initialize = (bootstrap) => {
     const nodes = new Map([...declaredIds].map(id => [id, makeElement("div")]));

@@ -5,6 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const api = require("../app.js");
 const { test } = require("node:test");
+const { emptyHalfMonthSchedules } = require("./fixtures/half-month-schedules.js");
 const context = { window: {} };
 vm.createContext(context);
 for (const file of ["schedule.js", "store-insights.js"]) {
@@ -39,10 +40,14 @@ const halfFeed = (sources = [halfSource()]) => ({
 test("half-month feed strictly validates the public-only contract and calendar", () => {
   const snapshot = halfFeed();
   assert.equal(api.validateHalfMonthSchedules(snapshot, { roster: schedule.roster, insights }), snapshot);
-  const empty = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "data", "half-month-schedules.json"), "utf8"));
+  const empty = emptyHalfMonthSchedules();
   assert.equal(api.validateHalfMonthSchedules(empty), empty);
   assert.deepEqual(empty, { schemaVersion: 1, complete: false, checkedAt: null, lastSuccessAt: null,
-    schedules: [], lastRun: { status: "never" } }, "the public feed starts never/empty, not seeded facts");
+    schedules: [], lastRun: { status: "never" } }, "the public unit fixture starts never/empty");
+  const anotherEmpty = emptyHalfMonthSchedules();
+  assert.notEqual(empty, anotherEmpty);
+  assert.notEqual(empty.schedules, anotherEmpty.schedules);
+  assert.notEqual(empty.lastRun, anotherEmpty.lastRun);
   for (const status of ["never", "ok", "partial", "unavailable", "no-new", "no-results",
     "paused", "budget-exhausted", "outside-window"]) {
     assert.ok(api.validateHalfMonthSchedules({ ...snapshot, lastRun: { status } }));
