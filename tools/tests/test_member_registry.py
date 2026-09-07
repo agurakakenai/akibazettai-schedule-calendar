@@ -400,13 +400,23 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(ordered[-5:], self.schedule['kitchenStaff'])
         self.assertEqual(ordered[-6], 'みらい')
 
-    def test_saved_checked_in_registry_and_generated_script_match_migration(self):
+    def test_checked_in_registry_extends_legacy_baseline_and_script_matches(self):
         path = TOOLS.parent / 'data' / 'members.json'
         saved = registry.load_registry(path)
         migrated = registry.migrate_legacy(self.schedule, self.accounts, self.insights,
                                            registry.timestamp(saved['legacySnapshot']['registeredAt']), REVISION)
-        self.assertEqual(saved, migrated)
+        registry.validate_transition(migrated, saved)
         registry.check_projection(path, saved)
+
+    def test_baseline_allows_later_admin_only_changes_without_updating_legacy_inputs(self):
+        baseline = self.migrate()
+        after = registry.add_member(baseline, NAME, URL, LATER)
+        after = registry.update_member(after, 'ひかり', now=LATER, membership='inactive')
+        after = registry.update_member(after, 'あむ', now=LATER, display_name='試験表示')
+        registry.validate_transition(baseline, after)
+        self.assertEqual(len(after['members']), 41)
+        self.assertEqual(registry.lookup(after, '試験表示')['canonicalName'], 'あむ')
+        self.assertEqual(registry.registry_report(after)['activeCount'], 40)
 
 
 class StorageAndCLITests(unittest.TestCase):
