@@ -24,6 +24,8 @@ NOW = dt.datetime(2026, 9, 5, 20, tzinfo=dt.timezone.utc)
 CREATED = '2026-09-05T09:17:05Z'
 TID = '2096165714604486679'
 TOKEN = 'github_pat_OFFLINE_SENTINEL_NEVER_LOG_OR_STORE'
+LEGACY_FILES = {cloud.SNAPSHOT, cloud.HTTP_STATE, cloud.PERSONAL, cloud.AI_USAGE,
+                cloud.OWNER_FILE, cloud.LEASE}
 
 
 def make_id(created):
@@ -443,7 +445,7 @@ class CloudTests(unittest.TestCase):
             lease, _ = self.remote_json(cloud.LEASE)
             self.assertEqual(lease['runId'], '12345')
             self.assertEqual(lease['sourceCodeSHA'], self.source)
-            self.assertEqual(self.remote_names(), cloud.FILES - {cloud.PERSONAL, cloud.AI_USAGE})
+            self.assertEqual(self.remote_names(), LEGACY_FILES - {cloud.PERSONAL, cloud.AI_USAGE})
             checks.append(True)
 
         result = self.run_cloud(OfflineClient(on_http=check_lease))
@@ -461,7 +463,7 @@ class CloudTests(unittest.TestCase):
         author = self.git(self.remote, 'log', '-1', '--format=%an <%ae>', cloud.REF).decode().strip()
         self.assertEqual(author, 'github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>')
         for revision in history:
-            self.assertLessEqual(self.remote_names(revision), cloud.FILES)
+            self.assertLessEqual(self.remote_names(revision), LEGACY_FILES)
             self.assertEqual(self.remote_json(cloud.OWNER_FILE, revision)[0], cloud.STATE_OWNER)
         self.assertNotIn(self.source, history)
         self.assertEqual((self.root / '.git' / 'index').read_bytes(), index_before)
@@ -625,7 +627,7 @@ class CloudTests(unittest.TestCase):
         with mock.patch.object(cloud, 'child_process', side_effect=fail_final):
             with self.assertRaisesRegex(cloud.CloudError, '^state_push_failed$'):
                 self.run_cloud()
-        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.PERSONAL, cloud.AI_USAGE})
+        self.assertEqual(self.remote_names(), LEGACY_FILES - {cloud.PERSONAL, cloud.AI_USAGE})
         self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0]['posts'], [])
         recovery = self.root / 'recovery' / cloud.SNAPSHOT
         self.assertEqual(json.loads(recovery.read_bytes())['posts'], [fact()])
@@ -648,7 +650,7 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(result['reason'], 'unresolved_lease')
         self.assertIn('lease', result['recoveryInstructions'])
         self.assertNotIn(TOKEN.encode(), process.stdout + process.stderr)
-        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.PERSONAL, cloud.AI_USAGE})
+        self.assertEqual(self.remote_names(), LEGACY_FILES - {cloud.PERSONAL, cloud.AI_USAGE})
 
     def test_collector_local_failure_preserves_http_only_sidecar_and_blocks_retry(self):
         def fail_local(root, state, report, environment):
@@ -660,7 +662,7 @@ class CloudTests(unittest.TestCase):
             with self.assertRaisesRegex(cloud.CloudError, 'collector_local_failure'):
                 cloud.orchestrate(self.args, root=self.root,
                                   environment=self.environment, collector=collector)
-        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.PERSONAL, cloud.AI_USAGE})
+        self.assertEqual(self.remote_names(), LEGACY_FILES - {cloud.PERSONAL, cloud.AI_USAGE})
         recovery, _ = cloud.validate_transport(self.root / 'recovery' / cloud.HTTP_STATE, collector)
         self.assertEqual(recovery['cooldowns'], {'search.yahoo.co.jp': '2026-09-06T20:00:00Z'})
         with self.assertRaisesRegex(cloud.CloudError, 'unresolved_lease'):
@@ -679,7 +681,7 @@ class CloudTests(unittest.TestCase):
             with self.assertRaisesRegex(cloud.CloudError, 'recovery_state_invalid'):
                 cloud.orchestrate(self.args, root=self.root,
                                   environment=self.environment, collector=collector)
-        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.PERSONAL, cloud.AI_USAGE})
+        self.assertEqual(self.remote_names(), LEGACY_FILES - {cloud.PERSONAL, cloud.AI_USAGE})
         self.assertFalse((self.root / 'recovery' / cloud.SNAPSHOT).exists())
         limits = json.loads((self.root / 'recovery' / cloud.HTTP_STATE).read_bytes())
         self.assertEqual(limits['cooldowns'], {'search.yahoo.co.jp': '2026-09-06T20:00:00Z'})
@@ -945,7 +947,7 @@ class CloudTests(unittest.TestCase):
         checks = []
 
         def before_http():
-            self.assertEqual(self.remote_names(), cloud.FILES - {cloud.AI_USAGE})
+            self.assertEqual(self.remote_names(), LEGACY_FILES - {cloud.AI_USAGE})
             saved = self.remote_json(cloud.PERSONAL)[0]
             self.assertEqual(saved['posts'], seed['posts'])
             self.assertEqual(saved['budgets'], {'2026-09-06': {'searches': 7, 'posts': 2}})
@@ -960,7 +962,7 @@ class CloudTests(unittest.TestCase):
         saved = self.remote_json(cloud.PERSONAL)[0]
         self.assertEqual(saved['budgets']['2026-09-06'], {'searches': 7 + len(calls), 'posts': 2})
         self.assertEqual(saved['posts'], seed['posts'])
-        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.LEASE, cloud.AI_USAGE})
+        self.assertEqual(self.remote_names(), LEGACY_FILES - {cloud.LEASE, cloud.AI_USAGE})
         self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0]['posts'], official['posts'])
         for name in (cloud.SNAPSHOT, cloud.HTTP_STATE, cloud.PERSONAL):
             self.assertEqual((self.output.parent / name).read_bytes(), self.remote_json(name)[1])
@@ -1175,7 +1177,7 @@ class CloudTests(unittest.TestCase):
         with mock.patch.object(cloud, 'invoke_personal_collector', side_effect=failed):
             with self.assertRaisesRegex(cloud.CloudError, 'personal_local_failure'):
                 self.run_cloud()
-        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.AI_USAGE})
+        self.assertEqual(self.remote_names(), LEGACY_FILES - {cloud.AI_USAGE})
         self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0]['posts'], [])
         recovery = self.root / 'recovery'
         self.assertEqual(json.loads((recovery / cloud.SNAPSHOT).read_bytes())['posts'], [fact()])
@@ -1212,7 +1214,7 @@ class CloudTests(unittest.TestCase):
         with mock.patch.object(cloud, 'child_process', side_effect=fail_final):
             with self.assertRaisesRegex(cloud.CloudError, 'state_push_failed'):
                 self.run_personal_cloud(module)
-        self.assertEqual(self.remote_names(), cloud.FILES - {cloud.AI_USAGE})
+        self.assertEqual(self.remote_names(), LEGACY_FILES - {cloud.AI_USAGE})
         self.assertEqual(self.remote_json(cloud.PERSONAL)[0]['budgets']['2026-09-06']['searches'], 7)
         recovery = module.read_state(self.root / 'recovery' / cloud.PERSONAL)
         self.assertGreater(recovery['budgets']['2026-09-06']['searches'], 7)
@@ -1485,6 +1487,76 @@ class CloudTests(unittest.TestCase):
         self.assert_read_only_failure('missing_ai_usage')
         self.args.mode = 'restore'
         self.assert_read_only_failure('missing_ai_usage')
+
+    def test_half_month_activation_never_creates_zero_accounting_or_empty_state(self):
+        self.personal_seed()
+        self.seed_branch()
+        usage = cloud.load_analysis_state()
+        ledger = usage.empty_state()
+        usage.apply_import(ledger, {
+            'receiptId': 'a' * 64, 'sourceHash': 'b' * 64,
+            'date': '2026-09-07', 'counts': {'requests': 13},
+            'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'text', 'count': 13}],
+        })
+        self.bare_commit({cloud.AI_USAGE: ledger})
+        self.personal_mode('both')
+        self.environment['HALF_MONTH_SCHEDULE_ENABLED'] = 'true'
+        self.assert_read_only_failure('half_month_requires_daily_guidance')
+        self.environment['DAILY_GUIDANCE_ENABLED'] = 'true'
+        self.assert_read_only_failure('missing_half_month_state')
+        self.args.mode = 'restore'
+        self.assert_read_only_failure('missing_half_month_state')
+
+    def test_half_month_allocation_preserves_personal_deadline_and_shared_remainder(self):
+        ledger = cloud.load_analysis_state()
+        state = ledger.empty_state()
+        path = self.root / 'allocation.json'
+        now = dt.datetime(2026, 9, 7, 12, 30, tzinfo=cloud.JST)
+        collector.atomic_json(path, state)
+        self.assertEqual(cloud.half_month_official_allocation(
+            path, '12345-1', now, personal_active=True, scheduled=True), 1)
+        self.assertEqual(cloud.half_month_personal_allocation(
+            path, '12345-1', now, scheduled=True), 2)
+        self.assertEqual(cloud.half_month_official_allocation(
+            path, '12345-1', now.replace(hour=18, minute=30),
+            personal_active=False, scheduled=True), 2)
+        near = now.replace(hour=13, minute=29)
+        self.assertEqual(cloud.half_month_official_allocation(
+            path, '12345-1', near, personal_active=True, scheduled=True),
+            cloud.official_allocation(path, '12345-1', near, True, True))
+        self.assertEqual(cloud.half_month_personal_allocation(
+            path, '12345-1', near, scheduled=True), 3)
+        ledger.apply_import(state, {
+            'receiptId': 'c' * 64, 'sourceHash': 'd' * 64,
+            'date': '2026-09-07', 'counts': {'requests': 30},
+            'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'image', 'count': 30}],
+        })
+        collector.atomic_json(path, state)
+        self.assertEqual(cloud.half_month_official_allocation(
+            path, '12345-1', now, personal_active=True, scheduled=True), 0)
+
+    def test_half_month_child_is_bounded_headless_and_never_receives_git_credentials(self):
+        environment = {
+            **self.environment, 'CLOUD_COLLECTION_SHARED': 'true',
+            'CLOUD_COLLECTION_SOURCE_ENABLED': 'true', 'CLOUD_COLLECTION_RUN_ID': '12345-1',
+            'AZURE_OPENAI_API_KEY': 'OFFLINE_SENTINEL',
+            'AZURE_OPENAI_ENDPOINT': 'https://offline.openai.azure.com',
+            'AZURE_OPENAI_DEPLOYMENT': 'gpt-5.6-luna',
+        }
+        with mock.patch.object(cloud, 'child_process', return_value=mock.Mock(returncode=0)) as child:
+            self.assertEqual(cloud.invoke_half_month_collector(
+                self.root, self.root, self.root / 'report.json', environment), 0)
+        argv = child.call_args.args[0]
+        for option, expected in (('--analysis-limit', '1'), ('--max-searches', '1'),
+                                 ('--max-posts', '1'), ('--max-images', '4')):
+            self.assertEqual(argv[argv.index(option) + 1], expected)
+        self.assertNotIn('OFFLINE_SENTINEL', repr(argv))
+        actual_environment = child.call_args.kwargs['environment']
+        self.assertNotIn('GH_TOKEN', actual_environment)
+        self.assertEqual(actual_environment['AZURE_OPENAI_API_KEY'], 'OFFLINE_SENTINEL')
+        self.assertEqual(child.call_args.kwargs['timeout'], 900)
+        self.assertIn('-I', argv)
+        self.assertIn('-B', argv)
 
     def test_shared_ledger_restore_is_byte_exact_and_never_seeded_from_checkout(self):
         usage = cloud.load_analysis_state()

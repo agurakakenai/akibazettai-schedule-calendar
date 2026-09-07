@@ -7,10 +7,21 @@ const fs = require("node:fs");
 const path = require("node:path");
 const http = require("node:http");
 const { spawn } = require("node:child_process");
+const { createHash } = require("node:crypto");
 
 const root = path.resolve(__dirname, "..");
-const output = process.argv[2];
+const flags = new Set(process.argv.slice(2).filter(value => value.startsWith("--")));
+for (const flag of flags) assert.ok(["--no-screenshots", "--half-month-mock", "--half-month-only"].includes(flag), `Unknown flag: ${flag}`);
+const output = process.argv.slice(2).find(value => !value.startsWith("--"));
+if (output) {
+  const relative = path.relative(process.cwd(), path.resolve(output));
+  assert.ok(relative && !relative.startsWith("..") && !path.isAbsolute(relative), "Artifacts must be inside the current worktree");
+}
+const noScreenshots = flags.has("--no-screenshots");
+const halfMonthMock = flags.has("--half-month-mock");
+const halfMonthOnly = flags.has("--half-month-only");
 const publicOrigin = process.env.PUBLIC_PREVIEW_URL?.replace(/\/$/, "");
+assert.ok(!publicOrigin || !halfMonthMock, "PUBLIC_PREVIEW_URL cannot use a mocked half-month feed");
 if (publicOrigin) {
   assert.equal(publicOrigin, "https://agurakakenai.github.io/akibazettai-schedule-calendar",
     "the public smoke test is restricted to this site's approved URL");
@@ -23,6 +34,13 @@ assert.ok(executable, "Set CHROME_PATH to a Chromium executable");
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function main() {
+  let halfMonthResponse = null;
+  let halfMonthFailure = false;
+  let halfMonthReport = null;
+  let screenshotCommands = 0;
+  const blockedRequests = [];
+  const siteRequests = [];
+  const halfRequests = [];
   let observationResponse = null;
   let observationFailure = false;
   let holdObservation = false;
@@ -31,6 +49,7 @@ async function main() {
     schemaVersion: 1, complete: false, checkedAt: null, lastSuccessAt: null,
     posts: [], lastRun: { status: "never" }
   };
+  if (halfMonthMock) personalResponse = JSON.parse(fs.readFileSync(path.join(root, "data", "personal-shifts.json"), "utf8"));
   let personalFailure = 0;
   let holdPersonal = false;
   const heldPersonalResponses = [];
@@ -38,6 +57,16 @@ async function main() {
   const mime = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
   const server = http.createServer((req, res) => {
     const pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
+    if (pathname === "/data/half-month-schedules.json") {
+      halfRequests.push({ mock: halfMonthResponse !== null, failed: halfMonthFailure });
+      if (halfMonthResponse || halfMonthFailure) {
+        assert.ok(halfMonthMock && !publicOrigin, "Half-month data substitution requires an explicit local mock run");
+        res.setHeader("Content-Type", "application/json");
+        res.writeHead(halfMonthFailure ? 503 : 200);
+        res.end(JSON.stringify(halfMonthResponse));
+        return;
+      }
+    }
     if (pathname === "/data/personal-shifts.json") {
       if (holdPersonal) {
         heldPersonalResponses.push(res);
@@ -72,6 +101,8 @@ async function main() {
     "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
     "--disable-background-networking", "--disable-component-update", "--disable-sync",
     "--disable-extensions", "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0",
+    "--no-proxy-server",
+    `--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost${publicOrigin ? `, EXCLUDE ${new URL(publicOrigin).hostname}` : ""}`,
     `--user-data-dir=${path.resolve(profile)}`, "about:blank"
   ], { windowsHide: true, stdio: "ignore" });
   let ws;
@@ -121,10 +152,13 @@ async function main() {
       if (message.method === "Runtime.exceptionThrown") exceptions.push(message.params.exceptionDetails);
       if (message.method === "Fetch.requestPaused") {
         const { requestId, request } = message.params;
+        const firstParty = request.url === origin || request.url.startsWith(`${origin}/`);
         const widget = request.url === "https://platform.twitter.com/widgets.js";
         if (widget) widgetRequests++;
-        const method = widget && !widgetBlocked ? "Fetch.fulfillRequest" : "Fetch.failRequest";
-        const params = widget && !widgetBlocked
+        if (firstParty) siteRequests.push(request.url.slice(origin.length));
+        else blockedRequests.push({ url: request.url, mocked: widget && !widgetBlocked });
+        const method = firstParty ? "Fetch.continueRequest" : widget && !widgetBlocked ? "Fetch.fulfillRequest" : "Fetch.failRequest";
+        const params = firstParty ? { requestId } : widget && !widgetBlocked
           ? { requestId, responseCode: 200, responseHeaders: [{ name: "Content-Type", value: "text/javascript" }],
             body: Buffer.from(mockWidget).toString("base64") }
           : { requestId, errorReason: "BlockedByClient" };
@@ -139,6 +173,10 @@ async function main() {
       else request.resolve(message.result);
     };
     const call = (method, params = {}) => new Promise((resolve, reject) => {
+      if (method === "Page.captureScreenshot" || method === "Page.startScreencast") {
+        assert.ok(!noScreenshots, "Screen capture is disabled for this run");
+        screenshotCommands++;
+      }
       const number = ++id;
       const timer = setTimeout(() => {
         pending.delete(number);
@@ -177,7 +215,7 @@ async function main() {
       }
     };
     const capture = async (name, full = false) => {
-      if (!output) return;
+      if (!output || noScreenshots) return;
       fs.mkdirSync(output, { recursive: true });
       const params = { format: "png", captureBeyondViewport: full };
       if (full) {
@@ -194,13 +232,258 @@ async function main() {
       const style = getComputedStyle(document.querySelector(selector));
       return [selector, style.backgroundColor, style.color, style.colorScheme, style.borderColor, style.accentColor];
     })`);
+    const runHalfMonthChecks = async () => {
+      const api = require(path.join(root, "app.js"));
+      const core = [["2026-09-02", "夜"], ["2026-09-05", "昼"], ["2026-09-07", "昼"],
+        ["2026-09-10", "夜"], ["2026-09-12", "昼"], ["2026-09-14", "昼"]];
+      const sampleDates = [...new Set([...core.map(([date]) => date), "2026-09-06"])].sort();
+      const originalPersonal = personalResponse;
+      const readFeed = name => evaluate(`(async () => (await (await fetch(${JSON.stringify(`data/${name}.json`)}, {cache:"no-store"})).json()))()`);
+      const savedFeed = await readFeed("half-month-schedules");
+      const savedOfficial = await readFeed("observed-shifts");
+      const savedPersonal = await readFeed("personal-shifts");
+      const originalManual = await evaluate('JSON.stringify(window.SCHEDULE_DATA)');
+      const originalInsights = await evaluate('JSON.stringify(window.STORE_INSIGHTS)');
+      const data = JSON.parse(originalManual);
+      const insights = JSON.parse(originalInsights);
+      const hash = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+      halfMonthReport = {
+        status: "running", mode: halfMonthMock ? "explicit-local-mock" : publicOrigin ? "public-unmocked" : "local-unmocked",
+        origin, screenshotsDisabled: noScreenshots, widths: [], sourceKind: "half-month-schedule",
+        originalFeedHashes: { official: hash(savedOfficial), personal: hash(savedPersonal), halfMonth: hash(savedFeed) },
+        originalPostCounts: { official: savedOfficial.posts.length, personal: savedPersonal.posts.length },
+        checks: [], dom: []
+      };
+      api.validateHalfMonthSchedules(savedFeed, { roster: data.roster, insights, personal: savedPersonal });
+      const selectMode = mode => evaluate(`(() => {
+        const input = document.querySelector('input[name="view-mode"][value="${mode}"]');
+        input.checked = true; input.dispatchEvent(new Event("change"));
+      })()`);
+      const extract = (mode, dates) => {
+        const rows = [];
+        const add = (row, name, date, shift, maid) => {
+          if (!name || !dates.includes(date)) return;
+          const label = row.querySelector(maid ? ".maid-plan-when" : ".maid-name");
+          rows.push({ name, date, shift, evidence: row.dataset.evidence,
+            store: maid ? row.querySelector(".maid-plan-where").dataset.store : row.dataset.store ?? "",
+            nameHref: label?.getAttribute("href") ?? null,
+            updates: [...row.querySelectorAll(".entry-update")].map(item => item.textContent),
+            sources: [...row.querySelectorAll(".half-month-source")].map(link => ({
+              url: link.href, kind: link.dataset.sourceKind, name: link.dataset.name,
+              date: link.dataset.date, shift: link.dataset.shift, label: link.textContent,
+              title: link.title, aria: link.getAttribute("aria-label"), target: link.target, rel: link.rel
+            })) });
+        };
+        if (mode === "maid") {
+          for (const plan of document.querySelectorAll(".maid-plan")) {
+            for (const row of plan.querySelectorAll(".maid-plan-stop")) {
+              add(row, plan.dataset.name, row.dataset.date, row.dataset.shift, true);
+            }
+          }
+        } else if (mode === "calendar") {
+          for (const [id, shift] of [["dialog-day", "昼"], ["dialog-night", "夜"]]) {
+            document.querySelectorAll(`#${id} .maid-entry`).forEach(row =>
+              add(row, row.dataset.name, dates[0], shift, false));
+          }
+        } else {
+          for (const day of document.querySelectorAll(".calendar-day")) {
+            const parts = /(\d+)年(\d+)月(\d+)日/.exec(day.getAttribute("aria-label"));
+            if (!parts) continue;
+            const date = `${parts[1]}-${parts[2].padStart(2, "0")}-${parts[3].padStart(2, "0")}`;
+            [...day.querySelectorAll(".shift-section")].forEach((section, index) =>
+              section.querySelectorAll(".maid-entry").forEach(row =>
+                add(row, row.dataset.name, date, ["昼", "夜"][index], false)));
+          }
+        }
+        return rows;
+      };
+      const collect = async (mode, dates = sampleDates) => {
+        await selectMode(mode);
+        const rows = [];
+        if (mode === "calendar") {
+          for (const date of dates) {
+            await click(`.day-button[data-date="${date}"]`);
+            await wait('document.querySelector("#day-dialog").open');
+            rows.push(...await evaluate(`(${extract})("calendar", ${JSON.stringify([date])})`));
+            assert.ok(await evaluate('document.querySelector("#day-dialog-content").scrollWidth <= document.querySelector("#day-dialog-content").clientWidth'),
+              "source links fit the actual modal width");
+            await click("#close-day-dialog");
+          }
+        } else rows.push(...await evaluate(`(${extract})(${JSON.stringify(mode)}, ${JSON.stringify(dates)})`));
+        assert.ok(await evaluate('document.documentElement.scrollWidth <= innerWidth'), `${mode} has no page overflow`);
+        return rows.sort((a, b) => `${a.date}|${a.shift}|${a.name}|${a.store}`.localeCompare(`${b.date}|${b.shift}|${b.name}|${b.store}`));
+      };
+      const refreshHalf = async () => {
+        await click("#refresh-half-month");
+        await wait('document.querySelector("#half-month-status").dataset.loaded === "true"');
+      };
+      const refreshPersonal = async () => {
+        await click("#refresh-personal");
+        await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+      };
+      const previous = {};
+      for (const mode of ["calendar", "roster", "forecast", "maid"]) previous[mode] = await collect(mode);
+      let feed = savedFeed;
+      if (halfMonthMock) {
+        const createdAt = "2026-09-06T11:57:53Z";
+        const id = (((BigInt(Date.parse(createdAt)) - 1288834974657n) << 22n) + 1n).toString();
+        const authorScreenName = insights.maidTendency["いと"]?.x ?? "half_fixture";
+        const source = { id, url: `https://x.com/${authorScreenName}/status/${id}`, name: "いと",
+          authorId: "123456789", authorScreenName, createdAt, observedAt: "2026-09-06T12:00:00Z",
+          sourceKind: "half-month-schedule",
+          period: { from: "2026-09-01", to: "2026-09-15", printedYear: null, yearBasis: "post-context" },
+          days: core.map(([date, shift]) => ({ date, shifts: [shift] })) };
+        halfMonthResponse = feed = { schemaVersion: 1, complete: false,
+          checkedAt: source.observedAt, lastSuccessAt: source.observedAt,
+          schedules: [source], lastRun: { status: "ok" } };
+        await refreshHalf();
+      }
+      api.validateHalfMonthSchedules(feed, { roster: data.roster, insights, personal: savedPersonal });
+      assert.equal(await evaluate('document.querySelector("#half-month-status").dataset.error'), "false");
+      const ito = feed.schedules.find(source => source.name === "いと" && source.period.from === "2026-09-01");
+      if (halfMonthMock || process.env.REQUIRE_HALF_MONTH_SCHEDULES === "1") {
+        assert.ok(ito, "a confirmed Ito first-half source is required");
+        assert.deepEqual(ito.days.flatMap(day => day.shifts.map(shift => [day.date, shift])).sort(), [...core].sort(),
+          "only the source's six date/shift contributions, not the whole resolved roster, are the core gold");
+      }
+      const effective = api.buildEffectiveSchedule(data.schedule, feed);
+      const expectedSources = sampleDates.flatMap(dateKey => ["昼", "夜"].flatMap(shift =>
+        api.resolveShiftRoster({ insights, observations: savedOfficial, personal: savedPersonal,
+          dateKey, shift, schedule: effective, roster: data.roster,
+          nameCorrections: data.observationNameCorrections, personalEventAdditions: data.personalEventAdditions
+        }).entries.flatMap(entry => (entry.halfMonthSources ?? []).map(source =>
+          `${dateKey}|${shift}|${entry.name}|${source.url}`)))).sort();
+      const noSource = ({ sources, ...row }) => row;
+      for (const width of [1280, 320]) {
+        await call("Emulation.setDeviceMetricsOverride", {
+          width, height: width === 1280 ? 960 : 844, deviceScaleFactor: 1, mobile: width !== 1280
+        });
+        const faces = [];
+        for (const mode of ["calendar", "roster", "forecast", "maid"]) {
+          const rows = await collect(mode);
+          const sources = rows.flatMap(row => row.sources);
+          assert.deepEqual([...new Set(sources.map(link => `${link.date}|${link.shift}|${link.name}|${link.url}`))].sort(),
+            expectedSources, `${width}/${mode}: exact, separately labelled half-month provenance`);
+          for (const link of sources) {
+            assert.equal(link.kind, "half-month-schedule");
+            assert.equal(link.label, "予定の出典");
+            assert.match(link.title, /半月予定表.*当日の出勤確認ではありません/);
+            assert.equal(link.aria, link.title);
+            assert.equal(link.target, "_blank");
+            assert.equal(link.rel, "noopener noreferrer");
+          }
+          if (halfMonthMock) {
+            for (const old of previous[mode].filter(row => ["recorded", "observed", "personal", "official-announced"].includes(row.evidence))) {
+              const current = rows.find(row => row.name === old.name && row.date === old.date && row.shift === old.shift && row.store === old.store);
+              assert.ok(current, `${width}/${mode}: retain ${old.name}/${old.date}/${old.shift}/${old.store}`);
+              assert.deepEqual(noSource(current), noSource(old), "existing facts, same-day URLs and arrival notices are unchanged");
+            }
+            assert.equal(rows.flatMap(row => row.sources).length, 6, "synthetic half feed contributes six sources only");
+            for (const row of rows.filter(row => row.name === "いと")) {
+              assert.equal(row.nameHref, null, "half-month source never substitutes for a same-day name/date link");
+              if (row.date === "2026-09-02" && row.shift === "昼") {
+                assert.equal(row.store, "s2");
+                assert.equal(row.evidence, "recorded");
+                assert.equal(row.sources.length, 0, "curated opposite shift has no fabricated half source");
+              }
+            }
+          }
+          for (const [date, shift, store] of [["2026-09-02", "昼", "s2"], ["2026-09-02", "夜", "s1"], ["2026-09-05", "昼", "s1"]]) {
+            assert.ok(rows.some(row => row.name === "いと" && row.date === date && row.shift === shift && row.store === store),
+              "curated/observed Ito stores and the opposite curated shift survive");
+          }
+          faces.push([...new Set(rows.map(row => `${row.date}|${row.shift}|${row.name}`))].sort());
+          halfMonthReport.dom.push({ width, mode, rows });
+        }
+        faces.slice(1).forEach(names => assert.deepEqual(names, faces[0], "all four views resolve the same people/date/shift"));
+        halfMonthReport.widths.push(width);
+      }
+      halfMonthReport.checks.push("four-mode-exact-provenance", "curated-observed-preserved", "same-day-links-separate", "no-overflow-1280-320");
+      if (halfMonthMock) {
+        const personalId = "2097000000000000099";
+        const sameDay = { id: personalId, url: `https://x.com/${ito.authorScreenName}/status/${personalId}`,
+          name: ito.name, authorId: ito.authorId, authorScreenName: ito.authorScreenName,
+          date: "2026-09-07", createdAt: "2026-09-07T02:00:00Z", observedAt: "2026-09-07T03:00:00Z",
+          events: [], links: [{ scope: "昼", status: "work" }] };
+        personalResponse = { ...originalPersonal, posts: [...originalPersonal.posts, sameDay] };
+        await refreshPersonal();
+        for (const mode of ["calendar", "roster", "forecast", "maid"]) {
+          const row = (await collect(mode, ["2026-09-07"])).find(row => row.name === "いと" && row.shift === "昼");
+          assert.equal(row.nameHref, sameDay.url);
+          assert.equal(row.sources[0].url, ito.url);
+          assert.notEqual(row.nameHref, row.sources[0].url);
+        }
+        await click("#reset-filters");
+        await evaluate('document.querySelector("#date-to").value = "2026-09-15"; document.querySelector("#date-to").dispatchEvent(new Event("change"))');
+        assert.ok(!(await evaluate('document.querySelector("#schedule-pending-note").title')).includes("いと"));
+        await click('.day-button[data-date="2026-09-05"]');
+        await wait('document.querySelector("#day-dialog").open');
+        await evaluate(`window.__halfSource = document.querySelector('#dialog-day .half-month-source');
+          window.__halfSection = document.querySelector("#dialog-day");
+          window.__halfSource.focus({preventScroll:true});
+          document.querySelector("#day-dialog-content").scrollTop = 80; true;`);
+        const interaction = await evaluate(`({focus: document.activeElement.dataset.focusKey,
+          scroll: document.querySelector("#day-dialog-content").scrollTop,
+          from: document.querySelector("#date-from").value, to: document.querySelector("#date-to").value})`);
+        assert.ok(interaction.scroll > 0, "the narrow popup exercises real scrolling");
+        halfMonthResponse = JSON.parse(JSON.stringify(feed));
+        halfMonthResponse.checkedAt = halfMonthResponse.schedules[0].observedAt = "2026-09-07T00:00:00Z";
+        halfMonthResponse.lastRun.status = "no-new";
+        await refreshHalf();
+        assert.ok(await evaluate('document.querySelector("#dialog-day") === window.__halfSection && document.activeElement === window.__halfSource'),
+          "metadata updates preserve the real DOM node and focused source");
+        const valid = JSON.parse(JSON.stringify(halfMonthResponse));
+        for (const failure of ["http", "schema"]) {
+          halfMonthFailure = failure === "http";
+          if (failure === "schema") halfMonthResponse.schedules[0].days[0].shifts = ["不明"];
+          await refreshHalf();
+          assert.equal(await evaluate('document.querySelector("#half-month-status").dataset.error'), "true");
+          assert.ok(await evaluate('document.querySelector("#dialog-day") === window.__halfSection && document.activeElement === window.__halfSource'));
+          assert.deepEqual(await evaluate(`({focus: document.activeElement.dataset.focusKey,
+            scroll: document.querySelector("#day-dialog-content").scrollTop,
+            from: document.querySelector("#date-from").value, to: document.querySelector("#date-to").value})`), interaction);
+        }
+        halfMonthFailure = false;
+        halfMonthResponse = valid;
+        const newerId = (BigInt(ito.id) + 20n).toString();
+        halfMonthResponse.schedules[0].id = newerId;
+        halfMonthResponse.schedules[0].url = `https://x.com/${ito.authorScreenName}/status/${newerId}`;
+        await refreshHalf();
+        assert.equal(await evaluate('document.querySelector("#half-month-status").dataset.error'), "false");
+        assert.equal(await evaluate('document.activeElement.dataset.focusKey'), interaction.focus,
+          "new source revisions retain focus at the same date/shift link");
+        assert.equal(await evaluate('document.activeElement.href'), halfMonthResponse.schedules[0].url);
+        assert.equal(await evaluate('document.querySelector("#day-dialog-content").scrollTop'), interaction.scroll);
+        await click("#close-day-dialog");
+        await click("#reset-filters");
+        assert.match(await evaluate('document.querySelector("#schedule-pending-note").textContent'), /一部の半月を確認済み/);
+        halfMonthReport.checks.push("same-day-positive-link-in-four-modes", "partial-pending-period", "metadata-no-redraw",
+          "invalid-fetch-retains-last-good", "source-revision-focus-and-scroll");
+        personalResponse = originalPersonal;
+        halfMonthResponse = null;
+        await refreshPersonal();
+        await refreshHalf();
+      }
+      assert.equal(await evaluate('JSON.stringify(window.SCHEDULE_DATA)'), originalManual);
+      assert.equal(await evaluate('JSON.stringify(window.STORE_INSIGHTS)'), originalInsights);
+      assert.deepEqual(await readFeed("observed-shifts"), savedOfficial, "official source observations are never rewritten");
+      assert.deepEqual(await readFeed("personal-shifts"), savedPersonal, "personal snapshot is restored unchanged");
+      assert.equal(widgetRequests, 0, "half sources do not trigger X widgets or media fetches");
+      assert.ok(!blockedRequests.some(request => /(?:x\.com|twitter\.com|yahoo|twimg\.com)/i.test(request.url)),
+        "no half-source X/Yahoo/media attempt was initiated");
+      assert.equal(await evaluate('(async () => { try { await fetch("https://blocked.invalid/network-boundary-probe"); return false; } catch { return true; } })()'), true);
+      assert.ok(blockedRequests.some(request => request.url === "https://blocked.invalid/network-boundary-probe" && !request.mocked),
+        "a reserved-domain canary is rejected before network delivery");
+      assert.equal(exceptions.length, 0, JSON.stringify(exceptions));
+      if (noScreenshots) assert.equal(screenshotCommands, 0);
+      halfMonthReport.checks.push("manual-and-insights-immutable", "third-party-network-deny", "zero-capture");
+      halfMonthReport.status = "passed";
+      console.log(`Half-month DOM passed (${halfMonthReport.mode}): 4 modes, 1280/320, exact provenance, preserved evidence, source0/inference0; capture commands=${screenshotCommands}.`);
+    };
     await call("Page.enable");
     await call("Runtime.enable");
     await call("Network.enable");
-    await call("Fetch.enable", { patterns: publicOrigin
-      ? [{ urlPattern: "https://platform.twitter.com/*" }, { urlPattern: "https://x.com/*" },
-        { urlPattern: "https://*.twimg.com/*" }, { urlPattern: "https://twitter.com/*" }]
-      : [{ urlPattern: "https://*" }, { urlPattern: "http://*.com/*" }, { urlPattern: "http://*.jp/*" }] });
+    await call("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
     await call("Emulation.setFocusEmulationEnabled", { enabled: true });
     await call("Emulation.setTimezoneOverride", { timezoneId: "America/Los_Angeles" });
     await call("Page.addScriptToEvaluateOnNewDocument", { source: `
@@ -216,6 +499,11 @@ async function main() {
     await wait('document.querySelectorAll(".day-button").length === 30');
     await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
     await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+    await wait('document.querySelector("#half-month-status").dataset.loaded === "true"');
+    if (halfMonthMock || halfMonthOnly || process.env.REQUIRE_HALF_MONTH_SCHEDULES === "1") {
+      await runHalfMonthChecks();
+      if (halfMonthOnly) return;
+    }
     assert.equal(widgetRequests, 0, "no widget request before an explicit disclosure open");
     assert.equal(await evaluate('document.querySelectorAll("script[src=\\"https://platform.twitter.com/widgets.js\\"]").length'), 0);
     await wait('[...document.querySelectorAll(".event-image")].every(img => img.complete && img.naturalWidth > 0)');
@@ -1175,13 +1463,25 @@ async function main() {
       "do not disable accessibility forced colors");
     assert.equal(exceptions.length, 0, JSON.stringify(exceptions));
     console.log("Browser calendar passed: 1280/390/320, events, modal, focus, keys, scroll, evidence, range, filters, fallback, light-only under dark preference and Auto Dark.");
-    if (output) console.log(`Screenshots: ${path.resolve(output)}`);
+    if (output && !noScreenshots) console.log(`Screenshots: ${path.resolve(output)}`);
   } finally {
     if (ws) ws.close();
     browser.kill();
     if (server.listening) await new Promise((resolve) => server.close(resolve));
     await delay(1000);
     fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    if (output && halfMonthReport) {
+      fs.mkdirSync(output, { recursive: true });
+      const reportPath = path.join(output, "half-month-dom-report.json");
+      fs.writeFileSync(reportPath, JSON.stringify({
+        ...halfMonthReport, status: halfMonthReport.status === "running" ? "failed" : halfMonthReport.status,
+        screenshotCommands, blockedRequests,
+        browserPid: browser.pid, headless: true, isolatedProfile: true, networkPolicy: "same-origin-only",
+        firstPartyRequests: siteRequests.length, halfMonthResponses: halfRequests,
+        disposableProfileRemoved: !fs.existsSync(profile), completedAt: new Date().toISOString()
+      }, null, 2) + "\n");
+      console.log(`DOM report: ${path.resolve(reportPath)}`);
+    }
   }
 }
 

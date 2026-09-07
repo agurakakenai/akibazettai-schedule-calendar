@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_FILES = (
     'index.html', 'app.js', 'styles.css', 'data/schedule.js',
     'data/store-insights.js', 'data/observed-shifts.json', 'data/personal-shifts.json',
+    'data/half-month-schedules.json',
 )
 POST_FIELDS = (
     'id', 'url', 'authorId', 'authorScreenName', 'createdAt', 'date',
@@ -89,6 +90,16 @@ def load_personal_collector():
     with _no_bytecode():
         source = _source_file(ROOT, 'tools/collect-personal-shifts.py')
         spec = importlib.util.spec_from_file_location('pages_personal_shifts', source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+
+@lru_cache(maxsize=1)
+def load_half_month_state():
+    with _no_bytecode():
+        source = _source_file(ROOT, 'tools/half-month-schedules.py')
+        spec = importlib.util.spec_from_file_location('pages_half_month_schedules', source)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
@@ -324,6 +335,31 @@ def load_public_personal_snapshot(path):
         raise PagesError('invalid_personal_snapshot') from None
 
 
+def half_month_projection(state):
+    try:
+        return load_half_month_state().public_state(state)
+    except (ValueError, TypeError, KeyError, OverflowError, AttributeError):
+        raise PagesError('invalid_half_month_snapshot') from None
+
+
+def load_public_half_month_snapshot(path):
+    try:
+        state = json.loads(path.read_text(encoding='utf-8'),
+                           object_pairs_hook=_unique_fields)
+        return half_month_projection(state)
+    except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
+        raise PagesError('invalid_half_month_snapshot') from None
+
+
+def _unique_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise PagesError('invalid_half_month_snapshot')
+        result[key] = value
+    return result
+
+
 def _plain_path(path):
     """Reject symlinks, Windows junctions/reparse points, and special files."""
     path = Path(os.path.abspath(path))
@@ -463,6 +499,8 @@ def stage(output, revision, *, root=ROOT, clock=None):
             files[name] = json_bytes(observation)
         elif name == 'data/personal-shifts.json':
             files[name] = json_bytes(load_public_personal_snapshot(source))
+        elif name == 'data/half-month-schedules.json':
+            files[name] = json_bytes(load_public_half_month_snapshot(source))
         else:
             files[name] = source.read_bytes()
     events = _plain_path(root / 'assets' / 'events')

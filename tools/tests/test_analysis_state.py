@@ -148,6 +148,50 @@ class UsageTests(unittest.TestCase):
                          {'run': 3, 'day': 3, 'remaining': 0})
         self.assertEqual(self.sleeps, [60, 60])
 
+    def test_schedule_is_third_shared_component_with_one_per_run_and_success_dedup(self):
+        with self.shared('official') as ledger:
+            self.completed(ledger, 'official')
+        with self.shared('personal') as ledger:
+            self.completed(ledger, 'personal', 'events')
+        for reason in ('schedule', 'not_schedule'):
+            with self.subTest(reason=reason):
+                run_id = 'run-1' if reason == 'schedule' else 'run-2'
+                with self.shared('schedule', run_id=run_id) as ledger:
+                    key = self.completed(ledger, reason, reason)
+                    with self.assertRaisesRegex(usage.UsageFailure, 'azure_already_analyzed'):
+                        ledger.reserve(key, IDENTITY)
+                    with self.assertRaisesRegex(usage.UsageFailure, 'azure_budget_exhausted'):
+                        ledger.reserve(digest(reason + ':second'), IDENTITY)
+                with self.shared('schedule', run_id=run_id) as ledger:
+                    with self.assertRaisesRegex(usage.UsageFailure, 'azure_budget_exhausted'):
+                        ledger.check()
+        self.assertEqual(usage.usage_counts(usage.load_state(self.path), 'run-1', self.clock),
+                         {'run': 3, 'day': 4, 'remaining': 0})
+        self.assertEqual(self.sleeps, [60, 60, 60])
+
+    def test_schedule_success_requires_issued_and_shared_thirty_day_counts_imports(self):
+        state = usage.load_state(self.path)
+        imported = historical(count=29, breakdown=[
+            {'model': 'gpt-5.6-luna', 'kind': 'image', 'component': 'schedule', 'count': 29}])
+        usage.apply_import(state, imported)
+        old = copy.deepcopy(state)
+        usage.atomic_json(self.path, state)
+        with self.shared('schedule') as ledger:
+            key = digest('schedule-unissued')
+            ledger.reserve(key, IDENTITY)
+            for reason in ('schedule', 'not_schedule'):
+                with self.assertRaisesRegex(usage.UsageFailure, 'azure_interrupted'):
+                    ledger.finish(key, reason)
+            ledger.issued(key)
+            ledger.finish(key, 'schedule')
+        for component in ('official', 'personal', 'schedule'):
+            with self.shared(component, run_id='different') as ledger:
+                with self.assertRaisesRegex(usage.UsageFailure, 'azure_budget_exhausted'):
+                    ledger.check()
+        final = usage.load_state(self.path)
+        self.assertEqual(final['imports'], old['imports'])
+        self.assertEqual(final['sourceImports'], old['sourceImports'])
+
     def test_external_model_records_import_once_and_thirty_actual_day_cap(self):
         previous = historical('2026-09-06', 24, 'old-models', [
             {'model': 'gpt-5.4-nano', 'kind': 'text', 'count': 18},

@@ -92,6 +92,7 @@ jobs:
           COLLECTION_MODE: ${{ steps.route.outputs.collectionMode }}
           DAILY_GUIDANCE_ENABLED: ${{ vars.DAILY_GUIDANCE_ENABLED || 'false' }}
           APPLY_SAVED_MANIFEST: ${{ inputs.saved_manifest }}
+          HALF_MONTH_SCHEDULE_ENABLED: ${{ vars.HALF_MONTH_SCHEDULE_ENABLED || 'false' }}
           # Cloud strips Azure configuration from Git, restore, and all non-AI children.
           PERSONAL_ANALYSIS_BACKEND: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both') && 'azure' || 'rules' }}
           AZURE_OPENAI_API_KEY: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both' || steps.route.outputs.collectionMode == 'daily-guidance' || (steps.route.outputs.collectionMode == 'collect' && vars.DAILY_GUIDANCE_ENABLED == 'true')) && secrets.AZURE_OPENAI_API_KEY || '' }}
@@ -103,7 +104,9 @@ jobs:
           steps.collection.outputs.collectionStatus == 'partial' ||
           steps.collection.outputs.collectionStatus == 'unavailable' ||
           steps.collection.outputs.personalCollectionStatus == 'paused' ||
-          steps.collection.outputs.personalCollectionStatus == 'budget-exhausted'
+          steps.collection.outputs.personalCollectionStatus == 'budget-exhausted' ||
+          steps.collection.outputs.halfMonthCollectionStatus == 'paused' ||
+          steps.collection.outputs.halfMonthCollectionStatus == 'budget-exhausted'
         run: echo "::warning::Collection was incomplete or paused; only saved, verified facts will be published."
       - name: Preserve data for explicit recovery after a failure
         if: failure() && hashFiles('_recovery-state/**') != ''
@@ -138,6 +141,7 @@ jobs:
           GH_PROMPT_DISABLED: "1"
           GIT_TERMINAL_PROMPT: "0"
           DAILY_GUIDANCE_ENABLED: ${{ vars.DAILY_GUIDANCE_ENABLED || 'false' }}
+          HALF_MONTH_SCHEDULE_ENABLED: ${{ vars.HALF_MONTH_SCHEDULE_ENABLED || 'false' }}
         run: python tools/cloud-collection.py --mode restore --output data/observed-shifts.json
       - uses: ./.github/actions/validate-site
       - name: Stage only public frontend files

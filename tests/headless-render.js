@@ -2219,6 +2219,419 @@ test("link-only refresh updates scoped popup links and preserves filters, focus,
   }
 });
 
+test("half-month plans reach all four views with exact source scope and retained evidence", async () => {
+  const api = require(path.join(repo, "app.js"));
+  const copy = value => JSON.parse(JSON.stringify(value));
+  const emptyHalf = JSON.parse(fs.readFileSync(path.join(repo, "data", "half-month-schedules.json"), "utf8"));
+  const savedOfficial = JSON.parse(fs.readFileSync(path.join(repo, "data", "observed-shifts.json"), "utf8"));
+  const savedPersonal = JSON.parse(fs.readFileSync(path.join(repo, "data", "personal-shifts.json"), "utf8"));
+  const savedBefore = JSON.stringify([schedule, insights, savedOfficial, savedPersonal]);
+  const datesAndShifts = [
+    ["2026-09-02", "夜"], ["2026-09-05", "昼"], ["2026-09-07", "昼"],
+    ["2026-09-10", "夜"], ["2026-09-12", "昼"], ["2026-09-14", "昼"]
+  ];
+  const createdAt = "2026-09-06T11:57:53Z";
+  const id = (((BigInt(Date.parse(createdAt)) - 1288834974657n) << 22n) + 1n).toString();
+  const handle = insights.maidTendency["いと"]?.x ?? "half_fixture";
+  const source = {
+    id, url: `https://x.com/${handle}/status/${id}`, name: "いと",
+    authorId: "123456789", authorScreenName: handle, createdAt, observedAt: "2026-09-06T12:00:00Z",
+    sourceKind: "half-month-schedule",
+    period: { from: "2026-09-01", to: "2026-09-15", printedYear: null, yearBasis: "post-context" },
+    days: datesAndShifts.map(([date, shift]) => ({ date, shifts: [shift] }))
+  };
+  const snapshot = { ...copy(emptyHalf), schedules: [source],
+    checkedAt: source.observedAt, lastSuccessAt: source.observedAt, lastRun: { status: "ok" } };
+  let halfPayload = copy(emptyHalf);
+  let personalPayload = savedPersonal;
+  let officialPayload = savedOfficial;
+  let errorMode = null;
+  const requests = [];
+  const originalFetch = windowShim.fetch;
+  const originalError = sandbox.console.error;
+  const content = elementById("day-dialog-content");
+  const dialog = elementById("day-dialog");
+  const originalQuery = content.querySelectorAll;
+  const originalCalendarQuery = calendar.querySelectorAll;
+  const originalContains = dialog.contains;
+  const originalScroll = windowShim.scrollTo;
+  const originalScrollX = windowShim.scrollX;
+  const originalScrollY = windowShim.scrollY;
+  windowShim.scrollX = 12;
+  windowShim.scrollY = 345;
+  windowShim.scrollTo = (x, y) => { windowShim.scrollX = x; windowShim.scrollY = y; };
+  windowShim.fetch = async (url, options) => {
+    requests.push(url);
+    assert.equal(options.cache, "no-store");
+    assert.ok(["data/half-month-schedules.json", "data/personal-shifts.json", "data/observed-shifts.json"].includes(url),
+      "no half-month X/Yahoo/image request is permitted");
+    if (url === "data/half-month-schedules.json" && errorMode === "http") return { ok: false, status: 503 };
+    if (url === "data/half-month-schedules.json" && errorMode === "json") {
+      return { ok: true, json: async () => { throw new Error("invalid fixture JSON"); } };
+    }
+    const payload = url === "data/half-month-schedules.json" ? halfPayload :
+      url === "data/personal-shifts.json" ? personalPayload : officialPayload;
+    return { ok: true, json: async () => copy(payload) };
+  };
+  content.querySelectorAll = (selector) => selector === "[data-focus-key]"
+    ? walk(content).filter(node => node.dataset.focusKey)
+    : walk(content).filter(node => node.tagName === "DETAILS" && node.dataset.stateKey);
+  calendar.querySelectorAll = selector => selector === "[data-focus-key]"
+    ? walk(calendar).filter(node => node.dataset.focusKey) : [];
+  dialog.contains = node => walk(content).includes(node);
+  const byDay = (key) => withClass(calendar, "calendar-day")
+    .find(day => day.getAttribute("aria-label") === `2026年9月${Number(key.slice(8))}日`);
+  const rows = section => withClass(section, "maid-entry");
+  const signature = row => [
+    row.dataset.name, row.dataset.evidence, row.dataset.store,
+    withClass(row, "maid-name")[0]?.href, withClass(row, "entry-update").map(node => node.textContent).join("|")
+  ];
+  const entriesFor = (key, shift) => rows(withClass(byDay(key), "shift-section")[shift === "昼" ? 0 : 1]);
+  const openDate = key => {
+    const button = withClass(calendar, "day-button").find(node => node.dataset.date === key);
+    assert.ok(button && !button.disabled);
+    listeners.find(entry => entry.element === button && entry.type === "click").fn({ target: button });
+  };
+  const assertSources = (root, expected = datesAndShifts) => {
+    const links = withClass(root, "half-month-source");
+    assert.deepEqual(links.map(link => [link.dataset.date, link.dataset.shift]).sort(), [...expected].sort());
+    for (const link of links) {
+      assert.equal(link.href, source.url);
+      assert.equal(link.textContent, "予定の出典");
+      assert.equal(link.dataset.name, "いと");
+      assert.equal(link.dataset.sourceKind, "half-month-schedule");
+      assert.equal(link.rel, "noopener noreferrer");
+      assert.equal(link.target, "_blank");
+      assert.match(link.title, /半月予定表/);
+      assert.match(link.title, /当日の出勤確認ではありません/);
+      assert.equal(link.getAttribute("aria-label"), link.title);
+      assert.notEqual(link.className, "maid-name");
+    }
+    assert.ok(walk(root).filter(node => ["IMG", "IFRAME", "SCRIPT"].includes(node.tagName))
+      .every(node => !String(node.src ?? "").includes("half_fixture")),
+    "half sources are links only, never fetched images/widgets");
+  };
+  try {
+    await dispatch("reset-filters", "click");
+    await dispatch("refresh-observations", "click");
+    await dispatch("refresh-personal", "click");
+    selectViewMode("roster");
+    const priorEvidence = new Map();
+    for (let day = 1; day <= 15; day += 1) {
+      const key = `2026-09-${String(day).padStart(2, "0")}`;
+      for (const shift of ["昼", "夜"]) {
+        priorEvidence.set(`${key}|${shift}`, entriesFor(key, shift).filter(row =>
+          !["scheduled", "pending"].includes(row.dataset.evidence)).map(signature));
+      }
+    }
+    halfPayload = snapshot;
+    await dispatch("refresh-half-month", "click");
+    assert.equal(elementById("half-month-status").dataset.error, "false");
+    assertSources(calendar);
+    assert.match(elementById("schedule-pending-note").textContent, /一部の半月を確認済み/);
+    for (const [key, previous] of priorEvidence) {
+      const [date, shift] = key.split("|");
+      assert.deepEqual(entriesFor(date, shift).filter(row =>
+        !["scheduled", "pending"].includes(row.dataset.evidence)).map(signature), previous,
+      `${key}: official/curated/personal evidence, counts, source links and notices are unchanged`);
+    }
+    for (const mode of ["roster", "forecast"]) {
+      selectViewMode(mode);
+      assertSources(calendar);
+      for (const [key, shift] of datesAndShifts) {
+        const current = entriesFor(key, shift).filter(row => row.dataset.name === "いと");
+        assert.equal(current.length, 1, `${mode} ${key} ${shift}`);
+        assert.equal(withClass(current[0], "maid-name")[0].href, undefined, "no half-source fallback on a name chip");
+        const other = shift === "昼" ? "夜" : "昼";
+        assert.equal(entriesFor(key, other).flatMap(row => withClass(row, "half-month-source")).length, 0);
+      }
+      assert.equal(entriesFor("2026-09-02", "昼").find(row => row.dataset.name === "いと").dataset.store, "s2");
+      assert.equal(entriesFor("2026-09-02", "夜").find(row => row.dataset.name === "いと").dataset.store, "s1");
+      assert.equal(entriesFor("2026-09-05", "昼").find(row => row.dataset.name === "いと").dataset.store, "s1");
+    }
+    const effective = api.buildEffectiveSchedule(schedule.schedule, snapshot);
+    const forecastRows = new Map(datesAndShifts.map(([key, shift]) => [
+      `${key}|${shift}`, entriesFor(key, shift).find(row => row.dataset.name === "いと").dataset.store ?? ""
+    ]));
+    const key = "2026-09-07";
+    const shift = "昼";
+    const members = effective[key][shift].map(entry => entry.name);
+    const pins = api.eventStorePins({ insights, entries: effective[key][shift],
+      homeStore: schedule.homeStore, unpostedMaids: new Set(schedule.unpostedMaids) });
+    const base = api.getStoreOutlook({ insights, dateKey: key, shift, lastActualDate: api.lastActualDateOf(insights) });
+    const expectedOutlook = api.applyEventCertainty(insights, api.applyPostedTilt(insights,
+      api.applyHomeStaff(insights, base, members, schedule.homeStore, schedule.kitchenStaff), shift, members), pins);
+    assert.ok(withClass(byDay(key), "store-outlook")[0].title.includes(expectedOutlook.summary),
+      "forecast counts/outlook read the same effective plans, without changing the kernel");
+    selectViewMode("maid");
+    const plan = withClass(calendar, "maid-plan").find(node => node.dataset.name === "いと");
+    assertSources(plan);
+    const profile = withClass(plan, "maid-plan-name")[0];
+    assert.equal(withClass(profile, "half-month-source").length, 0, "the persona profile heading is unchanged");
+    const stops = withClass(plan, "maid-plan-stop");
+    assert.ok(stops.some(row => row.dataset.date === "2026-09-02" && row.dataset.shift === "昼"),
+      "curated opposite shift is still in the final itinerary");
+    for (const [date, currentShift] of datesAndShifts) {
+      const stop = stops.find(row => row.dataset.date === date && row.dataset.shift === currentShift);
+      assert.ok(stop);
+      assert.equal(withClass(stop, "maid-plan-when")[0].href, undefined);
+      assert.equal(withClass(stop, "maid-plan-where")[0].dataset.store, forecastRows.get(`${date}|${currentShift}`),
+        "maid and forecast store placements agree");
+    }
+    selectViewMode("calendar");
+    const artBefore = withClass(calendar, "event-art").map(node => node.dataset.maid);
+    for (const [date, currentShift] of datesAndShifts) {
+      openDate(date);
+      assertSources(content, [[date, currentShift]]);
+      if (date === "2026-09-02") {
+        const sections = withClass(content, "shift-section");
+        assert.equal(rows(sections[0]).find(row => row.dataset.name === "いと").dataset.store, "s2");
+        assert.equal(rows(sections[1]).find(row => row.dataset.name === "いと").dataset.store, "s1");
+      }
+      await dispatch("close-day-dialog", "click");
+    }
+    assert.deepEqual(withClass(calendar, "event-art").map(node => node.dataset.maid), artBefore,
+      "half-month refresh never invents featured events or artwork");
+
+    elementById("date-from").value = "2026-09-01";
+    elementById("date-to").value = "2026-09-15";
+    await dispatch("date-to", "change");
+    assert.ok(!elementById("schedule-pending-note").title.includes("いと"));
+    await dispatch("clear-all", "click");
+    const selected = walk(elementById("maid-checkboxes")).find(node => node.tagName === "INPUT" && node.value === "いと");
+    selected.checked = true;
+    listeners.find(entry => entry.element === selected && entry.type === "change").fn({ target: selected });
+    const filters = () => JSON.stringify([
+      elementById("date-from").value, elementById("date-to").value,
+      viewModeInputs.map(input => [input.value, input.checked]),
+      walk(elementById("maid-checkboxes")).filter(node => node.tagName === "INPUT").map(input => [input.value, input.checked])
+    ]);
+    const beforeFilters = filters();
+    openDate("2026-09-07");
+    let halfLink = withClass(content, "half-month-source")[0];
+    halfLink.focus();
+    content.scrollTop = 77;
+    const daySection = withClass(content, "shift-section")[0];
+    const nightSection = withClass(content, "shift-section")[1];
+    halfPayload = copy(snapshot);
+    halfPayload.checkedAt = "2026-09-07T00:00:00Z";
+    halfPayload.schedules[0].observedAt = "2026-09-07T00:00:00Z";
+    halfPayload.lastRun.status = "budget-exhausted";
+    await dispatch("refresh-half-month", "click");
+    assert.equal(withClass(content, "shift-section")[0], daySection, "metadata-only refresh does not redraw a popup");
+    assert.equal(documentShim.activeElement, halfLink);
+    assert.equal(content.scrollTop, 77);
+    const reorder = value => Array.isArray(value) ? value.slice().reverse().map(reorder)
+      : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).reverse()
+        .map(([field, item]) => [field, reorder(item)])) : value;
+    halfPayload = reorder(halfPayload);
+    await dispatch("refresh-half-month", "click");
+    assert.equal(withClass(content, "shift-section")[0], daySection, "wire key/day order is not a presentation change");
+    assert.equal(documentShim.activeElement, halfLink);
+    halfPayload.schedules[0].days.push({ date: "2026-09-08", shifts: ["昼"] });
+    await dispatch("refresh-half-month", "click");
+    assert.equal(withClass(content, "shift-section")[0], daySection, "unrelated dates do not replace popup rows");
+    assert.equal(withClass(content, "shift-section")[1], nightSection);
+    const sameDayId = "2097000000000000099";
+    personalPayload = { ...savedPersonal, posts: [...savedPersonal.posts, {
+      id: sameDayId, url: `https://x.com/${handle}/status/${sameDayId}`,
+      name: "いと", authorId: source.authorId, authorScreenName: handle, date: key,
+      createdAt: `${key}T02:00:00Z`, observedAt: `${key}T03:00:00Z`, events: [],
+      links: [{ scope: "昼", status: "work" }]
+    }] };
+    await dispatch("refresh-personal", "click");
+    halfLink = withClass(content, "half-month-source")[0];
+    assert.equal(documentShim.activeElement, halfLink, "source-link keyboard focus survives actual row updates");
+    assert.equal(withClass(content, "maid-name")[0].href, personalPayload.posts.at(-1).url);
+    assert.notEqual(withClass(content, "maid-name")[0].href, halfLink.href, "same-day and half-month links are separate");
+    assert.equal(content.scrollTop, 77);
+    assert.equal(filters(), beforeFilters);
+    const retained = withClass(content, "shift-section")[0];
+    sandbox.console.error = () => {};
+    for (const failure of ["http", "json", "schema"]) {
+      errorMode = failure;
+      if (failure === "schema") halfPayload.schedules[0].days[0].shifts = ["不明"];
+      await dispatch("refresh-half-month", "click");
+      assert.equal(elementById("half-month-status").dataset.error, "true");
+      assert.match(elementById("half-month-status").textContent, /半月予定の読込に失敗.*保存済みの表示は維持/);
+      assert.equal(withClass(content, "shift-section")[0], retained, "invalid fetch preserves last valid facts and DOM");
+      assert.equal(documentShim.activeElement, halfLink);
+      assert.equal(content.scrollTop, 77);
+      assert.equal(filters(), beforeFilters);
+    }
+    sandbox.console.error = originalError;
+    errorMode = null;
+    halfPayload = copy(snapshot);
+    await dispatch("refresh-half-month", "click");
+    assert.equal(elementById("half-month-status").dataset.error, "false");
+    assert.equal(dialog.open, true);
+    const replacementId = (BigInt(id) + 20n).toString();
+    halfPayload.schedules[0].id = replacementId;
+    halfPayload.schedules[0].url = `https://x.com/${handle}/status/${replacementId}`;
+    await dispatch("refresh-half-month", "click");
+    assert.equal(documentShim.activeElement, withClass(content, "half-month-source")[0],
+      "a newer source retains focus on the same date/shift provenance link");
+    assert.equal(documentShim.activeElement.href, halfPayload.schedules[0].url);
+    assert.equal(content.scrollTop, 77);
+    await dispatch("close-day-dialog", "click");
+    selectViewMode("roster");
+    const listSource = withClass(calendar, "half-month-source").find(link => link.dataset.date === key);
+    listSource.focus();
+    calendar.scrollTop = 89;
+    calendar.scrollLeft = 21;
+    halfPayload.schedules[0].days.push({ date: "2026-09-08", shifts: ["昼"] });
+    await dispatch("refresh-half-month", "click");
+    assert.equal(documentShim.activeElement.dataset.focusKey, listSource.dataset.focusKey);
+    assert.equal(calendar.scrollTop, 89);
+    assert.equal(calendar.scrollLeft, 21);
+    assert.equal(windowShim.scrollY, 345);
+    assert.equal(windowShim.scrollX, 12);
+    const unchangedTree = calendar.children[0];
+    halfPayload.lastRun.status = "no-new";
+    await dispatch("refresh-half-month", "click");
+    assert.equal(calendar.children[0], unchangedTree, "status-only timer refresh cannot redraw a list");
+
+    const absence = {
+      ...personalPayload.posts.at(-1), id: "2097000000000000100", createdAt: `${key}T04:00:00Z`,
+      observedAt: `${key}T05:00:00Z`, url: `https://x.com/${handle}/status/2097000000000000100`,
+      links: [{ scope: "昼", status: "withdrawn" }],
+      events: [{ kind: "absence", shift: "昼", excerpt: "synthetic cancellation" }]
+    };
+    personalPayload = { ...personalPayload, posts: [...personalPayload.posts, absence] };
+    await dispatch("refresh-personal", "click");
+    for (const mode of ["roster", "forecast", "maid", "calendar"]) {
+      selectViewMode(mode);
+      if (mode === "calendar") openDate(key);
+      const root = mode === "calendar" ? content : calendar;
+      assert.equal(withClass(root, "half-month-source").filter(link =>
+        link.dataset.date === key && link.dataset.shift === "昼").length, 0,
+      `${mode}: a same-day cancellation suppresses the half-month row and its source`);
+      if (mode === "calendar") await dispatch("close-day-dialog", "click");
+    }
+    const returned = { ...absence, id: "2097000000000000101", createdAt: `${key}T06:00:00Z`,
+      observedAt: `${key}T07:00:00Z`, url: `https://x.com/${handle}/status/2097000000000000101`,
+      links: [{ scope: "昼", status: "work" }],
+      events: [{ kind: "return", shift: "昼", excerpt: "synthetic return" }] };
+    personalPayload = { ...personalPayload, posts: [...personalPayload.posts, returned] };
+    await dispatch("refresh-personal", "click");
+    selectViewMode("roster");
+    const returnRow = entriesFor(key, "昼").find(row => row.dataset.name === "いと");
+    assert.ok(returnRow);
+    assert.equal(withClass(returnRow, "half-month-source").length, 1);
+    assert.equal(withClass(returnRow, "maid-name")[0].href, returned.url);
+
+    await dispatch("reset-filters", "click");
+    const cooks = schedule.kitchenStaff.map((name, index) => {
+      const account = insights.maidTendency[name].x;
+      const cookId = (BigInt(source.id) + BigInt(index + 1)).toString();
+      return { ...source, name, id: cookId, authorId: String(200 + index), authorScreenName: account,
+        url: `https://x.com/${account}/status/${cookId}`, days: [{ date: key, shifts: ["昼"] }] };
+    });
+    halfPayload = { ...copy(snapshot), schedules: [copy(source), ...cooks] };
+    await dispatch("refresh-half-month", "click");
+    selectViewMode("forecast");
+    const cookRows = entriesFor(key, "昼").filter(row => schedule.kitchenStaff.includes(row.dataset.name));
+    assert.equal(cookRows.length, 5);
+    assert.ok(cookRows.every(row => row.classList.contains("is-kitchen")));
+    elementById("hide-kitchen").checked = true;
+    await dispatch("hide-kitchen", "change");
+    assert.equal(entriesFor(key, "昼").filter(row => schedule.kitchenStaff.includes(row.dataset.name)).length, 0);
+    assert.equal(entriesFor(key, "昼").filter(row => row.dataset.name === "いと").length, 1);
+    assert.equal(JSON.stringify([schedule, insights, savedOfficial, savedPersonal]), savedBefore,
+      "manual, historical, official and personal source data are never modified");
+    assert.ok(requests.filter(url => url === "data/half-month-schedules.json").length >= 10);
+  } finally {
+    sandbox.console.error = originalError;
+    errorMode = null;
+    halfPayload = emptyHalf;
+    personalPayload = windowShim.PERSONAL_SHIFTS;
+    officialPayload = windowShim.OBSERVED_SHIFTS;
+    await dispatch("close-day-dialog", "click");
+    await dispatch("refresh-half-month", "click");
+    await dispatch("refresh-personal", "click");
+    await dispatch("refresh-observations", "click");
+    windowShim.fetch = originalFetch;
+    content.querySelectorAll = originalQuery;
+    calendar.querySelectorAll = originalCalendarQuery;
+    dialog.contains = originalContains;
+    windowShim.scrollTo = originalScroll;
+    windowShim.scrollX = originalScrollX;
+    windowShim.scrollY = originalScrollY;
+  }
+});
+
+test("half-month initial loading shares the snapshot lifecycle without unsolicited redraws", async () => {
+  const empty = JSON.parse(fs.readFileSync(path.join(repo, "data", "half-month-schedules.json"), "utf8"));
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  const initialize = (bootstrap) => {
+    const nodes = new Map([...declaredIds].map(id => [id, makeElement("div")]));
+    const modes = viewModeValues.map(value => Object.assign(makeElement("input"), { value }));
+    const document = {
+      ...documentShim, activeElement: null,
+      querySelector: selector => nodes.get(selector.slice(1)),
+      querySelectorAll: () => modes, getElementById: id => nodes.get(id),
+      body: makeElement("body"), documentElement: makeElement("html")
+    };
+    const requests = [];
+    const timers = [];
+    let release;
+    let payload = empty;
+    const window = {
+      ...windowShim, SCHEDULE_DATA: JSON.parse(JSON.stringify(schedule)), STORE_INSIGHTS: JSON.parse(JSON.stringify(insights)),
+      PERSONAL_SHIFTS: { ...windowShim.PERSONAL_SHIFTS, posts: [] },
+      OBSERVED_SHIFTS: { ...windowShim.OBSERVED_SHIFTS, posts: [] },
+      location: { hash: "", search: "" }, localStorage: { getItem: () => null, setItem() {} },
+      fetch: (url, options) => {
+        requests.push([url, options.cache]);
+        return new Promise(resolve => {
+          release = () => resolve({ ok: true, json: async () => JSON.parse(JSON.stringify(payload)) });
+        });
+      },
+      setInterval: (callback, milliseconds) => { timers.push({ callback, milliseconds }); }
+    };
+    if (bootstrap) window.HALF_MONTH_SCHEDULES = bootstrap;
+    const context = { ...sandbox, window, document, console };
+    context.globalThis = context;
+    vm.createContext(context);
+    vm.runInContext(fs.readFileSync(path.join(repo, "app.js"), "utf8"), context);
+    return { nodes, document, requests, timers, release: () => release(), setPayload: value => { payload = value; } };
+  };
+  const bad = initialize({ ...empty, complete: true });
+  assert.equal(bad.nodes.get("half-month-status").dataset.error, "true");
+  assert.match(bad.nodes.get("half-month-status").textContent, /半月予定の読込に失敗/);
+  assert.equal(bad.requests.length, 0, "invalid injected source does not trigger external requests");
+  const loaded = initialize();
+  assert.deepEqual(loaded.requests, [["data/half-month-schedules.json", "no-store"]]);
+  assert.equal(loaded.nodes.get("half-month-status").dataset.loaded, "false");
+  assert.equal(loaded.nodes.get("refresh-half-month").disabled, true);
+  assert.equal(loaded.timers.length, 1);
+  assert.equal(loaded.timers[0].milliseconds, 60000, "same existing snapshot cadence");
+  const button = loaded.nodes.get("refresh-half-month");
+  await listeners.find(entry => entry.element === button && entry.type === "click").fn();
+  assert.equal(loaded.requests.length, 1, "a pending initial request cannot be duplicated");
+  loaded.release();
+  await flush();
+  assert.equal(loaded.nodes.get("half-month-status").dataset.loaded, "true");
+  assert.equal(button.disabled, false);
+  assert.equal(loaded.nodes.get("half-month-status").dataset.error, "false");
+  const tree = loaded.nodes.get("calendar").children[0];
+  loaded.setPayload({ ...empty, checkedAt: "2026-09-07T00:00:00Z", lastRun: { status: "no-results" } });
+  loaded.timers[0].callback();
+  loaded.release();
+  await flush();
+  assert.equal(loaded.nodes.get("calendar").children[0], tree, "metadata-only timer ticks do not redraw");
+  assert.match(loaded.nodes.get("half-month-status").textContent, /候補なし/);
+  assert.deepEqual(loaded.requests, [
+    ["data/half-month-schedules.json", "no-store"], ["data/half-month-schedules.json", "no-store"]
+  ]);
+  loaded.document.hidden = true;
+  loaded.timers[0].callback();
+  loaded.document.hidden = false;
+  loaded.nodes.get("day-dialog").open = true;
+  loaded.timers[0].callback();
+  assert.equal(loaded.requests.length, 2, "hidden pages/open popups follow the existing polling policy");
+});
+
 console.log(
   `Headless render valid: ${dayCells.length} day cells, ${shiftSections.length} shift sections, ` +
     `${maidEntries.length} maid entries sorted by assigned store, ` +
