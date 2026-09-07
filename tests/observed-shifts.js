@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const api = require("../app.js");
 const { test } = require("node:test");
-const { emptyHalfMonthSchedules } = require("./fixtures/half-month-schedules.js");
+const { emptyHalfMonthSchedules, halfMonthEvidence } = require("./fixtures/half-month-schedules.js");
 const context = { window: {} };
 vm.createContext(context);
 for (const file of ["schedule.js", "store-insights.js"]) {
@@ -366,7 +366,9 @@ test("effective plans are an immutable manual/half union, never event or attenda
   assert.deepEqual(Object.entries(pureHalf).flatMap(([date, day]) => Object.keys(day).map(shift => [date, shift])), halfDays);
   assert.equal(api.dayHasPersonStoreEvidence(insights, null, "2026-09-07"), false);
   assert.equal(api.personalPostLink({ personal: { posts: [] }, insights, observations: null,
-    dateKey: "2026-09-07", shift: "昼", name: "いと" }), null, "a half source never becomes a same-day link");
+    dateKey: "2026-09-07", shift: "昼", name: "いと" }), null, "a plan is not promoted to same-day evidence");
+  assert.equal(api.rosterPostLink({ schedule: effective, personal: { posts: [] }, insights,
+    dateKey: "2026-09-07", shift: "昼", name: "いと" }).kind, "half-month-schedule");
   const replaced = halfFeed([halfSource("いと", { days: [{ date: "2026-09-08", shifts: ["昼"] }] })]);
   const changed = api.buildEffectiveSchedule(manual, replaced);
   assert.equal(changed["2026-09-10"], undefined, "producer's current winner replaces only automatic facts");
@@ -374,9 +376,86 @@ test("effective plans are an immutable manual/half union, never event or attenda
   assert.equal(JSON.stringify([manual, snapshot, schedule, insights]), beforeInputs);
 });
 
+test("roster post links prefer verified own day posts without weakening same-day history", () => {
+  const source = halfSource();
+  const effective = api.buildEffectiveSchedule(schedule.schedule, halfFeed([source]));
+  const post = {
+    id: "2097000000000000099", url: `https://x.com/${source.authorScreenName}/status/2097000000000000099`,
+    name: source.name, authorId: source.authorId, authorScreenName: source.authorScreenName,
+    date: "2026-09-07", createdAt: "2026-09-07T02:00:00Z", observedAt: "2026-09-07T03:00:00Z",
+    events: [], links: [{ scope: "昼", status: "work" }]
+  };
+  const options = { schedule: effective, insights, dateKey: post.date, shift: "昼", name: source.name };
+  const before = JSON.stringify([effective, post]);
+  const select = (posts, extra = {}) => api.rosterPostLink({ ...options, personal: { posts }, ...extra });
+  assert.deepEqual(select([post]), { post, kind: "personal" });
+  for (const change of [
+    { date: "2026-09-06" },
+    { name: "あむ" },
+    { authorScreenName: "someone_else", url: "https://x.com/someone_else/status/2097000000000000099" },
+    { url: `https://x.com/${source.authorScreenName}` },
+    { url: "https://x.com/search?q=work" },
+    { links: [{ scope: "夜", status: "work" }] }
+  ]) {
+    const selected = select([{ ...post, ...change }]);
+    assert.equal(selected.kind, "half-month-schedule", JSON.stringify(change));
+    assert.equal(selected.post.url, source.url);
+  }
+  for (const status of ["withdrawn", "conflict"]) {
+    const later = { ...post, id: "2097000000000000100",
+      url: `https://x.com/${source.authorScreenName}/status/2097000000000000100`,
+      createdAt: "2026-09-07T04:00:00Z", observedAt: "2026-09-07T05:00:00Z",
+      links: [{ scope: "昼", status }]
+    };
+    assert.equal(api.personalPostLink({ ...options, personal: { posts: [post, later] } }), null);
+    assert.equal(select([post, later]).kind, "half-month-schedule", "never revive the superseded day post");
+    assert.equal(select([post, later], { schedule: {} }), null, "no profile fallback after withdrawal/conflict");
+  }
+  const placement = { ...post, events: [{ kind: "placement", shift: "昼", storeId: "s2", excerpt: "synthetic placement" }] };
+  const { official } = halfMonthEvidence({ observedSameDay: true });
+  assert.equal(select([placement], { observations: official }).kind, "half-month-schedule",
+    "a later contradictory official post still suppresses stale personal guidance");
+  assert.equal(JSON.stringify([effective, post]), before);
+});
+
+test("half-post fallback is person/date/shift-bound, never a profile, search or another author's post", () => {
+  for (const name of ["いと", "あむ", ...schedule.kitchenStaff]) {
+    const source = halfSource(name);
+    const effective = api.buildEffectiveSchedule(schedule.schedule, halfFeed([source]));
+    const options = { schedule: effective, insights, personal: { posts: [] }, name };
+    for (const [dateKey, shift] of halfDays) {
+      const result = api.rosterPostLink({ ...options, dateKey, shift });
+      assert.equal(result.post.url, source.url);
+      assert.equal(result.kind, "half-month-schedule");
+    }
+    for (const [dateKey, shift] of [
+      ["2026-09-02", "昼"], ["2026-09-07", "夜"], ["2026-09-08", "昼"],
+      ["2026-09-17", "昼"], ["2026-09-07", "unspecified"]
+    ]) {
+      assert.equal(api.rosterPostLink({ ...options, dateKey, shift }), null, `${name} ${dateKey} ${shift}`);
+    }
+    const otherName = name === "いと" ? "あむ" : "いと";
+    for (const change of [
+      { name: otherName },
+      { sourceKind: "personal" },
+      { period: { from: "2026-09-16", to: "2026-09-30" } },
+      { id: Number(source.id) },
+      { url: `https://x.com/${source.authorScreenName}` },
+      { url: "https://x.com/search?q=work" },
+      { url: source.url + "?tracking=1" },
+      { authorScreenName: "someone_else", url: `https://x.com/someone_else/status/${source.id}` }
+    ]) {
+      const wrong = { "2026-09-07": { "昼": [{ name, halfMonthSources: [{ ...source, ...change }] }] } };
+      assert.equal(api.rosterPostLink({ ...options, schedule: wrong, dateKey: "2026-09-07", shift: "昼" }), null,
+        `${name}: ${JSON.stringify(change)}`);
+    }
+  }
+});
+
 test("half union preserves curated, official, personal absence/return and kitchen semantics", () => {
-  const publicObserved = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "data", "observed-shifts.json"), "utf8"));
-  const publicPersonal = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "data", "personal-shifts.json"), "utf8"));
+  const { official: publicObserved, personal: publicPersonal } = halfMonthEvidence();
+  api.validateObservations(publicObserved);
+  api.validatePersonalShifts(publicPersonal);
   const inputBefore = JSON.stringify([schedule, insights, publicObserved, publicPersonal]);
   const effective = api.buildEffectiveSchedule(schedule.schedule, halfFeed());
   const resolve = (dateKey, shift, planned = effective, personal = publicPersonal) => api.resolveShiftRoster({
@@ -429,6 +508,55 @@ test("half union preserves curated, official, personal absence/return and kitche
   "all five kitchen members remain excluded from floor headcounts");
   assert.match(cookOutlook.summary, /キッチンにゃんこ5人.*この数に入れていません/);
   assert.equal(JSON.stringify([schedule, insights, publicObserved, publicPersonal]), inputBefore);
+});
+
+test("half plans retain newer official evidence without turning an absence conflict into a return", () => {
+  const { official, personal } = halfMonthEvidence({ observedSameDay: true });
+  api.validateObservations(official);
+  api.validatePersonalShifts(personal);
+  const baseline = halfMonthEvidence();
+  assert.equal(baseline.official.posts.some(post => post.date === "2026-09-07"), false);
+  assert.notEqual(official.posts[0], baseline.official.posts[0], "fixture calls never share mutable posts");
+  assert.notEqual(personal.posts[0].events, baseline.personal.posts[0].events);
+  const effective = api.buildEffectiveSchedule(schedule.schedule, halfFeed());
+  const key = "2026-09-07";
+  const source = official.posts.find(post => post.date === key);
+  const post = { id: "2097000000000000010", url: "https://x.com/half_fixture/status/2097000000000000010",
+    name: "いと", authorId: "123456789", authorScreenName: "half_fixture", date: key,
+    createdAt: `${key}T02:00:00Z`, observedAt: `${key}T05:00:00Z`,
+    events: [{ kind: "absence", shift: "昼", excerpt: "synthetic cancellation" }] };
+  const inputBefore = JSON.stringify([official, personal, effective, post]);
+  const resolve = (posts) => api.resolveShiftRoster({
+    insights, observations: official, personal: { ...personal, posts }, dateKey: key, shift: "昼",
+    schedule: effective, roster: schedule.roster, nameCorrections: schedule.observationNameCorrections,
+    personalEventAdditions: schedule.personalEventAdditions
+  });
+  const current = resolve([]);
+  assert.equal(current.entries.find(entry => entry.name === "いと").observed, true);
+  assert.deepEqual(current.observed.byMaid.get("いと").sources, [source]);
+  assert.deepEqual(current.observed.byMaid.get("いと").storeIds, ["s1"]);
+  const conflict = resolve([post]);
+  const entry = conflict.entries.find(entry => entry.name === "いと");
+  assert.ok(entry, "a newer contradictory official post must not silently erase the person");
+  assert.equal(entry.halfMonthSources.length, 1);
+  assert.equal(entry.personalNotice.conflict, true);
+  assert.equal(entry.personalNotice.returned, false, "official presence is not an implicit personal return");
+  assert.equal(entry.personalNotice.storeId, null);
+  assert.equal(conflict.observed.byMaid.has("いと"), false, "conflicting evidence cannot confirm a shop");
+  assert.deepEqual(conflict.observed.posts, [source], "original official evidence remains inspectable");
+  assert.deepEqual(entry.personalNotice.sources, [post]);
+  assert.equal(api.dayHasPersonStoreEvidence(insights, official, key, { posts: [post] }), true);
+  const later = { ...post, createdAt: `${key}T04:00:00Z` };
+  assert.equal(resolve([later]).entries.some(entry => entry.name === "いと"), false,
+    "an absence newer than the official post still cancels the half plan");
+  const returned = { ...later, events: [{ kind: "return", shift: "昼", excerpt: "synthetic return" }] };
+  const restored = resolve([post, { ...returned, id: "2097000000000000011",
+    url: "https://x.com/half_fixture/status/2097000000000000011" }]);
+  assert.equal(restored.entries.filter(entry => entry.name === "いと").length, 1);
+  assert.equal(restored.entries.find(entry => entry.name === "いと").halfMonthSources.length, 1);
+  assert.equal(restored.personal.byMaid.get("いと").returned, true);
+  assert.equal(restored.personal.byMaid.get("いと").storeId, null, "a storeless return cannot revive an old shop");
+  assert.equal(JSON.stringify([official, personal, effective, post]), inputBefore);
 });
 const makePost = (id, storeId, names) => ({
   id, url: `https://x.com/akibazettai/status/${id}`,

@@ -265,13 +265,7 @@
     return entries.map((entry) => {
       const workTimingNote = resolveWorkTiming({ ...options, name: entry.name });
       if (!workTimingNote) return entry;
-      const sources = entry.halfMonthSources ?? [];
-      const source = workTimingNote?.source;
-      return {
-        ...entry, workTimingNote,
-        ...(source?.sourceKind === "half-month-schedule" && !sources.some((item) => item.id === source.id)
-          ? { halfMonthSources: [...sources, { ...source, period: halfMonthPeriod(options.dateKey), timingOnly: true }] } : {})
-      };
+      return { ...entry, workTimingNote };
     });
   }
 
@@ -705,6 +699,25 @@
       }
     }
     return source;
+  }
+
+  function rosterPostLink({ schedule, ...options }) {
+    const post = personalPostLink(options);
+    if (post) return { post, kind: "personal" };
+    const { insights, dateKey, shift, name } = options;
+    if (!SHIFT_NAMES.includes(shift)) return null;
+    const canonical = displayAliases(insights).get(name) ?? name;
+    const account = insights?.maidTendency?.[canonical]?.x;
+    // Only use provenance attached to this exact person/date/shift, not a period-wide lookup.
+    const source = schedule?.[dateKey]?.[shift]?.find((entry) => entry.name === canonical)
+      ?.halfMonthSources?.find((source) => source.name === canonical &&
+        source.sourceKind === "half-month-schedule" &&
+        source.period?.from <= dateKey && dateKey <= source.period?.to &&
+        typeof source.id === "string" && /^[1-9][0-9]{9,24}$/.test(source.id) &&
+        typeof source.authorScreenName === "string" && /^[A-Za-z0-9_]{1,15}$/.test(source.authorScreenName) &&
+        source.url === `https://x.com/${source.authorScreenName}/status/${source.id}` &&
+        (!account || source.authorScreenName.toLowerCase() === account.toLowerCase()));
+    return source ? { post: source, kind: "half-month-schedule" } : null;
   }
 
   function observedTrainee(insights, name, key) {
@@ -2763,6 +2776,7 @@
       personalShift,
       personalPostsForView,
       personalPostLink,
+      rosterPostLink,
       resolveShiftRoster,
       validatePersonalShifts,
       validateHalfMonthSchedules,
@@ -3141,23 +3155,26 @@
     return link;
   }
 
-  function appendHalfMonthSources(target, sources, key, shift, name) {
-    for (const source of sources ?? []) {
-      const link = document.createElement("a");
-      link.className = "half-month-source";
-      link.href = source.url;
+  function createRosterPostLabel(name, key, shift) {
+    const source = rosterPostLink({
+      schedule: effectiveSchedule, personal: personalShifts, insights, observations,
+      dateKey: key, shift, name, nameCorrections: data.observationNameCorrections,
+      personalEventAdditions: data.personalEventAdditions
+    });
+    const link = document.createElement(source ? "a" : "span");
+    if (source) {
+      link.href = source.post.url;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
-      link.textContent = "予定の出典";
-      link.dataset.sourceKind = source.sourceKind;
+      link.dataset.sourceKind = source.kind;
       link.dataset.name = name;
       link.dataset.date = key;
       link.dataset.shift = shift;
-      link.dataset.focusKey = `${key}|${shift}|${name}|${source.timingOnly ? `half-month-timing|${source.id}` : "half-month"}`;
-      link.title = `${displayName(name)}：${key} ${shift}の${source.timingOnly ? "勤務時間の根拠となる" : ""}半月予定表（${source.period.from}〜${source.period.to}）を開く。当日の出勤確認ではありません`;
+      link.title = `${displayName(name)}：${source.kind === "personal"
+        ? "本人の当日投稿を開く" : "予定表の投稿を開く（当日の出勤確認ではありません）"}`;
       link.setAttribute("aria-label", link.title);
-      target.append(link);
     }
+    return link;
   }
 
   function personalNoticeLabel(person) {
@@ -3290,30 +3307,21 @@
     item.dataset.name = entry.name;
     item.dataset.evidence = evidence;
     if (storeId) item.dataset.store = storeId;
-    const source = sameDayPersonalPost(entry.name, key, shift);
-    const href = source?.url;
-    const name = document.createElement(href ? "a" : "span");
+    const name = createRosterPostLabel(entry.name, key, shift);
     name.className = "maid-name";
     name.textContent = displayName(entry.name);
     name.dataset.name = entry.name;
     name.dataset.focusKey = `${key}|${shift}|${entry.name}`;
-    if (href) {
-      name.href = href;
-      name.target = "_blank";
-      name.rel = "noopener noreferrer";
-      name.title = `${displayName(entry.name)}：本人の当日投稿を開く`;
-      name.setAttribute("aria-label", name.title);
-    } else {
+    if (!name.href) {
       name.tabIndex = -1;
     }
     item.append(name);
     const timingDescription = workTimingDescription(entry.workTimingNote);
     appendWorkTiming(item, entry.workTimingNote);
-    appendHalfMonthSources(item, entry.halfMonthSources, key, shift, entry.name);
     const descriptions = note ? [note] : [];
     if (timingDescription) {
       descriptions.push(timingDescription);
-      if (href) {
+      if (name.href) {
         name.title += `。${timingDescription}`;
         name.setAttribute("aria-label", name.title);
       }
@@ -4479,32 +4487,19 @@
     return block;
   }
 
-  function sameDayPersonalPost(name, key, shift) {
-    return personalPostLink({
-      personal: personalShifts, insights, observations, dateKey: key, shift, name,
-      nameCorrections: data.observationNameCorrections,
-      personalEventAdditions: data.personalEventAdditions
-    });
-  }
-
   function createMaidStop(stop, name) {
     const item = document.createElement("li");
     item.className = `maid-plan-stop is-${stop.state ?? "unknown"}`;
     item.dataset.date = stop.dateKey;
     item.dataset.shift = stop.shift;
-    const source = sameDayPersonalPost(name, stop.dateKey, stop.shift);
-    const when = document.createElement(source ? "a" : "span");
+    const when = createRosterPostLabel(name, stop.dateKey, stop.shift);
     when.className = "maid-plan-when";
     when.dataset.focusKey = `${stop.dateKey}|${stop.shift}|${name}|when`;
     const [, month, date] = stop.dateKey.split("-").map(Number);
     // 曜日はカレンダーと同じ書き方で添える。「9/3」だけでは何曜日か分からない。
     const weekday = weekdays[new Date(`${stop.dateKey}T00:00:00`).getDay()];
     when.textContent = `${month}/${date}(${weekday}) ${stop.shift}`;
-    if (source) {
-      when.href = source.url;
-      when.target = "_blank";
-      when.rel = "noopener noreferrer";
-      when.title = `${displayName(name)}：本人の当日投稿を開く`;
+    if (when.href) {
       when.setAttribute("aria-label", `${when.textContent} ${when.title}`);
     }
     const where = document.createElement("span");
@@ -4515,7 +4510,6 @@
       : stop.storeId ? storeShort(insights, stop.storeId) : "未発表";
     item.append(when, where);
     appendWorkTiming(item, stop.workTimingNote);
-    appendHalfMonthSources(item, stop.halfMonthSources, stop.dateKey, stop.shift, name);
     const evidence = document.createElement("span");
     evidence.className = "maid-plan-evidence";
     evidence.textContent = stop.observed ? "記録" : stop.recorded ? "実績"
@@ -4557,7 +4551,7 @@
     }
     const timingDescription = workTimingDescription(stop.workTimingNote);
     const explanation = stopExplanation(stop) + (timingDescription ? `${timingDescription}。` : "");
-    if (source && timingDescription) {
+    if (when.href && timingDescription) {
       when.title += `。${timingDescription}`;
       when.setAttribute("aria-label", `${when.textContent} ${when.title}`);
     }
