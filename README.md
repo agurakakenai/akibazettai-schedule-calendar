@@ -1202,6 +1202,8 @@ wireでは昼終了／夜開始に絞り、本人は最大8 facts、半月は1�
 
 独立documentは`kind: "half-month-timing-selection-approval-v1"`／`stage: "selection-only"`で、`independentGoldHash`も保持します。hashはUTF-8・キー順整列・空白なし・末尾改行なしのcanonical JSONに対するSHA256です。最終GOは別の`halfMonthSelectionApply`（`kind: "half-month-timing-selection-apply-v1"`／`stage: "apply-exact"`）に、選択承認hashと完成したentry全体の`entryHash`を結び付けます。これはentry自身には埋め込まず、適用後のprivate auditへ保存します。両documentがあっても、外側の`expectedMainSHA`／`expectedStateSHA`・既存lease/CAS・精算済みusage検証は必要です。
 
+解析後に定期処理の運用状態が更新された場合、selected entryだけは`expectedApplySubjectHash`で最新の適用CASを別に固定できます。原解析の`expectedSubjectHash`・packet・attestationは変更せず、対象source・前任revision・basis・core・timingの検証を維持します。両hashは適用履歴と最終entry承認へ結び付き、通常の適用・解析前経路を緩めません。
+
 本人の補足限定適用も、raw再抽出の完全一致と、明示的に選択したchannelを非破壊mergeした後のcore保全を区別します。空`events`は配置の削除命令ではありません。候補builderは元raw全体を`personal-saved.validate_selection_core()`で再groundingし、非空のcore/linkに取消・別日shift・配置や時刻変更などの不一致がないことを確認してから、非選択の比較channelを`null`へ投影します。これは適用scopeの指定で、元rawが`null`だったという記録ではありません。既存applyはhashから原文を復元できないため、この投影前検証と親の明示承認はcaller側の必須条件です。勤務時間だけを選択した承認は元raw・失敗した完全比較・一意の実usageを別証跡として保持し、既存の`work-timing-only`検証を通します。語だけを確認した`early/null`を、原投稿に数字があることを理由に`16:00`へ書き換えません。
 
 ### GitHub Actionsから収集・公開する構成

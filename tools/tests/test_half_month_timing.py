@@ -232,6 +232,8 @@ class TimingOnlyTests(base.Offline):
         if 'selectionProof' in amendment:
             imported['selectionProof'] = copy.deepcopy(amendment['selectionProof'])
             imported['applyApproval'] = self.final_approval(entry)
+        if 'expectedApplySubjectHash' in entry:
+            imported['expectedApplySubjectHash'] = entry['expectedApplySubjectHash']
         keys = []
         for table in amendment['schedules']:
             revision = {'schedule': copy.deepcopy(table), 'source': copy.deepcopy(amendment['source']),
@@ -397,6 +399,174 @@ class TimingOnlyTests(base.Offline):
         facts.validate_state(restored)
         self.assertFalse(self.direct_apply_entry(restored, entry))
         self.assertEqual(self.fx.apply_timing(restored, entry), restored)
+
+    def scheduled_state(self):
+        state = copy.deepcopy(self.state)
+        checked = facts.stamp(base.NOW + dt.timedelta(seconds=20))
+        candidate = {field: self.source[field] for field in ('id', 'url', 'name', 'authorId', 'authorScreenName')}
+        candidate.update(searchCreatedAt=self.source['createdAt'], discoveredAt=checked,
+                         discoveryHash=facts.digest(b'scheduled-discovery'), priority=0,
+                         lastAttemptAt=checked, nextAttemptAt=facts.stamp(NOW))
+        state.update(checkedAt=checked, lastRun={'status': 'partial'}, pending=[candidate])
+        state['candidateHistory'][facts.candidate_key(candidate)] = {
+            'candidate': copy.deepcopy(candidate), 'reason': 'valid_schedule', 'checkedAt': checked}
+        period = state['schedules'][0]['period']
+        state['coverage'][period['from']] = {self.source['name']: {
+            'name': self.source['name'], 'handle': self.source['authorScreenName'], 'to': period['to'],
+            'lastSearchedAt': checked, 'nextCheckAt': facts.stamp(NOW),
+            'candidateIds': [self.source['id']], 'confirmedIds': [self.source['id']], 'reason': 'valid_schedule'}}
+        facts.validate_state(state)
+        return state
+
+    def test_selected_current_apply_cas_preserves_attested_origin_and_latest_operations(self):
+        baseline_usage = copy.deepcopy(self.usage)
+        exact = lambda value: json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+        for kind in ('native', 'imported'):
+            with self.subTest(kind=kind):
+                self.usage = copy.deepcopy(baseline_usage)
+                self.fx.usage = self.usage
+                if kind == 'native':
+                    packet, proof = self.native_packet(self.partial_pattern())
+                else:
+                    packet = self.packet(self.partial_pattern())
+                    proof = self.accounted_proof(packet)
+                approved = self.selection_for(packet)
+                self.selection_approvals[approved['approvalManifestHash']] = approved
+                current = json.loads(json.dumps(self.scheduled_state(), sort_keys=True))
+                apply_hash = facts.digest(current)
+                frozen = exact((packet, proof, approved, current, self.usage))
+                with self.assertRaisesRegex(ValueError, 'saved_half_month_subject_changed'):
+                    timing.to_selected_amendment(packet, proof, approved, current, self.usage)
+                with self.assertRaisesRegex(ValueError, 'saved_half_month_subject_changed'):
+                    timing.prepare_request(current, self.approval, self.source, self.text, self.images, self.usage)
+                entry = timing.to_selected_amendment(
+                    packet, proof, approved, current, self.usage, expected_apply_subject_hash=apply_hash)
+                self.assertEqual(entry['expectedSubjectHash'], facts.digest(self.state))
+                self.assertEqual(entry['expectedApplySubjectHash'], apply_hash)
+                self.assertNotEqual(entry['expectedSubjectHash'], apply_hash)
+                self.assertEqual(entry['amendment'], self.selected_entry(packet, proof, approved)['amendment'])
+                after = self.apply_entry(current, entry)
+                audit = after['savedImports'][facts.digest(entry['amendment'])]
+                self.assertEqual(audit['expectedApplySubjectHash'], apply_hash)
+                for key in after['receipts'][packet['analysis']['receiptId']]:
+                    self.assertEqual(after['revisions'][key]['timingAmendment']['expectedSubjectHash'],
+                                     entry['expectedSubjectHash'])
+                timing.validate_selection_delta(
+                    current, after, packet['analysis'], packet['source'], packet['schedules'],
+                    entry['amendment']['selectionProof'], reported=True)
+                for field in ('pending', 'checkedAt', 'lastRun', 'coverage', 'candidateHistory',
+                              'sources', 'identityBindings', 'lastSuccessAt'):
+                    self.assertEqual(exact(after[field]), exact(current[field]))
+                restored = json.loads(json.dumps(after, sort_keys=True))
+                facts.validate_state(restored)
+                timing.saved.validate_accounting(restored, self.usage, facts)
+                self.assertEqual(self.fx.apply_timing(restored, entry), restored)
+                self.assertFalse(self.direct_apply_entry(restored, entry))
+                self.assertEqual(exact((packet, proof, approved, current, self.usage)), frozen)
+                with self.assertRaisesRegex(ValueError, 'timing_response_pending'):
+                    timing.require_complete(packet, proof, self.usage)
+
+    def test_selected_apply_cas_is_exact_selection_only_and_replay_hash_bound(self):
+        packet = self.packet(self.partial_pattern())
+        proof = self.accounted_proof(packet)
+        approved = self.selection_for(packet)
+        self.selection_approvals[approved['approvalManifestHash']] = approved
+        ordinary = self.fx.entry(self.state)
+        current = self.scheduled_state()
+        entry = timing.to_selected_amendment(
+            packet, proof, approved, current, self.usage, expected_apply_subject_hash=facts.digest(current))
+        for wrong in ('f' * 64, facts.digest(self.state), 'not-a-hash'):
+            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
+                timing.to_selected_amendment(
+                    packet, proof, approved, current, self.usage, expected_apply_subject_hash=wrong)
+        stale = copy.deepcopy(current)
+        stale['checkedAt'] = facts.stamp(NOW)
+        with self.assertRaisesRegex(ValueError, 'saved_half_month_subject_changed'):
+            self.apply_entry(stale, entry)
+        with self.assertRaisesRegex(ValueError, 'timing_selection_apply_subject_changed'):
+            self.direct_apply_entry(stale, entry)
+        ordinary['expectedApplySubjectHash'] = facts.digest(current)
+        with self.assertRaisesRegex(ValueError, 'timing_selection_apply_subject_requires_selection'):
+            self.fx.apply_timing(current, ordinary)
+        after = self.apply_entry(current, entry)
+        key = facts.digest(entry['amendment'])
+        for field in ('expectedSubjectHash', 'expectedApplySubjectHash'):
+            changed = copy.deepcopy(entry)
+            changed[field] = 'f' * 64
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                timing.validate_selection_apply_approval(self.final_approval(entry), changed)
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.fx.apply_timing(after, changed)
+        for change in ('replace', 'drop'):
+            changed, forged = copy.deepcopy((entry, after))
+            if change == 'replace':
+                changed['expectedApplySubjectHash'] = 'f' * 64
+                forged['savedImports'][key]['expectedApplySubjectHash'] = 'f' * 64
+            else:
+                del changed['expectedApplySubjectHash']
+                del forged['savedImports'][key]['expectedApplySubjectHash']
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.fx.apply_timing(after, changed)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.direct_apply_entry(copy.deepcopy(after), changed)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                facts.validate_state(forged)
+        old_entry = self.selected_entry(packet, proof, approved)
+        self.assertNotIn('expectedApplySubjectHash', old_entry)
+        legacy = self.apply_entry(self.state, old_entry)
+        restored = json.loads(json.dumps(legacy, sort_keys=True))
+        facts.validate_state(restored)
+        self.assertEqual(self.fx.apply_timing(restored, old_entry), restored)
+        with self.assertRaisesRegex(ValueError, 'saved_half_month_replay_changed'):
+            self.fx.apply_timing(restored, entry)
+
+    def test_selected_current_apply_cas_does_not_admit_changed_canonical_evidence(self):
+        self.state = self.fx.apply(None, [self.fx.entry()])
+        self.configure()
+        packet = self.packet(self.partial_pattern())
+        proof = self.accounted_proof(packet)
+        approved = self.selection_for(packet)
+        current = self.scheduled_state()
+        for change in ('source', 'core', 'timing', 'previous', 'identity'):
+            altered = copy.deepcopy(current)
+            receipt = self.approval['previous']['analysisReceiptId']
+            old_key = altered['receipts'][receipt][0]
+            revision = altered['revisions'].pop(old_key)
+            if change == 'source':
+                revision['source']['payloadHash'] = 'f' * 64
+            elif change == 'core':
+                revision['schedule']['days'].pop()
+            elif change == 'timing':
+                revision['schedule']['workTiming'] = facts.timing().bind([{
+                    'serviceDate': '2026-09-05', 'shift': '昼', 'boundary': 'end', 'status': 'set',
+                    'qualifier': 'short', 'explicitTime': None}], self.source, 'half-month-schedule')
+            elif change == 'previous':
+                new_receipt = facts.digest(b'replacement-predecessor')
+                revision['analysis']['receiptId'] = new_receipt
+                altered['receipts'][new_receipt] = altered['receipts'].pop(receipt)
+                for audit in altered['savedImports'].values():
+                    if audit['receiptId'] == receipt:
+                        audit['receiptId'] = new_receipt
+                receipt = new_receipt
+            else:
+                record = altered['sources'].pop(revision['sourceKey'])
+                for owner in (record['source'], revision['source'], revision['schedule'],
+                              altered['identityBindings'][self.source['name']]):
+                    owner['authorId'] = '12345'
+                revision['sourceKey'] = facts.source_key(record['source'])
+                altered['sources'][revision['sourceKey']] = record
+            new_key = facts.digest(revision)
+            altered['revisions'][new_key] = revision
+            altered['receipts'][receipt] = [new_key]
+            altered['schedules'] = [copy.deepcopy(revision['schedule'])]
+            facts.validate_state(altered)
+            timing.saved.validate_accounting(altered, self.usage, facts)
+            frozen = copy.deepcopy((altered, packet, proof, approved, self.usage))
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                timing.to_selected_amendment(
+                    packet, proof, approved, altered, self.usage,
+                    expected_apply_subject_hash=facts.digest(altered))
+            self.assertEqual((altered, packet, proof, approved, self.usage), frozen)
 
     def test_selected_partial_preserves_full_origin_and_exact_unselected_state_with_both_accounting_kinds(self):
         historical = self.fx.entry()
