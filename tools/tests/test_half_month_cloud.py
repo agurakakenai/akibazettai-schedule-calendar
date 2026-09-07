@@ -397,6 +397,23 @@ class HalfMonthCloudTests(unittest.TestCase):
         self.half_state = self.saved.apply_amendments(
             None, [self.facts_entry()], self.usage, self.half, schedule=fixture.SCHEDULE,
             insights={}, accounts=fixture.ACCOUNTS, personal_state=self.private, now=NOW)
+        self.assert_restored_public_site()
+
+    def test_work_timing_revision_survives_private_restore_and_public_javascript(self):
+        saved_fixture = load('half_cloud_timing_fixture', Path(__file__).with_name('test_half_month_saved.py'))
+        helper = saved_fixture.SavedHalfMonthTests(methodName='runTest')
+        self.addCleanup(helper.doCleanups)
+        helper.setUp()
+        old = helper.legacy_state()
+        self.half_state = helper.apply_timing(old, helper.timing_entry(old))
+        self.now = NOW + dt.timedelta(hours=1)
+        for receipt in helper.usage['imports'].values():
+            self.ai.apply_import(self.usage, receipt)
+        self.source_state = self.baseline()
+        self.assertEqual(len(self.half_state['revisions']), 2)
+        self.assert_restored_public_site()
+
+    def assert_restored_public_site(self):
         self.seed()
         self.fx.bare_commit({
             cloud.SNAPSHOT: json.loads((TOOLS.parent / 'data' / cloud.SNAPSHOT).read_bytes())})
@@ -432,8 +449,27 @@ class HalfMonthCloudTests(unittest.TestCase):
             'assets/events/' + path.name for path in (TOOLS.parent / 'assets' / 'events').glob('*.svg')})
         for name in (cloud.SOURCE_USAGE, cloud.AI_USAGE, 'raw-sentinel.json'):
             self.assertFalse((output / 'data' / name).exists())
-        for forbidden in ('savedImports', 'revisions', 'requestHash', 'bodyHash', 'payloadHash', RAW):
+        for forbidden in ('savedImports', 'revisions', 'timingAmendment', 'requestHash', 'bodyHash', 'payloadHash', RAW):
             self.assertNotIn(forbidden, json.dumps(public))
+        script = """
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const api = require('./app.js');
+const value = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+assert.equal(api.validateHalfMonthSchedules(value), value);
+const effective = api.buildEffectiveSchedule({}, value);
+for (const source of value.schedules) {
+  for (const fact of source.workTiming?.facts ?? []) {
+    const note = api.resolveWorkTiming({schedule:effective, personal:null, insights:null,
+      dateKey:fact.serviceDate, shift:fact.shift, name:source.name});
+    assert.equal(api.workTimingLabel(note), api.workTimingLabel(fact));
+  }
+}
+"""
+        checked = cloud.child_process(
+            [node, '-e', script, str(output / 'data' / cloud.HALF_MONTH)],
+            cwd=self.fx.root, environment=cloud.safe_environment(os.environ))
+        self.assertEqual(checked.returncode, 0, (checked.stdout + checked.stderr).decode('utf-8'))
         for name, raw in expected.items():
             self.assertEqual((self.fx.output.parent / name).read_bytes(), raw)
             self.assertEqual(self.fx.remote_json(name)[1], raw)

@@ -412,7 +412,7 @@ def validate_personal(path, personal=None, *, private=True):
     for post in state['posts']:
         fields = ('id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt',
                   'observedAt', 'date', 'events')
-        keys(post, (*fields, 'links'), fields)
+        keys(post, (*fields, 'links', 'workTiming'), fields)
         identity(post)
         for event in post['events']:
             require(event['kind'] != 'absence' or 'storeId' not in event,

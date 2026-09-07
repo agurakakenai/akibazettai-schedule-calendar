@@ -422,7 +422,7 @@ def refresh_coverage(state, reasons, now, manual):
             row['candidateIds'] = [item['id'] for item in state['pending'] if item['name'] == name]
             if reason['handle'] is None:
                 row['reason'] = reason['reason']
-            elif row['confirmedIds']:
+            elif row['confirmedIds'] and row['reason'] != facts.TIMING_STORAGE_LIMIT_REASON:
                 row['reason'] = 'valid_schedule'
             if row['lastSearchedAt'] is not None:
                 interval = 6 if empty_day and not row['confirmedIds'] else 24
@@ -635,9 +635,16 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
                     else:
                         schedules, analysis = analyzer.analyze(verified, text, images, periods, on_issued)
                         if schedules:
-                            changed = facts.apply_revision(state, schedules, verified, analysis)
-                            outcome = 'ok' if changed else 'no-new'
-                            _set_reason(state, target['name'], periods, 'valid_schedule')
+                            try:
+                                changed = facts.apply_revision(state, schedules, verified, analysis)
+                            except facts.timing().WorkTimingLimitError:
+                                outcome = 'partial'
+                                facts.record_source(state, verified, 'failed', facts.TIMING_STORAGE_LIMIT_REASON,
+                                                    clock(), analysis['requestHash'], image_hashes)
+                                _set_reason(state, target['name'], periods, facts.TIMING_STORAGE_LIMIT_REASON)
+                            else:
+                                outcome = 'ok' if changed else 'no-new'
+                                _set_reason(state, target['name'], periods, 'valid_schedule')
                         else:
                             facts.record_source(state, verified, 'negative', 'not_schedule',
                                                 clock(), analysis['requestHash'], image_hashes)
@@ -695,7 +702,8 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
 
 
 def replay_saved(state, *, document, payload_bytes, images, result, schedule, insights,
-                 accounts, post_id, now, receipt_id, allowed_periods=None, existing_bindings=None):
+                 accounts, post_id, now, receipt_id, allowed_periods=None, existing_bindings=None,
+                 contract_version=facts.VERSION):
     """Offline bootstrap from verified roster/account + actual discovery and raw hashes.
 
     This produces validation material, not authorization: the caller must bind
@@ -716,7 +724,8 @@ def replay_saved(state, *, document, payload_bytes, images, result, schedule, in
     if len(images) != len(urls):
         raise ValueError('schedule_images_incomplete')
     parsed, proof = azure.saved_result(source, text, images, result, now=now, receipt_id=receipt_id,
-                                      allowed_periods=allowed_periods or facts.target_periods(now))
+                                      allowed_periods=allowed_periods or facts.target_periods(now),
+                                      contract_version=contract_version)
     target = targets[selected['name']]
     account = next(row for row in accounts if row['handle'] == target['handle'])
     subject = {'name': target['name'], 'handle': target['handle'], 'accountSource': account['source'],

@@ -20,13 +20,13 @@ JST = dt.timezone(dt.timedelta(hours=9))
 HEX = re.compile(r'[0-9a-f]{64}\Z')
 TOKEN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}\Z')
 REASONS = {
-    'events', 'links', 'no_event', 'schedule', 'not_schedule',
+    'events', 'links', 'work_timing', 'no_event', 'schedule', 'not_schedule',
     'azure_pending', 'azure_invalid_output', 'azure_refused',
     'azure_timeout', 'azure_network_error', 'azure_http_error', 'azure_rate_limited',
     'azure_auth_stopped', 'azure_interrupted', 'azure_input_limit', 'azure_ungrounded',
     'azure_model_mismatch', 'azure_deadline', 'azure_budget_exhausted', 'azure_backoff',
 }
-SUCCESS_REASONS = {'events', 'links', 'no_event', 'schedule', 'not_schedule'}
+SUCCESS_REASONS = {'events', 'links', 'work_timing', 'no_event', 'schedule', 'not_schedule'}
 
 
 class UsageFailure(Exception):

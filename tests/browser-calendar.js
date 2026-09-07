@@ -1233,7 +1233,7 @@ async function main() {
     assert.ok(await evaluate(`(() => {
       const row = document.querySelector('#dialog-day .maid-entry[data-name="みりあ"]');
       return row.dataset.store === "s4" && row.dataset.evidence === "official-announced"
-        && row.textContent.includes("あとから") && !/実績|確認/.test(row.title);
+        && !/あとから|遅れ|到着予定/.test(row.textContent) && !/実績|確認/.test(row.title);
     })()`));
     assert.equal(await evaluate('document.querySelectorAll("#dialog-day .unmatched-roster [data-name=\\"みりあ\\"]").length'), 0);
     assert.ok(await evaluate(`(() => {

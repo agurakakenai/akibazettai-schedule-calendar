@@ -11,7 +11,8 @@ import re
 
 UTC = dt.timezone.utc
 JST = dt.timezone(dt.timedelta(hours=9))
-VERSION = 'half-month-schedule-v1'
+LEGACY_VERSION = 'half-month-schedule-v1'
+VERSION = 'half-month-schedule-v2'
 MODEL, MODEL_VERSION = 'gpt-5.6-luna', '2026-07-09'
 HEX = re.compile(r'[a-f0-9]{64}\Z')
 ID = re.compile(r'[1-9][0-9]{0,24}\Z')
@@ -20,12 +21,13 @@ NAME = re.compile(r'[ぁ-んァ-ヶ一-龠ーａ-ｚA-Za-z0-9]{1,12}\Z')
 STATUSES = {'never', 'ok', 'partial', 'unavailable', 'no-new', 'no-results',
             'paused', 'budget-exhausted', 'outside-window'}
 SOURCE_STATUSES = {'pending', 'issued', 'valid', 'negative', 'failed'}
+TIMING_STORAGE_LIMIT_REASON = 'work_timing_storage_limit'
 REASONS = {
     'not_searched', 'account_unknown', 'account_ambiguous', 'account_identity_mismatch',
     'no_candidates', 'post_unverified', 'not_issued', 'period_unknown', 'schedule_pending',
     'not_schedule', 'budget_wait', 'paused', 'valid_schedule', 'queue_limit',
     'candidate_limit', 'outside_period', 'source_failed', 'analysis_failed',
-    'known_source', 'search_failed', 'not_due', 'stale_candidate',
+    'known_source', 'search_failed', 'not_due', 'stale_candidate', TIMING_STORAGE_LIMIT_REASON,
 }
 PUBLIC_FIELDS = {'schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt', 'schedules', 'lastRun'}
 PRIVATE_FIELDS = {'identityBindings', 'revisions', 'sources', 'pending', 'coverage', 'receipts',
@@ -34,6 +36,8 @@ SAVED_IMPORT_HASH_FIELDS = ('receiptId', 'requestHash', 'usageReceiptId', 'usage
                            'sourceManifestHash', 'analysisResultHash', 'analysisReceiptHash')
 SCHEDULE_FIELDS = {'id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt',
                    'observedAt', 'sourceKind', 'period', 'days'}
+_CONTRACT_FINGERPRINTS = None
+_TIMING_MODULE = None
 
 
 def load_module(filename, name):
@@ -41,6 +45,13 @@ def load_module(filename, name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def timing():
+    global _TIMING_MODULE
+    if _TIMING_MODULE is None:
+        _TIMING_MODULE = load_module('work-timing.py', 'half_month_work_timing')
+    return _TIMING_MODULE
 
 
 def require_keys(value, fields):
@@ -152,7 +163,8 @@ def validate_period(value):
 
 
 def validate_schedule(value):
-    require_keys(value, SCHEDULE_FIELDS)
+    require_keys(value, SCHEDULE_FIELDS | ({'workTiming'} if isinstance(value, dict)
+                                         and 'workTiming' in value else set()))
     identity(value['name'], value['authorScreenName'], value['authorId'])
     identifier(value['id'])
     if value['url'] != public_url(value['authorScreenName'], value['id']):
@@ -179,6 +191,10 @@ def validate_schedule(value):
                 or len(set(shifts)) != len(shifts)):
             raise ValueError('invalid_schedule_day')
         seen.add(when)
+    if 'workTiming' in value:
+        timing().validate(value['workTiming'], owner=value,
+                          days={row['date']: row['shifts'] for row in days},
+                          source_kind='half-month-schedule')
     return value
 
 
@@ -243,12 +259,20 @@ def source_key(source):
 
 
 def validate_analysis(value):
+    global _CONTRACT_FINGERPRINTS
     require_keys(value, ('contract', 'model', 'modelVersion', 'promptHash', 'schemaHash',
                          'contextHash', 'requestHash', 'resultHash', 'receiptId', 'analyzedAt', 'images'))
-    if (value['contract'], value['model'], value['modelVersion']) != (VERSION, MODEL, MODEL_VERSION):
+    if (value['contract'] not in (LEGACY_VERSION, VERSION)
+            or (value['model'], value['modelVersion']) != (MODEL, MODEL_VERSION)):
         raise ValueError('invalid_schedule_contract')
     for field in ('promptHash', 'schemaHash', 'contextHash', 'requestHash', 'resultHash', 'receiptId'):
         valid_hash(value[field])
+    if value['contract'] == VERSION:
+        if _CONTRACT_FINGERPRINTS is None:
+            contract = load_module('schedule-azure.py', 'half_month_current_contract')
+            _CONTRACT_FINGERPRINTS = digest(contract.PROMPT.encode('utf-8')), digest(contract.SCHEMA)
+        if (value['promptHash'], value['schemaHash']) != _CONTRACT_FINGERPRINTS:
+            raise ValueError('invalid_schedule_contract_hash')
     timestamp(value['analyzedAt'])
     if not isinstance(value['images'], list) or len(value['images']) > 4:
         raise ValueError('invalid_schedule_images')
@@ -273,6 +297,262 @@ def empty_state():
             'schedules': [], 'lastRun': {'status': 'never'}, 'identityBindings': {},
             'revisions': {}, 'sources': {}, 'pending': [], 'coverage': {}, 'receipts': {},
             'candidateHistory': {}, 'savedImports': {}}
+
+
+def contract_hash(analysis):
+    validate_analysis(analysis)
+    return digest({key: analysis[key] for key in (
+        'contract', 'model', 'modelVersion', 'promptHash', 'schemaHash')})
+
+
+def core_hash(schedules):
+    return digest([{key: copy.deepcopy(row[key]) for key in sorted(SCHEDULE_FIELDS - {'observedAt'})}
+                   for row in sorted(schedules, key=lambda item: (item['name'], item['period']['from']))])
+
+
+def timing_hash(schedules):
+    return digest([{'name': row['name'], 'from': row['period']['from'],
+                    'workTiming': row.get('workTiming')}
+                   for row in sorted(schedules, key=lambda item: (item['name'], item['period']['from']))])
+
+
+TIMING_AMENDMENT_FIELDS = ('operation', 'previous', 'expectedCoreHash', 'expectedTimingHash',
+                          'targetScopes', 'updateChannels', 'basisRevisionKeys')
+
+
+def validate_timing_authorization(value):
+    require_keys(value, (*TIMING_AMENDMENT_FIELDS, 'expectedSubjectHash', 'importId'))
+    if value['operation'] != 'work-timing-only' or value['updateChannels'] != ['workTiming']:
+        raise ValueError('invalid_schedule_timing_operation')
+    for field in ('expectedSubjectHash', 'expectedCoreHash', 'expectedTimingHash', 'importId'):
+        valid_hash(value[field])
+    basis = value['basisRevisionKeys']
+    if not isinstance(basis, list) or not 1 <= len(basis) <= 4096:
+        raise ValueError('invalid_schedule_timing_basis')
+    for key in basis:
+        valid_hash(key)
+    if basis != sorted(set(basis)):
+        raise ValueError('invalid_schedule_timing_basis')
+    previous = value['previous']
+    native = isinstance(previous, dict) and previous.get('kind') == 'native'
+    require_keys(previous, ('contractVersion', 'contractHash', 'analysisReceiptId',
+                            'kind' if native else 'importId'))
+    if previous['contractVersion'] not in (LEGACY_VERSION, VERSION):
+        raise ValueError('invalid_schedule_previous_contract')
+    for field in ('contractHash', 'analysisReceiptId', *(('importId',) if not native else ())):
+        valid_hash(previous[field])
+    scopes = value['targetScopes']
+    if not isinstance(scopes, list) or not 1 <= len(scopes) <= 128:
+        raise ValueError('invalid_schedule_target_scopes')
+    seen = set()
+    for item in scopes:
+        require_keys(item, ('name', 'serviceDate', 'shift', 'boundary'))
+        identity(item['name'], 'scope')
+        day(item['serviceDate'])
+        if item['shift'] not in ('昼', '夜') or item['boundary'] not in ('start', 'end'):
+            raise ValueError('invalid_schedule_target_scopes')
+        key = (item['name'], item['serviceDate'], item['shift'], item['boundary'])
+        if key in seen:
+            raise ValueError('invalid_schedule_target_scopes')
+        seen.add(key)
+    return seen
+
+
+def _post_order(schedule):
+    return timestamp(schedule['createdAt']), int(schedule['id'])
+
+
+def _pair(schedule):
+    return schedule['name'], schedule['period']['from']
+
+
+def _project(selected):
+    result = {}
+    for revision in sorted(selected, key=lambda item: (
+            *_post_order(item['schedule']), *_pair(item['schedule']))):
+        row = copy.deepcopy(revision['schedule'])
+        old = result.get(_pair(row))
+        if 'workTiming' in row or old is not None and 'workTiming' in old:
+            row['workTiming'] = timing().merge(
+                old.get('workTiming') if old else None, row.get('workTiming'),
+                days={entry['date']: entry['shifts'] for entry in row['days']})
+        result[_pair(row)] = row
+    return result
+
+
+def projection_basis(state, receipt_id):
+    """Freeze the exact selected revisions contributing to a predecessor projection."""
+    prior_keys = state['receipts'].get(receipt_id, [])
+    if not prior_keys or any(key not in state['revisions'] for key in prior_keys):
+        raise ValueError('schedule_timing_parent_missing')
+    targets = {_pair(state['revisions'][key]['schedule']):
+               _post_order(state['revisions'][key]['schedule']) for key in prior_keys}
+    return sorted(key for key, revision in select_revisions(state)
+                  if _pair(revision['schedule']) in targets
+                  and _post_order(revision['schedule']) <= targets[_pair(revision['schedule'])])
+
+
+def _effective_revision(state, key):
+    revisions, chain, visited = state['revisions'], [], set()
+    current = key
+    while True:
+        if current not in revisions or current in visited:
+            raise ValueError('invalid_schedule_timing_basis')
+        visited.add(current)
+        ancestor = revisions[current]
+        chain.append(ancestor)
+        auth = ancestor.get('timingAmendment')
+        if auth is None:
+            break
+        parents = [parent for parent in state['receipts'].get(auth['previous']['analysisReceiptId'], [])
+                   if parent in revisions
+                   and _pair(revisions[parent]['schedule']) == _pair(revisions[key]['schedule'])]
+        if len(parents) != 1:
+            raise ValueError('invalid_schedule_timing_basis')
+        current = parents[0]
+    effective, channel = copy.deepcopy(revisions[key]), None
+    for ancestor in reversed(chain):
+        if 'workTiming' in ancestor['schedule']:
+            channel = timing().merge(channel, ancestor['schedule']['workTiming'])
+    if channel is not None:
+        effective['schedule']['workTiming'] = channel
+    return effective
+
+
+def select_revisions(state):
+    """Resolve explicit same-post lineage, then original publication order only."""
+    revisions = state['revisions']
+    groups, children, authorizations = {}, {}, {}
+    for key, revision in revisions.items():
+        row = revision['schedule']
+        groups.setdefault((*_pair(row), row['id']), []).append(key)
+        auth = revision.get('timingAmendment')
+        if auth is None:
+            continue
+        allowed = validate_timing_authorization(auth)
+        imported = state.get('savedImports', {}).get(auth['importId'])
+        previous = auth['previous']
+        native = previous.get('kind') == 'native'
+        prior_import = state.get('savedImports', {}).get(previous.get('importId'))
+        if (not isinstance(imported, dict)
+                or imported['receiptId'] != revision['analysis']['receiptId']
+                or imported['receiptId'] == previous['analysisReceiptId']):
+            raise ValueError('schedule_timing_import_lineage')
+        if native:
+            if any(item['receiptId'] == previous['analysisReceiptId']
+                   for item in state.get('savedImports', {}).values()):
+                raise ValueError('schedule_timing_native_lineage')
+        elif (not isinstance(prior_import, dict)
+              or prior_import['receiptId'] != previous['analysisReceiptId']
+              or imported['usageReceiptId'] == prior_import['usageReceiptId']):
+            raise ValueError('schedule_timing_import_lineage')
+        prior_keys = state['receipts'].get(previous['analysisReceiptId'], [])
+        parents = [parent for parent in prior_keys if parent in revisions
+                   and _pair(revisions[parent]['schedule']) == _pair(row)]
+        if len(parents) != 1:
+            raise ValueError('schedule_timing_parent_missing')
+        parent_key = parents[0]
+        parent = revisions[parent_key]
+        prior_analysis = parent['analysis']
+        if (row['id'] != parent['schedule']['id']
+                or previous['contractVersion'] != prior_analysis['contract']
+                or previous['contractHash'] != contract_hash(prior_analysis)
+                or revision['analysis']['contract'] != VERSION
+                or timestamp(revision['analysis']['analyzedAt']) < timestamp(prior_analysis['analyzedAt'])):
+            raise ValueError('schedule_timing_contract_lineage')
+        before_source = parent.get('source', state['sources'][parent['sourceKey']]['source'])
+        source = revision.get('source', state['sources'][revision['sourceKey']]['source'])
+        if (any(source[field] != before_source[field] for field in (
+                'id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt',
+                'bodyHash', 'media', 'editTweetIds'))
+                or [image['sha256'] for image in revision['analysis']['images']]
+                != [image['sha256'] for image in prior_analysis['images']]):
+            raise ValueError('schedule_timing_source_changed')
+        if core_hash([row]) != core_hash([parent['schedule']]):
+            raise ValueError('schedule_timing_core_changed')
+        if parent_key in children and children[parent_key] != key:
+            raise ValueError('schedule_timing_branch')
+        children[parent_key] = key
+        for fact in row.get('workTiming', {}).get('facts', []):
+            if (row['name'], *timing().scope(fact)) not in allowed:
+                raise ValueError('schedule_timing_scope_changed')
+        authorizations.setdefault(auth['importId'], []).append(key)
+    selected = []
+    for keys in groups.values():
+        roots = [key for key in keys if 'timingAmendment' not in revisions[key]]
+        if not roots:
+            raise ValueError('schedule_timing_cycle')
+        root = min(roots, key=lambda key: (timestamp(revisions[key]['schedule']['observedAt']), key))
+        for key in roots:
+            before, after = revisions[root]['schedule'], revisions[key]['schedule']
+            if core_hash([before]) != core_hash([after]) or timing_hash([before]) != timing_hash([after]):
+                raise ValueError('schedule_same_revision_conflict')
+        amended_roots = [key for key in roots if key in children]
+        if len(amended_roots) > 1:
+            raise ValueError('schedule_timing_branch')
+        current = amended_roots[0] if amended_roots else root
+        visited = set(roots)
+        channel = revisions[current]['schedule'].get('workTiming')
+        while current in children:
+            current = children[current]
+            if current in visited:
+                raise ValueError('schedule_timing_cycle')
+            visited.add(current)
+            channel = timing().merge(channel, revisions[current]['schedule'].get('workTiming'))
+        if visited != set(keys):
+            raise ValueError('schedule_timing_branch')
+        effective = copy.deepcopy(revisions[current])
+        if channel is not None:
+            effective['schedule']['workTiming'] = channel
+        selected.append((current, effective))
+    for import_id, keys in authorizations.items():
+        auth = revisions[keys[0]]['timingAmendment']
+        if any(revisions[key]['timingAmendment'] != auth for key in keys):
+            raise ValueError('schedule_timing_authorization_conflict')
+        previous_keys = state['receipts'][auth['previous']['analysisReceiptId']]
+        prior_rows = [revisions[key]['schedule'] for key in previous_keys]
+        new_rows = [revisions[key]['schedule'] for key in keys]
+        imported = state['savedImports'][import_id]
+        receipt_keys = state['receipts'][imported['receiptId']]
+        if set(receipt_keys) != set(keys):
+            raise ValueError('schedule_timing_receipt_lineage')
+        first = revisions[receipt_keys[0]]
+        source = first.get('source', state['sources'][first['sourceKey']]['source'])
+        proof_fields = ('usageReceiptId', 'usageSourceHash', 'sourceManifestHash',
+                        'analysisResultHash', 'analysisReceiptHash', 'issuedAt')
+        amendment = {field: copy.deepcopy(auth[field]) for field in TIMING_AMENDMENT_FIELDS}
+        amendment.update(source=source, schedules=[revisions[key]['schedule'] for key in receipt_keys],
+                         analysis=first['analysis'],
+                         proof={**{field: imported[field] for field in proof_fields},
+                                'searchCreatedAt': source['createdAt']})
+        if digest(amendment) != import_id:
+            raise ValueError('schedule_timing_amendment_hash')
+        if core_hash(prior_rows) != auth['expectedCoreHash'] or core_hash(new_rows) != auth['expectedCoreHash']:
+            raise ValueError('schedule_timing_core_changed')
+        allowed = validate_timing_authorization(auth)
+        for name, date, shift, _ in allowed:
+            if not any(row['name'] == name and any(
+                    entry['date'] == date and shift in entry['shifts'] for entry in row['days'])
+                       for row in prior_rows):
+                raise ValueError('schedule_timing_scope_changed')
+        basis = auth['basisRevisionKeys']
+        targets = {_pair(row): _post_order(row) for row in prior_rows}
+        if not set(previous_keys) <= set(basis) or any(key not in revisions for key in basis):
+            raise ValueError('invalid_schedule_timing_basis')
+        groups_seen = set()
+        for key in basis:
+            row = revisions[key]['schedule']
+            group = (*_pair(row), row['id'])
+            if (_pair(row) not in targets or _post_order(row) > targets[_pair(row)]
+                    or group in groups_seen or key in keys):
+                raise ValueError('invalid_schedule_timing_basis')
+            groups_seen.add(group)
+        # Later discoveries participate in today's projection, never in a historical approval hash.
+        projection = _project([_effective_revision(state, key) for key in basis])
+        target_rows = [projection[_pair(row)] for row in prior_rows]
+        if timing_hash(target_rows) != auth['expectedTimingHash']:
+            raise ValueError('schedule_timing_stale_hash')
+    return selected
 
 
 def validate_state(value, private=True):
@@ -334,10 +614,11 @@ def validate_state(value, private=True):
             raise ValueError('invalid_schedule_image_hashes')
         for image_hash in record['imageHashes']:
             valid_hash(image_hash)
-    winners = {}
     for key, revision in value['revisions'].items():
         require_keys(revision, ('schedule', 'sourceKey', 'analysis',
-                               *(('source',) if isinstance(revision, dict) and 'source' in revision else ())))
+                               *(('source',) if isinstance(revision, dict) and 'source' in revision else ()),
+                               *(('timingAmendment',) if isinstance(revision, dict)
+                                 and 'timingAmendment' in revision else ())))
         if key != digest(revision):
             raise ValueError('invalid_schedule_revision_hash')
         schedule = validate_schedule(revision['schedule'])
@@ -354,6 +635,11 @@ def validate_state(value, private=True):
                 'id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt', 'observedAt')):
             raise ValueError('schedule_source_mismatch')
         validate_analysis(revision['analysis'])
+        if 'workTiming' in schedule:
+            if revision['analysis']['contract'] != VERSION or any(
+                    fact['source'] != timing().source_metadata(source, 'half-month-schedule')
+                    for fact in schedule['workTiming']['facts']):
+                raise ValueError('schedule_timing_source_mismatch')
         if len(source['media']) != len(revision['analysis']['images']):
             raise ValueError('schedule_images_incomplete')
         bound = value['identityBindings'].get(schedule['name'])
@@ -363,13 +649,7 @@ def validate_state(value, private=True):
             raise ValueError('schedule_analysis_chronology')
         if key not in value['receipts'].get(revision['analysis']['receiptId'], []):
             raise ValueError('schedule_receipt_missing')
-        pair = (schedule['name'], schedule['period']['from'])
-        previous = winners.get(pair)
-        order = lambda row: (timestamp(row['createdAt']), int(row['id']))
-        if previous is None or order(schedule) > order(previous):
-            winners[pair] = schedule
-        elif order(schedule) == order(previous) and schedule['days'] != previous['days']:
-            raise ValueError('schedule_same_revision_conflict')
+    winners = _project([revision for _, revision in select_revisions(value)])
     for schedule in value['schedules']:
         if winners.get((schedule['name'], schedule['period']['from'])) != schedule:
             raise ValueError('schedule_revision_missing_or_stale')
@@ -490,7 +770,7 @@ def record_source(state, source, status, reason, now, request_hash=None, image_h
     return key
 
 
-def apply_revision(state, schedules, source, analysis):
+def apply_revision(state, schedules, source, analysis, *, timing_amendment=None, saved_import=None):
     """Atomically retain all revisions; only a newer complete same-half input wins."""
     validate_state(state)
     validate_source(source)
@@ -508,6 +788,10 @@ def apply_revision(state, schedules, source, analysis):
                         [image['sha256'] for image in analysis['images']])
     revisions = [{'schedule': copy.deepcopy(schedule), 'sourceKey': key, 'source': copy.deepcopy(source),
                   'analysis': copy.deepcopy(analysis)} for schedule in schedules]
+    if timing_amendment is not None:
+        validate_timing_authorization(timing_amendment)
+        for revision in revisions:
+            revision['timingAmendment'] = copy.deepcopy(timing_amendment)
     revision_keys = [digest(revision) for revision in revisions]
     receipt = analysis['receiptId']
     previous = state['receipts'].get(receipt)
@@ -516,26 +800,25 @@ def apply_revision(state, schedules, source, analysis):
         if len(old) != len(revisions) or any(
                 before['schedule'] != after['schedule'] or before['sourceKey'] != after['sourceKey']
                 or before['analysis'] != after['analysis']
+                or before.get('timingAmendment') != after.get('timingAmendment')
                 or before.get('source', state['sources'][before['sourceKey']]['source']) != after['source']
                 for before, after in zip(old, revisions)):
             raise ValueError('schedule_receipt_conflict')
         return False
+    if timing_amendment is not None and timing_amendment['basisRevisionKeys'] != projection_basis(
+            state, timing_amendment['previous']['analysisReceiptId']):
+        raise ValueError('schedule_timing_basis_stale')
     for revision_key, revision in zip(revision_keys, revisions):
         working['revisions'][revision_key] = revision
     working['receipts'][receipt] = revision_keys
-    changed = False
-    for schedule in schedules:
-        old = next((item for item in working['schedules'] if item['name'] == schedule['name']
-                    and item['period']['from'] == schedule['period']['from']), None)
-        order = lambda item: (timestamp(item['createdAt']), int(item['id']))
-        if old is None or order(schedule) > order(old):
-            if old is not None:
-                working['schedules'].remove(old)
-            working['schedules'].append(copy.deepcopy(schedule))
-            changed = True
-        elif order(schedule) == order(old) and schedule['days'] != old['days']:
-            raise ValueError('schedule_same_revision_conflict')
+    if saved_import is not None:
+        import_id, imported = saved_import
+        if import_id in working.setdefault('savedImports', {}):
+            raise ValueError('schedule_saved_import_conflict')
+        working['savedImports'][import_id] = copy.deepcopy(imported)
+    working['schedules'] = list(_project([revision for _, revision in select_revisions(working)]).values())
     working['schedules'].sort(key=lambda item: (item['period']['from'], item['name']))
+    changed = working['schedules'] != state['schedules']
     validate_state(working)
     state.clear()
     state.update(working)

@@ -20,12 +20,38 @@ may be the collector module or its azure_context() (official and valid_post).
 subject_hash(state, id) identifies all canonical subject facts and their binding.
 apply_amendments(state, entries, usage, personal) returns a new state; usage is the
 pre-existing canonical ledger, not a ledger with this run's imports added.
+
+v8 work-timing-only amendments additionally require previous
+{contractVersion, contractHash, importId, analysisReceiptId}, expectedCoreHash,
+expectedTimingHash, targetScopes [{serviceDate, name, shift, boundary}] and
+updateChannels ["workTiming"]. analysisReceiptId identifies the predecessor's
+analysisReceiptHash. events/links are required nullable comparison inputs; they
+never replace the original core. workTiming is a nonempty source-bound versioned
+channel. Null/empty updates must settle usage separately, not enter this path.
+Multiple distinct exclusions use the same single logical targetScopes entry;
+their distinct fact keys retain the set value and other excluded targets.
+CONTRACT_HASH from personal-azure.py is the required new contractHash.
+Immutable savedPersonalImports entries form the revision history and current
+revision is the unique chain leaf, never whichever analyzedAt sorts last.
+Native or legacy subjects lacking a prior saved import are deliberately refused.
+Normal v8 imports can create a known post for the first time, but cannot replace
+an existing post; that requires the authorized work-timing-only revision path.
 """
 import copy
 import hashlib
+import importlib.util
 import json
+from pathlib import Path
 import re
 
+
+SPEC = importlib.util.spec_from_file_location('saved_personal_timing', Path(__file__).with_name('work-timing.py'))
+timing = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(timing)
+AZURE_SPEC = importlib.util.spec_from_file_location(
+    'saved_personal_contract', Path(__file__).with_name('personal-azure.py'))
+azure_contract = importlib.util.module_from_spec(AZURE_SPEC)
+AZURE_SPEC.loader.exec_module(azure_contract)
 
 HEX = re.compile(r'[0-9a-f]{64}\Z')
 METADATA = ('url', 'name', 'authorId', 'authorScreenName', 'date', 'createdAt')
@@ -40,6 +66,11 @@ LEGACY_CONTRACT = 'personal-line-ids-v4'
 PREVIOUS_LINK_CONTRACT = 'personal-line-ids-v5'
 NULLABLE_LINK_CONTRACT = 'personal-line-ids-v6'
 LINK_CONTRACT = 'personal-line-ids-v7'
+TIMING_CONTRACT = 'personal-line-ids-v8'
+TIMING_CONTRACT_HASH = azure_contract.CONTRACT_HASH
+TIMING_OPERATION = 'work-timing-only'
+TIMING_UPDATE_FIELDS = ('operation', 'previous', 'expectedCoreHash', 'expectedTimingHash',
+                        'targetScopes', 'updateChannels')
 
 
 def _require(condition, reason='invalid_saved_personal_import'):
@@ -64,9 +95,11 @@ def _hash(value):
 def post_from_amendment(amendment):
     source = amendment['source']
     post = {'id': amendment['id'], **{field: source[field] for field in METADATA},
-            'observedAt': source['fetchedAt'], 'events': copy.deepcopy(amendment['events'])}
-    if 'links' in amendment:
+            'observedAt': source['fetchedAt'], 'events': copy.deepcopy(amendment['events'] or [])}
+    if amendment.get('links') is not None:
         post['links'] = copy.deepcopy(amendment['links'])
+    if amendment.get('workTiming') is not None:
+        post['workTiming'] = copy.deepcopy(amendment['workTiming'])
     return post
 
 
@@ -74,7 +107,9 @@ def _validate_entry(entry, personal):
     _keys(entry, ('expectedSubjectHash', 'amendment'))
     _hash(entry['expectedSubjectHash'])
     amendment = entry['amendment']
-    _keys(amendment, ('schemaVersion', 'id', 'source', 'events'), ('links',))
+    is_timing = amendment.get('operation') == TIMING_OPERATION if isinstance(amendment, dict) else False
+    _keys(amendment, ('schemaVersion', 'id', 'source', 'events'),
+          ('links', 'workTiming', *TIMING_UPDATE_FIELDS) if is_timing else ('links', 'workTiming'))
     _require(type(amendment['schemaVersion']) is int and amendment['schemaVersion'] == 1)
     source = amendment['source']
     _keys(source, SOURCE_FIELDS, ('searchCreatedAt',))
@@ -83,7 +118,13 @@ def _validate_entry(entry, personal):
     _require(source['model'] == source['deployment'] == MODEL
              and source['modelVersion'] == MODEL_VERSION)
     _require(source['contractVersion'] in (
-        LEGACY_CONTRACT, PREVIOUS_LINK_CONTRACT, NULLABLE_LINK_CONTRACT, LINK_CONTRACT))
+        LEGACY_CONTRACT, PREVIOUS_LINK_CONTRACT, NULLABLE_LINK_CONTRACT, LINK_CONTRACT, TIMING_CONTRACT))
+    if source['contractVersion'] == TIMING_CONTRACT:
+        _require('links' in amendment and 'workTiming' in amendment)
+        _require(source['contractHash'] == TIMING_CONTRACT_HASH, 'saved_personal_contract_mismatch')
+    else:
+        _require('workTiming' not in amendment and not is_timing)
+        _require('links' not in amendment or isinstance(amendment['links'], list))
     _require(source['provenance'] in ('search', 'direct')
              and ('searchCreatedAt' in source) == (source['provenance'] == 'search'))
     official = personal.official
@@ -95,12 +136,30 @@ def _validate_entry(entry, personal):
         searched = official.timestamp(source['searchCreatedAt'])
         _require(abs((searched - created).total_seconds()) < 2
                  and searched.astimezone(official.JST).date().isoformat() == source['date'])
-    _require(isinstance(amendment['events'], list) and len(amendment['events']) <= 8)
+    _require(is_timing and amendment['events'] is None
+             or isinstance(amendment['events'], list) and len(amendment['events']) <= 8)
+    if is_timing:
+        _keys(amendment, ('schemaVersion', 'id', 'source', 'events', 'links', 'workTiming',
+                          *TIMING_UPDATE_FIELDS))
+        _require(amendment['updateChannels'] == ['workTiming'])
+        _keys(amendment['previous'], ('contractVersion', 'contractHash', 'importId', 'analysisReceiptId'))
+        _require(amendment['previous']['contractVersion'] in (
+            LEGACY_CONTRACT, PREVIOUS_LINK_CONTRACT, NULLABLE_LINK_CONTRACT, LINK_CONTRACT, TIMING_CONTRACT))
+        for field in ('contractHash', 'importId', 'analysisReceiptId'):
+            _hash(amendment['previous'][field])
+        for field in ('expectedCoreHash', 'expectedTimingHash'):
+            _hash(amendment[field])
+        _require(amendment['workTiming'] is not None
+                 and isinstance(amendment['workTiming'], dict)
+                 and bool(amendment['workTiming'].get('facts')), 'saved_personal_empty_timing')
+        _target_scopes(amendment)
     if source['contractVersion'] == LEGACY_CONTRACT:
         # Saved v4 acceptances do not attest new link-only/unknown-scope meaning.
         _require(amendment['events'])
     post = post_from_amendment(amendment)
     personal.valid_post(post)
+    if 'workTiming' in post:
+        timing.validate(post['workTiming'], owner=post, date=post['date'], source_kind='personal-work-post')
     _require(source['authorScreenName'].casefold() != official.AUTHOR.casefold())
     seen = set()
     for event in post['events']:
@@ -126,7 +185,7 @@ def _validate_entry(entry, personal):
 
 def validate_imports(value, personal):
     _require(isinstance(value, dict) and len(value) <= MAX_IMPORTS)
-    ids, analysis = set(), set()
+    ids, analysis, children = set(), set(), {}
     for receipt_id, entry in value.items():
         _hash(receipt_id)
         _validate_entry(entry, personal)
@@ -134,9 +193,102 @@ def validate_imports(value, personal):
         _require(receipt_id == data_hash(amendment))
         identity = amendment['id']
         receipt = amendment['source']['analysisReceiptHash']
-        _require(identity not in ids and receipt not in analysis)
-        ids.add(identity)
+        _require(receipt not in analysis)
+        if amendment.get('operation') == TIMING_OPERATION:
+            parent_id = amendment['previous']['importId']
+            _require(parent_id in value and parent_id not in children and parent_id != receipt_id,
+                     'saved_personal_predecessor_mismatch')
+            children[parent_id] = receipt_id
+        else:
+            _require(identity not in ids)
+            ids.add(identity)
         analysis.add(receipt)
+    current, visited = {}, set()
+    for receipt_id, entry in value.items():
+        if entry['amendment'].get('operation') == TIMING_OPERATION:
+            continue
+        post = post_from_amendment(entry['amendment'])
+        while True:
+            _require(receipt_id not in visited, 'saved_personal_predecessor_mismatch')
+            visited.add(receipt_id)
+            current[post['id']] = (receipt_id, post)
+            child = children.get(receipt_id)
+            if child is None:
+                break
+            amendment = value[child]['amendment']
+            post = _timing_revision(post, amendment, value[receipt_id], receipt_id, personal)
+            receipt_id = child
+    _require(visited == set(value), 'saved_personal_predecessor_mismatch')
+    return current
+
+
+def core_hash(post):
+    return data_hash({field: value for field, value in post.items() if field != 'workTiming'})
+
+
+def timing_hash(post):
+    return data_hash(post.get('workTiming'))
+
+
+def _target_scopes(amendment):
+    scopes = amendment['targetScopes']
+    _require(isinstance(scopes, list) and 1 <= len(scopes) <= timing.MAX_FACTS)
+    seen = set()
+    for scope in scopes:
+        _keys(scope, ('serviceDate', 'name', 'shift', 'boundary'))
+        _require(scope['name'] == amendment['source']['name']
+                 and scope['serviceDate'] == amendment['source']['date']
+                 and scope['shift'] in ('昼', '夜') and scope['boundary'] in ('start', 'end'))
+        key = timing.scope(scope)
+        _require(key not in seen)
+        seen.add(key)
+    return seen
+
+
+def _timing_revision(post, amendment, predecessor, predecessor_id, personal):
+    previous, prior = amendment['previous'], predecessor['amendment']
+    old_source, source = prior['source'], amendment['source']
+    _require(previous == {
+        'contractVersion': old_source['contractVersion'], 'contractHash': old_source['contractHash'],
+        'importId': predecessor_id, 'analysisReceiptId': old_source['analysisReceiptHash'],
+    } and prior['id'] == amendment['id'] == post['id'], 'saved_personal_predecessor_mismatch')
+    _require(all(source[field] == old_source[field] for field in (*METADATA, 'bodyHash', 'sourceHash',
+                                                                  'fetchedAt')),
+             'saved_personal_source_mismatch')
+    _require(personal.official.timestamp(source['analyzedAt'])
+             >= personal.official.timestamp(old_source['analyzedAt']), 'saved_personal_predecessor_mismatch')
+    _require(amendment['expectedCoreHash'] == core_hash(post), 'saved_personal_core_mismatch')
+    _require(amendment['expectedTimingHash'] == timing_hash(post), 'saved_personal_timing_mismatch')
+    for field, scope_key in (('events', 'shift'), ('links', 'scope')):
+        supplied = amendment[field]
+        if supplied:
+            scopes = {item[scope_key] for item in supplied}
+            merged = copy.deepcopy(supplied)
+            merged.extend(copy.deepcopy(item) for item in post.get(field, []) if item[scope_key] not in scopes)
+            # Order is not evidence; preserve the existing canonical order when equal.
+            _require(sorted(merged, key=data_hash) == sorted(post.get(field, []), key=data_hash),
+                     'saved_personal_core_mismatch')
+    scopes = _target_scopes(amendment)
+    update = amendment['workTiming']
+    timing.validate(update, owner=post, date=post['date'], source_kind='personal-work-post')
+    _require(all(timing.scope(fact) in scopes for fact in update['facts']), 'saved_personal_scope_mismatch')
+    result = copy.deepcopy(post)
+    result['workTiming'] = timing.merge(post.get('workTiming'), update)
+    personal.valid_post(result)
+    return result
+
+
+def validate_revisions(state, personal):
+    """Bind saved current revisions, retaining proof if a later native analysis exists."""
+    imports = state.get('savedPersonalImports', {})
+    current = validate_imports(imports, personal)
+    for tid, (receipt_id, post) in current.items():
+        if imports[receipt_id]['amendment'].get('operation') != TIMING_OPERATION:
+            continue
+        active = [item for item in state['posts'] if item['id'] == tid]
+        history = state.get('azureAnalysis', {}).get('history', [])
+        _require(active == [post] or post in history, 'saved_personal_revision_mismatch')
+    return current
 
 
 def subject_facts(state, tid):
@@ -147,6 +299,14 @@ def subject_facts(state, tid):
         name: copy.deepcopy(state['identityBindings'][name])
         for name in sorted(names) if name in state['identityBindings']
     }
+    imports = {key: copy.deepcopy(entry) for key, entry in state.get('savedPersonalImports', {}).items()
+               if entry['amendment']['id'] == tid}
+    history = [copy.deepcopy(post) for post in state.get('azureAnalysis', {}).get('history', [])
+               if post['id'] == tid]
+    if imports:
+        facts['savedPersonalImports'] = imports
+    if history:
+        facts['analysisHistory'] = history
     return facts
 
 
@@ -248,6 +408,7 @@ def apply_amendments(state, entries, usage, personal):
     _require(isinstance(entries, list) and len(entries) <= 3)
     previous = state.get('savedPersonalImports', {})
     validate_accounting(previous, usage, personal)
+    current = validate_revisions(state, personal)
     prepared, ids = [], set()
     receipts = copy.deepcopy(previous)
     proposed_bindings = copy.deepcopy(state['identityBindings'])
@@ -259,13 +420,36 @@ def apply_amendments(state, entries, usage, personal):
         receipt_id = data_hash(entry['amendment'])
         if receipt_id in previous:
             recorded = previous[receipt_id]
+            if entry['amendment'].get('operation') == TIMING_OPERATION:
+                _require(recorded == entry, 'saved_personal_receipt_conflict')
+                continue
             _require(recorded['amendment'] == entry['amendment']
                      and entry['expectedSubjectHash'] in (
                          recorded['expectedSubjectHash'], subject_hash(state, tid)),
                      'saved_personal_receipt_conflict')
             continue
+        if entry['amendment'].get('operation') == TIMING_OPERATION:
+            _require(tid in current, 'saved_personal_predecessor_required')
+            predecessor_id, predecessor_post = current[tid]
+            _require(entry['amendment']['previous']['importId'] == predecessor_id,
+                     'saved_personal_predecessor_mismatch')
+            _require(subject_hash(state, tid) == entry['expectedSubjectHash'],
+                     'saved_personal_subject_mismatch')
+            existing = [item for item in state['posts'] if item['id'] == tid]
+            _require(len(existing) == 1 and existing[0] == predecessor_post,
+                     'saved_personal_core_mismatch')
+            _require(_check_binding(entry['amendment']['source'], proposed_bindings) is not None,
+                     'missing_saved_personal_binding')
+            post = _timing_revision(existing[0], entry['amendment'], previous[predecessor_id],
+                                    predecessor_id, personal)
+            receipts[receipt_id] = copy.deepcopy(entry)
+            prepared.append((entry, post))
+            continue
         _require(not any(item['amendment']['id'] == tid for item in previous.values()),
                  'saved_personal_receipt_conflict')
+        _require(entry['amendment']['source']['contractVersion'] != TIMING_CONTRACT
+                 or not any(item['id'] == tid for item in state['posts']),
+                 'saved_personal_timing_operation_required')
         _check_subject(state, entry, personal)
         source = entry['amendment']['source']
         if _check_binding(source, proposed_bindings) is None:
@@ -277,15 +461,16 @@ def apply_amendments(state, entries, usage, personal):
         prepared.append((entry, post))
     validate_accounting(receipts, usage, personal)
     result = copy.deepcopy(state)
-    for _, post in prepared:
+    for entry, post in prepared:
         tid = post['id']
         existing = next((index for index, item in enumerate(result['posts']) if item['id'] == tid), None)
         if existing is None:
             result['posts'].append(post)
         else:
             result['posts'][existing] = post
-        for field in ('pending', 'resolved'):
-            result[field] = [item for item in result[field] if item['id'] != tid]
+        if entry['amendment'].get('operation') != TIMING_OPERATION:
+            for field in ('pending', 'resolved'):
+                result[field] = [item for item in result[field] if item['id'] != tid]
     if prepared:
         result['identityBindings'] = proposed_bindings
         result['savedPersonalImports'] = receipts

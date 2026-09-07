@@ -306,7 +306,16 @@ def personal_projection(state, *, collector=None):
                         raise ValueError
                     seen_scopes.add(link['scope'])
                     item['links'].append({'scope': link['scope'], 'status': link['status']})
-            if not item['events'] and not item.get('links'):
+            if 'workTiming' in post:
+                timing = load_personal_collector().timing
+                timing.validate(post['workTiming'], owner=post, date=post['date'],
+                                source_kind='personal-work-post')
+                item['workTiming'] = json.loads(json.dumps(post['workTiming']))
+                for fact in item['workTiming']['facts']:
+                    fact['source']['createdAt'] = item['createdAt']
+                timing.validate(item['workTiming'], owner=item, date=item['date'],
+                                source_kind='personal-work-post')
+            if not item['events'] and not item.get('links') and not item.get('workTiming', {}).get('facts'):
                 raise ValueError
             ids.add(tid)
             result['posts'].append(item)

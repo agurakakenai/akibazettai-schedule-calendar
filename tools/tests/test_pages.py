@@ -196,6 +196,51 @@ class WorkspaceTests(unittest.TestCase):
 
 
 class ProjectionTests(WorkspaceTests):
+    def test_work_timing_projection_is_source_bound_not_attendance(self):
+        personal = pages.load_personal_collector()
+        value = personal_snapshot()
+        post = value['posts'][0]
+        post['events'] = []
+        post['links'] = []
+        post['workTiming'] = personal.timing.bind([{
+            'serviceDate': post['date'], 'shift': '夜', 'boundary': 'start',
+            'status': 'set', 'qualifier': 'early', 'explicitTime': '16:00',
+        }], post, 'personal-work-post')
+        value['privateTimingInput'] = SECRET
+        public = pages.personal_projection(value)
+        self.assertEqual(public['posts'][0]['events'], [])
+        self.assertEqual(public['posts'][0]['links'], [])
+        self.assertEqual(public['posts'][0]['workTiming'], post['workTiming'])
+        self.assertNotIn(SECRET, json.dumps(public))
+        self.assertEqual(value['privateTimingInput'], SECRET)
+        fractional = personal_snapshot()
+        fractional_post = fractional['posts'][0]
+        fractional_post['createdAt'] = fractional_post['createdAt'].replace('Z', '.000000Z')
+        fractional_post['workTiming'] = personal.timing.bind([{
+            'serviceDate': fractional_post['date'], 'shift': '夜', 'boundary': 'start',
+            'status': 'set', 'qualifier': 'early', 'explicitTime': '16:00',
+        }], fractional_post, 'personal-work-post')
+        projected_post = pages.personal_projection(fractional)['posts'][0]
+        self.assertEqual(projected_post['workTiming']['facts'][0]['source']['createdAt'], projected_post['createdAt'])
+        personal.valid_post(projected_post)
+        self.assertTrue(fractional_post['createdAt'].endswith('.000000Z'))
+        post['workTiming']['facts'][0]['source']['sourceKind'] = 'half-month-schedule'
+        with self.assertRaises(pages.PagesError):
+            pages.personal_projection(value)
+
+        half = half_month_snapshot()
+        table = half['schedules'][0]
+        table['workTiming'] = personal.timing.bind([{
+            'serviceDate': '2026-09-07', 'shift': '昼', 'boundary': 'end',
+            'status': 'set', 'qualifier': 'long', 'explicitTime': None,
+        }], table, 'half-month-schedule')
+        projected = pages.half_month_projection(half)
+        self.assertEqual(projected['schedules'][0]['workTiming'], table['workTiming'])
+        self.assertIsNone(projected['schedules'][0]['workTiming']['facts'][0]['explicitTime'])
+        table['workTiming']['facts'][0]['source']['raw'] = SECRET
+        with self.assertRaises(pages.PagesError):
+            pages.half_month_projection(half)
+
     def test_half_month_projection_is_separate_from_same_day_evidence(self):
         value = half_month_snapshot()
         projected = pages.half_month_projection(value)

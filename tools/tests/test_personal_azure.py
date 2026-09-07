@@ -50,9 +50,37 @@ def dated(value, day=base.DATE.isoformat()):
     return {'serviceDate': day, **value} if isinstance(value, dict) else value
 
 
-def result(*events, links=(), pending_events=False):
+def result(*events, links=(), pending_events=False, work_timing=()):
     return {'events': None if pending_events else [dated(value) for value in events],
-            'links': None if links is None else [dated(value) for value in links]}
+            'links': None if links is None else [dated(value) for value in links],
+            'workTiming': None if work_timing is None else list(work_timing)}
+
+
+def timing_fact(shift='昼', boundary='end', qualifier=None, explicit_time='16:00',
+                status='set', day=base.DATE.isoformat(), line_ids=(1,)):
+    assert boundary == ('end' if shift == '昼' else 'start')
+    kind = ('not-' + (qualifier or 'time') if status == 'excluded'
+            else status if status != 'set' else qualifier or 'time')
+    return {'serviceDate': day, 'shift': shift,
+            'kind': kind,
+            'time': explicit_time, 'evidenceLineIds': list(line_ids)}
+
+
+def maximum_timing_response():
+    days = [(base.DATE + dt.timedelta(days=offset)).isoformat() for offset in range(4)]
+    source = [f'9月{6 + offset}日 昼1号店。12時から18時まで、ながめ昼。'
+              if shift == '昼' else f'9月{6 + offset}日 夜2号店。16時から22時まで、早め夜。'
+              for offset in range(4) for shift in ('昼', '夜')]
+    text = '\n'.join(['本文'] * 112 + source * 2)
+    ids = list(range(113, 129))
+    events = [dated(event(shift, 'placement', ids, store), day)
+              for day in days[:2] for shift, store in (('昼', 's1'), ('夜', 's2'))]
+    links = [dated(link(scope, line_ids=ids), day)
+             for day in days[:2] for scope in ('昼', '夜', 'unspecified')]
+    facts = [timing_fact(shift, 'end' if shift == '昼' else 'start',
+                         'long' if shift == '昼' else 'early', '18:00' if shift == '昼' else '16:00',
+                         day=day, line_ids=ids) for day in days for shift in ('昼', '夜')]
+    return text, result(*events, links=links, work_timing=facts)
 
 
 def response(value=None, *, content=None, refusal=None, finish='stop'):
@@ -403,6 +431,397 @@ class AzureTests(base.Offline):
     def assess_v5(self, text, value, shifts=('昼', '夜')):
         return azure.grounded_assessment_v5(value, text, base.DATE, shifts, personal.azure_context())
 
+    def test_work_timing_exact_boundaries_and_explicit_words_are_independent(self):
+        cases = (
+            ('本日昼16時終了', timing_fact()),
+            ('本日昼１２〜１６', timing_fact()),
+            ('本日昼12:00-16:00', timing_fact()),
+            ('本日昼18時終了', timing_fact(explicit_time='18:00')),
+            ('本日夜16時開始', timing_fact('夜', 'start')),
+            ('本日夜18時開始', timing_fact('夜', 'start', explicit_time='18:00')),
+            ('本日昼は短め', timing_fact(qualifier='short', explicit_time=None)),
+            ('本日昼はながめ', timing_fact(qualifier='long', explicit_time=None)),
+            ('本日早め夜', timing_fact('夜', 'start', 'early', None)),
+            ('本日おそめ夜', timing_fact('夜', 'start', 'late', None)),
+            ('本日昼ながめ18時終了', timing_fact(qualifier='long', explicit_time='18:00')),
+            ('本日早め夜16時開始', timing_fact('夜', 'start', 'early')),
+            ('本日昼17時終了に訂正', timing_fact(qualifier=None, explicit_time='17:00')),
+            ('本日昼15時終了', timing_fact(qualifier=None, explicit_time='15:00')),
+            ('本日夜19時開始', timing_fact('夜', 'start', None, '19:00')),
+        )
+        for text, proposed in cases:
+            with self.subTest(text=text):
+                events, links, facts, reason = azure.grounded_assessment_v8(
+                    result(pending_events=True, links=None, work_timing=[proposed]),
+                    text, base.DATE, ('昼', '夜'), personal.azure_context())
+                self.assertEqual((events, links, reason), ([], [], 'work_timing'))
+                self.assertEqual(facts, [azure.timing.expand_compact(
+                    {key: proposed[key] for key in azure.timing.COMPACT_FIELDS}, proposed['serviceDate'])])
+                if proposed['kind'] == 'time':
+                    self.assertIsNone(facts[0]['qualifier'])
+        self.opener.open.assert_not_called()
+
+    def test_work_timing_compact_maximum_response_fits_transport_and_rejects_ninth_scope(self):
+        text, value = maximum_timing_response()
+        lines = azure.source_lines(text)
+        self.assertEqual(len(lines), 128)
+        self.assertLessEqual(len(text.encode('utf-8')), 6000)
+        self.assertEqual([len(value[field]) for field in ('events', 'links', 'workTiming')], [4, 6, 8])
+        schema = azure.response_schema(lines)
+        self.assertEqual(schema['properties']['workTiming']['maxItems'], 8)
+        self.assertEqual(set(schema['properties']['workTiming']['items']['required']),
+                         {'serviceDate', 'shift', 'kind', 'time', 'evidenceLineIds'})
+        for field in ('events', 'links', 'workTiming'):
+            refs = schema['properties'][field]['items']['properties']['evidenceLineIds']
+            self.assertEqual(refs['maxItems'], 16)
+            self.assertEqual(refs['items']['enum'], list(range(1, 129)))
+            self.assertTrue(all(len(item['evidenceLineIds']) == 16 for item in value[field]))
+        for indent in (None, 2):
+            with self.subTest(indent=indent):
+                separators = (',', ':') if indent is None else None
+                content = json.dumps(value, indent=indent, separators=separators)
+                reply = response(content=content)
+                envelope = json.loads(reply.read.return_value)
+                payload = json.dumps(envelope, indent=indent, separators=separators).encode('utf-8')
+                self.assertLess(len(payload), 24000)
+                self.assertEqual(azure.MAX_RESPONSE_BYTES, 24000)
+                reply.read.return_value = payload
+                self.opener.open.return_value = reply
+                decoded = self.analyzer.request(lines, personal.official.timestamp(base.CREATED),
+                                                base.DATE, ('昼', '夜'), base.AMU['name'])
+                self.assertEqual(decoded, value)
+                events, links, facts, channels, dates = azure._grounded_v8(
+                    decoded, text, base.DATE, ('昼', '夜'), personal.azure_context(), lines)
+                self.assertEqual([len(events), len(links), len(facts)], [2, 3, 2])
+                self.assertEqual(channels, {'events': 'confirmed', 'links': 'confirmed', 'workTiming': 'confirmed'})
+                self.assertEqual(len(dates['workTiming']), 4)
+                self.assertEqual([fact['boundary'] for fact in facts], ['end', 'start'])
+                self.assertTrue(all(set(fact) == set(azure.timing.FACT_FIELDS) for fact in facts))
+        self.assertEqual(self.opener.open.call_count, 2)
+        ninth = copy.deepcopy(value)
+        ninth['workTiming'].append({**value['workTiming'][0], 'serviceDate': '2026-09-10'})
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_invalid_output'):
+            azure.grounded_assessment_v8(ninth, text, base.DATE, ('昼', '夜'), personal.azure_context())
+
+    def test_work_timing_wire_only_requests_day_end_and_night_start(self):
+        self.assertEqual(azure.MAX_OUTPUT_TOKENS, 2304)
+        self.assertEqual((azure.MAX_INPUT_BYTES, azure.MAX_DATED_EVENTS, azure.MAX_DATED_LINKS,
+                          azure.MAX_EVIDENCE_LINES, azure.timing.MAX_FACTS), (6000, 4, 6, 16, 512))
+        for policy in ('day WORK END or night WORK START', 'Day START and night END',
+                       'Numbers NEVER generate a qualifier kind', "opposite boundary's clock",
+                       'kind=time with time=17:00'):
+            self.assertIn(policy, azure.PROMPT)
+        for shift, bad_kind in (('昼', 'early'), ('昼', 'late'), ('夜', 'short'), ('夜', 'long')):
+            raw = {'serviceDate': base.DATE.isoformat(), 'shift': shift, 'kind': bad_kind,
+                   'time': None, 'evidenceLineIds': [1]}
+            with self.subTest(raw=raw), self.assertRaises(azure.AnalysisFailure):
+                self.assess('本日の勤務時間の案内', result(work_timing=[raw]))
+        for raw in ({**timing_fact(), 'boundary': 'start'},
+                    {**timing_fact('夜', 'start'), 'boundary': 'end'}):
+            with self.subTest(raw=raw), self.assertRaises(azure.AnalysisFailure):
+                self.assess('本日昼12時開始、夜22時終了', result(work_timing=[raw]))
+        for text in ('本日昼12時開始', '本日夜22時終了'):
+            self.assertEqual(azure.grounded_assessment_v8(
+                result(), text, base.DATE, ('昼', '夜'), personal.azure_context()), ([], [], [], 'no_event'))
+
+    def test_work_timing_compaction_preserves_rich_saved_channels_and_history(self):
+        post, _ = personal.validate_post(base.candidate(), base.post(), base.AMU, self.clock)
+        facts = [{'serviceDate': post['date'], 'shift': shift, 'boundary': boundary,
+                  'status': 'set', 'qualifier': None, 'explicitTime': when}
+                 for shift, boundary, when in (('昼', 'start', '12:00'), ('昼', 'end', '17:00'),
+                                                ('夜', 'start', '18:00'), ('夜', 'end', '22:00'))]
+        post['workTiming'] = azure.timing.bind(facts, post, 'personal-work-post')
+        self.state['posts'] = [post]
+        self.analyzer.state['history'] = [copy.deepcopy(post)]
+        self.analyzer.state['cache'][azure.digest('rich prior cache')] = {
+            'postId': post['id'], 'bodyHash': azure.digest('prior body'),
+            'versionHash': azure.digest('prior wire'), 'at': base.CREATED,
+            'reason': 'events', 'events': copy.deepcopy(post['events']), 'links': [],
+            'workTiming': copy.deepcopy(facts),
+            'channels': {'events': 'confirmed', 'links': 'none', 'workTiming': 'confirmed'},
+            'serviceDates': {'events': [post['date']], 'links': [], 'workTiming': [post['date']]},
+        }
+        self.save()
+        self.assertEqual(personal.read_state(self.snapshot), self.state)
+        self.assertEqual(personal.public_state(self.state)['posts'][0]['workTiming'], post['workTiming'])
+        self.opener.open.assert_not_called()
+
+    def test_work_timing_targeted_denials_keep_late_and_distinct_targets_in_private_cache(self):
+        late = timing_fact('夜', 'start', 'late', None)
+        not_early = timing_fact('夜', 'start', 'early', None, status='excluded', line_ids=(1, 2))
+        not_sixteen = timing_fact('夜', 'start', None, '16:00', status='excluded', line_ids=(1, 3))
+        text = '本日夜はおそめです\n早めではありません\n16時開始でもありません'
+        value = result(work_timing=[late, not_early, not_sixteen])
+        post, reason = self.parse(text, value)
+        facts = post['workTiming']['facts']
+        self.assertEqual(reason, 'work_timing')
+        self.assertEqual((post['events'], post['links']), ([], []))
+        self.assertEqual([(fact['status'], fact['qualifier'], fact['explicitTime']) for fact in facts],
+                         [('set', 'late', None), ('excluded', 'early', None), ('excluded', None, '16:00')])
+        self.assertEqual(len({azure.timing.scope(fact) for fact in facts}), 1)
+        self.assertEqual(len({azure.timing.fact_key(fact) for fact in facts}), 3)
+        self.assertNotIn('withdrawn', [fact['status'] for fact in facts])
+        self.state['posts'] = [post]
+        self.analyzer.state['history'] = [copy.deepcopy(post)]
+        self.save()
+        self.assertEqual(personal.read_state(self.snapshot), self.state)
+        self.assertEqual(self.parse(text, value), (post, reason))
+        self.opener.open.assert_called_once()
+        duplicate = copy.deepcopy(self.analyzer.state)
+        cached = next(iter(duplicate['cache'].values()))
+        cached['workTiming'].append(copy.deepcopy(cached['workTiming'][1]))
+        with self.assertRaises(ValueError):
+            azure.validate_state(duplicate, personal.azure_context())
+        with self.assertRaises(azure.AnalysisFailure):
+            self.assess(text, result(work_timing=[late, not_early, not_early]))
+
+    def test_work_timing_all_targeted_denial_kinds_validate_and_bind_only_their_target(self):
+        cases = (
+            ('昼', 'end', 'short', None, '本日昼は短めではありません'),
+            ('昼', 'end', 'long', None, '本日昼はながめではありません'),
+            ('夜', 'start', 'early', None, '本日夜は早めではありません'),
+            ('夜', 'start', 'late', None, '本日夜はおそめではありません'),
+            ('昼', 'end', None, '18:00', '本日昼18時終了ではありません'),
+            ('夜', 'start', None, '16:00', '本日夜16時開始ではありません'),
+        )
+        for shift, boundary, qualifier, when, text in cases:
+            proposed = timing_fact(shift, boundary, qualifier, when, status='excluded')
+            with self.subTest(proposed=proposed):
+                events, links, facts, reason = azure.grounded_assessment_v8(
+                    result(pending_events=True, links=None, work_timing=[proposed]),
+                    text, base.DATE, ('昼', '夜'), personal.azure_context())
+                self.assertEqual((events, links, reason), ([], [], 'work_timing'))
+                self.assertEqual((facts[0]['status'], facts[0]['qualifier'], facts[0]['explicitTime']),
+                                 ('excluded', qualifier, when))
+                self.assertEqual((facts[0]['qualifier'] is None) != (facts[0]['explicitTime'] is None), True)
+        invalid = (
+            {**timing_fact(), 'kind': 'not-short', 'time': '16:00'},
+            {**timing_fact(), 'kind': 'not-time', 'time': None},
+            {**timing_fact(), 'kind': 'not-early', 'time': None},
+            {**timing_fact('夜', 'start'), 'kind': 'not-long', 'time': None},
+            {**timing_fact(), 'kind': 'not-time', 'time': '19:00'},
+            {**timing_fact(), 'kind': 'excluded'},
+        )
+        for proposed in invalid:
+            with self.subTest(proposed=proposed), self.assertRaises(azure.AnalysisFailure):
+                self.assess('本日昼16時終了という案内の否定です', result(work_timing=[proposed]))
+
+    def test_work_timing_normal_usual_or_no_info_is_not_a_withdrawal_or_inferred_time(self):
+        for policy in ('Current late plus a later "not early" must retain late',
+                       'Normal/usual/no-info wording alone is NOT a whole-boundary',
+                       'Do not invent a positive value from a denial'):
+            self.assertIn(policy, azure.PROMPT)
+        for text in ('本日いつもどおりです', '本日の勤務時間は普通です', '本日の時間情報はありません'):
+            self.assertEqual(azure.grounded_assessment_v8(
+                result(), text, base.DATE, ('昼', '夜'), personal.azure_context()), ([], [], [], 'no_event'))
+            with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_pending'):
+                azure.grounded_assessment_v8(result(work_timing=None), text, base.DATE,
+                                             ('昼', '夜'), personal.azure_context())
+        for kind in ('normal', 'usual', 'no-info', 'none'):
+            proposed = {**timing_fact(explicit_time=None), 'kind': kind}
+            with self.subTest(kind=kind), self.assertRaises(azure.AnalysisFailure):
+                self.assess('本日いつもどおりです', result(work_timing=[proposed]))
+
+    def test_work_timing_eight_distinct_denials_keep_wire_cap_separate_from_aggregate_guard(self):
+        values = [timing_fact('夜', 'start', None, f'16:{minute:02d}', status='excluded')
+                  for minute in range(9)]
+        text = '本日夜の開始時刻ではありません: ' + '、'.join(value['time'] for value in values)
+        parsed = azure.grounded_assessment_v8(
+            result(work_timing=values[:8]), text, base.DATE, ('夜',), personal.azure_context())
+        self.assertEqual(len(parsed[2]), 8)
+        self.assertEqual(len({azure.timing.scope(fact) for fact in parsed[2]}), 1)
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_invalid_output'):
+            self.assess(text, result(work_timing=values))
+        facts = [azure.timing.expand_compact(
+            {'shift': '夜', 'kind': 'not-time', 'time': f'{minute // 60:02d}:{minute % 60:02d}'},
+            base.DATE.isoformat()) for minute in range(513)]
+        state = azure.empty_state()
+        cached = {'postId': base.TID, 'bodyHash': azure.digest('prior body'),
+                  'versionHash': azure.digest('prior wire'), 'at': base.CREATED,
+                  'reason': 'work_timing', 'events': [], 'links': [], 'workTiming': facts[:512],
+                  'channels': {'events': 'none', 'links': 'none', 'workTiming': 'confirmed'},
+                  'serviceDates': {'events': [], 'links': [], 'workTiming': [base.DATE.isoformat()]}}
+        state['cache'][azure.digest('retained aggregate')] = cached
+        azure.validate_state(state, personal.azure_context())
+        cached['workTiming'] = facts
+        with self.assertRaises(ValueError):
+            azure.validate_state(state, personal.azure_context())
+        self.opener.open.assert_not_called()
+
+    def test_work_timing_storage_overflow_holds_old_facts_and_reports_partial_without_reissue(self):
+        previous, _ = personal.validate_post(base.candidate(), base.post(), base.AMU, self.clock)
+        previous['links'] = personal.legacy_links(previous)
+        values = [{'shift': '夜', 'kind': 'late', 'time': None}]
+        values.extend({'shift': '夜', 'kind': 'not-time', 'time': f'{minute // 60:02d}:{minute % 60:02d}'}
+                      for minute in range(511))
+        facts = [azure.timing.expand_compact(value, previous['date']) for value in values]
+        previous['workTiming'] = azure.timing.bind(facts, previous, 'personal-work-post')
+        self.state['posts'] = [previous]
+        self.state['identityBindings'][previous['name']] = {
+            'authorId': previous['authorId'], 'authorScreenName': previous['authorScreenName'],
+            'verifiedAt': base.CREATED}
+        self.state['resolved'] = [
+            {key: previous[key] for key in ('id', 'url', 'name', 'date')}
+            | {'reason': 'events', 'resolvedAt': base.CREATED}]
+        self.state['budgets'][previous['date']] = {'searches': 7, 'posts': 2}
+        self.analyzer.state['history'] = [copy.deepcopy(previous)]
+        kept = {field: copy.deepcopy(self.state[field])
+                for field in ('posts', 'resolved', 'identityBindings', 'budgets')}
+        history = copy.deepcopy(self.analyzer.state['history'])
+        text = '本日夜は16時開始ではありません'
+        self.opener.open.return_value = response(result(work_timing=[
+            timing_fact('夜', 'start', None, '16:00', status='excluded')]))
+        with self.shared_usage() as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+            for _ in range(2):
+                report, code, client = self.collect(payloads={base.TID: base.post(text)}, analyzer=analyzer)
+                self.assertEqual((report['status'], code), ('partial', 2))
+                self.assertEqual(report['failures'],
+                                 [{'id': base.TID, 'reason': 'azure_work_timing_storage_limit'}])
+                self.assertEqual((report['newPostCount'], report['newEventCount'], report['pendingCount']),
+                                 (0, 0, 1))
+                self.assertEqual(self.state['pending'][0]['reason'], 'azure_work_timing_storage_limit')
+                for field, value in kept.items():
+                    self.assertEqual(self.state[field], value)
+                self.assertEqual(analyzer.state['history'], history)
+                self.assertEqual(len(self.state['posts'][0]['workTiming']['facts']), 512)
+                self.assertEqual(self.state['posts'][0]['workTiming']['facts'][0]['qualifier'], 'late')
+                client.search.assert_not_called()
+                client.fetch_post.assert_not_called()
+            self.assertEqual(ledger.used, 1)
+            self.assertEqual(next(iter(ledger.state['receipts'].values()))['reason'], 'work_timing')
+            self.assertEqual(next(iter(analyzer.state['cache'].values()))['reason'], 'work_timing')
+        self.opener.open.assert_called_once()
+        personal.read_state(self.snapshot)
+
+    def test_work_timing_nullable_cross_product_has_no_cross_channel_deletion(self):
+        for events in (None, [], [dated(event('昼', 'placement', [1], 's1'))]):
+            for links in (None, [], [dated(link('昼'))]):
+                for facts in (None, [], [timing_fact()]):
+                    value = {'events': events, 'links': links, 'workTiming': facts}
+                    with self.subTest(value=value):
+                        reason = ('events' if events else 'links' if links else
+                                  'work_timing' if facts else
+                                  'azure_pending' if None in (events, links, facts) else 'no_event')
+                        if reason == 'azure_pending':
+                            with self.assertRaisesRegex(azure.AnalysisFailure, reason):
+                                azure.grounded_assessment_v8(value, '今日 昼1号店16時終了',
+                                                            base.DATE, ('昼',), personal.azure_context())
+                        else:
+                            parsed = azure.grounded_assessment_v8(value, '今日 昼1号店16時終了',
+                                                                 base.DATE, ('昼',), personal.azure_context())
+                            self.assertEqual(parsed[-1], reason)
+                            self.assertEqual([bool(items) for items in parsed[:3]],
+                                             [bool(events), bool(links), bool(facts)])
+
+    def test_work_timing_only_persists_source_bound_cache_without_attendance_or_links(self):
+        self.known()
+        text = '本日昼16時終了\nPRIVATE_TIMING_BODY'
+        self.opener.open.return_value = response(result(work_timing=[timing_fact()]))
+        with mock.patch.object(personal, 'parse_events', side_effect=AssertionError('no rules fallback')):
+            _, code, client = self.collect(payloads={base.TID: base.post(text)})
+        self.assertEqual(code, 0)
+        client.search.assert_not_called()
+        client.fetch_post.assert_not_called()
+        self.opener.open.assert_called_once()
+        post = self.state['posts'][0]
+        self.assertEqual((post['events'], post['links']), ([], []))
+        self.assertEqual(post['workTiming']['facts'][0]['source'],
+                         azure.timing.source_metadata(post, 'personal-work-post'))
+        cached = next(iter(self.analyzer.state['cache'].values()))
+        self.assertEqual(cached['reason'], 'work_timing')
+        self.assertEqual(cached['channels'], {'events': 'none', 'links': 'none', 'workTiming': 'confirmed'})
+        self.assertNotIn('source', cached['workTiming'][0])
+        self.assertEqual(cached['serviceDates']['workTiming'], [base.DATE.isoformat()])
+        for value in (self.state, personal.public_state(self.state)):
+            encoded = json.dumps(value)
+            for private in ('PRIVATE_TIMING_BODY', 'evidenceLineIds', 'bodyLines', ENV['AZURE_OPENAI_API_KEY']):
+                self.assertNotIn(private, encoded)
+        cached_post, reason = self.parse(text, result(work_timing=[timing_fact()]))
+        self.assertEqual((cached_post, reason), (post, 'work_timing'))
+        self.opener.open.assert_called_once()
+
+    def test_work_timing_shared_usage_is_one_successful_accounted_request(self):
+        text = '本日昼16時終了'
+        with self.shared_usage() as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+            for _ in range(2):
+                post, reason = self.parse(text, result(work_timing=[timing_fact()]), analyzer=analyzer)
+                self.assertEqual((post['events'], post['links'], reason), ([], [], 'work_timing'))
+            self.assertEqual(ledger.used, 1)
+            receipt = next(iter(ledger.state['receipts'].values()))
+            self.assertEqual(receipt['reason'], 'work_timing')
+            self.assertIsNotNone(receipt['issuedAt'])
+            self.assertIsNotNone(receipt['completedAt'])
+        self.opener.open.assert_called_once()
+        personal.read_state(self.snapshot)
+
+    def test_work_timing_validates_ignored_dates_and_numeric_occurrence_per_selected_line(self):
+        today = timing_fact()
+        tomorrow = timing_fact(day='2026-09-07', explicit_time='18:00', line_ids=(2,))
+        text = '今日昼16時終了\r\n明日昼18時終了'
+        _, _, facts, _, dates = azure._grounded_v8(
+            result(work_timing=[today, tomorrow]), text, base.DATE, ('昼',), personal.azure_context())
+        self.assertEqual([fact['serviceDate'] for fact in facts], ['2026-09-06'])
+        self.assertEqual(dates['workTiming'], ['2026-09-06', '2026-09-07'])
+        self.assertEqual(azure.grounded_assessment_v8(
+            result(work_timing=[tomorrow]), text, base.DATE, ('昼',), personal.azure_context()),
+            ([], [], [], 'no_event'))
+        bad_facts = (
+            {**tomorrow, 'serviceDate': '2026-02-30'}, {**tomorrow, 'evidenceLineIds': [1]},
+            {**tomorrow, 'evidenceLineIds': [1, 1]}, {**tomorrow, 'evidenceLineIds': [True]},
+            {**tomorrow, 'evidenceLineIds': [999]}, {**tomorrow, 'shift': '朝'},
+            {**tomorrow, 'kind': 'early'}, {**tomorrow, 'shift': '夜', 'kind': 'short'},
+            {**tomorrow, 'time': '17:00'}, {**tomorrow, 'unexpected': None},
+            {**tomorrow, 'kind': 'withdrawn'}, {**tomorrow, 'time': None},
+            {**tomorrow, 'boundary': 'start'}, {**tomorrow, 'status': 'set'},
+            {**tomorrow, 'qualifier': None}, {**tomorrow, 'explicitTime': '18:00'},
+        )
+        for proposed in bad_facts:
+            with self.subTest(proposed=proposed), self.assertRaises(azure.AnalysisFailure):
+                azure.grounded_assessment_v8(result(work_timing=[today, proposed]),
+                                             text, base.DATE, ('昼',), personal.azure_context())
+        for proposed in (result(work_timing=[today, today]),
+                         result(work_timing=[today] * (azure.MAX_DATED_TIMING + 1)),
+                         {**result(), 'workTiming': {}}, {'events': [], 'links': []}):
+            with self.subTest(proposed=proposed), self.assertRaises(azure.AnalysisFailure):
+                self.assess(text, proposed)
+        with self.assertRaises(azure.AnalysisFailure):
+            self.assess('本日昼終了16\n時', result(work_timing=[timing_fact(line_ids=(1, 2))]))
+        for text in ('本日昼12-16時半', '本日昼12-16:300', '本日昼12-16時30分'):
+            with self.subTest(text=text), self.assertRaises(azure.AnalysisFailure):
+                self.assess(text, result(work_timing=[timing_fact()]))
+        with self.assertRaises(azure.AnalysisFailure):
+            self.assess('本日昼16時終了', result(work_timing=[today]), shifts=('夜',))
+
+    def test_work_timing_does_not_reinterpret_late_return_break_or_default_hours(self):
+        for kind in ('late', 'return'):
+            value = result(event('夜', kind, [1], 's1', '18:00'))
+            parsed = azure.grounded_assessment_v8(
+                value, '本日夜1号店18時に到着・休憩から復帰', base.DATE, ('夜',), personal.azure_context())
+            self.assertEqual(parsed[0][0]['time'], '18:00')
+            self.assertEqual(parsed[2], [])
+        for text in ('今日通しでお給仕', '今日昼休憩16時から18時まで', '投稿は16時です', '明日は早め夜'):
+            self.assertEqual(azure.grounded_assessment_v8(
+                result(), text, base.DATE, ('昼', '夜'), personal.azure_context()), ([], [], [], 'no_event'))
+        for status in ('withdrawn', 'conflict'):
+            proposed = timing_fact(status=status, qualifier=None, explicit_time=None)
+            parsed = azure.grounded_assessment_v8(
+                result(work_timing=[proposed]), '本日の昼終了の案内を取り消します',
+                base.DATE, ('昼',), personal.azure_context())
+            self.assertEqual(parsed[2][0]['status'], status)
+
+    def test_work_timing_v7_adapter_is_explicit_and_cache_failure_is_not_migrated(self):
+        old = {'events': [], 'links': [dated(link('昼'))]}
+        self.assertEqual(azure.grounded_assessment_v7(
+            old, '本日昼のお給仕', base.DATE, ('昼',), personal.azure_context()),
+            ([], [{'scope': '昼', 'status': 'work'}], 'links'))
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_invalid_output'):
+            self.assess('本日昼のお給仕', old)
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_invalid_output'):
+            azure.grounded_assessment_v7(
+                result(), '本日昼のお給仕', base.DATE, ('昼',), personal.azure_context())
+
     def collect(self, *, payloads=None, entries=None, analyzer=None):
         durable = personal.DurableHttp(self.state, self.snapshot, self.http, base.DATE, self.targets,
                                        3, 3, clock=lambda: self.clock, sleep=self.sleep)
@@ -447,7 +866,7 @@ class AzureTests(base.Offline):
             'author': 'あむ', 'knownShiftsByDate': {'2026-09-06': ['昼', '夜']}})
         self.assertEqual(sent['reasoning_effort'], 'none')
         self.assertEqual(sent['model'], 'gpt-5.6-luna')
-        self.assertEqual(sent['max_completion_tokens'], 1200)
+        self.assertEqual(sent['max_completion_tokens'], 2304)
         self.assertNotIn('tools', sent)
         self.assertNotIn(ENV['AZURE_OPENAI_API_KEY'], json.dumps(sent))
 
@@ -536,13 +955,13 @@ class AzureTests(base.Offline):
                     self.assertEqual(entry['links'], expected_links)
                     self.assertEqual(entry['channels'], {
                         field: 'pending' if value is None else 'confirmed' if value else 'none'
-                        for field, value in (('events', events), ('links', links))})
+                        for field, value in (('events', events), ('links', links), ('workTiming', []))})
                     self.assertEqual(entry['serviceDates'], {
                         field: [base.DATE.isoformat()] if value else []
-                        for field, value in (('events', events), ('links', links))})
+                        for field, value in (('events', events), ('links', links), ('workTiming', []))})
                     self.assertEqual(set(entry), {
                         'postId', 'bodyHash', 'versionHash', 'at', 'reason', 'events', 'links',
-                        'channels', 'serviceDates'})
+                        'channels', 'serviceDates', 'workTiming'})
                     self.opener.open.assert_called_once()
                     self.assertEqual(analyzer.used, 1)
                     personal.read_state(self.snapshot)
@@ -713,8 +1132,9 @@ class AzureTests(base.Offline):
         self.assertEqual(next(iter(self.analyzer.state['cache'].values()))['reason'], 'azure_invalid_output')
         with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_invalid_output'):
             self.validate(text, result(event('昼', 'placement', [1], 's1'), links=[link('昼')]))
-        self.assertEqual(azure.VERSION, 'personal-line-ids-v7')
-        for version in ('personal-line-ids-v4', 'personal-line-ids-v5', 'personal-line-ids-v6'):
+        self.assertEqual(azure.VERSION, 'personal-line-ids-v8')
+        for version in ('personal-line-ids-v4', 'personal-line-ids-v5', 'personal-line-ids-v6',
+                        'personal-line-ids-v7'):
             with mock.patch.object(azure, 'VERSION', version):
                 old_namespace = self.make_analyzer().version
             self.assertNotEqual(self.analyzer.version, old_namespace)
@@ -732,11 +1152,11 @@ class AzureTests(base.Offline):
                          'unspecified', 'already-displayed', 'independently', 'knownShiftsByDate'):
             self.assertIn(boundary, sent['messages'][0]['content'])
         self.assertEqual(sent['model'], 'gpt-5.6-luna')
-        self.assertEqual(sent['max_completion_tokens'], 1200)
+        self.assertEqual(sent['max_completion_tokens'], 2304)
         self.assertEqual(self.analyzer.client.identity['modelVersion'], '2026-07-09')
         schema = sent['response_format']['json_schema']['schema']
-        self.assertEqual(set(schema['required']), {'events', 'links'})
-        self.assertEqual(set(schema['properties']), {'events', 'links'})
+        self.assertEqual(set(schema['required']), {'events', 'links', 'workTiming'})
+        self.assertEqual(set(schema['properties']), {'events', 'links', 'workTiming'})
         self.assertIs(schema['additionalProperties'], False)
         self.assertNotIn('linkDecision', sent['messages'][0]['content'])
         self.assertIn('events=[]', sent['messages'][0]['content'])
@@ -780,9 +1200,10 @@ class AzureTests(base.Offline):
                         self.assertEqual(post['date'], '2026-09-06')
                         self.assertEqual(post['createdAt'], base.CREATED)
                 cached = next(iter(analyzer.state['cache'].values()))
-                self.assertEqual(cached['serviceDates'], {'events': [], 'links': expected_dates})
+                self.assertEqual(cached['serviceDates'], {'events': [], 'links': expected_dates, 'workTiming': []})
                 self.assertEqual(cached['channels'], {
-                    'events': 'none', 'links': 'confirmed' if expected_reason == 'links' else 'none'})
+                    'events': 'none', 'links': 'confirmed' if expected_reason == 'links' else 'none',
+                    'workTiming': 'none'})
                 self.assertEqual(self.state['posts'], [])
                 self.opener.open.assert_called_once()
                 personal.read_state(self.snapshot)
@@ -816,7 +1237,8 @@ class AzureTests(base.Offline):
         self.assertEqual(([item['storeId'] for item in accepted], len(accepted_links), reason),
                          (['s1', 's2'], 3, 'events'))
         _, _, channels, dates = azure._grounded_v7(
-            value, text, base.DATE, base.AMU['shifts'], personal.azure_context())
+            {key: value[key] for key in ('events', 'links')},
+            text, base.DATE, base.AMU['shifts'], personal.azure_context())
         self.assertEqual(channels, {'events': 'confirmed', 'links': 'confirmed'})
         self.assertEqual(dates, {field: ['2026-09-06', '2026-09-07'] for field in ('events', 'links')})
         invalid = [
@@ -838,7 +1260,7 @@ class AzureTests(base.Offline):
         with self.assertRaises(azure.AnalysisFailure):
             self.assess(text, result(events[1]), shifts=('昼',))
         _, _, channels, dates = azure._grounded_v7(
-            result(events[3], links=None), text, base.DATE, ('昼',), personal.azure_context())
+            {'events': [events[3]], 'links': None}, text, base.DATE, ('昼',), personal.azure_context())
         self.assertEqual(channels, {'events': 'none', 'links': 'pending'})
         self.assertEqual(dates, {'events': ['2026-09-07'], 'links': []})
 
@@ -1174,6 +1596,8 @@ class AzureTests(base.Offline):
         cases.extend(('v5', reason) for reason in ('events', 'links', 'no_event',
                                                   'azure_pending', 'azure_invalid_output'))
         cases.extend(('v6', reason) for reason in ('events', 'links', 'no_event',
+                                                 'azure_pending', 'azure_ungrounded'))
+        cases.extend(('v7', reason) for reason in ('events', 'links', 'no_event',
                                                   'azure_pending', 'azure_invalid_output'))
         for version, reason in cases:
             with self.subTest(version=version, reason=reason):
@@ -1184,7 +1608,7 @@ class AzureTests(base.Offline):
                 old = {'postId': base.TID, 'bodyHash': azure.digest('今日昼1号店'),
                        'versionHash': azure.digest('saved-' + version), 'at': base.CREATED,
                        'reason': reason, 'events': events}
-                if version in ('v5', 'v6'):
+                if version in ('v5', 'v6', 'v7'):
                     old['links'] = links
                 self.state['azureAnalysis'] = {
                     **azure.empty_state(), 'cache': {azure.digest('saved-' + version + '-key'): old}}
@@ -1500,7 +1924,7 @@ process.stdout.write(JSON.stringify({store:person.storeId,history:person.history
         self.assertEqual(checked, personal.read_state(self.snapshot))
         self.assertTrue(checked['azureAnalysis']['cache'])
         self.assertEqual(next(iter(checked['azureAnalysis']['cache'].values()))['channels'],
-                         {'events': 'pending', 'links': 'confirmed'})
+                         {'events': 'pending', 'links': 'confirmed', 'workTiming': 'none'})
         self.assertTrue(checked['coverage'][base.DATE.isoformat()][name]['linkScopes'])
         public = pages.personal_projection(checked, collector=personal.official)
         self.assertEqual(public['posts'][0]['events'], [])
@@ -1571,7 +1995,7 @@ process.stdout.write(JSON.stringify({urls,events:post.events}));
         checked, raw = cloud.validate_personal(self.snapshot, personal)
         self.assertEqual(raw, self.snapshot.read_bytes())
         self.assertEqual(next(iter(checked['azureAnalysis']['cache'].values()))['channels'],
-                         {'events': 'confirmed', 'links': 'pending'})
+                         {'events': 'confirmed', 'links': 'pending', 'workTiming': 'none'})
         self.assertEqual(checked['posts'][0]['links'], [])
         public = pages.personal_projection(checked, collector=personal.official)
         self.assertEqual(public['posts'][0]['events'], [
@@ -1637,8 +2061,9 @@ process.stdout.write(JSON.stringify({store:roster.personal.byMaid.get(post.name)
                 checked, raw = cloud.validate_personal(self.snapshot, personal)
                 self.assertEqual(raw, self.snapshot.read_bytes())
                 cached = next(iter(checked['azureAnalysis']['cache'].values()))
-                self.assertEqual(cached['serviceDates'], {'events': [], 'links': dates})
-                self.assertEqual(cached['channels'], {'events': 'none', 'links': 'confirmed' if url else 'none'})
+                self.assertEqual(cached['serviceDates'], {'events': [], 'links': dates, 'workTiming': []})
+                self.assertEqual(cached['channels'], {
+                    'events': 'none', 'links': 'confirmed' if url else 'none', 'workTiming': 'none'})
                 public = pages.personal_projection(checked, collector=personal.official)
                 self.assertEqual(len(public['posts']), 1 if url else 0)
                 if url:

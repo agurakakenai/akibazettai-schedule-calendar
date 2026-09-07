@@ -2504,6 +2504,334 @@ class PersonalSavedTests(unittest.TestCase):
             self.entries if entries is None else entries,
             self.usage if usage is None else usage, self.personal)
 
+    def timing_revision(self, state=None, previous_entry=None, suffix='timing'):
+        state = self.apply() if state is None else state
+        previous_entry = self.entries[0] if previous_entry is None else previous_entry
+        prior = previous_entry['amendment']
+        post = next(item for item in state['posts'] if item['id'] == prior['id'])
+        amendment = copy.deepcopy(prior)
+        source = amendment['source']
+        source.update(contractVersion=self.saved.TIMING_CONTRACT,
+                      contractHash=self.saved.TIMING_CONTRACT_HASH,
+                      analysisResultHash=self.saved.data_hash([suffix, 'result']),
+                      analysisReceiptHash=self.saved.data_hash([suffix, 'analysis']),
+                      analyzedAt='2026-09-07T03:00:00Z', usageReceiptId='7' * 64,
+                      usageSourceHash='8' * 64)
+        fact = {'serviceDate': post['date'], 'shift': '昼', 'boundary': 'end',
+                'status': 'set', 'qualifier': 'long', 'explicitTime': '18:00'}
+        amendment.update(
+            operation='work-timing-only', events=None, links=None,
+            previous={'contractVersion': prior['source']['contractVersion'],
+                      'contractHash': prior['source']['contractHash'],
+                      'importId': self.saved.data_hash(prior),
+                      'analysisReceiptId': prior['source']['analysisReceiptHash']},
+            expectedCoreHash=self.saved.core_hash(post), expectedTimingHash=self.saved.timing_hash(post),
+            updateChannels=['workTiming'],
+            targetScopes=[{'serviceDate': post['date'], 'name': post['name'], 'shift': '昼', 'boundary': 'end'}],
+            workTiming=self.saved.timing.bind([fact], post, 'personal-work-post'))
+        usage = copy.deepcopy(self.usage)
+        cloud.load_analysis_state().apply_import(usage, {
+            'receiptId': '7' * 64, 'sourceHash': '8' * 64, 'date': '2026-09-07',
+            'counts': {'requests': 3},
+            'modelBreakdown': [{
+                'model': self.saved.MODEL, 'deployment': self.saved.MODEL,
+                'modelVersion': self.saved.MODEL_VERSION, 'kind': 'text', 'component': 'personal', 'count': 3,
+            }],
+        })
+        entry = {'expectedSubjectHash': self.saved.subject_hash(state, post['id']), 'amendment': amendment}
+        return state, usage, entry
+
+    def test_work_timing_revision_preserves_core_and_immutable_import_history(self):
+        state, usage, entry = self.timing_revision()
+        before, before_usage = copy.deepcopy(state), copy.deepcopy(usage)
+        after = self.apply(state=state, usage=usage, entries=[entry])
+        tid = entry['amendment']['id']
+        old = next(post for post in state['posts'] if post['id'] == tid)
+        new = next(post for post in after['posts'] if post['id'] == tid)
+        self.assertEqual({key: value for key, value in new.items() if key != 'workTiming'}, old)
+        self.assertEqual(new['workTiming']['facts'][0]['qualifier'], 'long')
+        self.assertEqual(self.saved.core_hash(new), entry['amendment']['expectedCoreHash'])
+        for key, receipt in state['savedPersonalImports'].items():
+            self.assertEqual(after['savedPersonalImports'][key], receipt)
+        for field in state.keys() - {'posts', 'savedPersonalImports'}:
+            self.assertEqual(after[field], state[field])
+        self.assertEqual(len(after['savedPersonalImports']), len(state['savedPersonalImports']) + 1)
+        self.assertEqual(self.apply(state=after, usage=usage, entries=[entry]), after)
+        self.saved.validate_revisions(after, self.personal)
+        self.saved.validate_accounting(after['savedPersonalImports'], usage, self.personal)
+        self.assertEqual(state, before)
+        self.assertEqual(usage, before_usage)
+
+    def test_work_timing_chain_replaces_only_target_and_rejects_branches_and_tampering(self):
+        state, usage, first = self.timing_revision()
+        updated = self.apply(state=state, usage=usage, entries=[first])
+        _, usage, second = self.timing_revision(updated, first, suffix='second')
+        second['amendment']['workTiming']['facts'][0].update(
+            status='withdrawn', qualifier=None, explicitTime=None)
+        final = self.apply(state=updated, usage=usage, entries=[second])
+        self.saved.validate_revisions(final, self.personal)
+        post = next(item for item in final['posts'] if item['id'] == first['amendment']['id'])
+        self.assertEqual(post['workTiming']['facts'][0]['status'], 'withdrawn')
+        self.assertEqual(len(final['savedPersonalImports']), len(state['savedPersonalImports']) + 2)
+        self.assertEqual(self.apply(state=final, usage=usage, entries=[first]), final)
+        self.assertEqual(self.apply(state=final, usage=usage, entries=[second]), final)
+        branch = copy.deepcopy(first)
+        branch['amendment']['source']['analysisReceiptHash'] = self.saved.data_hash('branch analysis')
+        branch['expectedSubjectHash'] = self.saved.subject_hash(final, post['id'])
+        with self.assertRaisesRegex(ValueError, 'saved_personal_predecessor_mismatch'):
+            self.apply(state=final, usage=usage, entries=[branch])
+        bad = copy.deepcopy(final)
+        bad['posts'][bad['posts'].index(post)]['workTiming']['facts'][0].update(
+            status='set', qualifier='long', explicitTime='18:00')
+        with self.assertRaisesRegex(ValueError, 'saved_personal_revision_mismatch'):
+            self.saved.validate_revisions(bad, self.personal)
+        receipts = copy.deepcopy(final['savedPersonalImports'])
+        first_id = self.saved.data_hash(first['amendment'])
+        del receipts[first_id]
+        with self.assertRaises(ValueError):
+            self.saved.validate_imports(receipts, self.personal)
+
+    def test_work_timing_numeric_correction_keeps_unmentioned_boundary_and_receipts(self):
+        state, usage, first = self.timing_revision()
+        amendment = first['amendment']
+        night = copy.deepcopy(amendment['workTiming']['facts'][0])
+        night.update(shift='夜', boundary='start', qualifier='early', explicitTime='16:00')
+        amendment['workTiming']['facts'].append(night)
+        amendment['targetScopes'].append({
+            'name': night['source']['name'], 'serviceDate': night['serviceDate'], 'shift': '夜', 'boundary': 'start'})
+        updated = self.apply(state=state, usage=usage, entries=[first])
+        _, usage, second = self.timing_revision(updated, first, suffix='corrected')
+        second['amendment']['workTiming']['facts'][0].update(qualifier=None, explicitTime='17:00')
+        final = self.apply(state=updated, usage=usage, entries=[second])
+        post = next(item for item in final['posts'] if item['id'] == amendment['id'])
+        facts = {self.saved.timing.scope(fact): fact for fact in post['workTiming']['facts']}
+        self.assertEqual(facts[(post['date'], '夜', 'start')], night)
+        self.assertEqual(facts[(post['date'], '昼', 'end')]['explicitTime'], '17:00')
+        self.assertIsNone(facts[(post['date'], '昼', 'end')]['qualifier'])
+        for key, entry in updated['savedPersonalImports'].items():
+            self.assertEqual(final['savedPersonalImports'][key], entry)
+        self.saved.validate_revisions(final, self.personal)
+
+    def test_work_timing_specific_denials_share_one_authorized_scope_without_erasing_late(self):
+        state, usage, first = self.timing_revision()
+        first['amendment']['targetScopes'][0].update(shift='夜', boundary='start')
+        late = first['amendment']['workTiming']['facts'][0]
+        late.update(shift='夜', boundary='start', qualifier='late', explicitTime=None)
+        current = self.apply(state=state, usage=usage, entries=[first])
+        _, usage, denial = self.timing_revision(current, first, suffix='targeted-denials')
+        denial['amendment']['targetScopes'][0].update(shift='夜', boundary='start')
+        not_early = {**copy.deepcopy(late), 'status': 'excluded', 'qualifier': 'early'}
+        not_sixteen = {**copy.deepcopy(late), 'status': 'excluded', 'qualifier': None, 'explicitTime': '16:00'}
+        denial['amendment']['workTiming']['facts'] = [not_early, not_sixteen]
+        before, ledger = copy.deepcopy(current), copy.deepcopy(usage)
+        updated = self.apply(state=current, usage=usage, entries=[denial])
+        post = next(item for item in updated['posts'] if item['id'] == first['amendment']['id'])
+        self.assertEqual(post['workTiming']['facts'], [late, not_early, not_sixteen])
+        self.assertEqual(len(denial['amendment']['targetScopes']), 1)
+        self.assertEqual(self.saved.core_hash(post), first['amendment']['expectedCoreHash'])
+        for key, entry in current['savedPersonalImports'].items():
+            self.assertEqual(updated['savedPersonalImports'][key], entry)
+        self.saved.validate_revisions(updated, self.personal)
+        self.assertEqual(self.apply(state=updated, usage=usage, entries=[denial]), updated)
+        self.assertEqual(current, before)
+        self.assertEqual(usage, ledger)
+        duplicate = copy.deepcopy(denial)
+        duplicate['amendment']['targetScopes'] *= 2
+        with self.assertRaises(ValueError):
+            self.apply(state=current, usage=usage, entries=[duplicate])
+        duplicate = copy.deepcopy(denial)
+        duplicate['amendment']['workTiming']['facts'].append(copy.deepcopy(not_early))
+        with self.assertRaises(ValueError):
+            self.apply(state=current, usage=usage, entries=[duplicate])
+        self.assertEqual(current, before)
+        self.assertEqual(usage, ledger)
+
+    def test_work_timing_storage_overflow_is_pure_saved_rejection_without_truncating_prior_facts(self):
+        initial = copy.deepcopy(self.entries[0])
+        amendment = initial['amendment']
+        amendment['source'].update(contractVersion=self.saved.TIMING_CONTRACT,
+                                   contractHash=self.saved.TIMING_CONTRACT_HASH)
+        post = self.saved.post_from_amendment(amendment)
+        values = [{'shift': '夜', 'kind': 'late', 'time': None}]
+        values.extend({'shift': '夜', 'kind': 'not-time', 'time': f'{minute // 60:02d}:{minute % 60:02d}'}
+                      for minute in range(511))
+        facts = [self.saved.timing.expand_compact(value, post['date']) for value in values]
+        amendment['workTiming'] = self.saved.timing.bind(facts, post, 'personal-work-post')
+        state = self.apply(entries=[initial])
+        _, usage, entry = self.timing_revision(state, initial, suffix='storage-overflow')
+        before, ledger = copy.deepcopy(state), copy.deepcopy(usage)
+        with self.assertRaisesRegex(self.saved.timing.WorkTimingLimitError, '^work_timing_storage_limit$'):
+            self.apply(state=state, usage=usage, entries=[entry])
+        self.assertEqual(state, before)
+        self.assertEqual(usage, ledger)
+        saved_post = next(item for item in state['posts'] if item['id'] == amendment['id'])
+        self.assertEqual(len(saved_post['workTiming']['facts']), 512)
+        self.assertEqual(saved_post['workTiming']['facts'][0]['qualifier'], 'late')
+        self.saved.validate_revisions(state, self.personal)
+
+    def test_work_timing_mixed_wire_dates_normalize_before_amendment_scope_checks(self):
+        state, usage, entry = self.timing_revision()
+        post = next(item for item in state['posts'] if item['id'] == entry['amendment']['id'])
+        azure = self.personal.azure
+        date = self.personal.calendar_day(self.personal.official.timestamp(post['createdAt']))
+        today = {'serviceDate': date.isoformat(), 'shift': '昼', 'kind': 'time',
+                 'time': '18:00', 'evidenceLineIds': [1]}
+        tomorrow = {**today, 'serviceDate': '2026-09-07', 'shift': '夜',
+                    'time': '16:00', 'evidenceLineIds': [2]}
+        wire = {'events': None, 'links': None, 'workTiming': [tomorrow, today]}
+        text = '本日昼18時終了\n明日夜16時開始'
+        events, links, facts, reason = azure.grounded_assessment_v8(
+            wire, text, date, ('昼',), self.personal.azure_context())
+        self.assertEqual((events, links, reason), ([], [], 'work_timing'))
+        self.assertEqual([fact['serviceDate'] for fact in facts], [post['date']])
+        entry['amendment']['workTiming'] = self.saved.timing.bind(facts, post, 'personal-work-post')
+        after = self.apply(state=state, usage=usage, entries=[entry])
+        current = next(item for item in after['posts'] if item['id'] == post['id'])
+        self.assertEqual(current['workTiming']['facts'], entry['amendment']['workTiming']['facts'])
+        before, ledger = copy.deepcopy(state), copy.deepcopy(usage)
+        for change in ({'serviceDate': '2026-02-30'}, {'evidenceLineIds': [1]},
+                       {'time': '19:00'}, {'unexpected': True}):
+            bad = copy.deepcopy(wire)
+            bad['workTiming'][0].update(change)
+            with self.subTest(change=change), self.assertRaises(azure.AnalysisFailure):
+                azure.grounded_assessment_v8(bad, text, date, ('昼',), self.personal.azure_context())
+            self.assertEqual(state, before)
+            self.assertEqual(usage, ledger)
+
+    def test_work_timing_rejects_incorrect_predecessor_scope_core_source_and_receipt(self):
+        state, usage, entry = self.timing_revision()
+        changes = (
+            lambda item: item.update(expectedSubjectHash='0' * 64),
+            lambda item: item['amendment'].update(expectedCoreHash='0' * 64),
+            lambda item: item['amendment'].update(expectedTimingHash='0' * 64),
+            lambda item: item['amendment'].update(updateChannels=['workTiming', 'events']),
+            lambda item: item['amendment']['previous'].update(contractVersion='personal-line-ids-v6'),
+            lambda item: item['amendment']['previous'].update(contractHash='0' * 64),
+            lambda item: item['amendment']['previous'].update(importId='0' * 64),
+            lambda item: item['amendment']['previous'].update(analysisReceiptId='0' * 64),
+            lambda item: item['amendment']['source'].update(bodyHash='0' * 64),
+            lambda item: item['amendment']['source'].update(sourceHash='0' * 64),
+            lambda item: item['amendment']['source'].update(contractVersion='personal-line-ids-v7'),
+            lambda item: item['amendment']['source'].update(contractHash='0' * 64),
+            lambda item: item['amendment']['source'].update(
+                analysisReceiptHash=self.entries[1]['amendment']['source']['analysisReceiptHash']),
+            lambda item: item['amendment']['source'].update(usageReceiptId='0' * 64),
+            lambda item: item['amendment']['source'].update(usageReceiptId='a' * 64, usageSourceHash='b' * 64),
+            lambda item: item['amendment']['targetScopes'][0].update(name='別人'),
+            lambda item: item['amendment']['targetScopes'][0].update(serviceDate='2026-09-07'),
+            lambda item: item['amendment']['targetScopes'][0].update(shift='夜'),
+            lambda item: item['amendment']['targetScopes'][0].update(boundary='start'),
+            lambda item: item['amendment']['workTiming']['facts'][0].update(serviceDate='2026-09-07'),
+            lambda item: item['amendment']['workTiming']['facts'][0]['source'].update(name='別人'),
+            lambda item: item['amendment'].update(
+                events=[{'shift': '昼', 'kind': 'placement', 'storeId': 's4', 'excerpt': '4号店'}]),
+            lambda item: item['amendment'].update(links=[{'scope': '昼', 'status': 'withdrawn'}]),
+        )
+        original, ledger = copy.deepcopy(state), copy.deepcopy(usage)
+        for change in changes:
+            bad = copy.deepcopy(entry)
+            change(bad)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.apply(state=state, usage=usage, entries=[bad])
+            self.assertEqual(state, original)
+            self.assertEqual(usage, ledger)
+
+    def test_work_timing_empty_invalid_or_unproven_revision_cannot_update_facts(self):
+        state, usage, entry = self.timing_revision()
+        for channel in (None, [], {'schemaVersion': 1, 'facts': []},
+                        {'schemaVersion': 1, 'facts': [{'status': 'refused'}]}):
+            bad = copy.deepcopy(entry)
+            bad['amendment']['workTiming'] = channel
+            with self.subTest(channel=channel), self.assertRaises(ValueError):
+                self.apply(state=state, usage=usage, entries=[bad])
+        legacy = copy.deepcopy(state)
+        del legacy['savedPersonalImports']
+        entry['expectedSubjectHash'] = self.saved.subject_hash(legacy, entry['amendment']['id'])
+        with self.assertRaisesRegex(ValueError, 'saved_personal_predecessor_required'):
+            self.apply(state=legacy, usage=usage, entries=[entry])
+        self.assertEqual(usage['imports']['7' * 64]['counts']['requests'], 3)
+
+    def test_work_timing_subject_hash_binds_prior_receipts_and_analysis_history(self):
+        state, usage, entry = self.timing_revision()
+        tid = entry['amendment']['id']
+        before = self.saved.subject_hash(state, tid)
+        state['azureAnalysis'] = {'history': [copy.deepcopy(next(post for post in state['posts'] if post['id'] == tid))]}
+        self.assertNotEqual(self.saved.subject_hash(state, tid), before)
+        with self.assertRaisesRegex(ValueError, 'saved_personal_subject_mismatch'):
+            self.apply(state=state, usage=usage, entries=[entry])
+        del state['azureAnalysis']
+        root = self.saved.data_hash(self.entries[0]['amendment'])
+        state['savedPersonalImports'][root]['expectedSubjectHash'] = '0' * 64
+        self.assertNotEqual(self.saved.subject_hash(state, tid), before)
+        with self.assertRaisesRegex(ValueError, 'saved_personal_subject_mismatch'):
+            self.apply(state=state, usage=usage, entries=[entry])
+
+    def test_work_timing_preserves_unmentioned_core_channels_and_ordinary_duplicate_guard(self):
+        for events, links in ((None, None), ([], []),
+                              (self.entries[0]['amendment']['events'], self.entries[0]['amendment']['links'])):
+            state, usage, entry = self.timing_revision()
+            entry['amendment'].update(events=events, links=links)
+            after = self.apply(state=state, usage=usage, entries=[entry])
+            tid = entry['amendment']['id']
+            self.assertEqual(self.saved.core_hash(next(post for post in after['posts'] if post['id'] == tid)),
+                             entry['amendment']['expectedCoreHash'])
+        bad = copy.deepcopy(self.entries[0])
+        bad['amendment']['source']['analysisReceiptHash'] = self.saved.data_hash('unscoped replacement')
+        with self.assertRaisesRegex(ValueError, 'saved_personal_receipt_conflict'):
+            self.apply(state=state, usage=usage, entries=[bad])
+
+    def test_v8_timing_only_first_import_has_no_event_or_link_and_legacy_shapes_stay_strict(self):
+        entry = copy.deepcopy(self.entries[0])
+        amendment = entry['amendment']
+        amendment['source'].update(contractVersion=self.saved.TIMING_CONTRACT,
+                                   contractHash=self.saved.TIMING_CONTRACT_HASH)
+        owner = self.saved.post_from_amendment(amendment)
+        amendment.update(events=[], links=[], workTiming=self.saved.timing.bind(
+            [{'serviceDate': owner['date'], 'shift': '夜', 'boundary': 'start',
+              'status': 'set', 'qualifier': 'early', 'explicitTime': None}], owner, 'personal-work-post'))
+        after = self.apply(entries=[entry])
+        post = next(item for item in after['posts'] if item['id'] == amendment['id'])
+        self.assertEqual((post['events'], post['links'], self.personal.legacy_links(post)), ([], [], []))
+        self.saved.validate_imports(after['savedPersonalImports'], self.personal)
+        self.assertEqual(self.apply(state=after, entries=[entry]), after)
+        for version in (self.saved.LEGACY_CONTRACT, self.saved.PREVIOUS_LINK_CONTRACT,
+                        self.saved.NULLABLE_LINK_CONTRACT, self.saved.LINK_CONTRACT):
+            bad = copy.deepcopy(self.entries[0])
+            bad['amendment']['source']['contractVersion'] = version
+            bad['amendment']['links'] = None
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                self.apply(entries=[bad])
+            bad['amendment']['links'] = self.entries[0]['amendment']['links']
+            bad['amendment']['workTiming'] = amendment['workTiming']
+            with self.subTest(timing_on_old=version), self.assertRaises(ValueError):
+                self.apply(entries=[bad])
+
+    def test_normal_v8_import_cannot_replace_existing_unproven_post_with_timing(self):
+        existing = self.state['posts'][0]
+        self.assertTrue(existing['events'])
+        self.assertTrue(self.personal.legacy_links(existing))
+        self.assertNotIn('savedPersonalImports', self.state)
+        entry = copy.deepcopy(next(item for item in self.entries
+                                   if item['amendment']['id'] == existing['id']))
+        amendment = entry['amendment']
+        amendment['source'].update(contractVersion=self.saved.TIMING_CONTRACT,
+                                   contractHash=self.saved.TIMING_CONTRACT_HASH)
+        amendment.update(events=[], links=[], workTiming=self.saved.timing.bind(
+            [{'serviceDate': existing['date'], 'shift': '昼', 'boundary': 'end',
+              'status': 'set', 'qualifier': 'short', 'explicitTime': '16:00'}],
+            existing, 'personal-work-post'))
+        before, ledger = copy.deepcopy(self.state), copy.deepcopy(self.usage)
+        for channel in (amendment['workTiming'], None, {'schemaVersion': 1, 'facts': []}):
+            bad = copy.deepcopy(entry)
+            bad['amendment']['workTiming'] = channel
+            if channel is None or not channel['facts']:
+                bad['amendment']['events'] = copy.deepcopy(existing['events'])
+            with self.subTest(channel=channel), self.assertRaisesRegex(
+                    ValueError, 'saved_personal_timing_operation_required'):
+                self.apply(entries=[bad])
+            self.assertEqual(self.state, before)
+            self.assertEqual(self.usage, ledger)
+
     def test_batch_proposed_bindings_reject_name_author_and_handle_conflicts(self):
         first = self.entries[0]['amendment']['source']
         variants = (

@@ -52,6 +52,15 @@ def validate_accounting(state, usage, half_month):
         used.add(proof['receiptId'])
         _require(0 < len(used) <= capacity, 'saved_half_month_usage_overallocated')
     imported = {proof['receiptId'] for proof in state.get('savedImports', {}).values()}
+    timing_imports = {revision['timingAmendment']['importId']
+                      for revision in state['revisions'].values() if 'timingAmendment' in revision}
+    for import_id in timing_imports:
+        proof = state['savedImports'][import_id]
+        _require(sum(item['usageReceiptId'] == proof['usageReceiptId']
+                     for item in state['savedImports'].values()) == 1,
+                 'saved_half_month_timing_usage_reused')
+        _require(proof['usageReceiptId'] not in (usage or {}).get('receipts', {}),
+                 'saved_half_month_timing_usage_reused')
     for receipt_id in state['receipts']:
         if receipt_id in imported:
             continue
@@ -79,7 +88,9 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
         half_month.require_keys(entry, ('expectedSubjectHash', 'amendment'))
         half_month.valid_hash(entry['expectedSubjectHash'])
         amendment = entry['amendment']
-        half_month.require_keys(amendment, ('source', 'schedules', 'analysis', 'proof'))
+        timing_only = isinstance(amendment, dict) and 'operation' in amendment
+        half_month.require_keys(amendment, ('source', 'schedules', 'analysis', 'proof',
+                                           *(half_month.TIMING_AMENDMENT_FIELDS if timing_only else ())))
         source, analysis, proof = (amendment[key] for key in ('source', 'analysis', 'proof'))
         half_month.validate_source(source)
         half_month.validate_analysis(analysis)
@@ -121,15 +132,59 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
                  'saved_half_month_usage_model')
         key = half_month.digest(amendment)
         if key in result.get('savedImports', {}):
+            if timing_only:
+                prior_authorizations = [revision.get('timingAmendment') for revision in result['revisions'].values()
+                                        if revision.get('timingAmendment', {}).get('importId') == key]
+                _require(bool(prior_authorizations) and all(
+                    authorization['expectedSubjectHash'] == entry['expectedSubjectHash']
+                    for authorization in prior_authorizations), 'saved_half_month_replay_changed')
             continue
         _require(entry['expectedSubjectHash'] == subject_hash(state, half_month),
                  'saved_half_month_subject_changed')
-        half_month.apply_revision(result, amendment['schedules'], source, analysis)
-        result.setdefault('savedImports', {})[key] = {
+        authorization = None
+        if timing_only:
+            _require(proof['searchCreatedAt'] == source['createdAt'],
+                     'saved_half_month_timing_search_mismatch')
+            authorization = {field: copy.deepcopy(amendment[field])
+                             for field in half_month.TIMING_AMENDMENT_FIELDS}
+            authorization.update(expectedSubjectHash=entry['expectedSubjectHash'], importId=key)
+            half_month.validate_timing_authorization(authorization)
+            prior = authorization['previous']
+            selected = half_month.select_revisions(result)
+            current_keys = {revision_key for revision_key, revision in selected
+                            if any(table['id'] == revision['schedule']['id']
+                                   and table['period']['from'] == revision['schedule']['period']['from']
+                                   and table['name'] == revision['schedule']['name']
+                                   for table in result['schedules'])}
+            prior_keys = result['receipts'].get(prior['analysisReceiptId'], [])
+            _require(bool(prior_keys) and set(prior_keys) <= current_keys,
+                     'saved_half_month_timing_parent_stale')
+            _require(amendment['basisRevisionKeys'] == half_month.projection_basis(
+                result, prior['analysisReceiptId']), 'saved_half_month_timing_basis_stale')
+            _require(analysis['receiptId'] not in result['receipts'],
+                     'saved_half_month_timing_receipt_reused')
+            _require(all(item['usageReceiptId'] != proof['usageReceiptId']
+                         for item in result.get('savedImports', {}).values()),
+                     'saved_half_month_timing_usage_reused')
+            current = [table for table in result['schedules'] if table['id'] == source['id']
+                       and any(table['period']['from'] == item['period']['from']
+                               for item in amendment['schedules'])]
+            _require(half_month.core_hash(current) == amendment['expectedCoreHash'],
+                     'saved_half_month_timing_core_changed')
+            _require(half_month.timing_hash(current) == amendment['expectedTimingHash'],
+                     'saved_half_month_timing_stale_hash')
+        imported = {
             **{field: proof[field] for field in PROOF_HASHES},
             'receiptId': analysis['receiptId'], 'requestHash': analysis['requestHash'],
             'issuedAt': proof['issuedAt'], 'importedAt': half_month.stamp(now),
         }
+        working = copy.deepcopy(result)
+        half_month.apply_revision(working, amendment['schedules'], source, analysis,
+                                  timing_amendment=authorization, saved_import=(key, imported))
+        if timing_only and not any(table.get('workTiming', {}).get('facts')
+                                   for table in amendment['schedules']):
+            continue
+        result = working
         result['checkedAt'] = half_month.stamp(now)
         result['lastSuccessAt'] = half_month.stamp(now)
         result['lastRun'] = {'status': 'ok'}
