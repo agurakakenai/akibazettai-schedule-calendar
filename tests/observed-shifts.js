@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const api = require("../app.js");
 const { test } = require("node:test");
-const { emptyHalfMonthSchedules } = require("./fixtures/half-month-schedules.js");
+const { emptyHalfMonthSchedules, halfMonthEvidence } = require("./fixtures/half-month-schedules.js");
 const context = { window: {} };
 vm.createContext(context);
 for (const file of ["schedule.js", "store-insights.js"]) {
@@ -35,6 +35,196 @@ function halfSource(name = "いと", overrides = {}) {
 const halfFeed = (sources = [halfSource()]) => ({
   schemaVersion: 1, complete: false, checkedAt: "2026-09-06T12:00:00Z",
   lastSuccessAt: "2026-09-06T12:00:00Z", schedules: sources, lastRun: { status: "ok" }
+});
+
+function timingSource(post, sourceKind) {
+  return { ...Object.fromEntries(["id", "url", "name", "authorId", "authorScreenName", "createdAt"]
+    .map(field => [field, post[field]])), sourceKind };
+}
+
+function timingFact(source, changes = {}) {
+  return { serviceDate: "2026-09-07", shift: "昼", boundary: "end", status: "set",
+    qualifier: "long", explicitTime: null, source, ...changes };
+}
+
+test("work timing strictly separates source words, exact clocks and work boundaries", () => {
+  const source = timingSource(halfSource(), "half-month-schedule");
+  for (const [shift, boundary, explicitTime, qualifier, label] of [
+    ["昼", "end", "16:00", null, "短め"], ["昼", "end", "18:00", null, "ながめ"],
+    ["夜", "start", "16:00", null, "早め"], ["夜", "start", "18:00", null, "おそめ"],
+    ["昼", "end", null, "short", "短め"], ["昼", "end", null, "long", "ながめ"],
+    ["夜", "start", null, "early", "早め"], ["夜", "start", null, "late", "おそめ"],
+    ["昼", "start", "16:00", null, null], ["夜", "end", "18:00", null, null],
+    ["昼", "end", "15:00", null, null], ["昼", "end", "17:00", null, null],
+    ["昼", "end", "19:00", null, null], ["夜", "start", "17:00", null, null],
+    ["夜", "start", "19:00", null, null]
+  ]) {
+    const fact = timingFact(source, { shift, boundary, explicitTime, qualifier });
+    const channel = { schemaVersion: 1, facts: [fact] };
+    assert.equal(api.validateWorkTiming(channel), channel);
+    assert.equal(api.workTimingLabel(fact), label);
+    if (label) {
+      assert.match(api.workTimingDescription(fact), explicitTime === null ? /明示語に基づく補足/ : /予定表に時刻記載/);
+      assert.doesNotMatch(api.workTimingDescription(fact), /数値記載なし|出典に数字がない/);
+      assert.equal(fact.explicitTime, explicitTime, "describing house meaning never fills an unconfirmed source clock");
+    }
+  }
+  assert.equal(api.workTimingLabel(timingFact(source, { qualifier: "long", explicitTime: "16:00" })), null);
+  for (const status of ["withdrawn", "conflict"]) {
+    assert.equal(api.workTimingLabel(timingFact(source, { status, qualifier: null })), null);
+  }
+  const valid = { schemaVersion: 1, facts: [timingFact(source)] };
+  for (const mutate of [
+    x => { x.raw = "private"; }, x => { x.schemaVersion = "1"; }, x => { x.facts = null; },
+    x => { delete x.facts[0].explicitTime; }, x => { x.facts[0].evidenceLineIds = [1]; },
+    x => { x.facts[0].serviceDate = "2026-09-31"; }, x => { x.facts[0].shift = "unspecified"; },
+    x => { x.facts[0].boundary = "break"; }, x => { x.facts[0].status = "pending"; },
+    x => { x.facts[0].qualifier = null; }, x => { x.facts[0].qualifier = "early"; },
+    x => { x.facts[0].qualifier = "__proto__"; }, x => { x.facts[0].explicitTime = "24:00"; },
+    x => { x.facts[0].source.url = "javascript:alert(1)"; }, x => { x.facts[0].source.body = "private"; },
+    x => { x.facts[0].source.id = 12345; }, x => { x.facts[0].source.createdAt = "2026-09-05T00:00:00Z"; },
+    x => { x.facts.push(copyOf(x.facts[0])); }
+  ]) {
+    const bad = copyOf(valid);
+    mutate(bad);
+    assert.throws(() => api.validateWorkTiming(bad), mutate.toString());
+  }
+  assert.throws(() => api.validateWorkTiming(valid, { owner: { ...halfSource(), authorId: "888" } }));
+  assert.throws(() => api.validateWorkTiming(valid, { date: "2026-09-08" }));
+  assert.throws(() => api.validateWorkTiming(valid, { days: { "2026-09-07": ["夜"] } }));
+  assert.throws(() => api.validateWorkTiming(valid, { sourceKind: "personal-work-post" }));
+});
+
+test("timing is display-only for curated and planned entries without inventing links or attendance", () => {
+  const table = halfSource();
+  table.workTiming = { schemaVersion: 1, facts: [
+    timingFact(timingSource(table, "half-month-schedule")),
+    timingFact(timingSource(table, "half-month-schedule"),
+      { serviceDate: "2026-09-02", shift: "夜", boundary: "start", qualifier: "early" })
+  ] };
+  assert.equal(api.validateHalfMonthSchedules(halfFeed([table]), { roster: schedule.roster, insights }).schedules[0], table);
+  const plain = api.buildEffectiveSchedule(schedule.schedule, halfFeed());
+  const effective = api.buildEffectiveSchedule(schedule.schedule, halfFeed([table]));
+  for (const [dateKey, shift, label] of [["2026-09-02", "夜", "早め"], ["2026-09-07", "昼", "ながめ"]]) {
+    const options = { insights, observations: null, personal: null, dateKey, shift, roster: schedule.roster };
+    const before = api.resolveShiftRoster({ ...options, schedule: plain });
+    const after = api.resolveShiftRoster({ ...options, schedule: effective });
+    assert.deepEqual(after.entries.map(entry => entry.name), before.entries.map(entry => entry.name));
+    assert.equal(api.workTimingLabel(after.entries.find(entry => entry.name === "いと").workTimingNote), label);
+    assert.equal(after.observed.byMaid.size, before.observed.byMaid.size);
+    assert.equal(after.personal.byMaid.size, before.personal.byMaid.size);
+  }
+  const before = JSON.stringify([table, effective, insights]);
+  const post = { ...table, date: "2026-09-06", events: [], links: [] };
+  delete post.period;
+  delete post.days;
+  delete post.sourceKind;
+  post.workTiming = { schemaVersion: 1, facts: [
+    timingFact(timingSource(post, "personal-work-post"), { serviceDate: post.date })
+  ] };
+  const personal = { schemaVersion: 1, complete: false, posts: [post],
+    checkedAt: post.observedAt, lastSuccessAt: post.observedAt, lastRun: { status: "ok" } };
+  assert.equal(api.validatePersonalShifts(personal), personal);
+  const result = api.resolveShiftRoster({ insights: null, observations: null, personal,
+    dateKey: post.date, shift: "昼", roster: schedule.roster, schedule: {} });
+  assert.deepEqual(result.entries, []);
+  assert.equal(api.dayHasPersonStoreEvidence(null, null, post.date, personal), false);
+  assert.equal(api.personalPostLink({ personal, insights: null, observations: null, dateKey: post.date, shift: "昼", name: post.name }), null);
+  assert.equal(JSON.stringify([table, effective, insights]), before);
+});
+
+test("timing precedence retains unmentioned facts and never revives explicitly blocked old labels", () => {
+  const table = halfSource("あむ");
+  table.workTiming = { schemaVersion: 1, facts: [timingFact(timingSource(table, "half-month-schedule"))] };
+  const effective = api.buildEffectiveSchedule({}, halfFeed([table]));
+  const makePost = (hour, changes = {}) => {
+    const createdAt = `2026-09-07T${String(hour).padStart(2, "0")}:00:00Z`;
+    const id = (((BigInt(Date.parse(createdAt)) - 1288834974657n) << 22n) + 1n).toString();
+    return { id, url: `https://x.com/${table.authorScreenName}/status/${id}`, name: table.name,
+      authorId: table.authorId, authorScreenName: table.authorScreenName, createdAt, observedAt: createdAt,
+      date: "2026-09-07", events: [], links: [{ scope: "昼", status: "work" }], ...changes };
+  };
+  const short = makePost(1);
+  short.workTiming = { schemaVersion: 1, facts: [
+    timingFact(timingSource(short, "personal-work-post"), { qualifier: null, explicitTime: "16:00" })
+  ] };
+  const resolve = (posts, changes = {}) => api.resolveWorkTiming({
+    personal: { posts }, schedule: effective, insights, dateKey: "2026-09-07", shift: "昼", name: "あむ", ...changes
+  });
+  const unrelated = makePost(2);
+  assert.equal(api.workTimingLabel(resolve([unrelated, short])), "短め");
+  assert.equal(api.workTimingLabel(resolve([makePost(3, { workTiming: { schemaVersion: 1, facts: [] } }), short])), "短め");
+  const changedTime = makePost(3);
+  changedTime.workTiming = { schemaVersion: 1, facts: [
+    timingFact(timingSource(changedTime, "personal-work-post"), { qualifier: null, explicitTime: "17:00" })
+  ] };
+  assert.equal(resolve([changedTime, short]), null);
+  for (const status of ["withdrawn", "conflict"]) {
+    const cancelled = makePost(3);
+    cancelled.workTiming = { schemaVersion: 1, facts: [
+      timingFact(timingSource(cancelled, "personal-work-post"), { status, qualifier: null })
+    ] };
+    assert.equal(resolve([cancelled, short, makePost(4)]), null);
+  }
+  assert.equal(resolve([short, makePost(3, { events: [{ shift: "昼", kind: "absence", excerpt: "お休み" }] }),
+    makePost(4, { events: [{ shift: "昼", kind: "return", excerpt: "復帰" }] })]), null);
+  assert.equal(resolve([short, makePost(3, { links: [{ scope: "昼", status: "withdrawn" }] })]), null);
+  const future = makePost(4, { date: "2026-09-08" });
+  future.workTiming = { schemaVersion: 1, facts: [
+    timingFact(timingSource(future, "personal-work-post"), { serviceDate: future.date, status: "withdrawn", qualifier: null })
+  ] };
+  assert.equal(api.workTimingLabel(resolve([short, future])), "短め");
+  assert.equal(api.workTimingLabel(resolve([makePost(4, { events: [{ shift: "昼", kind: "late", time: "16:00", excerpt: "遅れ" }] })])), "ながめ");
+  assert.equal(resolve([short], { shift: "夜" }), null);
+});
+
+test("value-specific timing denials do not cancel unrelated labels or revive older labels", () => {
+  const table = halfSource("あむ", { days: [{ date: "2026-09-07", shifts: ["夜"] }] });
+  const base = timingFact(timingSource(table, "half-month-schedule"),
+    { shift: "夜", boundary: "start", qualifier: "late" });
+  const earlyDenial = timingFact(base.source,
+    { shift: "夜", boundary: "start", status: "excluded", qualifier: "early" });
+  const timeDenial = { ...earlyDenial, qualifier: null, explicitTime: "18:00" };
+  table.workTiming = { schemaVersion: 1, facts: [base, earlyDenial, timeDenial] };
+  const feed = halfFeed([table]);
+  assert.equal(api.validateHalfMonthSchedules(feed), feed);
+  const resolve = (facts, posts = []) => {
+    const schedule = api.buildEffectiveSchedule({}, halfFeed([{ ...table, workTiming: { schemaVersion: 1, facts } }]));
+    return api.resolveWorkTiming({ personal: { posts }, schedule, insights, dateKey: "2026-09-07", shift: "夜", name: "あむ" });
+  };
+  assert.equal(api.workTimingLabel(resolve([base, earlyDenial])), "おそめ");
+  assert.equal(resolve([{ ...base, qualifier: null, explicitTime: "16:00" }, earlyDenial]), null);
+  assert.equal(api.workTimingLabel(resolve([{ ...base, qualifier: null, explicitTime: "18:00" }, earlyDenial])), "おそめ");
+  assert.equal(resolve([base, timeDenial]), null, "a denied clock matches the label's house meaning without inventing a source clock");
+  assert.equal(resolve([base, timeDenial, earlyDenial]), null);
+  assert.equal(resolve([{ ...base, qualifier: null, explicitTime: "18:00" },
+    { ...earlyDenial, qualifier: "late" }]), null);
+  const post = (hour, changes) => {
+    const createdAt = `2026-09-07T0${hour}:00:00Z`;
+    const id = (((BigInt(Date.parse(createdAt)) - 1288834974657n) << 22n) + 1n).toString();
+    const value = { id, url: `https://x.com/${table.authorScreenName}/status/${id}`,
+      name: table.name, authorId: table.authorId, authorScreenName: table.authorScreenName,
+      date: "2026-09-07", createdAt, observedAt: createdAt, events: [], links: [] };
+    value.workTiming = { schemaVersion: 1, facts: [
+      timingFact(timingSource(value, "personal-work-post"),
+        { shift: "夜", boundary: "start", status: "excluded", qualifier: "early", ...changes })
+    ] };
+    return value;
+  };
+  const notEarly = post(1, {});
+  const notLate = post(2, { qualifier: "late" });
+  const unrelatedLater = post(3, {});
+  assert.equal(api.workTimingLabel(resolve([base], [notEarly])), "おそめ");
+  assert.equal(resolve([base], [notLate, notEarly, unrelatedLater]), null);
+  assert.equal(api.workTimingLabel(resolve([base], [notLate, notEarly, unrelatedLater,
+    post(4, { status: "set", qualifier: "early" })])), "早め");
+  for (const facts of [
+    [{ ...earlyDenial, explicitTime: "16:00" }],
+    [{ ...earlyDenial, qualifier: null, explicitTime: null }],
+    [earlyDenial, copyOf(earlyDenial)]
+  ]) {
+    assert.throws(() => api.validateWorkTiming({ schemaVersion: 1, facts }));
+  }
 });
 
 test("half-month feed strictly validates the public-only contract and calendar", () => {
@@ -178,7 +368,9 @@ test("effective plans are an immutable manual/half union, never event or attenda
   assert.deepEqual(Object.entries(pureHalf).flatMap(([date, day]) => Object.keys(day).map(shift => [date, shift])), halfDays);
   assert.equal(api.dayHasPersonStoreEvidence(insights, null, "2026-09-07"), false);
   assert.equal(api.personalPostLink({ personal: { posts: [] }, insights, observations: null,
-    dateKey: "2026-09-07", shift: "昼", name: "いと" }), null, "a half source never becomes a same-day link");
+    dateKey: "2026-09-07", shift: "昼", name: "いと" }), null, "a plan is not promoted to same-day evidence");
+  assert.equal(api.rosterPostLink({ schedule: effective, personal: { posts: [] }, insights,
+    dateKey: "2026-09-07", shift: "昼", name: "いと" }).kind, "half-month-schedule");
   const replaced = halfFeed([halfSource("いと", { days: [{ date: "2026-09-08", shifts: ["昼"] }] })]);
   const changed = api.buildEffectiveSchedule(manual, replaced);
   assert.equal(changed["2026-09-10"], undefined, "producer's current winner replaces only automatic facts");
@@ -186,9 +378,86 @@ test("effective plans are an immutable manual/half union, never event or attenda
   assert.equal(JSON.stringify([manual, snapshot, schedule, insights]), beforeInputs);
 });
 
+test("roster post links prefer verified own day posts without weakening same-day history", () => {
+  const source = halfSource();
+  const effective = api.buildEffectiveSchedule(schedule.schedule, halfFeed([source]));
+  const post = {
+    id: "2097000000000000099", url: `https://x.com/${source.authorScreenName}/status/2097000000000000099`,
+    name: source.name, authorId: source.authorId, authorScreenName: source.authorScreenName,
+    date: "2026-09-07", createdAt: "2026-09-07T02:00:00Z", observedAt: "2026-09-07T03:00:00Z",
+    events: [], links: [{ scope: "昼", status: "work" }]
+  };
+  const options = { schedule: effective, insights, dateKey: post.date, shift: "昼", name: source.name };
+  const before = JSON.stringify([effective, post]);
+  const select = (posts, extra = {}) => api.rosterPostLink({ ...options, personal: { posts }, ...extra });
+  assert.deepEqual(select([post]), { post, kind: "personal" });
+  for (const change of [
+    { date: "2026-09-06" },
+    { name: "あむ" },
+    { authorScreenName: "someone_else", url: "https://x.com/someone_else/status/2097000000000000099" },
+    { url: `https://x.com/${source.authorScreenName}` },
+    { url: "https://x.com/search?q=work" },
+    { links: [{ scope: "夜", status: "work" }] }
+  ]) {
+    const selected = select([{ ...post, ...change }]);
+    assert.equal(selected.kind, "half-month-schedule", JSON.stringify(change));
+    assert.equal(selected.post.url, source.url);
+  }
+  for (const status of ["withdrawn", "conflict"]) {
+    const later = { ...post, id: "2097000000000000100",
+      url: `https://x.com/${source.authorScreenName}/status/2097000000000000100`,
+      createdAt: "2026-09-07T04:00:00Z", observedAt: "2026-09-07T05:00:00Z",
+      links: [{ scope: "昼", status }]
+    };
+    assert.equal(api.personalPostLink({ ...options, personal: { posts: [post, later] } }), null);
+    assert.equal(select([post, later]).kind, "half-month-schedule", "never revive the superseded day post");
+    assert.equal(select([post, later], { schedule: {} }), null, "no profile fallback after withdrawal/conflict");
+  }
+  const placement = { ...post, events: [{ kind: "placement", shift: "昼", storeId: "s2", excerpt: "synthetic placement" }] };
+  const { official } = halfMonthEvidence({ observedSameDay: true });
+  assert.equal(select([placement], { observations: official }).kind, "half-month-schedule",
+    "a later contradictory official post still suppresses stale personal guidance");
+  assert.equal(JSON.stringify([effective, post]), before);
+});
+
+test("half-post fallback is person/date/shift-bound, never a profile, search or another author's post", () => {
+  for (const name of ["いと", "あむ", ...schedule.kitchenStaff]) {
+    const source = halfSource(name);
+    const effective = api.buildEffectiveSchedule(schedule.schedule, halfFeed([source]));
+    const options = { schedule: effective, insights, personal: { posts: [] }, name };
+    for (const [dateKey, shift] of halfDays) {
+      const result = api.rosterPostLink({ ...options, dateKey, shift });
+      assert.equal(result.post.url, source.url);
+      assert.equal(result.kind, "half-month-schedule");
+    }
+    for (const [dateKey, shift] of [
+      ["2026-09-02", "昼"], ["2026-09-07", "夜"], ["2026-09-08", "昼"],
+      ["2026-09-17", "昼"], ["2026-09-07", "unspecified"]
+    ]) {
+      assert.equal(api.rosterPostLink({ ...options, dateKey, shift }), null, `${name} ${dateKey} ${shift}`);
+    }
+    const otherName = name === "いと" ? "あむ" : "いと";
+    for (const change of [
+      { name: otherName },
+      { sourceKind: "personal" },
+      { period: { from: "2026-09-16", to: "2026-09-30" } },
+      { id: Number(source.id) },
+      { url: `https://x.com/${source.authorScreenName}` },
+      { url: "https://x.com/search?q=work" },
+      { url: source.url + "?tracking=1" },
+      { authorScreenName: "someone_else", url: `https://x.com/someone_else/status/${source.id}` }
+    ]) {
+      const wrong = { "2026-09-07": { "昼": [{ name, halfMonthSources: [{ ...source, ...change }] }] } };
+      assert.equal(api.rosterPostLink({ ...options, schedule: wrong, dateKey: "2026-09-07", shift: "昼" }), null,
+        `${name}: ${JSON.stringify(change)}`);
+    }
+  }
+});
+
 test("half union preserves curated, official, personal absence/return and kitchen semantics", () => {
-  const publicObserved = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "data", "observed-shifts.json"), "utf8"));
-  const publicPersonal = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "data", "personal-shifts.json"), "utf8"));
+  const { official: publicObserved, personal: publicPersonal } = halfMonthEvidence();
+  api.validateObservations(publicObserved);
+  api.validatePersonalShifts(publicPersonal);
   const inputBefore = JSON.stringify([schedule, insights, publicObserved, publicPersonal]);
   const effective = api.buildEffectiveSchedule(schedule.schedule, halfFeed());
   const resolve = (dateKey, shift, planned = effective, personal = publicPersonal) => api.resolveShiftRoster({
@@ -241,6 +510,55 @@ test("half union preserves curated, official, personal absence/return and kitche
   "all five kitchen members remain excluded from floor headcounts");
   assert.match(cookOutlook.summary, /キッチンにゃんこ5人.*この数に入れていません/);
   assert.equal(JSON.stringify([schedule, insights, publicObserved, publicPersonal]), inputBefore);
+});
+
+test("half plans retain newer official evidence without turning an absence conflict into a return", () => {
+  const { official, personal } = halfMonthEvidence({ observedSameDay: true });
+  api.validateObservations(official);
+  api.validatePersonalShifts(personal);
+  const baseline = halfMonthEvidence();
+  assert.equal(baseline.official.posts.some(post => post.date === "2026-09-07"), false);
+  assert.notEqual(official.posts[0], baseline.official.posts[0], "fixture calls never share mutable posts");
+  assert.notEqual(personal.posts[0].events, baseline.personal.posts[0].events);
+  const effective = api.buildEffectiveSchedule(schedule.schedule, halfFeed());
+  const key = "2026-09-07";
+  const source = official.posts.find(post => post.date === key);
+  const post = { id: "2097000000000000010", url: "https://x.com/half_fixture/status/2097000000000000010",
+    name: "いと", authorId: "123456789", authorScreenName: "half_fixture", date: key,
+    createdAt: `${key}T02:00:00Z`, observedAt: `${key}T05:00:00Z`,
+    events: [{ kind: "absence", shift: "昼", excerpt: "synthetic cancellation" }] };
+  const inputBefore = JSON.stringify([official, personal, effective, post]);
+  const resolve = (posts) => api.resolveShiftRoster({
+    insights, observations: official, personal: { ...personal, posts }, dateKey: key, shift: "昼",
+    schedule: effective, roster: schedule.roster, nameCorrections: schedule.observationNameCorrections,
+    personalEventAdditions: schedule.personalEventAdditions
+  });
+  const current = resolve([]);
+  assert.equal(current.entries.find(entry => entry.name === "いと").observed, true);
+  assert.deepEqual(current.observed.byMaid.get("いと").sources, [source]);
+  assert.deepEqual(current.observed.byMaid.get("いと").storeIds, ["s1"]);
+  const conflict = resolve([post]);
+  const entry = conflict.entries.find(entry => entry.name === "いと");
+  assert.ok(entry, "a newer contradictory official post must not silently erase the person");
+  assert.equal(entry.halfMonthSources.length, 1);
+  assert.equal(entry.personalNotice.conflict, true);
+  assert.equal(entry.personalNotice.returned, false, "official presence is not an implicit personal return");
+  assert.equal(entry.personalNotice.storeId, null);
+  assert.equal(conflict.observed.byMaid.has("いと"), false, "conflicting evidence cannot confirm a shop");
+  assert.deepEqual(conflict.observed.posts, [source], "original official evidence remains inspectable");
+  assert.deepEqual(entry.personalNotice.sources, [post]);
+  assert.equal(api.dayHasPersonStoreEvidence(insights, official, key, { posts: [post] }), true);
+  const later = { ...post, createdAt: `${key}T04:00:00Z` };
+  assert.equal(resolve([later]).entries.some(entry => entry.name === "いと"), false,
+    "an absence newer than the official post still cancels the half plan");
+  const returned = { ...later, events: [{ kind: "return", shift: "昼", excerpt: "synthetic return" }] };
+  const restored = resolve([post, { ...returned, id: "2097000000000000011",
+    url: "https://x.com/half_fixture/status/2097000000000000011" }]);
+  assert.equal(restored.entries.filter(entry => entry.name === "いと").length, 1);
+  assert.equal(restored.entries.find(entry => entry.name === "いと").halfMonthSources.length, 1);
+  assert.equal(restored.personal.byMaid.get("いと").returned, true);
+  assert.equal(restored.personal.byMaid.get("いと").storeId, null, "a storeless return cannot revive an old shop");
+  assert.equal(JSON.stringify([official, personal, effective, post]), inputBefore);
 });
 const makePost = (id, storeId, names) => ({
   id, url: `https://x.com/akibazettai/status/${id}`,

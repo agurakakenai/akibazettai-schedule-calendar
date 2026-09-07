@@ -417,8 +417,107 @@ class ProducerTests(base.Offline):
         self.assertTrue(any(record['status'] == 'failed' for record in self.state['sources'].values()))
         self.assertEqual(self.model.structured.call_count, 1)
 
+    def test_storage_overflow_holds_all_old_facts_and_surfaces_fixed_partial_reason(self):
+        old_source, old_schedules, old_analysis = base.normalized(
+            created=base.CREATED - dt.timedelta(hours=1), suffix=9)
+        old_schedules[0]['workTiming'] = base.full_timing_channel(old_source)
+        facts.apply_revision(self.state, old_schedules, old_source, old_analysis)
+        self.state['checkedAt'] = self.state['lastSuccessAt'] = facts.stamp(
+            base.NOW - dt.timedelta(minutes=1))
+        before = copy.deepcopy(self.state)
+        self.client.post.return_value[0]['text'] += ' 5日昼は20:00ではありません。'
+        self.model.structured.return_value = base.timing_result({
+            5: [base.work_note(qualifier=None, explicit_time='20:00', status='excluded')]})
+
+        report, code = self.collect()
+        self.assertEqual((code, report['status'], report['analysisRequests']), (2, 'partial', 1))
+        self.assertEqual(self.state['lastRun'], {'status': 'partial'})
+        for field in ('schedules', 'revisions', 'receipts', 'savedImports', 'identityBindings', 'lastSuccessAt'):
+            self.assertEqual(self.state[field], before[field])
+        self.assertTrue(all(self.state['sources'][key] == value for key, value in before['sources'].items()))
+        self.assertEqual(len(self.state['schedules'][0]['workTiming']['facts']), 512)
+        self.assertEqual(self.state['schedules'][0]['workTiming']['facts'][0]['status'], 'set')
+        failed = next(record for record in self.state['sources'].values() if record['status'] == 'failed')
+        self.assertEqual(failed['reason'], 'work_timing_storage_limit')
+        self.assertTrue(failed['imageHashes'])
+        self.usage.finish.assert_called_once_with(failed['requestHash'], 'events')
+        self.assertEqual(self.state['pending'], [])
+        for start, _ in facts.target_periods(base.NOW):
+            self.assertEqual(self.state['coverage'][start][base.TARGET['name']]['reason'],
+                             'work_timing_storage_limit')
+        facts.validate_state(self.state)
+        self.assertEqual(self.saved[-1], self.state)
+
+        self.analyzer = azure.AzureAnalyzer(self.usage, clock=lambda: base.NOW, client=self.model)
+        self.client.reset_mock()
+        self.model.reset_mock()
+        self.collect()
+        self.client.search.assert_not_called()
+        self.client.post.assert_not_called()
+        self.client.image.assert_not_called()
+        self.model.structured.assert_not_called()
+        self.assertEqual(self.state['schedules'], before['schedules'])
+        for start, _ in facts.target_periods(base.NOW):
+            self.assertEqual(self.state['coverage'][start][base.TARGET['name']]['reason'],
+                             'work_timing_storage_limit')
+
+    def test_capacity_hold_preserves_old_facts_and_fingerprints_without_issue_or_repeat_get(self):
+        for phase in ('caption', 'metadata', 'profile'):
+            self.state = facts.empty_state()
+            old_source, old_schedules, old_analysis = base.normalized(suffix=9)
+            facts.apply_revision(self.state, old_schedules, old_source, old_analysis)
+            before = copy.deepcopy(self.state)
+            self.saved = []
+            self.client.reset_mock()
+            self.usage.reset_mock()
+            self.model.reset_mock()
+            self.analyzer = azure.AzureAnalyzer(self.usage, clock=lambda: base.NOW, client=self.model)
+            payload = base.payload(photos=4)
+            if phase == 'caption':
+                payload['text'] = 'x' * 6000
+            elif phase == 'metadata':
+                probe_source, _, _ = base.source(photos=4)
+                probe_source['bodyHash'] = facts.digest(b'')
+                messages, _ = azure.build_request(
+                    probe_source, '', [{'bytes': base.png(), 'mime': 'image/png'}] * 4)
+                report = azure.capacity.half_month(
+                    messages[1]['content'][0]['text'], azure.PROMPT, azure.SCHEMA, azure.MAX_OUTPUT_TOKENS)
+                payload['text'] = 'x' * (azure.capacity.LIMIT - report['textReservationBound'] + 1)
+            self.client.post.return_value = payload, facts.digest(b'capacity-held-payload')
+            profile_patch = {'promptHash': 'f' * 64} if phase == 'profile' else {}
+            reason = 'azure_capacity_profile_stale' if phase == 'profile' else 'azure_capacity_hold'
+            with self.subTest(phase=phase), mock.patch.dict(azure.capacity.HALF_MONTH, profile_patch):
+                report, code = self.collect()
+            self.assertEqual((code, report['status'], report['analysisRequests']), (2, 'partial', 0))
+            self.assertEqual(report['requests']['images'], 4 if phase == 'metadata' else 0)
+            self.assertEqual(self.client.image.call_count, 4 if phase == 'metadata' else 0)
+            self.usage.reserve.assert_not_called()
+            self.usage.issued.assert_not_called()
+            self.usage.finish.assert_not_called()
+            self.model.structured.assert_not_called()
+            self.assertEqual(self.analyzer.used, 0)
+            for field in ('schedules', 'revisions', 'receipts', 'savedImports', 'identityBindings', 'lastSuccessAt'):
+                self.assertEqual(self.state[field], before[field])
+            self.assertTrue(all(self.state['sources'][key] == value for key, value in before['sources'].items()))
+            failed = next(record for record in self.state['sources'].values() if record['status'] == 'failed')
+            self.assertEqual(failed['reason'], reason)
+            self.assertIsNone(failed['requestHash'])
+            self.assertEqual(len(failed['imageHashes']), 4 if phase == 'metadata' else 0)
+            self.assertEqual(self.state['pending'], [])
+            for start, _ in facts.target_periods(base.NOW):
+                self.assertEqual(self.state['coverage'][start][base.TARGET['name']]['reason'], reason)
+            facts.validate_state(self.state)
+            self.assertEqual(self.saved[-1], self.state)
+            self.client.reset_mock()
+            self.collect()
+            self.client.search.assert_not_called()
+            self.client.post.assert_not_called()
+            self.client.image.assert_not_called()
+            self.model.structured.assert_not_called()
+            self.assertEqual(self.state['schedules'], before['schedules'])
+
     def test_identical_reuploaded_image_is_not_charged_again(self):
-        verified, schedules, analysis = base.normalized(suffix=9)
+        verified, schedules, analysis = base.normalized(suffix=9, contract_version=facts.LEGACY_VERSION)
         facts.apply_revision(self.state, schedules, verified, analysis)
         report, code = self.collect()
         self.assertEqual(code, 0)
@@ -426,6 +525,23 @@ class ProducerTests(base.Offline):
         self.client.image.assert_called_once()
         self.model.structured.assert_not_called()
         self.assertEqual(len(self.state['revisions']), 1)
+
+    def test_version_bump_keeps_old_negative_and_failed_sources_without_refetch_or_reanalysis(self):
+        verified, _, _ = base.source()
+        for status, reason in [('negative', 'not_schedule'), ('failed', 'analysis_failed'),
+                               ('negative', 'known_source')]:
+            self.state = facts.empty_state()
+            source_key = facts.record_source(self.state, verified, status, reason, base.NOW,
+                                             facts.digest(b'old-v1-request'),
+                                             [facts.digest(base.png())])
+            previous = copy.deepcopy(self.state['sources'][source_key])
+            self.client.reset_mock()
+            self.collect()
+            self.client.post.assert_not_called()
+            self.client.image.assert_not_called()
+            self.model.structured.assert_not_called()
+            self.assertEqual(self.state['sources'][source_key], previous)
+            self.assertEqual(self.state['pending'], [])
 
     def test_interrupted_ai_issue_preserves_failed_source_fingerprint(self):
         self.usage.issued.side_effect = azure.AnalysisFailure('azure_interrupted')
@@ -476,6 +592,39 @@ class ProducerTests(base.Offline):
                 schedule=base.SCHEDULE, insights={}, accounts=base.ACCOUNTS, post_id=base.post_id(),
                 now=base.NOW, receipt_id=facts.digest(b'old-comparison-not-valid'))
         self.client.search.assert_not_called()
+        self.model.structured.assert_not_called()
+
+    def test_saved_same_post_v2_material_is_offline_not_implicit_apply_or_inference(self):
+        options = dict(document=base.document(best=base.entry()),
+                       payload_bytes=json.dumps(base.payload()).encode(),
+                       images=[{'bytes': base.png(), 'mime': 'image/png'}],
+                       schedule=base.SCHEDULE, insights={}, accounts=base.ACCOUNTS,
+                       post_id=base.post_id(), now=base.NOW)
+        legacy_raw = base.result(contract_version=facts.LEGACY_VERSION)
+        before_raw = copy.deepcopy(legacy_raw)
+        legacy = collector.replay_saved(
+            self.state, **options, result=legacy_raw,
+            contract_version=facts.LEGACY_VERSION, receipt_id=facts.digest(b'old-saved-receipt'))
+        facts.apply_revision(self.state, legacy['schedules'], legacy['source'], legacy['analysis'])
+        before = copy.deepcopy(self.state)
+        packet = collector.replay_saved(
+            self.state, **options,
+            result=base.timing_result({5: [base.work_note()], 12: [base.work_note()]}),
+            receipt_id=facts.digest(b'selected-new-receipt'))
+        self.assertEqual(self.state, before)
+        self.assertEqual(legacy_raw, before_raw)
+        self.assertEqual(legacy['analysis']['contract'], facts.LEGACY_VERSION)
+        self.assertEqual(packet['analysis']['contract'], facts.VERSION)
+        self.assertEqual(packet['source']['bodyHash'], legacy['source']['bodyHash'])
+        self.assertEqual(packet['analysis']['images'], legacy['analysis']['images'])
+        self.assertEqual(packet['schedules'][0]['days'], legacy['schedules'][0]['days'])
+        self.assertEqual(collector.validate_saved_packet(packet), packet)
+        with self.assertRaisesRegex(ValueError, 'same_revision_conflict'):
+            facts.apply_revision(self.state, packet['schedules'], packet['source'], packet['analysis'])
+        self.assertEqual(self.state, before)
+        self.client.search.assert_not_called()
+        self.client.post.assert_not_called()
+        self.client.image.assert_not_called()
         self.model.structured.assert_not_called()
 
     def test_unknown_saved_post_requires_discovery_not_only_id(self):
@@ -816,7 +965,8 @@ class SavedSourceReplayTests(base.Offline):
         self.assertEqual(len(schedule['roster']), 40)
         packet = collector.replay_saved(
             facts.empty_state(), document=html, payload_bytes=raw,
-            images=[{'bytes': photo, 'mime': 'image/jpeg'}], result=base.result(),
+            images=[{'bytes': photo, 'mime': 'image/jpeg'}],
+            result=base.timing_result({5: [base.work_note()], 12: [base.work_note()]}),
             schedule=schedule, insights=insights, accounts=accounts, post_id='2096568567798128871',
             now=dt.datetime(2026, 9, 6, 22, 34, tzinfo=facts.UTC),
             receipt_id=facts.digest(b'SYNTHETIC-MOCK-RESULT-NOT-CANONICAL-OR-STABLE-LIVE'))
@@ -831,6 +981,11 @@ class SavedSourceReplayTests(base.Offline):
                          [('2026-09-02', ['夜']), ('2026-09-05', ['昼']), ('2026-09-07', ['昼']),
                           ('2026-09-10', ['夜']), ('2026-09-12', ['昼']), ('2026-09-14', ['昼'])])
         self.assertEqual(packet['schedules'][0]['period']['yearBasis'], 'post-context')
+        self.assertEqual([(note['serviceDate'], note['shift'], note['boundary'],
+                           note['qualifier'], note['explicitTime'])
+                          for note in packet['schedules'][0]['workTiming']['facts']],
+                         [('2026-09-05', '昼', 'end', 'long', None),
+                          ('2026-09-12', '昼', 'end', 'long', None)])
 
 
 if __name__ == '__main__':

@@ -1033,7 +1033,7 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 
 公式の定型名簿は従来のrulesで確認し、有効化後のLunaは同じ集合ポストの明確な後着補足を別の`notices`へ抽出します。短い元文・名前・必要な時刻だけを公開し、時刻がない「あとから」に時刻を作りません。noticeは`names`・人数・勤務実績には加えません。名簿を観測した`observedAt`と補足本文を確認したnoticeの`observedAt`、非公開の解析時刻を分けます。公式・本人の最新案内は元の投稿日時とID順で対象の昼夜ごとに解決し、古い本文の再解析時刻で後の訂正を上書きしません。
 
-同じ投稿で名前の列と明確な後着補足が両方ある場合も、表示は後着案内として扱い、名簿原本は保持します。同じ店舗でも後の到着時刻を優先し、古い時刻を二重表示しません。後の明示配置では古い後着状態を引き継がず、保留の投稿だけで過去の時刻を復活させません。
+同じ投稿で名前の列と明確な後着補足が両方ある場合も、店舗配置は非実績の案内として扱い、名簿原本は保持します。同じ店舗でも後の到着時刻を保存上で優先しますが、一般的な後着語・到着時刻は名前下の小補足に表示しません。後の明示配置では古い後着状態を引き継がず、保留の投稿だけで過去の時刻を復活させません。
 
 日付の詳細は**店舗名と名前のチップ**を中心に表示し、確認できた顔ぶれと**「未発表」枠**を分けます。「投稿あり」「投稿実績」「本人案内」などの見出しを繰り返しません。公式の元投稿・投稿時刻は、閉じた**「集合ポスト」**へまとめています。時刻は日本時間のまま、画面上のJST suffixを省略します。自動観測がない店は未確認であり、休業ではありません。予定表だけの人物を、不在や勤務実績の証拠として扱いません。同じ人物の別店舗の投稿も保持します。人物別一覧でも、その人物の実績がある行だけが記録になります。
 
@@ -1057,7 +1057,7 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 
 `links`はoptionalな最大3件の`{scope,status}`です。scopeは`昼`・`夜`・`unspecified`、statusは確認済みの`work`・明示取消`withdrawn`・根拠間の`conflict`を区別します。店舗・昼夜がなくても、対象日の本人お給仕投稿だと独立に確認できれば`unspecified/work`にできます。**リンクだけでは人物表示、勤務event、店舗、昼夜勤務、実績を作りません。**すでに別根拠で表示されている同日のchipにだけ付け、明示昼/夜は反対側へ流用しません。`unspecified`で取消や両shift勤務を推定せず、明示取消後の復帰根拠にも使いません。legacyの`links`がない投稿は、既存の確認済みtyped eventsの範囲だけを互換表示します。
 
-日別・店舗別・popupのchipは、当日post未確認ならprofileや検索URLで代替しません。人物別の複数日に共通する名前見出しは従来のprofileリンクを維持し、各日/shift行の日付文字から同じ当日postを開けます。title/読み上げは本人の当日投稿であることを明示し、chip本文や未確認ラベルを増やしません。
+日別・店舗別・popupの名前chipは確認済み当日postを優先し、なければ本人のその日/shiftに紐付く半月予定表のpostを開きます。どちらもなければ非リンクとし、profileや検索URLで代替しません。人物別の複数日に共通する名前見出しは従来のprofileリンクを維持し、各日/shift行の日付文字から同じ選択結果を開けます。title/読み上げで「本人の当日投稿」と「予定表の投稿」を区別し、chip本文や追加ラベルを増やしません。
 
 本人投稿の日付は**本文の明示月日、または「今日」と投稿metadataの日本時間0時区切り**を照合します。店舗公式の朝5時区切りは流用しません。昨日・明日・他人の話・引用・返信だけの内容や、時刻からの昼夜推測は採用しません。初期の確認例は次のとおりです。
 
@@ -1086,9 +1086,9 @@ privateの`coverage`と`searchHistory`は、対象の由来、確認済みaccoun
 
 #### 共通Luna設定と本人本文解析
 
-解析v7は **metadata照合 → 行ID付き原文と最小contextをLunaへ1回 → 選択ID・対象範囲・元行の数値を確認 → 既存履歴** に分けます。v4の行ID契約を拡張し、同じ1要求で勤務eventsと当日リンクを独立に判断します。勤務と余談、昼夜、訂正・否定・不確実さ、他人や引用の意味はAIの担当です。単に同日投稿された日常文・募集・半月表を当日お給仕リンクにしません。コードで意味を再解釈する大量regexは追加せず、検証済み投稿のJST日時/暦日・相対日対応・本人名・日付付き既知shiftだけを添え、名簿全体や履歴はモデルへ送りません。
+解析v8は **metadata照合 → 行ID付き原文と最小contextをLunaへ1回 → 選択ID・対象範囲・元行の数値を確認 → 既存履歴** に分けます。v7までの行ID・勤務日契約を拡張し、同じ1要求で勤務events・当日リンク・勤務時間補足を独立に判断します。勤務と余談、昼夜、訂正・否定・不確実さ、他人や引用の意味はAIの担当です。単に同日投稿された日常文・募集・半月表を当日お給仕リンクにしません。コードで意味を再解釈する大量regexは追加せず、検証済み投稿のJST日時/暦日・相対日対応・本人名・日付付き既知shiftだけを添え、名簿全体や履歴はモデルへ送りません。
 
-wireの必須フィールドは`events/links`です。各itemの`serviceDate`は**その勤務・変更が対象とする日付**で、投稿日時やカレンダーの選択日を写す欄ではありません。モデルには元投稿のJST日時・暦日と、そこからcodeで計算した昨日/今日/明日/明後日の対応を渡します。実行日やUTC暦日、公式の05時区切りを本人の相対日の基準にしません。モデルは各勤務述語に結び付く日付を抽出し、日常文の「今日」を別の翌日勤務へ流用しません。
+wireの必須フィールドは`events/links/workTiming`です。各itemの`serviceDate`は**その勤務・変更が対象とする日付**で、投稿日時やカレンダーの選択日を写す欄ではありません。モデルには元投稿のJST日時・暦日と、そこからcodeで計算した昨日/今日/明日/明後日の対応を渡します。実行日やUTC暦日、公式の05時区切りを本人の相対日の基準にしません。モデルは各勤務述語に結び付く日付を抽出し、日常文の「今日」を別の翌日勤務へ流用しません。
 
 全itemの日付・型・行根拠・数値を検証してから、codeが`serviceDate`の一致する対象日だけを選びます。翌日のみなら当日リンクは0、同じ本文に当日と翌日があれば当日分だけを採用します。他日付の正しい抽出があること自体は失敗ではなく、当日へ混入したかを別に評価します。wire上限は複数日を表せるevents4件/links6件、対象日へ絞った公開値は従来のevents2件/links3件です。日付不明・欠落を対象日へ補完しません。
 
@@ -1096,17 +1096,17 @@ wireの必須フィールドは`events/links`です。各itemの`serviceDate`は
 
 private cacheの`channels`は対象日の確認・該当なし・保留を区別し、`serviceDates`には検証済みの抽出日付一覧を保持します。公開時は対象日に絞った確認済み配列だけを渡し、新しい解析でリンクが得られなければ`links: []`を明示します。legacyの`links`未導入へ戻して新しい勤務eventからリンクを推定しません。同じ投稿の部分再解析でも、既存確認済みscopeのリンクは保持し、今回の保留scopeへ新しいリンクを補完しません。
 
-原文はCRLFを1改行、単独CR/LFをそれぞれ改行として分割し、1始まりの整数IDを付けます。改行文字・空行・最後の改行後の空行・Unicode・絵文字・全角空白を保持し、文字を書き換えません。最大128行で、上限超過は切捨てず保留します。モデルは自由な引用文や文字offsetではなく`evidenceLineIds`（各event/linkにつき1〜16個、当該投稿に実在するID）を選びます。重複・空配列・不正ID・新版での空白行の参照は拒否し、複数行や昼夜での同じ行の共有は許容します。
+原文はCRLFを1改行、単独CR/LFをそれぞれ改行として分割し、1始まりの整数IDを付けます。改行文字・空行・最後の改行後の空行・Unicode・絵文字・全角空白を保持し、文字を書き換えません。最大128行で、上限超過は切捨てず保留します。モデルは自由な引用文や文字offsetではなく`evidenceLineIds`（各event/link/時間factにつき1〜16個、当該投稿に実在するID）を選びます。重複・空配列・不正ID・新版での空白行の参照は拒否し、複数行や昼夜での同じ行の共有は許容します。
 
 コードは選択IDから元行/元範囲を直接参照し、型・allowlist・対象日/shift・event重複・指定店舗/時刻の直接数値整合を確認します。選択行を連結して架空の引用や数値を作りません。元行・選択行は内部のみで、公開抜粋は従来の小さい原文アンカーだけです。**行ID参照で引用の転記ミスはなくなりますが、行の選択や意味の誤読は残り得ます。** 意味・参照ID・コード採否を分けて評価します。pending/refusal/不正schemaは保留し、`no_event`も既存案内の削除命令にはしません。
 
-旧nano/mini・v4/v5/v6や比較用deploymentのcache・履歴は保持し、本番Lunaのprovider/endpoint/deployment/model/versionとv7契約・入力contextを含む別のcache識別に分離します。旧応答を新版のモデル応答へ変換して再利用しません。v4/v5/v6の保存実応答は専用のoffline groundingで照合できます。旧v5のタグ不整合は拒否のまま、旧v6の型適合でも意味が誤っていた負例も失敗記録のまま保持します。旧応答の再生を新版の実測成功とは数えません。既知投稿の自動再GET・一括再解析も追加せず、再確認には保存payloadによる明示操作が必要です。
+旧nano/mini・v4/v5/v6/v7や比較用deploymentのcache・履歴は保持し、本番Lunaのprovider/endpoint/deployment/model/versionとv8契約・入力contextを含む別のcache識別に分離します。旧応答を新版のモデル応答へ変換して再利用しません。旧版の保存実応答は専用のoffline groundingで照合できます。旧v5のタグ不整合は拒否のまま、旧v6の型適合でも意味が誤っていた負例も失敗記録のまま保持します。旧応答の再生を新版の実測成功とは数えません。既知投稿の自動再GET・一括再解析も追加せず、再確認には保存payloadによる明示操作が必要です。
 
 ローカルCLIは無設定なら従来の`--analysis-backend rules`です。`--analysis-backend azure`を明示すると、検証済みの新規本人本文**全体**をAzure OpenAI `gpt-5.6-luna`（2026-07-09）へ送り、Chat Completions v1・structured outputs・`reasoning_effort=none`で解析します。共通の設定/HTTP transportは`tools/azure-openai.py`、本人用prompt/schema・予算・履歴は`tools/personal-azure.py`に分離しています。本番安定名`gpt-5.6-luna`だけを受理し、providerの返却modelも照合します。ルールが一部を拾ってもAzureを省略せず、nano/mini・別model・rulesへの成功fallbackは行いません。
 
 Actionsでは手動`personal` / `both`と、有効化された当日案内の公式・本人解析でAzureを選択します。必要な設定はsecret `AZURE_OPENAI_API_KEY`とvariables `AZURE_OPENAI_ENDPOINT`（`https://<resource>.openai.azure.com/`）、`AZURE_OPENAI_DEPLOYMENT`（`gpt-5.6-luna`）です。必要なcollector子だけに渡し、Git・Node入力読取・restore・stage/build・保存根拠の適用・frontendへは渡しません。無効時の公式定期は既存rulesのままです。
 
-公式補足と本人本文v7は共通Luna transportを使い、用途別prompt/schemaを分けます。下記の半月予定表は独立した画像用途で、本人v7の本文契約へ画像を混ぜません。10時からの巡回や新cronは追加しません。取得・本人確認・型・出典・原投稿順の履歴はコードの責務です。公式の未発行補足だけは別のbounded queueへ残し、次枠のAI容量がある場合に既知IDをsource上限内で確認できます。全既知投稿の編集巡回ではなく、拒否・失敗済みの再推論や結果合わせの再取得はしません。
+公式補足と本人本文v8は共通Luna transportを使い、用途別prompt/schemaを分けます。下記の半月予定表は独立した画像用途で、本人v8の本文契約へ画像を混ぜません。10時からの巡回や新cronは追加しません。取得・本人確認・型・出典・原投稿順の履歴はコードの責務です。公式の未発行補足だけは別のbounded queueへ残し、次枠のAI容量がある場合に既知IDをsource上限内で確認できます。全既知投稿の編集巡回ではなく、拒否・失敗済みの再推論や結果合わせの再取得はしません。
 
 cloudのAI（手動`personal/both`を含む）は**公式＋本人合算3回/run・実発行日のJST暦日30回**です。data-onlyの`ai-usage.json`へ発行前予約を永続化し、同じrun ID/attemptを子間で共有します。旧モデル・外部/画像使用も承認済みreceiptで同じ日予算へ算入します。cache hitは追加発行ではなく、中断予約は保守的に消費済みです。公式source/rulesを先行しても、両用途に枠がある本人受付中は公式AIを1〜2枠に制限し、過去の追加枠配分・締切で3枠目を配分します。残り1枠を本人の締切へ優先する場合や共有予算が尽きた場合は公式AIを0枠にでき、公式名簿の収集を維持して未発行補足を保留します。本人は公式の実使用後の残枠を利用し、容量がなければ本文GETを始めません。本文UTF-8 6,000 bytes・出力1,200 tokens・応答24,000 bytes・timeout 30秒、retry0・原則60秒以上の間隔を維持します。待機後は実日と締切を再確認し、429は少なくとも5分と`Retry-After`の長い方、401/403はAIだけを永続停止します。Yahoo/Xの共有cooldown・予算とは別です。同じ入力の成功・拒否・失敗・中断は自動再課金せず、復旧には運用者の明示照合が必要です。
 
@@ -1124,7 +1124,7 @@ cloudのAI（手動`personal/both`を含む）は**公式＋本人合算3回/run
 
 ### 本人の半月予定表
 
-`data/half-month-schedules.json` は本人の**事前の予定**を保存する独立feedです。`collect-half-month-schedules.py` が保存rosterの公式由来・本人確認済みaccountから公開postを探し、元postの作者・日時・mediaを照合して、共通Lunaの半月専用契約で対象期間・日付・昼夜を読み取ります。当日本人の`events/links`や勤務実績へは入れません。長め昼は昼だけにまとめ、画像から店舗・数値時刻・イベント主役を生成しません。
+`data/half-month-schedules.json` は本人の**事前の予定**を保存する独立feedです。`collect-half-month-schedules.py` が保存rosterの公式由来・本人確認済みaccountから公開postを探し、元postの作者・日時・mediaを照合して、共通Lunaの半月専用契約で対象期間・日付・昼夜を読み取ります。当日本人の`events/links`や勤務実績へは入れません。長め昼は昼のままとし、勤務時間の補足は独立した`workTiming`へ保存します。店舗・イベント主役や未記載の数値時刻を生成しません。
 
 当日の予定者だけではなく、保存roster全体を対象にします。厨房も取得対象ですが既存の厨房区分を維持します。既存author bindingや`maidTendency.x`がある場合は一致が必要で、初回bindingは真正な元postのmetadataで確認します。未取得と不一致を区別し、未知accountを推測しません。推計の昇格日・見習い期間を理由に、確認済みの本人公開予定から日付を削除しません。roster外の在籍者や新accountの探索は行いません。
 
@@ -1132,7 +1132,7 @@ cloudのAI（手動`personal/both`を含む）は**公式＋本人合算3回/run
 
 手動予定と有効な自動予定は日付・人物・昼夜で合わせ、重複する手動`featured`等は保持します。新しい完全な表が置換できるのは**同一人物・同一半月の旧自動予定だけ**です。取得順ではなく元投稿日時・ID順で決め、以前のrevision/出典を残します。元postのidentityと投稿時刻は共通でも、半月ごとの確認時刻・元payload hashは各revisionへ保持します。画像不足、partial、不明、非予定、解析失敗は旧有効予定を消しません。表に無い日を欠勤にはしません。curated名簿・観測・当日取消/訂正は既存resolverで優先します。
 
-日付詳細と人物別行の小さい「予定の出典」リンクで確認できます。**名前chipは引き続き確認済み当日本人post専用**で、半月postを代用しません。たとえば半月表が夜予定だけでも、別のcurated根拠で昼勤務がある場合は昼の記録を維持し、半月sourceは夜だけに付きます。予定人数と実績人数は別で、CSVや統計モデルを更新しません。
+独立した「予定の出典」リンクは置かず、**確認済み当日本人postがない場合に名前chip（人物別は日付リンク）から予定表の投稿を開けます**。たとえば半月表が夜予定だけでも、別のcurated根拠で昼勤務がある場合は昼の記録を維持し、半月sourceは夜だけに付きます。原source metadata/historyは残し、半月計画を当日の出勤確認へ格上げしません。予定人数と実績人数は別で、CSVや統計モデルを更新しません。
 
 現在と次の半月を、人物ごとのbounded queueで再確認します。通常は前回検索から24時間以降、予定者0人の日がある半月は未確認者の優先度を上げて最短6時間です。0人を休業や全員欠勤とせず、同じ条件でcacheを消したり全員を毎run取り直したりしません。期間ごとの未検索・候補なし・元post未確認・解析保留・予算待ち等を区別します。検索に無いことは未投稿の証明ではありません。
 
@@ -1153,6 +1153,44 @@ cloudのAI（手動`personal/both`を含む）は**公式＋本人合算3回/run
 このrepositoryはpublicなので、collector-stateも秘密の保管先ではありません。**原文・画像bytes・data URI・raw model応答はGit、logs、recovery、upload artifactへ残しません。**同runのtransient原文は最大3post、画像は1post分で終了時に削除し、跨runは検証済みmetadata/hash/facts/処理fingerprintだけを再利用します。Pagesはさらにwhitelistでqueue/会計/fingerprintを除外します。本人画像をブラウザーから自動取得・embedする機能は追加しません。
 
 保存原典の初回反映も限定data-only manifestで行います。新しい実推論のusageを実JST日に一度だけ精算し、そのcanonical receiptを参照する別manifestで真正な本人・半月だけを適用します。各段階で最新main/state SHA、owner、対象hash、lease/CASを照合し、前段成功・後段失敗を完了扱いしません。画像1件の成功やbounded queueの実装は、全員分の発見済み・全画像の精度保証とは別です。
+
+### 名前下の勤務時間の補足
+
+本人の当日投稿と半月予定表に根拠がある場合だけ、名前下へ短い補足を出します。昼の**勤務終了16:00は「短め」、18:00は「ながめ」**、夜の**勤務開始16:00は「早め」、18:00は「おそめ」**です。明示語だけでも表示しますが、title/読み上げでは店舗の呼称と出典に実記載された数字を区別します。昼夜だけの予定、オーラス、お昼寝・途中休憩、投稿時刻からは補完しません。
+
+`explicitTime: null`は今回の補足で数値時刻を確認していない状態で、原投稿に数字が存在しないという断定ではありません。明示語だけを確認した場合は「明示語に基づく補足」として店舗の呼称の意味を説明し、sourceの時刻値を補完しません。
+
+一般的な「あとから／遅れ／到着予定」は小補足に表示しません。後着の店舗案内・非実績分類・元の出典や履歴は残し、勤務時間の根拠へ読み替えません。公式集合投稿の勤務時間抽出は対象外です。日別・店舗別・月間popup・人物別は同じresolverを使い、人数・CSV・予測係数・厨房区分やcollectorの締切は変えません。名前・人物別の日付リンクは当日本人postを優先し、無い場合に対応する有効な半月postを開きます。独立した「予定の出典」リンクは置かず、時間補足を含むsource-kind・provenanceの区別はデータ内に保持します。
+
+時間の根拠は同じ本人・勤務日・昼夜・開始/終了に限定し、具体的な当日案内を半月予定より優先します。同種の根拠は元投稿日時順です。未記載・保留・空の解析結果は旧補足を消しません。一方、明示取消や相反する根拠、別の終了/開始時刻への訂正では古いラベルに戻しません。開始側の更新だけで終了側を消すこともありません。
+
+値を指定した否定は、その値だけを対象にする`excluded`として保持します。「おそめ」の後に「早めではない」と書かれても、無関係な「おそめ」は消しません。時刻の否定と明示語の否定、境界の指定全体の取消`withdrawn`は別です。単なる「通常」や情報なしを全取消へ広げず、取消後に古いラベルへ戻すこともありません。
+
+本人v8と半月v2は既存の1要求へ時間channelを統合し、旧契約は補足未抽出のまま読み込めます。版変更だけで旧negative/sourceを再取得・再解析しません。同postの承認済み再解析は`work-timing-only`に限定し、旧contract/import、同じ原文/画像hash、対象scope、変更前subject/core/timing hashと新しい一意usage receiptを結び付けます。旧events/links・半月の日付と昼夜・旧履歴を変更せず、一般の重複拒否を解除しません。
+
+wireでは昼終了／夜開始に絞り、本人は最大8 facts、半月は1行最大2 notesです。日付・勤務境界・画像参照の重複を減らし、出力上限は本人2304／半月3840 tokens、共有HTTP応答上限は従来の24000 bytesです。公式・旧半月v1の1200 tokensは変更しません。これは全画像条件での10000TPM適合保証ではなく、未測定の画像条件やservice側の見積もり差は別に扱います。現在値と対象付き否定の集約保存上限512はwire上限とは別で、到達時は旧factsを切り捨てず理由付き保留にします。
+
+新v8/v2の実際の解析経路には、`request-capacity.py`による追加の保守的admission guardがあります。実測済みprompt/schemaのhashに固定したprefix予約、JSON escape後の可変本文のUTF-8 byte上界、構造・出力・framingの予約で大入力を発行前に保留し、本文を切り捨てたり、別モデルへfallbackしたりしません。入力6000 bytes／128行は取得・形式の上限であり、すべての組合せの発行を保証するものではありません。guard失敗はusage予約・HTTP発行より前に記録し、既存factsを維持します。profile変更時も再計測なしに発行しません。runtime/CIにtokenizer依存は追加せず、このguardを正確なservice TPM計数や画像token換算とは扱いません。画像込みの固定liveは別の容量確認・承認を必要とし、公式と旧半月v1にはこの新guardを適用しません。
+
+### 確定済みの同一半月sourceに勤務時間だけを補う
+
+明示的な再解析には、独立した製品契約`half-month-timing-v1`（`tools/half-month-timing.py`）を使えます。`prepare_request()`は保存済みcanonicalとusageを検証し、元sourceのID・作者・本文hash・順序付き画像hash、旧import/receipt、basis、subject/core/timing hashを発行前に照合します。単に呼出し元が渡した表を「確定済み」とは扱いません。`AzureAnalyzer.analyze()`も同じ認可・shared usage・容量guardを通り、既存の`half-month-saved`による`work-timing-only`適用へ接続します。自動collectorの初回・新sourceは従来のv2契約と厳格な暦検証のままで、この限定経路へ自動fallbackしません。
+
+モデルに渡す既存slotの日付・昼夜は、**検証済みの更新可能範囲**だけです。旧補足の答え・goldは渡しません。opaqueな`slotId`はコードの参照IDで、画像に印字された行番号や位置ではありません。モデルは全slotの`workTiming`だけを返し、年・月・曜日・勤務日・昼夜・coreの再出力はできません。コードは元coreの値・配列順・文字列を保持して補足を接続し、未知・重複・欠落slot、別source、改変core、境界越えを拒否します。
+
+通常の製品結果は`ok/partial/pending/no-new`を区別し、`slots:null`やslotの`workTiming:null`は保留、空配列は新しい補足なしです。どちらも旧factsの削除命令ではありません。限定liveで完全な受入を主張する場合は`require_complete()`に加えて独立goldとの一致が必要です。過去の失敗応答をこの別契約へ読み替えたり、誤曜日を補正して成功扱いしたりはしません。
+
+新契約も最大64slot・64notes・元勤務日あたり2notes、出力3584 tokensで、コード参照とnullable情報を含む出力を制限します。専用のhash固定admission profileは既存v1/v2/本人のprofileとは別です。原画像や旧coreが変わった場合、既存coreを再利用して不足を埋めずに拒否します。`saved_result()`によるAPI0再生にも同じ認可が必要で、実推論や本番反映の承認を代替しません。
+
+完全性・正規化した補足・元のresult hashは`semanticResultHash`と信頼済み会計receiptのhash-only `resultAttestation`へ結合します。呼出側がpending/statusや補足を書き換え、再hashしただけでは完全受入へ昇格できません。native経路は`native_proof(packet, usage_state)`を使い、既に消費したnative1件を再import・再計上せず適用できます。別環境で発行した実解析は、独立承認されたusage importの同じattestationを`imported_proof()`で照合します。`require_complete(packet, proof, usage_state)`と`to_amendment(packet, proof, usage_state)`はこの証拠も検証します。raw応答・gold・本文・画像を公開stateへ格納する方式ではなく、旧receiptの値や過去の失敗記録も書き換えません。
+
+部分結果の確定した指定だけを採用する場合は、通常の完全適用とは別に`to_selected_amendment()`の明示選択経路を使います。全canonical slotの読取範囲・source・旧core・subject・basis・会計attestationを検証し、元結果の全claimが非空の`set`で、選択したslot/fact hashがその全claimと一致する場合に限ります。保留・取消・相反・値の否定を混ぜたり、都合のよいclaimだけを残したりはできません。元の`partial`・pending slot・semantic resultは不変で、`require_complete()`が成功したとは記録しません。
+
+`selectionProof.approvalManifestHash`は、元packet hash・選択slot/fact hash・未変更範囲を明記した**別の親selection承認document**のhashです。最終amendmentや適用manifest自身のhash、旧full-trialの実行許可では代用しません。この選択承認と最終適用のexact承認は別段階です。cloudの適用manifestでは`halfMonthSelections`にそのhashと別documentのmapを渡し、対象amendmentと過不足なく対応させます。更新は選択slotの補足と新revisionの監査記録だけに限定し、非選択slotの補足、旧core・source・既存履歴、source管理indexを保持します。通常適用経路と保存履歴の検証でも選択証拠を要求し、部分結果を完全結果へ読み替える迂回を拒否します。
+
+独立documentは`kind: "half-month-timing-selection-approval-v1"`／`stage: "selection-only"`で、`independentGoldHash`も保持します。hashはUTF-8・キー順整列・空白なし・末尾改行なしのcanonical JSONに対するSHA256です。最終GOは別の`halfMonthSelectionApply`（`kind: "half-month-timing-selection-apply-v1"`／`stage: "apply-exact"`）に、選択承認hashと完成したentry全体の`entryHash`を結び付けます。これはentry自身には埋め込まず、適用後のprivate auditへ保存します。両documentがあっても、外側の`expectedMainSHA`／`expectedStateSHA`・既存lease/CAS・精算済みusage検証は必要です。
+
+本人の補足限定適用も、raw再抽出の完全一致と、明示的に選択したchannelを非破壊mergeした後のcore保全を区別します。空`events`は配置の削除命令ではありません。候補builderは元raw全体を`personal-saved.validate_selection_core()`で再groundingし、非空のcore/linkに取消・別日shift・配置や時刻変更などの不一致がないことを確認してから、非選択の比較channelを`null`へ投影します。これは適用scopeの指定で、元rawが`null`だったという記録ではありません。既存applyはhashから原文を復元できないため、この投影前検証と親の明示承認はcaller側の必須条件です。勤務時間だけを選択した承認は元raw・失敗した完全比較・一意の実usageを別証跡として保持し、既存の`work-timing-only`検証を通します。語だけを確認した`early/null`を、原投稿に数字があることを理由に`16:00`へ書き換えません。
 
 ### GitHub Actionsから収集・公開する構成
 

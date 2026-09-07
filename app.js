@@ -132,6 +132,143 @@
     return { from: `${prefix}-16`, to: nextMonth.toISOString().slice(0, 10) };
   }
 
+  const WORK_TIMING_TERMS = {
+    short: { shift: "昼", boundary: "end", time: "16:00", label: "短め" },
+    long: { shift: "昼", boundary: "end", time: "18:00", label: "ながめ" },
+    early: { shift: "夜", boundary: "start", time: "16:00", label: "早め" },
+    late: { shift: "夜", boundary: "start", time: "18:00", label: "おそめ" }
+  };
+
+  function validateWorkTiming(value, { owner, date, days, sourceKind } = {}) {
+    const fields = (object, keys) => object && typeof object === "object" && !Array.isArray(object) &&
+      Object.keys(object).length === keys.length && keys.every((key) => Object.hasOwn(object, key));
+    const invalid = () => { throw new Error("勤務時間の根拠が不正です"); };
+    if (!fields(value, ["schemaVersion", "facts"]) || value.schemaVersion !== 1 ||
+        !Array.isArray(value.facts) || value.facts.length > 512) invalid();
+    const seen = new Set();
+    for (const fact of value.facts) {
+      if (!fields(fact, ["serviceDate", "shift", "boundary", "status", "qualifier", "explicitTime", "source"]) ||
+          !validDateKey(fact.serviceDate) || !["昼", "夜"].includes(fact.shift) ||
+          !["start", "end"].includes(fact.boundary) || !["set", "excluded", "withdrawn", "conflict"].includes(fact.status) ||
+          (fact.qualifier !== null && (typeof fact.qualifier !== "string" || !Object.hasOwn(WORK_TIMING_TERMS, fact.qualifier))) ||
+          (fact.explicitTime !== null && (typeof fact.explicitTime !== "string" ||
+            !/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(fact.explicitTime)))) invalid();
+      const key = JSON.stringify([fact.serviceDate, fact.shift, fact.boundary,
+        ...(fact.status === "excluded" ? ["excluded", fact.qualifier, fact.explicitTime] : [])]);
+      if (seen.has(key) || (date !== undefined && fact.serviceDate !== date) ||
+          (days && !days[fact.serviceDate]?.includes(fact.shift))) invalid();
+      seen.add(key);
+      if (fact.status === "set" || fact.status === "excluded") {
+        if (fact.qualifier === null && fact.explicitTime === null) invalid();
+        if (fact.status === "excluded" && fact.qualifier !== null && fact.explicitTime !== null) invalid();
+        if (fact.qualifier !== null && (WORK_TIMING_TERMS[fact.qualifier].shift !== fact.shift ||
+            WORK_TIMING_TERMS[fact.qualifier].boundary !== fact.boundary)) invalid();
+      } else if (fact.qualifier !== null || fact.explicitTime !== null) invalid();
+      const source = fact.source;
+      if (!fields(source, ["id", "url", "name", "authorId", "authorScreenName", "createdAt", "sourceKind"]) ||
+          typeof source.id !== "string" || !/^[1-9][0-9]{9,24}$/.test(source.id) ||
+          typeof source.authorId !== "string" || !/^[1-9][0-9]{0,24}$/.test(source.authorId) ||
+          typeof source.authorScreenName !== "string" || !/^[A-Za-z0-9_]{1,15}$/.test(source.authorScreenName) ||
+          source.url !== `https://x.com/${source.authorScreenName}/status/${source.id}` ||
+          typeof source.name !== "string" || !/^[ぁ-んァ-ヶ一-龠ーａ-ｚA-Za-z0-9]{1,12}$/.test(source.name) ||
+          !["personal-work-post", "half-month-schedule"].includes(source.sourceKind) ||
+          typeof source.createdAt !== "string" ||
+          !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{1,6})?Z$/.test(source.createdAt) ||
+          !validDateKey(source.createdAt.slice(0, 10)) || !Number.isFinite(Date.parse(source.createdAt)) ||
+          Math.abs(Number((BigInt(source.id) >> 22n) + 1288834974657n) - Date.parse(source.createdAt)) >= 2000 ||
+          (sourceKind && source.sourceKind !== sourceKind)) invalid();
+      if (owner) {
+        if (["name", "authorId", "authorScreenName"].some((field) => owner[field] !== source[field])) invalid();
+        if (source.sourceKind === "personal-work-post") {
+          if (["id", "url", "createdAt"].some((field) => owner[field] !== source[field])) invalid();
+        } else if (comparePosts(source, owner) > 0) invalid();
+      }
+    }
+    return value;
+  }
+
+  function workTimingLabel(fact) {
+    if (!fact || fact.status !== "set") return null;
+    const word = WORK_TIMING_TERMS[fact.qualifier]?.label;
+    const byTime = Object.values(WORK_TIMING_TERMS).find((term) =>
+      term.shift === fact.shift && term.boundary === fact.boundary && term.time === fact.explicitTime)?.label;
+    return word && byTime && word !== byTime ? null : word ?? byTime ?? null;
+  }
+
+  function workTimingTargetMatches(exclusion, fact) {
+    if (!fact || fact.status !== "set") return false;
+    const term = fact.qualifier ?? Object.keys(WORK_TIMING_TERMS).find((word) => {
+      const value = WORK_TIMING_TERMS[word];
+      return value.shift === fact.shift && value.boundary === fact.boundary && value.time === fact.explicitTime;
+    });
+    return exclusion.qualifier !== null ? exclusion.qualifier === term
+      : exclusion.explicitTime === (fact.explicitTime ?? WORK_TIMING_TERMS[term]?.time);
+  }
+
+  function workTimingDescription(fact) {
+    const label = workTimingLabel(fact);
+    if (!label) return "";
+    if (fact.explicitTime !== null) {
+      const origin = fact.source.sourceKind === "half-month-schedule" ? "半月予定表" : "本人投稿";
+      return `${label}・${fact.explicitTime}${fact.boundary === "start" ? "入り" : "まで"}（${origin}に時刻記載）`;
+    }
+    const term = Object.values(WORK_TIMING_TERMS).find((value) => value.label === label);
+    return `${label}（明示語に基づく補足。店舗の呼称では${term.shift}${term.time}${term.boundary === "start" ? "入り" : "まで"}）`;
+  }
+
+  function workTimingPresentation(value, key, shift) {
+    return { schemaVersion: 1, facts: value.facts
+      .filter((fact) => (!key || fact.serviceDate === key) && (!shift || fact.shift === shift))
+      .map((fact) => ({
+        serviceDate: fact.serviceDate, shift: fact.shift, boundary: fact.boundary, status: fact.status,
+        qualifier: fact.qualifier, explicitTime: fact.explicitTime,
+        source: Object.fromEntries(["id", "url", "name", "authorId", "authorScreenName", "createdAt", "sourceKind"]
+          .map((field) => [field, fact.source[field]]))
+      })).sort((a, b) => JSON.stringify([a.serviceDate, a.shift, a.boundary, a.status, a.qualifier, a.explicitTime])
+        .localeCompare(JSON.stringify([b.serviceDate, b.shift, b.boundary, b.status, b.qualifier, b.explicitTime])))
+    };
+  }
+
+  function resolveWorkTiming({ personal, schedule, insights, dateKey, shift, name, personalEventAdditions }) {
+    const aliases = displayAliases(insights);
+    const boundary = shift === "昼" ? "end" : "start";
+    const claims = [...(schedule?.[dateKey]?.[shift]?.find((entry) => entry.name === name)?.workTiming?.facts ?? [])];
+    for (const post of personalPostsForView(personal, personalEventAdditions)) {
+      if (post.date !== dateKey || (aliases.get(post.name) ?? post.name) !== name) continue;
+      claims.push(...(post.workTiming?.facts ?? []));
+      // Explicit work withdrawal blocks old hours too; a later return without
+      // new hours cannot resurrect the old half-month timing.
+      if (post.events.some((event) => event.shift === shift && event.kind === "absence") ||
+          post.links?.some((link) => link.scope === shift && ["withdrawn", "conflict"].includes(link.status))) {
+        claims.push({
+          serviceDate: dateKey, shift, boundary, status: "withdrawn", qualifier: null, explicitTime: null,
+          source: { ...post, sourceKind: "personal-work-post" }
+        });
+      }
+    }
+    const priority = (fact) => fact.source.sourceKind === "personal-work-post" ? 1 : 0;
+    const candidates = claims.filter((fact) => fact.serviceDate === dateKey && fact.shift === shift && fact.boundary === boundary)
+      .sort((left, right) => priority(left) - priority(right) || comparePosts(left.source, right.source) ||
+        Number(left.status !== "set") - Number(right.status !== "set"));
+    let current = null;
+    for (const fact of candidates) {
+      if (fact.status === "excluded") {
+        if (workTimingTargetMatches(fact, current)) current = null;
+      } else {
+        current = fact;
+      }
+    }
+    return workTimingLabel(current) ? current : null;
+  }
+
+  function attachWorkTiming(entries, options) {
+    return entries.map((entry) => {
+      const workTimingNote = resolveWorkTiming({ ...options, name: entry.name });
+      if (!workTimingNote) return entry;
+      return { ...entry, workTimingNote };
+    });
+  }
+
   function validateHalfMonthSchedules(value, { roster, insights, previous, personal } = {}) {
     const fields = (object, keys) => object && typeof object === "object" && !Array.isArray(object) &&
       Object.keys(object).length === keys.length && keys.every((key) => Object.hasOwn(object, key));
@@ -155,7 +292,7 @@
     const known = [...(previous?.schedules ?? []), ...(personal?.posts ?? [])];
     for (const source of value.schedules) {
       if (!fields(source, ["id", "url", "name", "authorId", "authorScreenName", "createdAt",
-        "observedAt", "sourceKind", "period", "days"]) ||
+        "observedAt", "sourceKind", "period", "days", ...(Object.hasOwn(source, "workTiming") ? ["workTiming"] : [])]) ||
           typeof source.id !== "string" || !/^[1-9][0-9]{9,24}$/.test(source.id) ||
           typeof source.authorId !== "string" || !/^[1-9][0-9]{0,24}$/.test(source.authorId) ||
           typeof source.authorScreenName !== "string" || !/^[A-Za-z0-9_]{1,15}$/.test(source.authorScreenName) ||
@@ -221,6 +358,10 @@
         }
         dates.add(day.date);
       }
+      if (Object.hasOwn(source, "workTiming")) {
+        validateWorkTiming(source.workTiming, { owner: source, sourceKind: "half-month-schedule",
+          days: Object.fromEntries(source.days.map((day) => [day.date, day.shifts])) });
+      }
     }
     return value;
   }
@@ -256,6 +397,11 @@
             entries.push(entry);
           }
           entry.halfMonthSources = [...(entry.halfMonthSources ?? []), provenance];
+          const timing = source.workTiming && workTimingPresentation(source.workTiming, day.date, shift);
+          if (timing?.facts.length) {
+            entry.workTiming = Object.freeze({ schemaVersion: 1, facts: Object.freeze(timing.facts.map((fact) =>
+              Object.freeze({ ...fact, source: Object.freeze(fact.source) }))) });
+          }
         }
       }
     }
@@ -303,7 +449,7 @@
           !/^\d{4}-\d{2}-\d{2}$/.test(post.date) || !Number.isFinite(Date.parse(`${post.date}T00:00:00Z`)) ||
           new Date(`${post.date}T00:00:00Z`).toISOString().slice(0, 10) !== post.date ||
           (Object.hasOwn(post, "links") && !validPersonalLinks(post.links)) ||
-          !Array.isArray(post.events) || (!post.events.length && !post.links?.length) ||
+          !Array.isArray(post.events) || (!post.events.length && !post.links?.length && !post.workTiming?.facts?.length) ||
           post.events.some((event) => !event || !["昼", "夜"].includes(event.shift) ||
             !["placement", "absence", "late", "return", "uncertain"].includes(event.kind) ||
             (event.kind === "placement" && !event.storeId) ||
@@ -313,6 +459,9 @@
             typeof event.excerpt !== "string" || !event.excerpt.trim() || [...event.excerpt].length > 160 ||
             /[\r\n\u2028\u2029]/.test(event.excerpt))) {
         throw new Error("本人ポストの検証情報が不正です");
+      }
+      if (Object.hasOwn(post, "workTiming")) {
+        validateWorkTiming(post.workTiming, { owner: post, date: post.date, sourceKind: "personal-work-post" });
       }
       ids.add(post.id);
     }
@@ -552,6 +701,25 @@
     return source;
   }
 
+  function rosterPostLink({ schedule, ...options }) {
+    const post = personalPostLink(options);
+    if (post) return { post, kind: "personal" };
+    const { insights, dateKey, shift, name } = options;
+    if (!SHIFT_NAMES.includes(shift)) return null;
+    const canonical = displayAliases(insights).get(name) ?? name;
+    const account = insights?.maidTendency?.[canonical]?.x;
+    // Only use provenance attached to this exact person/date/shift, not a period-wide lookup.
+    const source = schedule?.[dateKey]?.[shift]?.find((entry) => entry.name === canonical)
+      ?.halfMonthSources?.find((source) => source.name === canonical &&
+        source.sourceKind === "half-month-schedule" &&
+        source.period?.from <= dateKey && dateKey <= source.period?.to &&
+        typeof source.id === "string" && /^[1-9][0-9]{9,24}$/.test(source.id) &&
+        typeof source.authorScreenName === "string" && /^[A-Za-z0-9_]{1,15}$/.test(source.authorScreenName) &&
+        source.url === `https://x.com/${source.authorScreenName}/status/${source.id}` &&
+        (!account || source.authorScreenName.toLowerCase() === account.toLowerCase()));
+    return source ? { post: source, kind: "half-month-schedule" } : null;
+  }
+
   function observedTrainee(insights, name, key) {
     const period = insights?.traineePeriods?.byName?.[name];
     if (!period) return null;
@@ -655,9 +823,11 @@
   }
 
   function resolveShiftRoster({ insights, observations, personal, dateKey, shift, schedule, roster, nameCorrections, personalEventAdditions }) {
+    const timingOptions = { insights, personal, dateKey, shift, schedule, personalEventAdditions };
     const recorded = recordedRoster({ insights, dateKey, shift, schedule, roster });
     if (recorded) return {
-      ...recorded, observed: observedShift(null, insights, dateKey, shift),
+      ...recorded, entries: attachWorkTiming(recorded.entries, timingOptions),
+      observed: observedShift(null, insights, dateKey, shift),
       personal: { posts: [], byMaid: new Map() }
     };
     const observed = observedShift(observations, insights, dateKey, shift, nameCorrections);
@@ -735,7 +905,7 @@
         trainee: entry.trainee ?? official.trainee
       });
     }
-    return { assignment: null, observed, personal: notices, entries: [...entries.values()] };
+    return { assignment: null, observed, personal: notices, entries: attachWorkTiming([...entries.values()], timingOptions) };
   }
 
   function observationEntries(planned, observed, roster) {
@@ -2457,8 +2627,9 @@
     for (const key of dates ?? []) {
       for (const shift of shifts ?? []) {
         const { outlook, assignment, observed, personal, entries, confirmedOnly } = resolve(key, shift) ?? {};
+        const resolvedEntry = entries?.find((entry) => entry.name === name);
         const notice = assignment?.recorded ? null : personal?.byMaid.get(name);
-        const officialNotice = assignment?.recorded ? null : entries?.find((entry) => entry.name === name)?.officialNotice;
+        const officialNotice = assignment?.recorded ? null : resolvedEntry?.officialNotice;
         if (notice?.absent) {
           changes.push({ dateKey: key, shift, personalNotice: notice });
           continue;
@@ -2515,7 +2686,9 @@
           forecast,
           storeIds: observation?.storeIds ?? (announced ? [storeId] : []),
           sourcePosts: observation?.sources ?? officialNotice?.sources ?? [],
-          halfMonthSources: schedule?.[key]?.[shift]?.find((entry) => entry.name === name)?.halfMonthSources ?? [],
+          ...(resolvedEntry?.workTimingNote ? { workTimingNote: resolvedEntry.workTimingNote } : {}),
+          halfMonthSources: resolvedEntry?.halfMonthSources ??
+            schedule?.[key]?.[shift]?.find((entry) => entry.name === name)?.halfMonthSources ?? [],
           nameCorrections: observation?.nameCorrections ?? officialNotice?.nameCorrections ?? [],
           host,
           settled,
@@ -2603,9 +2776,14 @@
       personalShift,
       personalPostsForView,
       personalPostLink,
+      rosterPostLink,
       resolveShiftRoster,
       validatePersonalShifts,
       validateHalfMonthSchedules,
+      validateWorkTiming,
+      workTimingLabel,
+      workTimingDescription,
+      resolveWorkTiming,
       buildEffectiveSchedule,
       halfMonthPeriod,
       dayHasPersonStoreEvidence,
@@ -2977,30 +3155,33 @@
     return link;
   }
 
-  function appendHalfMonthSources(target, sources, key, shift, name) {
-    for (const source of sources ?? []) {
-      const link = document.createElement("a");
-      link.className = "half-month-source";
-      link.href = source.url;
+  function createRosterPostLabel(name, key, shift) {
+    const source = rosterPostLink({
+      schedule: effectiveSchedule, personal: personalShifts, insights, observations,
+      dateKey: key, shift, name, nameCorrections: data.observationNameCorrections,
+      personalEventAdditions: data.personalEventAdditions
+    });
+    const link = document.createElement(source ? "a" : "span");
+    if (source) {
+      link.href = source.post.url;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
-      link.textContent = "予定の出典";
-      link.dataset.sourceKind = source.sourceKind;
+      link.dataset.sourceKind = source.kind;
       link.dataset.name = name;
       link.dataset.date = key;
       link.dataset.shift = shift;
-      link.dataset.focusKey = `${key}|${shift}|${name}|half-month`;
-      link.title = `${displayName(name)}：${key} ${shift}の半月予定表（${source.period.from}〜${source.period.to}）を開く。当日の出勤確認ではありません`;
+      link.title = `${displayName(name)}：${source.kind === "personal"
+        ? "本人の当日投稿を開く" : "予定表の投稿を開く（当日の出勤確認ではありません）"}`;
       link.setAttribute("aria-label", link.title);
-      target.append(link);
     }
+    return link;
   }
 
   function personalNoticeLabel(person) {
     if (person.conflict) return "案内が不一致・保留";
     if (person.absent) return "取消";
     const pending = person.uncertain ? "・保留" : "";
-    if (person.late) return (person.late.time ? `遅れ・${person.late.time}到着予定` : "遅れ") + pending;
+    if (person.late) return "お給仕予定" + pending;
     if (person.returned && !person.storeId) return "復帰・未発表" + pending;
     if (person.storeId) return "お給仕予定" + pending;
     return "保留";
@@ -3008,7 +3189,19 @@
 
   function officialNoticeLabel(notice) {
     if (notice.conflict) return "案内が不一致・保留";
-    return (notice.time ? `${notice.time}到着予定` : "あとから") + (notice.uncertain ? "・保留" : "");
+    return "お給仕予定" + (notice.uncertain ? "・保留" : "");
+  }
+
+  function appendWorkTiming(target, fact) {
+    const label = workTimingLabel(fact);
+    if (!label) return;
+    const note = document.createElement("span");
+    note.className = "entry-update work-timing-note";
+    note.textContent = label;
+    note.dataset.boundary = fact.boundary;
+    note.dataset.sourceKind = fact.source.sourceKind;
+    note.setAttribute("aria-hidden", "true");
+    target.append(note);
   }
 
   function createChangeNotice(person, prefix = "") {
@@ -3114,25 +3307,25 @@
     item.dataset.name = entry.name;
     item.dataset.evidence = evidence;
     if (storeId) item.dataset.store = storeId;
-    const source = sameDayPersonalPost(entry.name, key, shift);
-    const href = source?.url;
-    const name = document.createElement(href ? "a" : "span");
+    const name = createRosterPostLabel(entry.name, key, shift);
     name.className = "maid-name";
     name.textContent = displayName(entry.name);
     name.dataset.name = entry.name;
     name.dataset.focusKey = `${key}|${shift}|${entry.name}`;
-    if (href) {
-      name.href = href;
-      name.target = "_blank";
-      name.rel = "noopener noreferrer";
-      name.title = `${displayName(entry.name)}：本人の当日投稿を開く`;
-      name.setAttribute("aria-label", name.title);
-    } else {
+    if (!name.href) {
       name.tabIndex = -1;
     }
     item.append(name);
-    appendHalfMonthSources(item, entry.halfMonthSources, key, shift, entry.name);
+    const timingDescription = workTimingDescription(entry.workTimingNote);
+    appendWorkTiming(item, entry.workTimingNote);
     const descriptions = note ? [note] : [];
+    if (timingDescription) {
+      descriptions.push(timingDescription);
+      if (name.href) {
+        name.title += `。${timingDescription}`;
+        name.setAttribute("aria-label", name.title);
+      }
+    }
     if (kitchenStaff.has(entry.name)) {
       item.classList.add("is-kitchen");
       descriptions.push("キッチンにゃんこ");
@@ -3152,7 +3345,7 @@
     }
     if (entry.personalNotice && !entry.officialNotice) {
       const person = entry.personalNotice;
-      if (person.conflict || person.late || (person.returned && !person.storeId) ||
+      if (person.conflict || (person.returned && !person.storeId) ||
           (!entry.observed && person.uncertain)) {
         const update = document.createElement("span");
         update.className = "entry-update";
@@ -3162,11 +3355,13 @@
       descriptions.push(personalNoticeLabel(person));
     }
     if (entry.officialNotice) {
-      const update = document.createElement("span");
-      update.className = "entry-update";
-      update.textContent = officialNoticeLabel(entry.officialNotice);
-      item.append(update);
-      descriptions.push(`お給仕予定・${update.textContent}`);
+      if (entry.officialNotice.conflict || entry.officialNotice.uncertain) {
+        const update = document.createElement("span");
+        update.className = "entry-update";
+        update.textContent = officialNoticeLabel(entry.officialNotice);
+        item.append(update);
+      }
+      descriptions.push(officialNoticeLabel(entry.officialNotice));
     }
     if (descriptions.length) {
       item.title = displayText(`${entry.name}：${descriptions.join(" / ")}`);
@@ -3321,22 +3516,27 @@
   }
 
   function sourceFacts(key, shift) {
+    const timing = (value) => workTimingPresentation(value, key, shift);
     return {
       posts: activeObservationPosts(observations).filter((post) => (!key || post.date === key) && (!shift || post.shift === shift))
         .map(({ id, url, date, shift, createdAt, names, notices, storeId }) => ({ id, url, date, shift, createdAt, names, notices, storeId })),
       personal: personalPostsForView(personalShifts, data.personalEventAdditions)
         .filter((post) => (!key || post.date === key) && (!shift ||
           post.events.some((event) => event.shift === shift) ||
-          post.links?.some((link) => link.scope === shift || link.scope === "unspecified")))
-        .map(({ id, url, date, createdAt, name, authorId, authorScreenName, events, links }) => ({
+          post.links?.some((link) => link.scope === shift || link.scope === "unspecified") ||
+          post.workTiming?.facts.some((fact) => fact.shift === shift)))
+        .map(({ id, url, date, createdAt, name, authorId, authorScreenName, events, links, workTiming }) => ({
           id, url, date, createdAt, name, authorId, authorScreenName,
           events: events.filter((event) => !shift || event.shift === shift),
           ...(links !== undefined ? { links: links.filter((link) =>
-            !shift || link.scope === shift || link.scope === "unspecified") } : {})
+            !shift || link.scope === shift || link.scope === "unspecified") } : {}),
+          ...(workTiming !== undefined ? { workTiming: timing(workTiming) } : {})
         })),
       halfMonth: halfMonthSchedules.schedules
         .map((source) => ({
-          ...halfMonthProvenance(source), days: source.days.filter((day) => (!key || day.date === key) &&
+          ...halfMonthProvenance(source),
+          ...(source.workTiming !== undefined ? { workTiming: timing(source.workTiming) } : {}),
+          days: source.days.filter((day) => (!key || day.date === key) &&
             (!shift || day.shifts.includes(shift))).map((day) => ({
             date: day.date, shifts: day.shifts.filter((item) => !shift || item === shift).slice().sort()
           })).sort((a, b) => a.date.localeCompare(b.date))
@@ -3607,8 +3807,9 @@
         assignment,
         unpostedMaids
       });
-      const titles = [];
-      const descriptions = [];
+      const timingDescription = workTimingDescription(entry.workTimingNote);
+      const titles = timingDescription ? [timingDescription] : [];
+      const descriptions = timingDescription ? [timingDescription] : [];
 
       if (isKitchen) {
         titles.push("キッチンにゃんこ");
@@ -3695,11 +3896,12 @@
       orderRosterEntries(members, data.roster, kitchenStaff, data.normalOrderBefore).forEach((entry) => {
         // 店を名乗らないと決めた以上、チップで店を出しては辻褄が合わない。
         const item = createMaidEntry(entry, null, true);
+        const detail = [note, workTimingDescription(entry.workTimingNote)].filter(Boolean).join("。");
         item.setAttribute(
           "aria-label",
-          displayText(`${entry.name}（${note}）`)
+          displayText(`${entry.name}（${detail}）`)
         );
-        item.title = displayText(`${entry.name}：${note}`);
+        item.title = displayText(`${entry.name}：${detail}`);
         list.append(item);
       });
       target.append(heading, list);
@@ -4285,32 +4487,19 @@
     return block;
   }
 
-  function sameDayPersonalPost(name, key, shift) {
-    return personalPostLink({
-      personal: personalShifts, insights, observations, dateKey: key, shift, name,
-      nameCorrections: data.observationNameCorrections,
-      personalEventAdditions: data.personalEventAdditions
-    });
-  }
-
   function createMaidStop(stop, name) {
     const item = document.createElement("li");
     item.className = `maid-plan-stop is-${stop.state ?? "unknown"}`;
     item.dataset.date = stop.dateKey;
     item.dataset.shift = stop.shift;
-    const source = sameDayPersonalPost(name, stop.dateKey, stop.shift);
-    const when = document.createElement(source ? "a" : "span");
+    const when = createRosterPostLabel(name, stop.dateKey, stop.shift);
     when.className = "maid-plan-when";
     when.dataset.focusKey = `${stop.dateKey}|${stop.shift}|${name}|when`;
     const [, month, date] = stop.dateKey.split("-").map(Number);
     // 曜日はカレンダーと同じ書き方で添える。「9/3」だけでは何曜日か分からない。
     const weekday = weekdays[new Date(`${stop.dateKey}T00:00:00`).getDay()];
     when.textContent = `${month}/${date}(${weekday}) ${stop.shift}`;
-    if (source) {
-      when.href = source.url;
-      when.target = "_blank";
-      when.rel = "noopener noreferrer";
-      when.title = `${displayName(name)}：本人の当日投稿を開く`;
+    if (when.href) {
       when.setAttribute("aria-label", `${when.textContent} ${when.title}`);
     }
     const where = document.createElement("span");
@@ -4320,11 +4509,11 @@
       ? stop.storeIds.map((id) => storeShort(insights, id)).join("・")
       : stop.storeId ? storeShort(insights, stop.storeId) : "未発表";
     item.append(when, where);
-    appendHalfMonthSources(item, stop.halfMonthSources, stop.dateKey, stop.shift, name);
+    appendWorkTiming(item, stop.workTimingNote);
     const evidence = document.createElement("span");
     evidence.className = "maid-plan-evidence";
     evidence.textContent = stop.observed ? "記録" : stop.recorded ? "実績"
-      : stop.officialNotice ? `お給仕予定・${officialNoticeLabel(stop.officialNotice)}`
+      : stop.officialNotice ? officialNoticeLabel(stop.officialNotice)
       : stop.personal ? personalNoticeLabel(stop.personalNotice) : stop.personalNotice?.conflict ? "案内が不一致・保留"
         : stop.personalNotice ? personalNoticeLabel(stop.personalNotice)
         : stop.host ? "イベント主役の予定" : stop.confirmedOnly ? "公開予定・未発表" : "未照合の予定・店舗推測";
@@ -4360,7 +4549,12 @@
       event.textContent = stop.eventLabel;
       item.append(event);
     }
-    const explanation = stopExplanation(stop);
+    const timingDescription = workTimingDescription(stop.workTimingNote);
+    const explanation = stopExplanation(stop) + (timingDescription ? `${timingDescription}。` : "");
+    if (when.href && timingDescription) {
+      when.title += `。${timingDescription}`;
+      when.setAttribute("aria-label", `${when.textContent} ${when.title}`);
+    }
     item.title = explanation;
     // 読み上げは aria-label に一本化する。同じ文を隠し要素にも置くと二度読まれる。
     item.setAttribute("aria-label", `${when.textContent}は${explanation}`);
@@ -4417,7 +4611,7 @@
   function stopExplanation(stop) {
     const trainee = stop.trainee === true ? "見習いにゃんことして" : "";
     if (stop.officialNotice) {
-      return `${stop.storeId ? `${storeShort(insights, stop.storeId)}の` : ""}お給仕予定・${officialNoticeLabel(stop.officialNotice)}。`;
+      return `${stop.storeId ? `${storeShort(insights, stop.storeId)}の` : ""}${officialNoticeLabel(stop.officialNotice)}。`;
     }
     if (stop.personalNotice && !stop.observed && !stop.recorded) {
       return `${stop.storeId ? `${storeShort(insights, stop.storeId)}の` : ""}お給仕予定。` +
@@ -4431,8 +4625,7 @@
     const where = storeShort(insights, stop.storeId);
     if (stop.observed) {
       return `${stop.storeIds.map((id) => storeShort(insights, id)).join("・")}の公式のお給仕投稿で確認しています。` +
-        "確認できた投稿の範囲の情報で、この時間帯の全員・全店舗を網羅するものではありません。" +
-        (stop.personalNotice?.late ? `${personalNoticeLabel(stop.personalNotice)}。` : "");
+        "確認できた投稿の範囲の情報で、この時間帯の全員・全店舗を網羅するものではありません。";
     }
     // 過ぎた日と、これからの日を混ぜない。記録があるのは過ぎた日だけ。
     if (stop.recorded) {

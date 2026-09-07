@@ -412,7 +412,7 @@ def validate_personal(path, personal=None, *, private=True):
     for post in state['posts']:
         fields = ('id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt',
                   'observedAt', 'date', 'events')
-        keys(post, (*fields, 'links'), fields)
+        keys(post, (*fields, 'links', 'workTiming'), fields)
         identity(post)
         for event in post['events']:
             require(event['kind'] != 'absence' or 'storeId' not in event,
@@ -1060,6 +1060,31 @@ def data_hash(value):
                                      separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
+def saved_half_month_selections(manifest):
+    approvals = manifest.get('halfMonthSelections', {})
+    require(isinstance(approvals, dict) and len(approvals) <= 1,
+            'invalid_half_month_selections')
+    for digest, document in approvals.items():
+        require(isinstance(digest, str) and re.fullmatch(r'[a-f0-9]{64}', digest)
+                and isinstance(document, dict), 'invalid_half_month_selections')
+    expected = set()
+    entries = manifest.get('halfMonthAmendments', [])
+    require(isinstance(entries, list) and len(entries) <= 1, 'invalid_half_month_selections')
+    for entry in entries:
+        require(isinstance(entry, dict) and isinstance(entry.get('amendment'), dict),
+                'invalid_half_month_selections')
+        proof = entry['amendment'].get('selectionProof')
+        if proof is not None:
+            require(isinstance(proof, dict)
+                    and isinstance(proof.get('approvalManifestHash'), str),
+                    'invalid_half_month_selections')
+            expected.add(proof['approvalManifestHash'])
+    require(set(approvals) == expected, 'half_month_selection_approval_mismatch')
+    require(isinstance(manifest.get('halfMonthSelectionApply'), dict) if expected
+            else 'halfMonthSelectionApply' not in manifest, 'half_month_selection_apply_approval_mismatch')
+    return approvals
+
+
 def read_saved_manifest(environment):
     text = environment.get('APPLY_SAVED_MANIFEST', '')
     require(isinstance(text, str) and 0 < len(text.encode('utf-8')) <= 32768,
@@ -1072,7 +1097,8 @@ def read_saved_manifest(environment):
         scan_private(value)
         fields = ('schemaVersion', 'expectedMainSHA', 'expectedStateSHA',
                   'officialAmendments', 'usageImports', 'sourceReceipts')
-        keys(value, (*fields, 'personalAmendments', 'halfMonthAmendments', 'sourceMigration'), fields)
+        keys(value, (*fields, 'personalAmendments', 'halfMonthAmendments',
+                     'halfMonthSelections', 'halfMonthSelectionApply', 'sourceMigration'), fields)
         require(type(value['schemaVersion']) is int and value['schemaVersion'] == 1)
         for field in ('expectedMainSHA', 'expectedStateSHA'):
             require(isinstance(value[field], str) and SHA_RE.fullmatch(value[field]))
@@ -1082,6 +1108,7 @@ def read_saved_manifest(environment):
                 and len(value.get('personalAmendments', [])) <= 3)
         require(isinstance(value.get('halfMonthAmendments', []), list)
                 and len(value.get('halfMonthAmendments', [])) <= 1)
+        saved_half_month_selections(value)
         if 'sourceMigration' in value:
             migration = value['sourceMigration']
             keys(migration, ('expectedPersonalBudgetsHash', 'sourceHash', 'historicalImages'),
@@ -1179,6 +1206,7 @@ def prepare_half_month_saved(manifest, half_state, source_state, personal, usage
                             *, root=ROOT, personal_collector=None, now=None, accounting_usage=None):
     reconciled_usage = usage if accounting_usage is None else accounting_usage
     entries = manifest.get('halfMonthAmendments', [])
+    selections = saved_half_month_selections(manifest)
     migration = manifest.get('sourceMigration')
     if not entries and migration is None:
         validate_half_month_links(half_state, source_state, reconciled_usage, personal)
@@ -1212,7 +1240,10 @@ def prepare_half_month_saved(manifest, half_state, source_state, personal, usage
             accounts = list(csv.DictReader(stream))
         half_state = load_half_month_saved().apply_amendments(
             half_state, entries, usage, module, schedule=schedule, insights=insights,
-            accounts=accounts, personal_state=personal, now=now)
+            accounts=accounts, personal_state=personal, now=now,
+            approved_selections={digest: {'approvalManifestHash': digest, 'document': document}
+                                 for digest, document in selections.items()},
+            approved_selection_apply=manifest.get('halfMonthSelectionApply'))
     elif half_state is None:
         half_state = module.empty_state()
     validate_half_month_links(half_state, sources, reconciled_usage, personal)

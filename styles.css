@@ -1580,10 +1580,6 @@ summary:focus-visible { outline: 3px solid var(--cp-accent); outline-offset: 2px
 .maid-entry { max-width: 100%; }
 .maid-name, .roster-source { overflow-wrap: anywhere; min-width: 0; }
 .observation-source { font-size: 0.68rem; color: #386047; overflow-wrap: anywhere; }
-.half-month-source { font-size: 0.75rem; color: #386047; text-underline-offset: 0.15em; overflow-wrap: anywhere; }
-.half-month-source:hover { text-decoration-thickness: 2px; }
-.half-month-source:focus-visible { outline: 2px solid var(--cp-accent); outline-offset: 2px; }
-.maid-plan-stop > .half-month-source { grid-column: 1 / -1; }
 .observation-sources { display: flex; flex-direction: column; gap: 3px; margin: 8px 0 0; }
 .observation-details { margin: 12px 0; color: var(--cp-text-muted); font-size: 0.68rem; }
 .observation-details summary { cursor: pointer; }
@@ -1598,6 +1594,7 @@ summary:focus-visible { outline: 3px solid var(--cp-accent); outline-offset: 2px
 .official-embed iframe { width: 100% !important; pointer-events: none; }
 .embed-fallback, .shift-change { color: var(--cp-text-muted); font-size: 0.72rem; overflow-wrap: anywhere; }
 .entry-update { flex-basis: 100%; color: var(--cp-text-muted); font-size: 0.65rem; }
+.maid-plan-stop > .work-timing-note { grid-column: 1 / -1; }
 #personal-status[data-error="true"], #half-month-status[data-error="true"] { color: var(--cp-danger); }
 .observation-status { margin-top: 12px; padding-top: 8px; border-top: 1px dashed var(--calendar-line); }
 .day-hint.is-observed { color: #396448; font-weight: 700; }
