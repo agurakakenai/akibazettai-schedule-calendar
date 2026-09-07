@@ -585,12 +585,6 @@ def select_targets(schedule, insights, accounts, date, state, observations=None,
             person['shifts'].add(shift)
         person['origins'].add(origin)
 
-    if registry is not None:
-        for member in registry['members']:
-            include(member['canonicalName'], None, 'registry')
-        for row in registry['unresolvedNames']:
-            if row['resolvedMemberId'] is None:
-                include(row['name'], None, 'registry')
     for name, target in state['originalTargets'].get(day, {}).items():
         for shift in target['shifts']:
             include(name, shift, 'original')
@@ -635,6 +629,7 @@ def select_targets(schedule, insights, accounts, date, state, observations=None,
             managed = registry_by_name.get(name)
             if managed:
                 handle, reason = managed['handle'], managed['reason']
+                population[name]['origins'].add('registry')
             if name in eligible_by_name:
                 reason = 'not_searched'
         elif len(rows) > 1:
@@ -656,10 +651,12 @@ def select_targets(schedule, insights, accounts, date, state, observations=None,
                         handle, reason = candidate, 'not_searched'
         shifts = [shift for shift in ('昼', '夜') if shift in population[name]['shifts']]
         if registry is not None:
-            if name in eligible_by_name:
+            if name in eligible_by_name and shifts:
                 eligible[name] = {**eligible_by_name[name], 'shifts': shifts,
                                   'registeredAt': members.lookup(registry, name)['registeredAt'],
                                   'aliases': sorted(members.names_of(members.lookup(registry, name)))}
+            elif name in eligible_by_name:
+                reason = 'shift_unknown'
         elif handle and not shifts:
             reason = 'shift_unknown'
         elif handle:
@@ -686,7 +683,7 @@ def active_targets(targets, date, now, *, scheduled=False):
     if scheduled and local > dt.time(18):
         return {}
     return {name: target for name, target in targets.items()
-            if local <= dt.time(13 if target['shifts'] == ['昼'] else 19, 30)}
+            if target['shifts'] and local <= dt.time(13 if target['shifts'] == ['昼'] else 19, 30)}
 
 
 def search_urls(date):
@@ -740,9 +737,6 @@ def target_searches(targets, date, state, now, maximum, *, scheduled=False):
         return history.get(target['name'], ''), target.get('registeredAt', ''), target['name']
 
     if any('memberId' in target for target in active.values()):
-        fresh = sorted((target for target in active.values()
-                        if target['name'] not in history), key=priority)
-        corrections = sorted((target for target in active.values() if target not in fresh), key=priority)
         local = now.astimezone(JST)
         minutes = local.hour * 60 + local.minute
 
@@ -758,11 +752,8 @@ def target_searches(targets, date, state, now, maximum, *, scheduled=False):
                      or official.timestamp(history[target['name']]).astimezone(JST)
                      < local.replace(hour=0, minute=0, second=0, microsecond=0) + dt.timedelta(
                          minutes=target_deadline(target, scheduled=scheduled) - 90))]
-        # One discovery slot is part of, never additional to, the existing cap.
-        selected = near[:1] if maximum else []
-        if fresh and len(selected) < maximum and not any(target in fresh for target in selected):
-            selected.append(fresh[0])
-        selected.extend(target for target in corrections if target not in selected)
+        selected = near[:maximum]
+        selected.extend(target for target in sorted(active.values(), key=priority) if target not in selected)
         return [(target['name'], account_search_url(target['handle'])) for target in selected[:maximum]]
     return [(target['name'], account_search_url(target['handle']))
             for target in sorted(active.values(), key=lambda target: (

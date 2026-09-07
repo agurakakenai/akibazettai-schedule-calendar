@@ -561,18 +561,40 @@ class StateTests(Offline):
         self.assertEqual(personal.select_targets(
             self.schedule, self.insights, self.accounts, DATE, self.state), {})
 
-    def test_registry_discovers_without_statistics_schedule_home_or_promoted_date(self):
+    def test_registration_requires_dated_work_but_not_statistics_home_or_promotion(self):
         registry = registry_fixture(AMU, {'name': '追加', 'handle': 'new_member'},
                                     {'name': '不明', 'handle': None})
         accounts = [*self.accounts, {'name': '旧名', 'handle': 'old_member', 'source': '公式サイト'}]
         targets = personal.select_targets({}, None, accounts, DATE, self.state, registry=registry)
-        self.assertEqual(set(targets), {'あむ', '追加'})
-        self.assertEqual(targets['追加']['shifts'], [])
+        self.assertEqual(targets, {})
         self.assertEqual(self.state['originalTargets'][DATE.isoformat()], {})
+        self.assertEqual(self.state['coverage'][DATE.isoformat()], {})
+        self.assertEqual(personal.target_searches(targets, DATE, self.state, NOW, 3), [])
+        schedule = {'schedule': {DATE.isoformat(): {'昼': [{'name': '追加'}, {'name': '不明'}]}}}
+        targets = personal.select_targets(schedule, None, accounts, DATE, self.state, registry=registry)
+        self.assertEqual(set(targets), {'追加'})
+        self.assertEqual(targets['追加']['shifts'], ['昼'])
         self.assertEqual(self.state['coverage'][DATE.isoformat()]['不明']['reason'], 'account_unknown')
-        self.assertEqual(self.state['coverage'][DATE.isoformat()]['追加']['origins'], ['registry'])
+        self.assertEqual(self.state['coverage'][DATE.isoformat()]['追加']['origins'], ['registry', 'scheduled'])
         personal.validate_collection_coverage(self.state)
         self.assertNotIn('旧名', targets)
+
+    def test_forty_managed_members_only_supply_the_announced_daily_population(self):
+        registry = registry_fixture(*({'name': f'人{index}', 'handle': f'person{index}'}
+                                      for index in range(40)))
+        self.assertEqual(len(registry['members']), 40)
+        names = [member['canonicalName'] for member in registry['members'][:14]]
+        schedule = {'schedule': {DATE.isoformat(): {'夜': [{'name': name} for name in names]}}}
+        targets = personal.select_targets(schedule, None, [], DATE, self.state, registry=registry)
+        self.assertEqual(set(targets), set(names))
+        first = personal.target_searches(targets, DATE, self.state, NOW, 3)
+        self.assertEqual(len(first), 3)
+        self.state['searchHistory'] = {DATE.isoformat(): {
+            name: {'handle': targets[name]['handle'], 'attemptedAt': personal.stamp(NOW)}
+            for name, _ in first}}
+        second = personal.target_searches(targets, DATE, self.state, NOW + dt.timedelta(minutes=1), 3)
+        self.assertEqual(len(second), 3)
+        self.assertFalse(set(name for name, _ in first) & set(name for name, _ in second))
 
     def test_registry_cross_collector_raw_name_and_alias_bindings_are_not_rebound(self):
         registry = registry_fixture(AMU)
@@ -580,13 +602,13 @@ class StateTests(Offline):
         bound = {'authorId': UID, 'authorScreenName': AMU['handle'], 'verifiedAt': CREATED}
         other = {'旧名': bound}
         before = copy.deepcopy(other)
-        targets = personal.select_targets({}, None, [], DATE, self.state,
+        targets = personal.select_targets(self.schedule, None, [], DATE, self.state,
                                           registry=registry, binding_maps=(other,))
         self.assertEqual(targets, {})
         self.assertEqual(self.state['coverage'][DATE.isoformat()]['あむ']['reason'],
                          'account_identity_mismatch')
         self.assertEqual(other, before)
-        targets = personal.select_targets({}, {'maidTendency': None}, [], DATE, self.state,
+        targets = personal.select_targets(self.schedule, {'maidTendency': None}, [], DATE, self.state,
                                           registry=registry, binding_maps=({'昔あむ': bound},))
         self.assertEqual(set(targets), {'あむ'})
         self.assertEqual(personal.identity_bindings(registry, {'昔あむ': bound})['あむ'], bound)
@@ -616,12 +638,12 @@ class StateTests(Offline):
                     self.assertEqual(self.state[field], old[field])
                 self.assertEqual(report['coverage']['あむ']['reason'], reason)
 
-    def test_unknown_discovery_uses_night_cutoff_without_asserting_night_shift(self):
+    def test_unknown_shifts_do_not_open_a_daily_discovery_window(self):
         target = {**AMU, 'shifts': []}
         for scheduled, last in ((True, dt.time(18)), (False, dt.time(19, 30))):
             now = dt.datetime.combine(DATE, last, personal.JST)
             self.assertEqual(personal.active_targets({'あむ': target}, DATE, now,
-                                                     scheduled=scheduled), {'あむ': target})
+                                                     scheduled=scheduled), {})
             self.assertEqual(personal.active_targets({'あむ': target}, DATE,
                                                      now + dt.timedelta(seconds=1),
                                                      scheduled=scheduled), {})
@@ -640,7 +662,7 @@ class StateTests(Offline):
         registry = registry_fixture(AMU)
         path = self.folder / 'members.json'
         personal.official.atomic_json(path, registry)
-        self.targets = personal.select_targets({}, None, [], DATE, self.state, registry=registry)
+        self.targets = personal.select_targets(self.schedule, None, [], DATE, self.state, registry=registry)
         for phase in ('wait', 'reserved'):
             with self.subTest(phase=phase):
                 personal.official.atomic_json(path, registry)
@@ -679,7 +701,8 @@ class StateTests(Offline):
         targets = [{'name': f'人{index}', 'handle': f'person{index}'} for index in range(6)]
         registry = registry_fixture(*targets)
         registry['members'][0]['aliases'] = ['古名']
-        self.targets = personal.select_targets({}, None, [], DATE, self.state, registry=registry)
+        schedule = {'schedule': {DATE.isoformat(): {'夜': [{'name': target['name']} for target in targets]}}}
+        self.targets = personal.select_targets(schedule, None, [], DATE, self.state, registry=registry)
         prior_day = (DATE - dt.timedelta(days=1)).isoformat()
         self.state['searchHistory'] = {prior_day: {
             '古名': {'handle': 'person0', 'attemptedAt': '2026-09-05T02:00:00Z'},
@@ -689,7 +712,7 @@ class StateTests(Offline):
         for _ in range(12):
             searched = {name for rows in self.state['searchHistory'].values() for name in rows} | {'人0'}
             queue = personal.target_searches(self.targets, DATE, self.state, now, 2)
-            self.assertLessEqual(len([name for name, _ in queue if name not in searched]), 1)
+            self.assertEqual(len(queue), 2)
             for name, _ in queue:
                 if name in served:
                     repeated.add(name)
@@ -711,7 +734,7 @@ class StateTests(Offline):
                          client_factory=lambda _: self.fail('must not construct a source client'))
         self.assertFalse(self.snapshot.exists())
 
-    def test_cli_missing_insights_and_empty_schedule_keep_registry_discovery(self):
+    def test_cli_missing_insights_and_empty_schedule_make_no_daily_requests(self):
         self.schedule = {}
         args = self.args(['--max-searches', '0', '--max-posts', '0'])
         args.insights.unlink()
@@ -726,11 +749,9 @@ class StateTests(Offline):
         client.fetch_post.assert_not_called()
         state = personal.read_state(self.snapshot)
         self.assertEqual(state['originalTargets'][DATE.isoformat()], {})
-        self.assertEqual(set(state['coverage'][DATE.isoformat()]), {'あむ', 'ららこ'})
-        self.assertTrue(all(row['reason'] == 'search_budget_deferred'
-                            for row in state['coverage'][DATE.isoformat()].values()))
+        self.assertEqual(state['coverage'][DATE.isoformat()], {})
 
-    def test_single_search_slot_does_not_let_daily_urgent_member_starve_discovery(self):
+    def test_single_search_slot_does_not_include_unannounced_registry_members(self):
         registry = registry_fixture(AMU, RARAKO, {'name': '追加', 'handle': 'new_member'})
         self.state['searchHistory'] = {'2026-09-05': {
             'あむ': {'handle': AMU['handle'], 'attemptedAt': '2026-09-05T03:00:00Z'}}}
@@ -746,13 +767,13 @@ class StateTests(Offline):
             served.add(name)
             self.state['searchHistory'].setdefault(day.isoformat(), {})[name] = {
                 'handle': targets[name]['handle'], 'attemptedAt': personal.stamp(now)}
-        self.assertEqual(served, {'あむ', 'ららこ', '追加'})
+        self.assertEqual(served, {'あむ'})
 
     def test_guard_change_while_fetching_keeps_old_pending_and_spent_get(self):
         registry = registry_fixture(AMU)
         path = self.folder / 'members.json'
         personal.official.atomic_json(path, registry)
-        self.targets = personal.select_targets({}, None, [], DATE, self.state, registry=registry)
+        self.targets = personal.select_targets(self.schedule, None, [], DATE, self.state, registry=registry)
         self.state['pending'] = [{**candidate(), 'reason': 'network_error', 'firstSeenAt': CREATED,
                                   'lastAttemptAt': CREATED, 'attempts': 1}]
         original = copy.deepcopy(self.state['pending'])
@@ -783,17 +804,20 @@ class StateTests(Offline):
         parsed['links'] = [{'scope': 'unspecified', 'status': 'work'}]
         self.state['posts'] = [parsed]
         self.targets = personal.select_targets({}, None, [], DATE, self.state, registry=registry)
-        self.assertEqual(self.targets['あむ']['shifts'], [])
+        self.assertEqual(self.targets, {})
         rows = personal.update_coverage(self.state, self.targets, DATE, NOW)
-        self.assertEqual(rows['あむ']['reason'], 'verified_annotation_available')
-        self.assertEqual(rows['あむ']['linkScopes'], [])
+        self.assertEqual(rows, {})
         self.assertEqual(self.state['originalTargets'][DATE.isoformat()], {})
+        self.assertEqual(self.state['posts'], [parsed])
+        self.targets = personal.select_targets(self.schedule, None, [], DATE, self.state, registry=registry)
+        self.assertEqual(self.targets['あむ']['shifts'], AMU['shifts'])
+        rows = personal.update_coverage(self.state, self.targets, DATE, NOW)
         self.assertEqual(rows['あむ']['postIds'], [TID])
         personal.validate_collection_coverage(self.state)
 
     def test_registry_profile_case_does_not_rewrite_verified_raw_post_provenance(self):
         registry = registry_fixture(AMU)
-        targets = personal.select_targets({}, None, [], DATE, self.state, registry=registry)
+        targets = personal.select_targets(self.schedule, None, [], DATE, self.state, registry=registry)
         raw = {**AMU, 'handle': 'Amu_Zettai'}
         original = candidate(target=raw)
         discovered = personal.discover(page([entry(original)]), targets, DATE, NOW, {})
@@ -1473,9 +1497,9 @@ class StateTests(Offline):
             actual_targets.append(targets)
             self.assertEqual(state['posts'], [])
             self.assertEqual(targets['あむ']['shifts'], ['昼'])
-            self.assertEqual(targets['ららこ']['shifts'], [])
+            self.assertNotIn('ららこ', targets)
             self.assertEqual(set(personal.active_targets(
-                targets, DATE, NOW.replace(hour=4, minute=31), scheduled=True)), {'ららこ'})
+                targets, DATE, NOW.replace(hour=4, minute=31), scheduled=True)), set())
             return {'component': 'personal'}, 0
 
         with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(
