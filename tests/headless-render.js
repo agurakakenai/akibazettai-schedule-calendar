@@ -9,7 +9,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const { test } = require("node:test");
-const { emptyHalfMonthSchedules } = require("./fixtures/half-month-schedules.js");
+const { emptyHalfMonthSchedules, halfMonthEvidence } = require("./fixtures/half-month-schedules.js");
 
 const repo = process.argv[2] || path.join(__dirname, "..");
 const { orderRosterEntries } = require(path.join(repo, "app.js"));
@@ -2220,12 +2220,12 @@ test("link-only refresh updates scoped popup links and preserves filters, focus,
   }
 });
 
-test("half-month plans reach all four views with exact source scope and retained evidence", async () => {
+for (const observedSameDay of [false, true]) {
+test(`half-month plans reach all four views with exact source scope and retained evidence (${observedSameDay ? "observed" : "unobserved"} day)`, async () => {
   const api = require(path.join(repo, "app.js"));
   const copy = value => JSON.parse(JSON.stringify(value));
   const emptyHalf = emptyHalfMonthSchedules();
-  const savedOfficial = JSON.parse(fs.readFileSync(path.join(repo, "data", "observed-shifts.json"), "utf8"));
-  const savedPersonal = JSON.parse(fs.readFileSync(path.join(repo, "data", "personal-shifts.json"), "utf8"));
+  const { official: savedOfficial, personal: savedPersonal } = halfMonthEvidence({ observedSameDay });
   const savedBefore = JSON.stringify([schedule, insights, savedOfficial, savedPersonal]);
   const datesAndShifts = [
     ["2026-09-02", "夜"], ["2026-09-05", "昼"], ["2026-09-07", "昼"],
@@ -2325,6 +2325,12 @@ test("half-month plans reach all four views with exact source scope and retained
           !["scheduled", "pending"].includes(row.dataset.evidence)).map(signature));
       }
     }
+    for (const post of savedPersonal.posts) {
+      for (const event of post.events) {
+        assert.ok(priorEvidence.get(`${post.date}|${event.shift}`).some(row =>
+          row[0] === post.name && row[3] === post.url), "baseline personal links must exist before preservation checks");
+      }
+    }
     halfPayload = snapshot;
     await dispatch("refresh-half-month", "click");
     assert.equal(elementById("half-month-status").dataset.error, "false");
@@ -2362,8 +2368,17 @@ test("half-month plans reach all four views with exact source scope and retained
     const base = api.getStoreOutlook({ insights, dateKey: key, shift, lastActualDate: api.lastActualDateOf(insights) });
     const expectedOutlook = api.applyEventCertainty(insights, api.applyPostedTilt(insights,
       api.applyHomeStaff(insights, base, members, schedule.homeStore, schedule.kitchenStaff), shift, members), pins);
-    assert.ok(withClass(byDay(key), "store-outlook")[0].title.includes(expectedOutlook.summary),
-      "forecast counts/outlook read the same effective plans, without changing the kernel");
+    if (observedSameDay) {
+      assert.equal(withClass(byDay(key), "store-outlook").length, 0,
+        "same-day official evidence suppresses forecasts for the whole day");
+      const actual = entriesFor(key, shift).find(row => row.dataset.name === "いと");
+      assert.equal(actual.dataset.evidence, "observed");
+      assert.equal(actual.dataset.store, "s1", "actual evidence takes priority over half-month guesses");
+      assert.equal(withClass(actual, "half-month-source").length, 1, "actual evidence retains plan provenance");
+    } else {
+      assert.ok(withClass(byDay(key), "store-outlook")[0].title.includes(expectedOutlook.summary),
+        "forecast counts/outlook read the same effective plans, without changing the kernel");
+    }
     selectViewMode("maid");
     const plan = withClass(calendar, "maid-plan").find(node => node.dataset.name === "いと");
     assertSources(plan);
@@ -2507,6 +2522,10 @@ test("half-month plans reach all four views with exact source scope and retained
       assert.equal(withClass(root, "half-month-source").filter(link =>
         link.dataset.date === key && link.dataset.shift === "昼").length, 0,
       `${mode}: a same-day cancellation suppresses the half-month row and its source`);
+      if (observedSameDay && ["roster", "forecast"].includes(mode)) {
+        assert.equal(withClass(byDay(key), "store-outlook").length, 0,
+          "a later cancellation never restores guesses on a day with retained actual evidence");
+      }
       if (mode === "calendar") await dispatch("close-day-dialog", "click");
     }
     const returned = { ...absence, id: "2097000000000000101", createdAt: `${key}T06:00:00Z`,
@@ -2560,6 +2579,7 @@ test("half-month plans reach all four views with exact source scope and retained
     windowShim.scrollY = originalScrollY;
   }
 });
+}
 
 test("half-month initial loading shares the snapshot lifecycle without unsolicited redraws", async () => {
   const empty = emptyHalfMonthSchedules();

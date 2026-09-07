@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const api = require("../app.js");
 const { test } = require("node:test");
-const { emptyHalfMonthSchedules } = require("./fixtures/half-month-schedules.js");
+const { emptyHalfMonthSchedules, halfMonthEvidence } = require("./fixtures/half-month-schedules.js");
 const context = { window: {} };
 vm.createContext(context);
 for (const file of ["schedule.js", "store-insights.js"]) {
@@ -187,8 +187,9 @@ test("effective plans are an immutable manual/half union, never event or attenda
 });
 
 test("half union preserves curated, official, personal absence/return and kitchen semantics", () => {
-  const publicObserved = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "data", "observed-shifts.json"), "utf8"));
-  const publicPersonal = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "data", "personal-shifts.json"), "utf8"));
+  const { official: publicObserved, personal: publicPersonal } = halfMonthEvidence();
+  api.validateObservations(publicObserved);
+  api.validatePersonalShifts(publicPersonal);
   const inputBefore = JSON.stringify([schedule, insights, publicObserved, publicPersonal]);
   const effective = api.buildEffectiveSchedule(schedule.schedule, halfFeed());
   const resolve = (dateKey, shift, planned = effective, personal = publicPersonal) => api.resolveShiftRoster({
@@ -241,6 +242,55 @@ test("half union preserves curated, official, personal absence/return and kitche
   "all five kitchen members remain excluded from floor headcounts");
   assert.match(cookOutlook.summary, /キッチンにゃんこ5人.*この数に入れていません/);
   assert.equal(JSON.stringify([schedule, insights, publicObserved, publicPersonal]), inputBefore);
+});
+
+test("half plans retain newer official evidence without turning an absence conflict into a return", () => {
+  const { official, personal } = halfMonthEvidence({ observedSameDay: true });
+  api.validateObservations(official);
+  api.validatePersonalShifts(personal);
+  const baseline = halfMonthEvidence();
+  assert.equal(baseline.official.posts.some(post => post.date === "2026-09-07"), false);
+  assert.notEqual(official.posts[0], baseline.official.posts[0], "fixture calls never share mutable posts");
+  assert.notEqual(personal.posts[0].events, baseline.personal.posts[0].events);
+  const effective = api.buildEffectiveSchedule(schedule.schedule, halfFeed());
+  const key = "2026-09-07";
+  const source = official.posts.find(post => post.date === key);
+  const post = { id: "2097000000000000010", url: "https://x.com/half_fixture/status/2097000000000000010",
+    name: "いと", authorId: "123456789", authorScreenName: "half_fixture", date: key,
+    createdAt: `${key}T02:00:00Z`, observedAt: `${key}T05:00:00Z`,
+    events: [{ kind: "absence", shift: "昼", excerpt: "synthetic cancellation" }] };
+  const inputBefore = JSON.stringify([official, personal, effective, post]);
+  const resolve = (posts) => api.resolveShiftRoster({
+    insights, observations: official, personal: { ...personal, posts }, dateKey: key, shift: "昼",
+    schedule: effective, roster: schedule.roster, nameCorrections: schedule.observationNameCorrections,
+    personalEventAdditions: schedule.personalEventAdditions
+  });
+  const current = resolve([]);
+  assert.equal(current.entries.find(entry => entry.name === "いと").observed, true);
+  assert.deepEqual(current.observed.byMaid.get("いと").sources, [source]);
+  assert.deepEqual(current.observed.byMaid.get("いと").storeIds, ["s1"]);
+  const conflict = resolve([post]);
+  const entry = conflict.entries.find(entry => entry.name === "いと");
+  assert.ok(entry, "a newer contradictory official post must not silently erase the person");
+  assert.equal(entry.halfMonthSources.length, 1);
+  assert.equal(entry.personalNotice.conflict, true);
+  assert.equal(entry.personalNotice.returned, false, "official presence is not an implicit personal return");
+  assert.equal(entry.personalNotice.storeId, null);
+  assert.equal(conflict.observed.byMaid.has("いと"), false, "conflicting evidence cannot confirm a shop");
+  assert.deepEqual(conflict.observed.posts, [source], "original official evidence remains inspectable");
+  assert.deepEqual(entry.personalNotice.sources, [post]);
+  assert.equal(api.dayHasPersonStoreEvidence(insights, official, key, { posts: [post] }), true);
+  const later = { ...post, createdAt: `${key}T04:00:00Z` };
+  assert.equal(resolve([later]).entries.some(entry => entry.name === "いと"), false,
+    "an absence newer than the official post still cancels the half plan");
+  const returned = { ...later, events: [{ kind: "return", shift: "昼", excerpt: "synthetic return" }] };
+  const restored = resolve([post, { ...returned, id: "2097000000000000011",
+    url: "https://x.com/half_fixture/status/2097000000000000011" }]);
+  assert.equal(restored.entries.filter(entry => entry.name === "いと").length, 1);
+  assert.equal(restored.entries.find(entry => entry.name === "いと").halfMonthSources.length, 1);
+  assert.equal(restored.personal.byMaid.get("いと").returned, true);
+  assert.equal(restored.personal.byMaid.get("いと").storeId, null, "a storeless return cannot revive an old shop");
+  assert.equal(JSON.stringify([official, personal, effective, post]), inputBefore);
 });
 const makePost = (id, storeId, names) => ({
   id, url: `https://x.com/akibazettai/status/${id}`,
