@@ -201,8 +201,8 @@ class AzureTests(base.Offline):
         self.assertEqual(next(iter(self.analyzer.state['cache'].values()))['reason'], 'azure_interrupted')
         personal.read_state(self.snapshot)
 
-    def test_unknown_manual_ai_spacing_rechecks_deadline_without_night_inference(self):
-        target = {**base.AMU, 'shifts': []}
+    def test_known_night_manual_ai_spacing_rechecks_deadline(self):
+        target = {**base.AMU, 'shifts': ['夜']}
         self.clock = dt.datetime.combine(base.DATE, dt.time(19, 29, 30), personal.JST)
         self.analyzer.deadline = lambda: bool(personal.active_targets(
             {'あむ': target}, base.DATE, self.clock))
@@ -212,7 +212,17 @@ class AzureTests(base.Offline):
             self.parse('今日 夜2号店', result(event('夜', 'placement', [1], 's2')), target=target)
         self.opener.open.assert_called_once()
         self.assertEqual(self.analyzer.state, previous)
-        self.assertEqual(target['shifts'], [])
+        self.assertEqual(target['shifts'], ['夜'])
+
+    def test_unknown_daily_shift_stops_before_ai_reservation(self):
+        target = {**base.AMU, 'shifts': []}
+        self.analyzer.deadline = lambda: bool(personal.active_targets(
+            {'あむ': target}, base.DATE, self.clock))
+        previous = copy.deepcopy(self.analyzer.state)
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_deadline'):
+            self.parse('今日 夜1号店', result(event('夜', 'placement', [1], 's1')), target=target)
+        self.opener.open.assert_not_called()
+        self.assertEqual(self.analyzer.state, previous)
 
     def shared_usage(self, **kwargs):
         path = self.folder / 'ai-usage.json'
