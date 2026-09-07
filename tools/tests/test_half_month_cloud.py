@@ -4,7 +4,9 @@ import copy
 import datetime as dt
 import importlib.util
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import unittest
 from unittest import mock
@@ -396,29 +398,46 @@ class HalfMonthCloudTests(unittest.TestCase):
             None, [self.facts_entry()], self.usage, self.half, schedule=fixture.SCHEDULE,
             insights={}, accounts=fixture.ACCOUNTS, personal_state=self.private, now=NOW)
         self.seed()
+        self.fx.bare_commit({
+            cloud.SNAPSHOT: json.loads((TOOLS.parent / 'data' / cloud.SNAPSHOT).read_bytes())})
         expected = {name: self.fx.remote_json(name)[1] for name in (
-            cloud.HALF_MONTH, cloud.SOURCE_USAGE, cloud.AI_USAGE, cloud.PERSONAL)}
+            cloud.SNAPSHOT, cloud.HTTP_STATE, cloud.HALF_MONTH, cloud.SOURCE_USAGE,
+            cloud.AI_USAGE, cloud.PERSONAL)}
+        references = self.fx.git(self.fx.remote, 'show-ref')
         self.fx.args.mode = 'restore'
         self.fx.environment['HALF_MONTH_SCHEDULE_ENABLED'] = 'false'
         self.without_children(self.invoke)
         for name, raw in expected.items():
             self.assertEqual((self.fx.output.parent / name).read_bytes(), raw)
-        self.schedule_inputs()
-        for name, text in (('index.html', '<!doctype html><html><body></body></html>'),
-                           ('app.js', 'const offline=true;'), ('styles.css', 'body {}')):
-            (self.fx.root / name).write_text(text, encoding='utf-8')
-        (self.fx.root / 'assets' / 'events').mkdir(parents=True)
+        # Production validates the restored private checkout before Pages projection.
+        for name in (*pages.PUBLIC_FILES, 'unauthorized.html'):
+            if not name.endswith('.json'):
+                shutil.copyfile(TOOLS.parent / name, self.fx.root / name)
+        for name in ('tests', 'tools/data', 'assets/events'):
+            shutil.copytree(TOOLS.parent / name, self.fx.root / name, dirs_exist_ok=True)
+        node = shutil.which('node') or str(self.personal.NODE_FALLBACK)
+        result = cloud.child_process(
+            [node, '--test', *('tests/' + name + '.js' for name in (
+                'validate-schedule', 'date-defaults', 'range-rendering', 'month-calendar',
+                'observed-shifts', 'validate-insights', 'store-outlook', 'headless-render'))],
+            cwd=self.fx.root, environment=cloud.safe_environment(os.environ))
+        self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).decode('utf-8'))
         (self.fx.root / 'data' / 'raw-sentinel.json').write_text(RAW, encoding='utf-8')
         output = self.fx.root / 'site'
         manifest = pages.stage(output, self.fx.source, root=self.fx.root, clock=lambda: NOW)
         public = json.loads((output / 'data' / cloud.HALF_MONTH).read_bytes())
         self.assertEqual(public, self.half.public_state(self.half_state))
         self.assertIn('data/' + cloud.HALF_MONTH, manifest['files'])
-        self.assertEqual(set(manifest['files']), set(pages.PUBLIC_FILES))
+        self.assertEqual(set(manifest['files']), set(pages.PUBLIC_FILES) | {
+            'assets/events/' + path.name for path in (TOOLS.parent / 'assets' / 'events').glob('*.svg')})
         for name in (cloud.SOURCE_USAGE, cloud.AI_USAGE, 'raw-sentinel.json'):
             self.assertFalse((output / 'data' / name).exists())
         for forbidden in ('savedImports', 'revisions', 'requestHash', 'bodyHash', 'payloadHash', RAW):
             self.assertNotIn(forbidden, json.dumps(public))
+        for name, raw in expected.items():
+            self.assertEqual((self.fx.output.parent / name).read_bytes(), raw)
+            self.assertEqual(self.fx.remote_json(name)[1], raw)
+        self.assertEqual(self.fx.git(self.fx.remote, 'show-ref'), references)
 
     def source_url(self, component, kind, index):
         if kind == 'searches':
