@@ -18,7 +18,7 @@ py -B -X utf8 tools\member-registry.py check
 py -B -X utf8 tools\member-registry.py report
 ```
 
-名前＋ユーザー提供のXプロフィールURLだけで、当日本人・半月の両collectorの探索対象とUIのfilter/profileへ反映します。所属店、初お給仕日、昇格日、統計・予定は登録条件ではありません。**名簿だけから勤務chip、昼夜、店舗、実績は作りません。** URLは`https://x.com/<handle>`へ正規化します。検索／投稿URL・不明handleの推測、同名別世代への再割当、既存handleの無確認置換はしません。`accounts.csv`の旧名を登録しただけの現役へ戻すこともありません。
+名前＋ユーザー提供のXプロフィールURLだけで、両collectorの本人情報とUIのfilter/profileへ反映します。**当日本人投稿は、その日のお給仕予定・公式案内など勤務根拠がある人だけを検索します。半月予定表は予定を発見するため在籍名簿を対象にします。** 所属店、初お給仕日、昇格日、統計・予定は登録条件ではありませんが、名簿だけで当日の検索対象や勤務chip、昼夜、店舗、実績を作りません。URLは`https://x.com/<handle>`へ正規化します。検索／投稿URL・不明handleの推測、同名別世代への再割当、既存handleの無確認置換はしません。`accounts.csv`の旧名を登録しただけの現役へ戻すこともありません。
 
 `paused`は取得だけを止めます。`inactive`も新しい取得を止め、過去の予定・実績・投稿リンク・名前対応は残します。退在籍日が不明なら将来の根拠も保存し「照合要」とします。確認済みの日付がある場合だけ、`set-status --membership inactive --inactive-from "<YYYY-MM-DD>"`でその日以降のplan-only表示を除外できます。登録時刻を退在籍日へ転用せず、原予定や実績は削除しません。
 
@@ -1063,7 +1063,7 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 
 `data/personal-shifts.json` は、店舗公式の集合ポストとは別に保存する**本人の当日案内と当日投稿リンク**です。勤務・店舗の根拠である`events`と、本人の対象当日のお給仕投稿であることを確認した`links`を分離します。そこで勤務した実績とは扱わず、原予定、`actualRoster`、公式観測、統計モデルは書き換えません。確認済みの当日投稿は、特定人物に限らず名前chipから直接開けます。別の「本人ポスト」欄や「本人案内」ラベルは置かず、公式の集合ポストへ混ぜません。
 
-対象は**現在の登録名簿と、元の当日公開予定・現在の予定・公式集合names・公式補足・確認済み本人案内で判明した人物**です。元予定を保ち毎run再計算し、同じrunの公式snapshotを`--observations`で渡します。探索資格はregistryのactive／enabled／trusted profileと、本人・半月の両保存bindingで判断し、`maidTendency.x`の欠落を不一致にしません。初回は正規個別postのauthorを確認します。旧aliasとpost限定補正を再利用し、似た名前・不明handle・退在籍・初日を推測しません。
+当日の対象は**元の当日公開予定・現在のmanual／確認済み半月予定・公式集合names・後着などの公式補足・確認済み本人案内で勤務日とshiftが判明した人物**です。元予定を保ち毎run再計算し、同じrunの公式snapshotを`--observations`で渡します。その集合をregistryのactive／enabled／trusted profileと本人・半月の両保存bindingで照合し、`maidTendency.x`の欠落を不一致にしません。名簿への登録だけでは当日対象になりません。初回は正規個別postのauthorを確認します。旧aliasとpost限定補正を再利用し、似た名前・不明handle・退在籍・初日を推測しません。
 
 `links`はoptionalな最大3件の`{scope,status}`です。scopeは`昼`・`夜`・`unspecified`、statusは確認済みの`work`・明示取消`withdrawn`・根拠間の`conflict`を区別します。店舗・昼夜がなくても、対象日の本人お給仕投稿だと独立に確認できれば`unspecified/work`にできます。**リンクだけでは人物表示、勤務event、店舗、昼夜勤務、実績を作りません。**すでに別根拠で表示されている同日のchipにだけ付け、明示昼/夜は反対側へ流用しません。`unspecified`で取消や両shift勤務を推定せず、明示取消後の復帰根拠にも使いません。legacyの`links`がない投稿は、既存の確認済みtyped eventsの範囲だけを互換表示します。
 
@@ -1084,7 +1084,7 @@ py -B -X utf8 tools\collect-shifts.py --date-from 2026-09-04 --date-to 2026-09-0
 
 検索の元`__NEXT_DATA__`から`bestTweet`と`timeline.entry`を両方候補化し、ID重複排除・作者/日時/URL照合後に個別本文を確認します。bestTweetは「常に最新」ではなく、引用先・返信先のmetadataを本人へ取り違えません。旧3種の検索URLは保存履歴の読取互換だけを維持します。昼だけの人は13:30まで、夜の根拠がある人は手動時19:30まで、**有効化後の定期時は18:00まで**を取得対象にし、待機後・source/AI要求直前にも人物ごとの締切を確認します。取得処理が遅れて締切を過ぎた対象は追跡を延長しません。
 
-勤務shiftがまだ不明な登録者は`knownShifts=[]`のまま探索できます。探索用の締切は定期18:00／手動19:30で、夜勤務の認定でも既知の昼締切の延長でもありません。明示的な勤務日・昼夜・店舗の根拠だけを受け付け、link-onlyから勤務行は増やしません。日跨ぎの試行履歴を使って巡回し、既存枠内の未探索者優先と既知勤務の締切・訂正監視を両立します。各要求直前と待機後に名簿・信頼・締切を再判定し、名簿変更時は旧対象のまま続行しません。上限や締切のため全員の日次取得を保証するものではありません。
+`knownShifts=[]`の登録者は日次検索に入れず、勤務予定や当日公式案内が確認された後に対象化します。link-onlyから新しい勤務行も増やしません。日跨ぎの試行履歴を使って勤務対象者を巡回し、未検索者にも既存の検索枠を使い切れるようにします（未検索は1人まで、という制限はありません）。既知勤務の締切・訂正監視、各要求直前と待機後の名簿・信頼・締切再判定は維持します。上限や締切のため、勤務対象者全員の日次取得を保証するものではありません。
 
 privateの`coverage`と`searchHistory`は、対象の由来、確認済みaccount、候補/投稿ID、検索状況、account不明・検索未実施・調べたページに候補なし・原文不足・解析保留・予算/締切等の理由を区別します。`verified_post_available`は確認資料があることを表し、公式との後続訂正を解決した実際の表示リンクcoverageとは区別します。**全員を扱う汎用ロジックと、全員分の投稿を発見済みであることは別です。**元予定、現在の表示母集団、保存原文の調査対象は分母を分けます。これらの内部情報はPagesへ出しません。
 
@@ -1238,6 +1238,8 @@ HTTPの前にleaseをremoteへ保存します。収集後、成功・部分失�
 #### 承認済み保存根拠の適用
 
 `mode=apply-saved`はtrusted mainの明示`workflow_dispatch`専用です。`saved_manifest`入力を環境変数で渡し、cloudが32KiB以下のdata-only JSONを検査します。トップレベルは`schemaVersion:1`、`expectedMainSHA`、`expectedStateSHA`、`officialAmendments`（最大3件）、`usageImports`、`sourceReceipts`（各最大10件）と、optionalな`personalAmendments`（最大3件）です。公式差分は既知投稿のmetadata・期待facts hash・短いnotices・分析根拠のhashに限定し、任意stateコピー、全文/元行/cache/秘密/コード/URL取得指示は拒否します。
+
+手動の過去日処理は、取得済みのprivate原文を`--analyze-saved --date <対象日>`で解析し、実時計・共有AI台帳は実行日のまま使います。定時取得の当日限定・締切は解除しません。未登録の過去postを適用する場合に限り、`personalAmendments[].amendment.operation="manual-saved-post"`を明示できます。v8のsearch由来metadata、解析日より前の対象日、空subjectのCAS、登録名簿・両author binding・対象日の勤務根拠、**先に精算された実使用receipt**が必要です。既知postの通常経路は変えず、最大3件・owner/lease・idempotencyの既存適用経路を使います。本文やmodel応答はmanifestへ入れず、有効な抽出結果と出典hashだけを渡します。
 
 公式差分の1件は`{expectedPostHash, amendment:{schemaVersion:1,id,source,notices}}`です。期待hashは保存済みpost全体をUTF-8・`ensure_ascii=False`・キー順・余白なしJSONにしたSHA256です。`source`は既存の`url/authorId/authorScreenName/createdAt`と、`fetchedAt/bodyHash/analyzedAt/analysisReceiptHash`だけを持ちます。noticeの`observedAt`は`fetchedAt`と一致させ、解析時刻は公開しません。AI receiptは`{receiptId,date,counts:{requests},modelBreakdown:[{model,kind,count}],sourceHash}`、source receiptは`{receiptId,date,searches,posts,sourceHash}`です。いずれもID/hashはSHA256、日付は加算先のJST暦日で、source receiptの加算前後カウンタも非公開台帳へ保持します。
 

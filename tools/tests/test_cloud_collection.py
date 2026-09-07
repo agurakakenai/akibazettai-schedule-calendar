@@ -1795,6 +1795,30 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(self.remote_json(cloud.PERSONAL)[0], after)
         self.assertEqual(self.remote_json(cloud.AI_USAGE)[0], usage)
 
+    def test_manual_past_import_uses_real_dated_scope_and_existing_leased_apply(self):
+        helper = PersonalSavedTests(methodName='runTest')
+        helper.setUp()
+        private, entry, registry, _ = helper.manual_import()
+        source = entry['amendment']['source']
+        self.seed_branch()
+        self.bare_commit({cloud.PERSONAL: private, cloud.AI_USAGE: helper.usage})
+        (self.root / 'data' / 'members.json').write_bytes(helper.personal.members.json_bytes(registry))
+        (self.root / 'data' / 'schedule.js').write_text('window.SCHEDULE_DATA=' + json.dumps({
+            'roster': [source['name']], 'schedule': {source['date']: {'昼': [{'name': source['name']}]}}
+        }) + ';', encoding='utf-8')
+        manifest = self.saved_manifest()
+        manifest.update(usageImports=[], personalAmendments=[entry])
+        self.saved_mode(manifest)
+        with mock.patch.object(cloud, 'invoke_collector', side_effect=AssertionError('No source')), \
+                mock.patch.object(cloud, 'invoke_personal_collector', side_effect=AssertionError('No AI')):
+            result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                       collector=collector, personal=helper.personal)
+        self.assertEqual(result['collectionStatus'], 'applied-saved')
+        self.assertNotIn(cloud.LEASE, self.remote_names())
+        after = self.remote_json(cloud.PERSONAL)[0]
+        self.assertIn(entry['amendment']['id'], {post['id'] for post in after['posts']})
+        self.assertEqual(self.remote_json(cloud.AI_USAGE)[0], helper.usage)
+
     def test_saved_personal_rejections_happen_before_lease(self):
         module = cloud.load_personal_collector()
         private, usage, entries = saved_personal_fixture(module)
@@ -2507,6 +2531,87 @@ class PersonalSavedTests(unittest.TestCase):
             self.state if state is None else state,
             self.entries if entries is None else entries,
             self.usage if usage is None else usage, self.personal)
+
+    def manual_import(self):
+        state = copy.deepcopy(self.state)
+        entry = copy.deepcopy(self.entries[0])
+        amendment = entry['amendment']
+        source = amendment['source']
+        state['pending'] = [row for row in state['pending'] if row['id'] != amendment['id']]
+        amendment.update(operation='manual-saved-post', workTiming=None)
+        source.update(contractVersion=self.saved.TIMING_CONTRACT,
+                      contractHash=self.saved.TIMING_CONTRACT_HASH)
+        entry['expectedSubjectHash'] = self.saved.subject_hash(state, amendment['id'])
+        registry = self.personal.members.empty_registry()
+        registry['members'] = [self.personal.members.new_member(
+            source['name'], 'https://x.com/' + source['authorScreenName'],
+            self.personal.official.timestamp(source['fetchedAt']))]
+        targets = {source['date']: {source['name']: {'shifts': ['昼']}}}
+        return state, entry, registry, targets
+
+    def test_manual_saved_post_requires_explicit_operation_and_is_idempotent(self):
+        state, entry, registry, targets = self.manual_import()
+        before = copy.deepcopy(state)
+        ordinary = copy.deepcopy(entry)
+        del ordinary['amendment']['operation']
+        with self.assertRaisesRegex(ValueError, 'unknown_saved_personal_post'):
+            self.saved.apply_amendments(state, [ordinary], self.usage, self.personal,
+                                        registry=registry, daily_targets=targets)
+        after = self.saved.apply_amendments(state, [entry], self.usage, self.personal,
+                                            registry=registry, daily_targets=targets)
+        self.assertEqual(state, before)
+        self.assertEqual(len(after['posts']), len(before['posts']) + 1)
+        self.saved.validate_imports(after['savedPersonalImports'], self.personal)
+        self.assertEqual(self.saved.apply_amendments(after, [entry], self.usage, self.personal), after)
+        for field in ('budgets', 'originalTargets', 'lastRequests', 'lastRun'):
+            self.assertEqual(after[field], before[field])
+
+    def test_manual_saved_post_rejects_unsettled_usage_stale_subject_and_unknown_work(self):
+        state, entry, registry, targets = self.manual_import()
+        for changes in ({'registry': None}, {'daily_targets': {}},
+                        {'usage': cloud.load_analysis_state().empty_state()}):
+            arguments = {'registry': registry, 'daily_targets': targets}
+            usage = changes.get('usage', self.usage)
+            arguments.update({key: value for key, value in changes.items() if key != 'usage'})
+            with self.subTest(changes=tuple(changes)), self.assertRaises(ValueError):
+                self.saved.apply_amendments(state, [entry], usage, self.personal, **arguments)
+        stale = copy.deepcopy(entry)
+        stale['expectedSubjectHash'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'saved_personal_subject_mismatch'):
+            self.saved.apply_amendments(state, [stale], self.usage, self.personal,
+                                        registry=registry, daily_targets=targets)
+        with self.assertRaisesRegex(ValueError, 'manual_saved_personal_subject_exists'):
+            self.saved.apply_amendments(self.state, [entry], self.usage, self.personal,
+                                        registry=registry, daily_targets=targets)
+
+    def test_manual_saved_post_preserves_registry_and_cross_collector_identity_guards(self):
+        state, entry, registry, targets = self.manual_import()
+        source = entry['amendment']['source']
+        paused = self.personal.members.update_member(
+            registry, source['name'], now=self.personal.official.timestamp(source['analyzedAt']),
+            collection='paused')
+        other = {source['name']: {'authorId': '123456789', 'authorScreenName': source['authorScreenName'],
+                                  'verifiedAt': source['fetchedAt']}}
+        for selected, bindings in ((paused, ()), (registry, (other,))):
+            with self.assertRaisesRegex(ValueError, 'saved_personal_identity_mismatch'):
+                self.saved.apply_amendments(state, [entry], self.usage, self.personal,
+                                            registry=selected, binding_maps=bindings, daily_targets=targets)
+
+    def test_manual_saved_post_requires_past_search_source_and_matching_shift(self):
+        state, entry, registry, targets = self.manual_import()
+        same_day = copy.deepcopy(entry)
+        same_day['amendment']['source']['analyzedAt'] = same_day['amendment']['source']['fetchedAt']
+        direct = copy.deepcopy(entry)
+        direct['amendment']['source']['provenance'] = 'direct'
+        del direct['amendment']['source']['searchCreatedAt']
+        for invalid in (same_day, direct):
+            with self.assertRaisesRegex(ValueError, 'invalid_manual_saved_personal_scope'):
+                self.saved.apply_amendments(state, [invalid], self.usage, self.personal,
+                                            registry=registry, daily_targets=targets)
+        source = entry['amendment']['source']
+        with self.assertRaisesRegex(ValueError, 'manual_saved_personal_work_scope_required'):
+            self.saved.apply_amendments(state, [entry], self.usage, self.personal, registry=registry,
+                                        daily_targets={source['date']: {source['name']: {'shifts': ['夜']}}})
 
     def timing_revision(self, state=None, previous_entry=None, suffix='timing'):
         state = self.apply() if state is None else state

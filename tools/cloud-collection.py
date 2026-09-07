@@ -1148,7 +1148,8 @@ def read_saved_manifest(environment):
     return value
 
 
-def prepare_saved(manifest, canonical, personal_state, usage, collector, personal):
+def prepare_saved(manifest, canonical, personal_state, usage, collector, personal, *,
+                  registry=None, binding_maps=(), daily_targets=None):
     """Validate and prepare the complete bounded delta without I/O or clients."""
     ledger = load_analysis_state()
     require(usage is not None or bool(manifest['usageImports']), 'missing_initial_usage_import')
@@ -1178,7 +1179,8 @@ def prepare_saved(manifest, canonical, personal_state, usage, collector, persona
     # Only the already-accounted canonical ledger can authorize saved analyses.
     # Any independently authorized source-budget delta above remains untouched.
     personal_result = load_personal_saved().apply_amendments(
-        personal_result, manifest.get('personalAmendments', []), usage, personal)
+        personal_result, manifest.get('personalAmendments', []), usage, personal,
+        registry=registry, binding_maps=binding_maps, daily_targets=daily_targets)
     ids = set()
     for entry in manifest['officialAmendments']:
         amendment = entry['amendment']
@@ -1409,8 +1411,31 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
             require(has_personal, 'missing_personal_state')
             # Validate the entire delta against current state before obtaining a lease.
             try:
-                prepared = prepare_saved(manifest, canonical, personal_state, usage_state,
-                                         collector, personal)
+                manual_personal = any(entry.get('amendment', {}).get('operation')
+                                      == 'manual-saved-post' for entry in manifest.get('personalAmendments', []))
+                registry = (load_member_registry().load_registry(root / 'data' / 'members.json')
+                            if manual_personal else None)
+                daily_targets = None
+                if manual_personal:
+                    schedule = personal.read_js(root / 'data' / 'schedule.js', 'SCHEDULE_DATA')
+                    if half_month_state is not None:
+                        schedule = {**schedule, 'schedule': load_half_month_state().effective_schedule(
+                            schedule.get('schedule', {}), half_month_state, registry=registry)}
+                    insights_path = root / 'data' / 'store-insights.js'
+                    insights = personal.read_js(insights_path, 'STORE_INSIGHTS') if insights_path.exists() else None
+                    dates = {entry['amendment']['source']['date']
+                             for entry in manifest.get('personalAmendments', [])
+                             if entry['amendment'].get('operation') == 'manual-saved-post'}
+                    daily_targets = {day: personal.select_targets(
+                        schedule, insights, [], dt.date.fromisoformat(day), copy.deepcopy(personal_state),
+                        canonical, registry=registry,
+                        binding_maps=((half_month_state or {}).get('identityBindings', {}),))
+                        for day in dates}
+                prepared = prepare_saved(
+                    manifest, canonical, personal_state, usage_state, collector, personal,
+                    registry=registry,
+                    binding_maps=((half_month_state or {}).get('identityBindings', {}),),
+                    daily_targets=daily_targets)
                 reconciled_source = source_usage_state
                 if source_usage_state is not None and manifest['sourceReceipts']:
                     reconciled_source = load_source_state().apply_source_imports(

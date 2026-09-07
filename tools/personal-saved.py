@@ -45,6 +45,10 @@ revision is the unique chain leaf, never whichever analyzedAt sorts last.
 Native or legacy subjects lacking a prior saved import are deliberately refused.
 Normal v8 imports can create a known post for the first time, but cannot replace
 an existing post; that requires the authorized work-timing-only revision path.
+
+Explicit manual-saved-post imports may admit a previously unknown past post only
+with an empty-subject CAS, settled usage, search attestation, and registry/binding
+and dated-work validation. Ordinary imports retain their known-subject requirement.
 """
 import copy
 import datetime as dt
@@ -79,6 +83,7 @@ LINK_CONTRACT = 'personal-line-ids-v7'
 TIMING_CONTRACT = 'personal-line-ids-v8'
 TIMING_CONTRACT_HASH = azure_contract.CONTRACT_HASH
 TIMING_OPERATION = 'work-timing-only'
+MANUAL_IMPORT_OPERATION = 'manual-saved-post'
 TIMING_UPDATE_FIELDS = ('operation', 'previous', 'expectedCoreHash', 'expectedTimingHash',
                         'targetScopes', 'updateChannels')
 
@@ -118,8 +123,10 @@ def _validate_entry(entry, personal):
     _hash(entry['expectedSubjectHash'])
     amendment = entry['amendment']
     is_timing = amendment.get('operation') == TIMING_OPERATION if isinstance(amendment, dict) else False
+    is_manual = amendment.get('operation') == MANUAL_IMPORT_OPERATION if isinstance(amendment, dict) else False
     _keys(amendment, ('schemaVersion', 'id', 'source', 'events'),
-          ('links', 'workTiming', *TIMING_UPDATE_FIELDS) if is_timing else ('links', 'workTiming'))
+          ('links', 'workTiming', *TIMING_UPDATE_FIELDS) if is_timing
+          else ('links', 'workTiming', 'operation') if is_manual else ('links', 'workTiming'))
     _require(type(amendment['schemaVersion']) is int and amendment['schemaVersion'] == 1)
     source = amendment['source']
     _keys(source, SOURCE_FIELDS, ('searchCreatedAt',))
@@ -142,6 +149,11 @@ def _validate_entry(entry, personal):
     fetched = official.timestamp(source['fetchedAt'])
     analyzed = official.timestamp(source['analyzedAt'])
     _require(created <= fetched <= analyzed)
+    if is_manual:
+        _require(source['contractVersion'] == TIMING_CONTRACT
+                 and source['provenance'] == 'search'
+                 and source['date'] < analyzed.astimezone(official.JST).date().isoformat(),
+                 'invalid_manual_saved_personal_scope')
     if source['provenance'] == 'search':
         searched = official.timestamp(source['searchCreatedAt'])
         _require(abs((searched - created).total_seconds()) < 2
@@ -380,11 +392,34 @@ def _check_binding(source, bindings):
     return binding
 
 
-def _check_subject(state, entry, personal):
+def _check_subject(state, entry, personal, *, registry=None, binding_maps=(), daily_targets=None):
     amendment, source = entry['amendment'], entry['amendment']['source']
     tid = amendment['id']
     facts = subject_facts(state, tid)
     items = [item for field in ('posts', 'pending', 'resolved') for item in facts[field]]
+    if amendment.get('operation') == MANUAL_IMPORT_OPERATION:
+        _require(not items, 'manual_saved_personal_subject_exists')
+        _require(subject_hash(state, tid) == entry['expectedSubjectHash'],
+                 'saved_personal_subject_mismatch')
+        _require(registry is not None, 'manual_saved_personal_registry_required')
+        incoming = {source['name']: {
+            'authorId': source['authorId'], 'authorScreenName': source['authorScreenName'],
+            'verifiedAt': source['fetchedAt']}}
+        targets, _ = personal.members.collection_population(
+            registry, state['identityBindings'], *binding_maps, incoming)
+        member = personal.members.lookup(registry, source['name'])
+        target = targets.get(member['memberId']) if member else None
+        _require(target is not None and target['name'] == source['name']
+                 and target['handle'].casefold() == source['authorScreenName'].casefold(),
+                 'saved_personal_identity_mismatch')
+        work = (daily_targets or {}).get(source['date'], {}).get(source['name'])
+        shifts = work.get('shifts', []) if work else []
+        _require(shifts and all(event['shift'] in shifts for event in amendment['events'])
+                 and all(link['scope'] == 'unspecified' or link['scope'] in shifts
+                         for link in amendment.get('links') or [])
+                 and all(fact['shift'] in shifts for fact in (amendment.get('workTiming') or {}).get('facts', [])),
+                 'manual_saved_personal_work_scope_required')
+        return
     _require(items, 'unknown_saved_personal_post')
     _require(all(len(facts[field]) <= 1 for field in ('posts', 'pending', 'resolved')))
     _require(subject_hash(state, tid) == entry['expectedSubjectHash'],
@@ -434,7 +469,7 @@ def _assert_delta(before, after, entries):
         _require(after.get('savedPersonalImports', {}).get(key) == receipt)
 
 
-def apply_amendments(state, entries, usage, personal):
+def apply_amendments(state, entries, usage, personal, *, registry=None, binding_maps=(), daily_targets=None):
     _require(isinstance(entries, list) and len(entries) <= 3)
     previous = state.get('savedPersonalImports', {})
     validate_accounting(previous, usage, personal)
@@ -480,7 +515,8 @@ def apply_amendments(state, entries, usage, personal):
         _require(entry['amendment']['source']['contractVersion'] != TIMING_CONTRACT
                  or not any(item['id'] == tid for item in state['posts']),
                  'saved_personal_timing_operation_required')
-        _check_subject(state, entry, personal)
+        _check_subject(state, entry, personal, registry=registry, binding_maps=binding_maps,
+                       daily_targets=daily_targets)
         source = entry['amendment']['source']
         if _check_binding(source, proposed_bindings) is None:
             proposed_bindings[source['name']] = {
