@@ -22,12 +22,14 @@ STATUSES = {'never', 'ok', 'partial', 'unavailable', 'no-new', 'no-results',
             'paused', 'budget-exhausted', 'outside-window'}
 SOURCE_STATUSES = {'pending', 'issued', 'valid', 'negative', 'failed'}
 TIMING_STORAGE_LIMIT_REASON = 'work_timing_storage_limit'
+CAPACITY_HOLD_REASONS = {'azure_capacity_hold', 'azure_capacity_profile_stale'}
 REASONS = {
     'not_searched', 'account_unknown', 'account_ambiguous', 'account_identity_mismatch',
     'no_candidates', 'post_unverified', 'not_issued', 'period_unknown', 'schedule_pending',
     'not_schedule', 'budget_wait', 'paused', 'valid_schedule', 'queue_limit',
     'candidate_limit', 'outside_period', 'source_failed', 'analysis_failed',
     'known_source', 'search_failed', 'not_due', 'stale_candidate', TIMING_STORAGE_LIMIT_REASON,
+    *CAPACITY_HOLD_REASONS,
 }
 PUBLIC_FIELDS = {'schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt', 'schedules', 'lastRun'}
 PRIVATE_FIELDS = {'identityBindings', 'revisions', 'sources', 'pending', 'coverage', 'receipts',

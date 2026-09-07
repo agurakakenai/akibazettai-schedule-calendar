@@ -1168,6 +1168,8 @@ cloudのAI（手動`personal/both`を含む）は**公式＋本人合算3回/run
 
 wireでは昼終了／夜開始に絞り、本人は最大8 facts、半月は1行最大2 notesです。日付・勤務境界・画像参照の重複を減らし、出力上限は本人2304／半月3840 tokens、共有HTTP応答上限は従来の24000 bytesです。公式・旧半月v1の1200 tokensは変更しません。これは全画像条件での10000TPM適合保証ではなく、未測定の画像条件やservice側の見積もり差は別に扱います。現在値と対象付き否定の集約保存上限512はwire上限とは別で、到達時は旧factsを切り捨てず理由付き保留にします。
 
+新v8/v2の実際の解析経路には、`request-capacity.py`による追加の保守的admission guardがあります。実測済みprompt/schemaのhashに固定したprefix予約、JSON escape後の可変本文のUTF-8 byte上界、構造・出力・framingの予約で大入力を発行前に保留し、本文を切り捨てたり、別モデルへfallbackしたりしません。入力6000 bytes／128行は取得・形式の上限であり、すべての組合せの発行を保証するものではありません。guard失敗はusage予約・HTTP発行より前に記録し、既存factsを維持します。profile変更時も再計測なしに発行しません。runtime/CIにtokenizer依存は追加せず、このguardを正確なservice TPM計数や画像token換算とは扱いません。画像込みの固定liveは別の容量確認・承認を必要とし、公式と旧半月v1にはこの新guardを適用しません。
+
 ### GitHub Actionsから収集・公開する構成
 
 本番の継続更新は、標準のGitHub-hosted runnerで**収集→状態保存→検証→frontend限定staging→同じworkflowでPages公開**する構成です。X用APIキーやCookieは使いません。GitHubへの状態保存には、そのrunの既存`GITHUB_TOKEN`を使います。tokenを公開HTTPへ送ったり、stateやartifactへ保存したりしません。

@@ -422,7 +422,8 @@ def refresh_coverage(state, reasons, now, manual):
             row['candidateIds'] = [item['id'] for item in state['pending'] if item['name'] == name]
             if reason['handle'] is None:
                 row['reason'] = reason['reason']
-            elif row['confirmedIds'] and row['reason'] != facts.TIMING_STORAGE_LIMIT_REASON:
+            elif row['confirmedIds'] and row['reason'] not in {
+                    facts.TIMING_STORAGE_LIMIT_REASON, *facts.CAPACITY_HOLD_REASONS}:
                 row['reason'] = 'valid_schedule'
             if row['lastSearchedAt'] is not None:
                 interval = 6 if empty_day and not row['confirmedIds'] else 24
@@ -517,6 +518,7 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
     outcome, target, verified = 'no-results', None, None
     selected = None
     payload_received = False
+    image_hashes = None
     try:
         analyzer.check()
         # Expired metadata is accounted for in coverage, never in valid revisions.
@@ -601,6 +603,7 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
                 facts.bind_identity(state, verified)
                 facts.record_source(state, verified, 'pending', 'not_issued', clock())
                 save()
+                azure.check_caption_capacity(verified, text)
                 analyzer.check()
                 if len(urls) > max_images:
                     raise Failure('source_budget_exhausted')
@@ -658,6 +661,16 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
         elif selected is not None:
             outcome = 'budget-exhausted'
             _set_reason(state, selected['name'], periods, 'budget_wait')
+    except azure.capacity.CapacityHold as exc:
+        outcome = 'partial'
+        if target is not None:
+            _set_reason(state, target['name'], periods, exc.reason)
+        if verified is not None:
+            record = state['sources'].get(facts.source_key(verified), {})
+            facts.record_source(state, verified, 'failed', exc.reason, clock(),
+                                record.get('requestHash'), image_hashes)
+        if selected is not None and selected in state['pending']:
+            state['pending'].remove(selected)
     except Exception as exc:
         reason = getattr(exc, 'reason', str(exc))
         if 'budget' in reason:

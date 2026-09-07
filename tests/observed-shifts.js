@@ -191,6 +191,8 @@ test("value-specific timing denials do not cancel unrelated labels or revive old
     return api.resolveWorkTiming({ personal: { posts }, schedule, insights, dateKey: "2026-09-07", shift: "夜", name: "あむ" });
   };
   assert.equal(api.workTimingLabel(resolve([base, earlyDenial])), "おそめ");
+  assert.equal(resolve([{ ...base, qualifier: null, explicitTime: "16:00" }, earlyDenial]), null);
+  assert.equal(api.workTimingLabel(resolve([{ ...base, qualifier: null, explicitTime: "18:00" }, earlyDenial])), "おそめ");
   assert.equal(resolve([base, timeDenial]), null, "a denied clock matches the label's house meaning without inventing a source clock");
   assert.equal(resolve([base, timeDenial, earlyDenial]), null);
   assert.equal(resolve([{ ...base, qualifier: null, explicitTime: "18:00" },

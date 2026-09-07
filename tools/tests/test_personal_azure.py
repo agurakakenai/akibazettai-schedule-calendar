@@ -83,6 +83,11 @@ def maximum_timing_response():
     return text, result(*events, links=links, work_timing=facts)
 
 
+def capacity_stress_text():
+    marker = 'PRIVATE_CAPACITY_SOURCE'
+    return '\n'.join(['"' * 46] * 127 + ['"' * (31 - len(marker)) + marker])
+
+
 def response(value=None, *, content=None, refusal=None, finish='stop'):
     envelope = {'model': 'gpt-5.6-luna-2026-07-09', 'choices': [{'finish_reason': finish, 'message': {
         'content': json.dumps(value) if content is None else content, 'refusal': refusal}}]}
@@ -502,6 +507,161 @@ class AzureTests(base.Offline):
         ninth['workTiming'].append({**value['workTiming'][0], 'serviceDate': '2026-09-10'})
         with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_invalid_output'):
             azure.grounded_assessment_v8(ninth, text, base.DATE, ('昼', '夜'), personal.azure_context())
+
+    def test_capacity_admits_known_small_and_maximum_fixture_before_reservation(self):
+        for text, value in (('本日昼16時終了', result(work_timing=[timing_fact()])),
+                            maximum_timing_response()):
+            with self.subTest(lines=len(azure.source_lines(text))):
+                self.state = personal.empty_state()
+                analyzer = self.make_analyzer()
+                self.opener.reset_mock()
+                lines = azure.source_lines(text)
+                messages, schema, payload = azure.request_components(
+                    lines, personal.official.timestamp(base.CREATED), base.DATE, ('昼', '夜'), base.AMU['name'])
+                self.assertEqual(json.loads(messages[1]['content']), payload)
+                self.assertEqual(''.join(line['text'] for line in payload['bodyLines']), text)
+                self.assertEqual(schema, azure.response_schema(lines))
+                self.assertTrue(all(set(line) == {'id', 'text'} for line in payload['bodyLines']))
+                report = azure.capacity.personal(payload, azure.PROMPT, azure.SCHEMA, azure.MAX_OUTPUT_TOKENS)
+                self.assertLessEqual(report['textReservationBound'], 10000)
+                self.assertEqual(report['framingReserve'], 512)
+                self.assertIs(report['serviceTpmGuaranteed'], False)
+                self.assertIs(report['imageTokensIncluded'], False)
+                with mock.patch.object(analyzer, 'reserve', wraps=analyzer.reserve) as reserve:
+                    post, reason = self.parse(text, value, analyzer=analyzer)
+                self.assertIsNotNone(post)
+                self.assertIn(reason, ('events', 'work_timing'))
+                self.assertEqual(analyzer.used, 1)
+                reserve.assert_called_once()
+                self.opener.open.assert_called_once()
+
+    def test_capacity_diagnostics_are_pure_and_direct_request_cannot_bypass_stress_hold(self):
+        text = capacity_stress_text()
+        lines = azure.source_lines(text)
+        self.assertEqual((len(text.encode('utf-8')), len(lines)), (6000, 128))
+        original = copy.deepcopy(lines)
+        created = personal.official.timestamp(base.CREATED)
+        with mock.patch.object(azure.transport, 'AzureOpenAI',
+                               side_effect=AssertionError('Diagnostics must not construct a client')):
+            messages, schema, payload = azure.request_components(lines, created, base.DATE, ('昼', '夜'), 'あむ')
+        self.assertEqual(lines, original)
+        self.assertEqual(len(payload['bodyLines']), 128)
+        self.assertEqual(''.join(line['text'] for line in payload['bodyLines']), text)
+        self.assertEqual(json.loads(messages[1]['content']), payload)
+        self.assertEqual(schema['properties']['workTiming']['maxItems'], 8)
+        with self.assertRaisesRegex(azure.capacity.CapacityHold, '^azure_capacity_hold$'):
+            azure.capacity.personal(payload, azure.PROMPT, azure.SCHEMA, azure.MAX_OUTPUT_TOKENS)
+        with mock.patch.object(self.analyzer.client, 'structured') as structured:
+            with self.assertRaisesRegex(azure.AnalysisFailure, '^azure_capacity_hold$'):
+                self.analyzer.request(lines, created, base.DATE, ('昼', '夜'), 'あむ')
+            for malformed in ([], [{'id': 2, 'text': '本日昼16時終了'}],
+                              [{'id': True, 'text': '本日昼16時終了'}]):
+                with self.subTest(lines=malformed), self.assertRaisesRegex(
+                        azure.AnalysisFailure, '^azure_capacity_hold$'):
+                    self.analyzer.request(malformed, created, base.DATE, ('昼',), 'あむ')
+            structured.assert_not_called()
+        self.assertEqual(self.analyzer.used, 0)
+        self.assertEqual(self.analyzer.state['cache'], {})
+        self.opener.open.assert_not_called()
+
+    def test_capacity_stress_caches_pending_before_any_usage_and_preserves_old_facts(self):
+        previous, _ = personal.validate_post(base.candidate(), base.post(), base.AMU, self.clock)
+        self.state['posts'] = [previous]
+        self.state['identityBindings'][previous['name']] = {
+            'authorId': previous['authorId'], 'authorScreenName': previous['authorScreenName'],
+            'verifiedAt': base.CREATED}
+        self.state['resolved'] = [
+            {key: previous[key] for key in ('id', 'url', 'name', 'date')}
+            | {'reason': 'events', 'resolvedAt': base.CREATED}]
+        old_key = azure.digest('old accepted cache')
+        old_cache = {
+            'postId': base.TID, 'bodyHash': azure.digest('old body'), 'versionHash': self.analyzer.version,
+            'at': base.CREATED, 'reason': 'events', 'events': copy.deepcopy(previous['events']),
+            'links': [], 'workTiming': [],
+        }
+        self.analyzer.state['cache'][old_key] = copy.deepcopy(old_cache)
+        self.analyzer.state['history'] = [copy.deepcopy(previous)]
+        kept = {field: copy.deepcopy(self.state[field])
+                for field in ('posts', 'resolved', 'identityBindings', 'budgets')}
+        history = copy.deepcopy(self.analyzer.state['history'])
+        text = capacity_stress_text()
+        with self.shared_usage() as ledger:
+            analyzer = self.make_analyzer(usage=ledger)
+            with mock.patch.object(analyzer, 'reserve', wraps=analyzer.reserve) as reserve, \
+                    mock.patch.object(ledger, 'reserve', wraps=ledger.reserve) as usage_reserve, \
+                    mock.patch.object(ledger, 'issued', wraps=ledger.issued) as issued, \
+                    mock.patch.object(analyzer.client, 'structured') as structured, \
+                    mock.patch.object(azure.capacity, 'personal', wraps=azure.capacity.personal) as admission, \
+                    mock.patch.object(personal, 'parse_events', side_effect=AssertionError('No semantic fallback')):
+                for _ in range(2):
+                    report, code, client = self.collect(payloads={base.TID: base.post(text)}, analyzer=analyzer)
+                    self.assertEqual((report['status'], code), ('partial', 2))
+                    self.assertEqual(report['failures'], [{'id': base.TID, 'reason': 'azure_capacity_hold'}])
+                    self.assertEqual(self.state['pending'][0]['reason'], 'azure_capacity_hold')
+                    self.assertEqual((report['newPostCount'], report['newEventCount']), (0, 0))
+                    for field, value in kept.items():
+                        self.assertEqual(self.state[field], value)
+                    self.assertEqual(analyzer.state['history'], history)
+                    self.assertEqual(analyzer.state['cache'][old_key], old_cache)
+                    client.search.assert_not_called()
+                    client.fetch_post.assert_not_called()
+                reserve.assert_not_called()
+                usage_reserve.assert_not_called()
+                issued.assert_not_called()
+                structured.assert_not_called()
+                admission.assert_called_once()
+            self.assertEqual((analyzer.used, ledger.used), (0, 0))
+            self.assertEqual(ledger.state['receipts'], {})
+            self.assertEqual(len(analyzer.state['cache']), 2)
+            self.assertEqual(next(value['reason'] for key, value in analyzer.state['cache'].items()
+                                  if key != old_key), 'azure_capacity_hold')
+            self.assertEqual(analyzer.state['budgets'], {})
+            self.assertIsNone(analyzer.state['nextRequestAt'])
+        self.opener.open.assert_not_called()
+        self.assertNotIn('PRIVATE_CAPACITY_SOURCE', self.snapshot.read_text(encoding='utf-8'))
+        personal.read_state(self.snapshot)
+
+    def test_capacity_stale_profile_is_cached_fail_closed_without_reservation_or_client(self):
+        stale = {**azure.capacity.PERSONAL, 'promptHash': '0' * 64}
+        with self.shared_usage() as ledger, mock.patch.object(azure.capacity, 'PERSONAL', stale):
+            analyzer = self.make_analyzer(usage=ledger)
+            with mock.patch.object(analyzer, 'reserve') as reserve, \
+                    mock.patch.object(ledger, 'issued') as issued, \
+                    mock.patch.object(analyzer.client, 'structured') as structured:
+                for _ in range(2):
+                    with self.assertRaisesRegex(azure.AnalysisFailure, '^azure_capacity_profile_stale$'):
+                        self.parse('本日昼16時終了', result(work_timing=[timing_fact()]), analyzer=analyzer)
+                with self.assertRaisesRegex(azure.AnalysisFailure, '^azure_capacity_profile_stale$'):
+                    analyzer.request(azure.source_lines('本日昼16時終了'), personal.official.timestamp(base.CREATED),
+                                     base.DATE, ('昼',), 'あむ')
+                reserve.assert_not_called()
+                issued.assert_not_called()
+                structured.assert_not_called()
+            self.assertEqual((analyzer.used, ledger.used), (0, 0))
+            self.assertEqual(ledger.state['receipts'], {})
+            self.assertEqual(next(iter(analyzer.state['cache'].values()))['reason'], 'azure_capacity_profile_stale')
+        self.opener.open.assert_not_called()
+        personal.read_state(self.snapshot)
+
+    def test_capacity_profile_hash_changes_namespace_without_changing_semantic_contract(self):
+        original_version, original_contract = self.analyzer.version, azure.CONTRACT_HASH
+        original_prompt, original_schema = azure.PROMPT, copy.deepcopy(azure.SCHEMA)
+        self.assertEqual(azure.capacity.digest(azure.PROMPT), azure.capacity.PERSONAL['promptHash'])
+        self.assertEqual(azure.capacity.digest(azure.capacity.canonical(azure.SCHEMA)),
+                         azure.capacity.PERSONAL['schemaHash'])
+        changed = {**azure.capacity.PERSONAL, 'system': azure.capacity.PERSONAL['system'] + 1}
+        with mock.patch.object(azure.capacity, 'PERSONAL', changed):
+            self.assertNotEqual(self.make_analyzer().version, original_version)
+        self.assertEqual((azure.PROMPT, azure.SCHEMA, azure.CONTRACT_HASH),
+                         (original_prompt, original_schema, original_contract))
+        for replacements in ({'PROMPT': azure.PROMPT + ' '},
+                             {'SCHEMA': {**azure.SCHEMA, 'maxProperties': 3}},
+                             {'MAX_OUTPUT_TOKENS': azure.MAX_OUTPUT_TOKENS + 1}):
+            with self.subTest(replacements=list(replacements)), mock.patch.multiple(azure, **replacements):
+                with self.assertRaisesRegex(azure.AnalysisFailure, '^azure_capacity_profile_stale$'):
+                    self.analyzer.request(azure.source_lines('本日昼16時終了'),
+                                          personal.official.timestamp(base.CREATED), base.DATE, ('昼',), 'あむ')
+        self.opener.open.assert_not_called()
 
     def test_work_timing_wire_only_requests_day_end_and_night_start(self):
         self.assertEqual(azure.MAX_OUTPUT_TOKENS, 2304)
@@ -1599,6 +1759,7 @@ class AzureTests(base.Offline):
                                                  'azure_pending', 'azure_ungrounded'))
         cases.extend(('v7', reason) for reason in ('events', 'links', 'no_event',
                                                   'azure_pending', 'azure_invalid_output'))
+        cases.extend(('v8', reason) for reason in ('azure_capacity_hold', 'azure_capacity_profile_stale'))
         for version, reason in cases:
             with self.subTest(version=version, reason=reason):
                 self.state = personal.empty_state()
@@ -1610,6 +1771,8 @@ class AzureTests(base.Offline):
                        'reason': reason, 'events': events}
                 if version in ('v5', 'v6', 'v7'):
                     old['links'] = links
+                if version == 'v8':
+                    old.update(links=[], workTiming=[])
                 self.state['azureAnalysis'] = {
                     **azure.empty_state(), 'cache': {azure.digest('saved-' + version + '-key'): old}}
                 if reason.startswith('azure_'):

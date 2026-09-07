@@ -150,6 +150,17 @@ class WorkTimingTests(unittest.TestCase):
         retained = timing.merge(timing.bind([late], post, "half-month-schedule"), other)
         self.assertEqual(len(retained["facts"]), 2, "different original sources keep their provenance")
 
+    def test_word_and_numeric_denials_share_only_the_same_boundary_meaning(self):
+        for word, (shift, boundary) in timing.QUALIFIERS.items():
+            clock = timing.QUALIFIER_TIMES[word]
+            current = fact(shift=shift, boundary=boundary, qualifier=None, explicitTime=clock)
+            denied_word = fact(shift=shift, boundary=boundary, status="excluded", qualifier=word)
+            self.assertTrue(timing.matches_target(denied_word, current))
+            other_clock = "18:00" if clock == "16:00" else "16:00"
+            self.assertFalse(timing.matches_target(denied_word, {**current, "explicitTime": other_clock}))
+            denied_time = {**denied_word, "qualifier": None, "explicitTime": clock}
+            self.assertTrue(timing.matches_target(denied_time, {**current, "qualifier": word, "explicitTime": None}))
+
 
 if __name__ == "__main__":
     unittest.main()

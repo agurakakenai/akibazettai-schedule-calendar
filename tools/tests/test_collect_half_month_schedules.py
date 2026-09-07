@@ -461,6 +461,61 @@ class ProducerTests(base.Offline):
             self.assertEqual(self.state['coverage'][start][base.TARGET['name']]['reason'],
                              'work_timing_storage_limit')
 
+    def test_capacity_hold_preserves_old_facts_and_fingerprints_without_issue_or_repeat_get(self):
+        for phase in ('caption', 'metadata', 'profile'):
+            self.state = facts.empty_state()
+            old_source, old_schedules, old_analysis = base.normalized(suffix=9)
+            facts.apply_revision(self.state, old_schedules, old_source, old_analysis)
+            before = copy.deepcopy(self.state)
+            self.saved = []
+            self.client.reset_mock()
+            self.usage.reset_mock()
+            self.model.reset_mock()
+            self.analyzer = azure.AzureAnalyzer(self.usage, clock=lambda: base.NOW, client=self.model)
+            payload = base.payload(photos=4)
+            if phase == 'caption':
+                payload['text'] = 'x' * 6000
+            elif phase == 'metadata':
+                probe_source, _, _ = base.source(photos=4)
+                probe_source['bodyHash'] = facts.digest(b'')
+                messages, _ = azure.build_request(
+                    probe_source, '', [{'bytes': base.png(), 'mime': 'image/png'}] * 4)
+                report = azure.capacity.half_month(
+                    messages[1]['content'][0]['text'], azure.PROMPT, azure.SCHEMA, azure.MAX_OUTPUT_TOKENS)
+                payload['text'] = 'x' * (azure.capacity.LIMIT - report['textReservationBound'] + 1)
+            self.client.post.return_value = payload, facts.digest(b'capacity-held-payload')
+            profile_patch = {'promptHash': 'f' * 64} if phase == 'profile' else {}
+            reason = 'azure_capacity_profile_stale' if phase == 'profile' else 'azure_capacity_hold'
+            with self.subTest(phase=phase), mock.patch.dict(azure.capacity.HALF_MONTH, profile_patch):
+                report, code = self.collect()
+            self.assertEqual((code, report['status'], report['analysisRequests']), (2, 'partial', 0))
+            self.assertEqual(report['requests']['images'], 4 if phase == 'metadata' else 0)
+            self.assertEqual(self.client.image.call_count, 4 if phase == 'metadata' else 0)
+            self.usage.reserve.assert_not_called()
+            self.usage.issued.assert_not_called()
+            self.usage.finish.assert_not_called()
+            self.model.structured.assert_not_called()
+            self.assertEqual(self.analyzer.used, 0)
+            for field in ('schedules', 'revisions', 'receipts', 'savedImports', 'identityBindings', 'lastSuccessAt'):
+                self.assertEqual(self.state[field], before[field])
+            self.assertTrue(all(self.state['sources'][key] == value for key, value in before['sources'].items()))
+            failed = next(record for record in self.state['sources'].values() if record['status'] == 'failed')
+            self.assertEqual(failed['reason'], reason)
+            self.assertIsNone(failed['requestHash'])
+            self.assertEqual(len(failed['imageHashes']), 4 if phase == 'metadata' else 0)
+            self.assertEqual(self.state['pending'], [])
+            for start, _ in facts.target_periods(base.NOW):
+                self.assertEqual(self.state['coverage'][start][base.TARGET['name']]['reason'], reason)
+            facts.validate_state(self.state)
+            self.assertEqual(self.saved[-1], self.state)
+            self.client.reset_mock()
+            self.collect()
+            self.client.search.assert_not_called()
+            self.client.post.assert_not_called()
+            self.client.image.assert_not_called()
+            self.model.structured.assert_not_called()
+            self.assertEqual(self.state['schedules'], before['schedules'])
+
     def test_identical_reuploaded_image_is_not_charged_again(self):
         verified, schedules, analysis = base.normalized(suffix=9, contract_version=facts.LEGACY_VERSION)
         facts.apply_revision(self.state, schedules, verified, analysis)

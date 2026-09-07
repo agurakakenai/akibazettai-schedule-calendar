@@ -1527,7 +1527,8 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         status = early_status
     elif codes & {'budget_exhausted', 'azure_budget_exhausted', 'source_budget_exhausted'}:
         status = 'budget-exhausted'
-    elif codes == {'azure_work_timing_storage_limit'}:
+    elif codes and codes <= {'azure_work_timing_storage_limit', 'azure_capacity_hold',
+                            'azure_capacity_profile_stale'}:
         status = 'partial'
     elif failures:
         status = 'partial' if any(source['status'] == 'ok' for source in sources) or new_posts else 'unavailable'

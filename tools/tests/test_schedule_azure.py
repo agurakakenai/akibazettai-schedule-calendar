@@ -375,6 +375,91 @@ class CalendarTests(base.Offline):
 
 
 class CapacityTests(base.Offline):
+    def inputs(self, caption=None, photos=4):
+        source, body, _ = base.source(photos=photos)
+        if caption is not None:
+            body = caption
+            source['bodyHash'] = facts.digest(body.encode('utf-8'))
+        images = [{'bytes': base.png(), 'mime': 'image/png'} for _ in range(photos)]
+        return source, body, images
+
+    def test_large_caption_is_held_before_reserve_issue_or_model_client(self):
+        source, caption, images = self.inputs('x' * 6000)
+        usage, client, issued = mock.Mock(), mock.Mock(), mock.Mock()
+        analyzer = azure.AzureAnalyzer(usage, clock=lambda: base.NOW, client=client)
+        with self.assertRaisesRegex(azure.capacity.CapacityHold, '^azure_capacity_hold$'):
+            analyzer.analyze(source, caption, images, facts.target_periods(base.NOW), issued)
+        usage.reserve.assert_not_called()
+        usage.issued.assert_not_called()
+        usage.finish.assert_not_called()
+        issued.assert_not_called()
+        client.structured.assert_not_called()
+        self.assertEqual(analyzer.used, 0)
+        with self.assertRaisesRegex(azure.capacity.CapacityHold, '^azure_capacity_hold$'):
+            azure.check_caption_capacity(source, caption)
+
+    def test_full_model_visible_metadata_is_checked_after_caption_lower_bound(self):
+        source, caption, images = self.inputs('')
+        messages, _ = azure.build_request(source, caption, images)
+        report = azure.capacity.half_month(
+            messages[1]['content'][0]['text'], azure.PROMPT, azure.SCHEMA, azure.MAX_OUTPUT_TOKENS)
+        caption = 'x' * (azure.capacity.LIMIT - report['textReservationBound'] + 1)
+        source['bodyHash'] = facts.digest(caption.encode('utf-8'))
+        lower_bound = azure.check_caption_capacity(source, caption)
+        self.assertLessEqual(lower_bound['textReservationBound'], azure.capacity.LIMIT)
+        with self.assertRaisesRegex(azure.capacity.CapacityHold, '^azure_capacity_hold$'):
+            azure.prepare_request(source, caption, images)
+
+    def test_small_known_fixture_admitted_without_claiming_vision_or_service_tpm(self):
+        source, caption, images = self.inputs()
+        diagnostic = azure.build_request(source, caption, images)
+        prepared = azure.prepare_request(source, caption, images)
+        self.assertEqual(prepared, diagnostic)
+        report = azure.capacity.half_month(
+            prepared[0][1]['content'][0]['text'], azure.PROMPT, azure.SCHEMA, azure.MAX_OUTPUT_TOKENS)
+        self.assertLessEqual(report['textReservationBound'], 10000)
+        self.assertFalse(report['imageTokensIncluded'])
+        self.assertFalse(report['serviceTpmGuaranteed'])
+        self.assertEqual(azure.MAX_INPUT_BYTES, 6000)
+        self.assertEqual(azure.MAX_OUTPUT_TOKENS, 3840)
+
+    def test_stale_profile_fails_closed_before_issue_and_diagnostic_construction_is_pure(self):
+        source, caption, images = self.inputs()
+        usage, client, issued = mock.Mock(), mock.Mock(), mock.Mock()
+        analyzer = azure.AzureAnalyzer(usage, clock=lambda: base.NOW, client=client)
+        unchanged = azure.build_request(source, caption, images)
+        with mock.patch.dict(azure.capacity.HALF_MONTH, {'schemaHash': 'f' * 64}):
+            self.assertEqual(azure.build_request(source, caption, images), unchanged)
+            with self.assertRaisesRegex(azure.capacity.CapacityHold, '^azure_capacity_profile_stale$'):
+                analyzer.analyze(source, caption, images, facts.target_periods(base.NOW), issued)
+        usage.reserve.assert_not_called()
+        usage.issued.assert_not_called()
+        usage.finish.assert_not_called()
+        issued.assert_not_called()
+        client.structured.assert_not_called()
+
+    def test_legacy_v1_remains_byte_exact_and_is_not_subject_to_new_admission_policy(self):
+        source, caption, images = self.inputs('x' * 6000)
+        expected = azure.build_request(source, caption, images, contract_version=facts.LEGACY_VERSION)
+        with mock.patch.object(azure.capacity, 'half_month', side_effect=AssertionError('v1 policy changed')):
+            actual = azure.prepare_request(source, caption, images, contract_version=facts.LEGACY_VERSION)
+            self.assertIsNone(azure.check_caption_capacity(source, caption, contract_version=facts.LEGACY_VERSION))
+        self.assertEqual(actual, expected)
+        wire = azure.wire_payload(actual[0], facts.LEGACY_VERSION)
+        self.assertEqual(wire['max_completion_tokens'], 1200)
+        self.assertEqual(facts.digest(json.dumps(wire).encode('utf-8')), actual[1]['requestHash'])
+
+    def test_held_request_still_has_a_data_only_diagnostic_representation(self):
+        source, caption, images = self.inputs('x' * 6000)
+        with mock.patch.object(azure.transport, 'AzureOpenAI', side_effect=AssertionError('no client')):
+            messages, proof = azure.build_request(source, caption, images)
+        self.assertEqual(json.loads(messages[1]['content'][0]['text'])['body'], caption)
+        self.assertEqual(len(proof['images']), 4)
+        self.assertEqual(facts.digest(json.dumps(azure.wire_payload(messages)).encode('utf-8')),
+                         proof['requestHash'])
+        with self.assertRaises(azure.capacity.CapacityHold):
+            azure.prepare_request(source, caption, images)
+
     def test_maximum_32_rows_64_notes_keeps_core_and_filters_only_after_full_validation(self):
         value = base.maximum_timing_result()
         verified, text, _ = base.source(photos=4)

@@ -27,6 +27,10 @@ TIMING_SPEC = importlib.util.spec_from_file_location(
     'personal_work_timing', Path(__file__).with_name('work-timing.py'))
 timing = importlib.util.module_from_spec(TIMING_SPEC)
 TIMING_SPEC.loader.exec_module(timing)
+CAPACITY_SPEC = importlib.util.spec_from_file_location(
+    'personal_request_capacity', Path(__file__).with_name('request-capacity.py'))
+capacity = importlib.util.module_from_spec(CAPACITY_SPEC)
+CAPACITY_SPEC.loader.exec_module(capacity)
 
 VERSION = 'personal-line-ids-v8'
 MAX_INPUT_BYTES = 6000
@@ -324,6 +328,7 @@ CACHE_REASONS = {
     'azure_timeout', 'azure_network_error', 'azure_http_error', 'azure_rate_limited',
     'azure_auth_stopped', 'azure_interrupted', 'azure_input_limit', 'azure_ungrounded',
     'azure_model_mismatch', 'azure_deadline', 'azure_budget_exhausted', 'azure_backoff',
+    'azure_capacity_hold', 'azure_capacity_profile_stale',
 }
 
 
@@ -345,6 +350,30 @@ def response_schema(lines):
         ids['items']['enum'] = [line['id'] for line in lines]
         ids['maxItems'] = min(MAX_EVIDENCE_LINES, len(lines))
     return schema
+
+
+def request_components(lines, created, date, shifts, name):
+    """Build inspectable request data without admission, reservation, or a client."""
+    posted = created.astimezone(JST)
+    posted_day = posted.date()
+    payload = {
+        'bodyLines': [{key: line[key] for key in ('id', 'text')} for line in lines],
+        'postedAtJST': posted.isoformat(), 'postedDateJST': posted_day.isoformat(),
+        'relativeDatesJST': {label: (posted_day + dt.timedelta(days=offset)).isoformat()
+                             for label, offset in (('yesterday', -1), ('today', 0),
+                                                   ('tomorrow', 1), ('dayAfterTomorrow', 2))},
+        'author': name, 'knownShiftsByDate': {date.isoformat(): list(shifts)},
+    }
+    messages = [{'role': 'system', 'content': PROMPT},
+                {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}]
+    return messages, response_schema(lines), payload
+
+
+def _admit(payload):
+    try:
+        return capacity.personal(payload, PROMPT, SCHEMA, MAX_OUTPUT_TOKENS)
+    except capacity.CapacityHold as exc:
+        raise AnalysisFailure(exc.reason) from None
 
 
 def selected_lines(lines, ids):
@@ -629,7 +658,8 @@ class AzureAnalyzer:
         self.used = usage.used if usage is not None else 0
         self.spacing_at = None
         self.version = digest(json.dumps([VERSION, PROMPT, SCHEMA, MAX_SOURCE_LINES,
-                                          self.client.identity], sort_keys=True))
+                                          self.client.identity, capacity.profile_hash(capacity.PERSONAL)],
+                                         sort_keys=True))
         known = {entry['postId'] for entry in self.state['cache'].values()}
         for item in state['resolved']:
             if item['id'] not in known:
@@ -658,11 +688,13 @@ class AzureAnalyzer:
                  'links': [], 'workTiming': []}
         try:
             lines = source_lines(text)
-        except AnalysisFailure:
-            entry['reason'] = 'azure_input_limit'
+            _, _, payload = request_components(lines, created, date, shifts, name)
+            _admit(payload)
+        except AnalysisFailure as exc:
+            entry.update(exc.facts())
             self.state['cache'][key] = entry
             self.save()
-            raise AnalysisFailure('azure_input_limit')
+            raise
         self.reserve(key, entry)
         try:
             if self.usage is not None:
@@ -784,14 +816,7 @@ class AzureAnalyzer:
         raise AnalysisFailure('azure_http_error', status)
 
     def request(self, lines, created, date, shifts, name):
-        posted = created.astimezone(JST)
-        posted_day = posted.date()
-        messages = [{'role': 'system', 'content': PROMPT}, {'role': 'user', 'content': json.dumps(
-            {'bodyLines': [{key: line[key] for key in ('id', 'text')} for line in lines],
-             'postedAtJST': posted.isoformat(), 'postedDateJST': posted_day.isoformat(),
-             'relativeDatesJST': {label: (posted_day + dt.timedelta(days=offset)).isoformat()
-                                  for label, offset in (('yesterday', -1), ('today', 0),
-                                                        ('tomorrow', 1), ('dayAfterTomorrow', 2))},
-             'author': name, 'knownShiftsByDate': {date.isoformat(): list(shifts)}}, ensure_ascii=False)}]
-        return self.client.structured(messages, response_schema(lines), name='personal_announcements',
+        messages, schema, payload = request_components(lines, created, date, shifts, name)
+        _admit(payload)
+        return self.client.structured(messages, schema, name='personal_announcements',
                                        max_completion_tokens=MAX_OUTPUT_TOKENS)

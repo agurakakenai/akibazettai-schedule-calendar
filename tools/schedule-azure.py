@@ -21,6 +21,7 @@ def _module(filename, name):
 
 facts = _module('half-month-schedules.py', 'schedule_facts')
 transport = _module('azure-openai.py', 'schedule_transport')
+capacity = _module('request-capacity.py', 'schedule_capacity')
 AnalysisFailure = transport.AzureFailure
 VERSION = facts.VERSION
 MAX_INPUT_BYTES, MAX_OUTPUT_TOKENS = 6000, 1200
@@ -230,24 +231,43 @@ def wire_payload(messages, contract_version=VERSION):
                 'name': 'half_month_schedule', 'strict': True, 'schema': schema}}}
 
 
-def prepare_request(source, text, images, *, contract_version=VERSION):
-    prompt, schema, _ = contract_parts(contract_version)
+def _validate_request_text(source, text):
     facts.validate_source(source)
     if not isinstance(text, str) or len(text.encode('utf-8')) > MAX_INPUT_BYTES:
         raise ValueError('azure_input_limit')
     if facts.digest(text.encode('utf-8')) != source['bodyHash']:
         raise ValueError('schedule_body_mismatch')
+
+
+def _request_context(source, text, metadata):
+    created = facts.timestamp(source['createdAt']).astimezone(facts.JST)
+    return {'name': source['name'], 'authorId': source['authorId'],
+            'authorScreenName': source['authorScreenName'], 'postId': source['id'],
+            'postedAtJST': created.isoformat(), 'body': text,
+            'images': [{**item, 'index': index,
+                       'originalWidth': source['media'][index]['originalWidth'],
+                       'originalHeight': source['media'][index]['originalHeight']}
+                      for index, item in enumerate(metadata)]}
+
+
+def check_caption_capacity(source, text, *, contract_version=VERSION):
+    """Early rejection using a text lower bound; prepare_request still checks the full context."""
+    prompt, schema, output = contract_parts(contract_version)
+    _validate_request_text(source, text)
+    if contract_version == VERSION:
+        return capacity.half_month(
+            json.dumps(_request_context(source, text, []), ensure_ascii=False), prompt, schema, output)
+    return None
+
+
+def build_request(source, text, images, *, contract_version=VERSION):
+    """Pure diagnostic construction, not inference admission; never opens a client."""
+    prompt, schema, _ = contract_parts(contract_version)
+    _validate_request_text(source, text)
     metadata = image_facts(images)
     if len(metadata) != len(source['media']):
         raise ValueError('schedule_images_incomplete')
-    created = facts.timestamp(source['createdAt']).astimezone(facts.JST)
-    context = {'name': source['name'], 'authorId': source['authorId'],
-               'authorScreenName': source['authorScreenName'], 'postId': source['id'],
-               'postedAtJST': created.isoformat(), 'body': text,
-               'images': [{**item, 'index': index,
-                           'originalWidth': source['media'][index]['originalWidth'],
-                           'originalHeight': source['media'][index]['originalHeight']}
-                          for index, item in enumerate(metadata)]}
+    context = _request_context(source, text, metadata)
     content = [{'type': 'text', 'text': json.dumps(context, ensure_ascii=False)}]
     for image in images:
         encoded = base64.b64encode(image['bytes']).decode('ascii')
@@ -261,6 +281,14 @@ def prepare_request(source, text, images, *, contract_version=VERSION):
              'promptHash': facts.digest(prompt.encode('utf-8')), 'schemaHash': facts.digest(schema),
              'contextHash': facts.digest(context), 'requestHash': facts.digest(serialized),
              'images': metadata}
+    return messages, proof
+
+
+def prepare_request(source, text, images, *, contract_version=VERSION):
+    messages, proof = build_request(source, text, images, contract_version=contract_version)
+    if contract_version == VERSION:
+        prompt, schema, output = contract_parts(contract_version)
+        capacity.half_month(messages[1]['content'][0]['text'], prompt, schema, output)
     return messages, proof
 
 
