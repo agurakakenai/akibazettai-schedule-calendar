@@ -589,9 +589,11 @@ def select_revisions(state):
             timing_product.validate_selection_record(
                 first['analysis'], auth, source, amendment['schedules'], imported.get('selectionProof'))
             if 'selectionProof' in imported:
+                entry = {'expectedSubjectHash': auth['expectedSubjectHash'], 'amendment': amendment}
+                if 'expectedApplySubjectHash' in imported:
+                    entry['expectedApplySubjectHash'] = imported['expectedApplySubjectHash']
                 timing_product.validate_selection_apply_approval(
-                    imported.get('applyApproval'),
-                    {'expectedSubjectHash': auth['expectedSubjectHash'], 'amendment': amendment})
+                    imported.get('applyApproval'), entry)
     return selected
 
 
@@ -715,7 +717,9 @@ def validate_state(value, private=True):
                                *(('selectionProof',) if isinstance(imported, dict)
                                  and 'selectionProof' in imported else ()),
                                *(('applyApproval',) if isinstance(imported, dict)
-                                 and 'applyApproval' in imported else ())))
+                                 and 'applyApproval' in imported else ()),
+                               *(('expectedApplySubjectHash',) if isinstance(imported, dict)
+                                 and 'expectedApplySubjectHash' in imported else ())))
         for field in SAVED_IMPORT_HASH_FIELDS:
             valid_hash(imported[field])
         if timestamp(imported['importedAt']) < timestamp(imported['issuedAt']):
@@ -731,6 +735,10 @@ def validate_state(value, private=True):
             raise ValueError('timing_selection_contract')
         if ('selectionProof' in imported) != ('applyApproval' in imported):
             raise ValueError('timing_selection_apply_approval_required')
+        if 'expectedApplySubjectHash' in imported:
+            valid_hash(imported['expectedApplySubjectHash'])
+            if 'selectionProof' not in imported:
+                raise ValueError('timing_selection_apply_subject_requires_selection')
         if any(value['revisions'][key]['analysis']['requestHash'] != imported['requestHash']
                for key in linked):
             raise ValueError('schedule_saved_import_request_mismatch')
@@ -866,6 +874,9 @@ def apply_revision(state, schedules, source, analysis, *, timing_amendment=None,
     receipt = analysis['receiptId']
     previous = state['receipts'].get(receipt)
     if previous is not None:
+        if selected_mode and state.get('savedImports', {}).get(saved_import[0], {}).get(
+                'expectedApplySubjectHash') != saved_import[1].get('expectedApplySubjectHash'):
+            raise ValueError('schedule_receipt_conflict')
         old = [state['revisions'][revision_key] for revision_key in previous]
         if len(old) != len(revisions) or any(
                 before['schedule'] != after['schedule'] or before['sourceKey'] != after['sourceKey']
@@ -875,6 +886,10 @@ def apply_revision(state, schedules, source, analysis, *, timing_amendment=None,
                 for before, after in zip(old, revisions)):
             raise ValueError('schedule_receipt_conflict')
         return False
+    if selected_mode and 'expectedApplySubjectHash' in saved_import[1]:
+        valid_hash(saved_import[1]['expectedApplySubjectHash'])
+        if saved_import[1]['expectedApplySubjectHash'] != digest(state):
+            raise ValueError('timing_selection_apply_subject_changed')
     if timing_amendment is not None and timing_amendment['basisRevisionKeys'] != projection_basis(
             state, timing_amendment['previous']['analysisReceiptId']):
         raise ValueError('schedule_timing_basis_stale')
