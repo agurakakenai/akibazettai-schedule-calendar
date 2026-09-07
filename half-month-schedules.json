@@ -1,0 +1,228 @@
+{
+  "candidateHistory": {},
+  "checkedAt": "2026-09-07T01:17:33.785207Z",
+  "complete": false,
+  "coverage": {},
+  "identityBindings": {
+    "いと": {
+      "authorId": "2080944098043977728",
+      "authorScreenName": "ito_zettai",
+      "verifiedAt": "2026-09-06T14:59:10.694684Z"
+    }
+  },
+  "lastRun": {
+    "status": "ok"
+  },
+  "lastSuccessAt": "2026-09-07T01:17:33.785207Z",
+  "pending": [],
+  "receipts": {
+    "164ee226a4e28cd184bbfdfe8b388da30290ad15a490a938a30211bef63e90dd": [
+      "6d4e1f153ca586f7904dd58bc9b98b459973c3eedd444c4125ebbb170e8aee28"
+    ]
+  },
+  "revisions": {
+    "6d4e1f153ca586f7904dd58bc9b98b459973c3eedd444c4125ebbb170e8aee28": {
+      "analysis": {
+        "analyzedAt": "2026-09-07T00:10:25.803803Z",
+        "contextHash": "4e8f0eef3df42bda643b5bd9d3eb99897b11c349697dd2a6cb0aed76987e2b1c",
+        "contract": "half-month-schedule-v1",
+        "images": [
+          {
+            "bytes": 239442,
+            "height": 1200,
+            "mime": "image/jpeg",
+            "sha256": "863b6b93878144c164d51d4ddb0c581ef30eb0ceccbbc7e00597499161850df6",
+            "width": 900
+          }
+        ],
+        "model": "gpt-5.6-luna",
+        "modelVersion": "2026-07-09",
+        "promptHash": "de95f7084151f7273305b1b62359449550aa78e9dc791c5aff4d4dfcc849a8ca",
+        "receiptId": "164ee226a4e28cd184bbfdfe8b388da30290ad15a490a938a30211bef63e90dd",
+        "requestHash": "0a857fb75afa1b7f527cde62205ccab5dfd264ba98b712a764a57aae4dde6ca4",
+        "resultHash": "9e4ede236c4ccd96009cc58da51aebb304c1ec089f4987e26187285a873e0ce1",
+        "schemaHash": "73961c687e9f136b278d712923b72329893cff82be953fd8857146f327f85109"
+      },
+      "schedule": {
+        "authorId": "2080944098043977728",
+        "authorScreenName": "ito_zettai",
+        "createdAt": "2026-09-06T11:57:53Z",
+        "days": [
+          {
+            "date": "2026-09-02",
+            "shifts": [
+              "夜"
+            ]
+          },
+          {
+            "date": "2026-09-05",
+            "shifts": [
+              "昼"
+            ]
+          },
+          {
+            "date": "2026-09-07",
+            "shifts": [
+              "昼"
+            ]
+          },
+          {
+            "date": "2026-09-10",
+            "shifts": [
+              "夜"
+            ]
+          },
+          {
+            "date": "2026-09-12",
+            "shifts": [
+              "昼"
+            ]
+          },
+          {
+            "date": "2026-09-14",
+            "shifts": [
+              "昼"
+            ]
+          }
+        ],
+        "id": "2096568567798128871",
+        "name": "いと",
+        "observedAt": "2026-09-06T14:59:10.694684Z",
+        "period": {
+          "from": "2026-09-01",
+          "printedYear": null,
+          "to": "2026-09-15",
+          "yearBasis": "post-context"
+        },
+        "sourceKind": "half-month-schedule",
+        "url": "https://x.com/ito_zettai/status/2096568567798128871"
+      },
+      "source": {
+        "authorId": "2080944098043977728",
+        "authorScreenName": "ito_zettai",
+        "bodyHash": "1129b4ed1401f88febb657ea03d9b7e4c697516a266a511cf1bf9f407819f31a",
+        "createdAt": "2026-09-06T11:57:53Z",
+        "discoveryHash": "5b4c44772cbcb7008a155d6f43c4fe6d54876ed01639edb3032e58f2aa6cd5b4",
+        "editTweetIds": [
+          "2096568567798128871"
+        ],
+        "id": "2096568567798128871",
+        "media": [
+          {
+            "originalHeight": 2048,
+            "originalWidth": 1536,
+            "urlHash": "49a97195521e36b96e73518bb4e20b06d3eb721b9c80c651831e7ecf4660c685"
+          }
+        ],
+        "name": "いと",
+        "observedAt": "2026-09-06T14:59:10.694684Z",
+        "payloadHash": "4780d92c1e8d2e3d90e687d2bb9f63b872d84a3a8ed4739d2d72e95506cd92bf",
+        "url": "https://x.com/ito_zettai/status/2096568567798128871"
+      },
+      "sourceKey": "b5bbb70d4847a8a9248495513f020856f3fa6e97e5fa9b7d3991cfd250b94e84"
+    }
+  },
+  "savedImports": {
+    "8c0428882459a4d55b8926e55eda6ea2f750d2ceb35ae38e50ba6b018a28c0a1": {
+      "analysisReceiptHash": "2f20194b6042b626b17cbee71d5fd7300b8a8b0e107311ea689b9b8ab1fbd5b8",
+      "analysisResultHash": "658ed59e0055a3009b8f10481d528195461f842378fdcd73246edcea595b751a",
+      "importedAt": "2026-09-07T01:17:33.785207Z",
+      "issuedAt": "2026-09-07T00:10:22.082080Z",
+      "receiptId": "164ee226a4e28cd184bbfdfe8b388da30290ad15a490a938a30211bef63e90dd",
+      "requestHash": "0a857fb75afa1b7f527cde62205ccab5dfd264ba98b712a764a57aae4dde6ca4",
+      "sourceManifestHash": "03b2a3a92b003bfe2ed6311afe2337c991db218d228911e47d96513823647035",
+      "usageReceiptId": "7978eea819cb8adb5b6df1141bd774d716567b9649819e0d166a00f634ac5585",
+      "usageSourceHash": "f8d8ea3d85a236cdd406a09728ca5c3360b09d50c1f5e108e648417611145813"
+    }
+  },
+  "schedules": [
+    {
+      "authorId": "2080944098043977728",
+      "authorScreenName": "ito_zettai",
+      "createdAt": "2026-09-06T11:57:53Z",
+      "days": [
+        {
+          "date": "2026-09-02",
+          "shifts": [
+            "夜"
+          ]
+        },
+        {
+          "date": "2026-09-05",
+          "shifts": [
+            "昼"
+          ]
+        },
+        {
+          "date": "2026-09-07",
+          "shifts": [
+            "昼"
+          ]
+        },
+        {
+          "date": "2026-09-10",
+          "shifts": [
+            "夜"
+          ]
+        },
+        {
+          "date": "2026-09-12",
+          "shifts": [
+            "昼"
+          ]
+        },
+        {
+          "date": "2026-09-14",
+          "shifts": [
+            "昼"
+          ]
+        }
+      ],
+      "id": "2096568567798128871",
+      "name": "いと",
+      "observedAt": "2026-09-06T14:59:10.694684Z",
+      "period": {
+        "from": "2026-09-01",
+        "printedYear": null,
+        "to": "2026-09-15",
+        "yearBasis": "post-context"
+      },
+      "sourceKind": "half-month-schedule",
+      "url": "https://x.com/ito_zettai/status/2096568567798128871"
+    }
+  ],
+  "schemaVersion": 1,
+  "sources": {
+    "b5bbb70d4847a8a9248495513f020856f3fa6e97e5fa9b7d3991cfd250b94e84": {
+      "checkedAt": "2026-09-07T00:10:25.803803Z",
+      "imageHashes": [
+        "863b6b93878144c164d51d4ddb0c581ef30eb0ceccbbc7e00597499161850df6"
+      ],
+      "reason": "valid_schedule",
+      "requestHash": "0a857fb75afa1b7f527cde62205ccab5dfd264ba98b712a764a57aae4dde6ca4",
+      "source": {
+        "authorId": "2080944098043977728",
+        "authorScreenName": "ito_zettai",
+        "bodyHash": "1129b4ed1401f88febb657ea03d9b7e4c697516a266a511cf1bf9f407819f31a",
+        "createdAt": "2026-09-06T11:57:53Z",
+        "discoveryHash": "5b4c44772cbcb7008a155d6f43c4fe6d54876ed01639edb3032e58f2aa6cd5b4",
+        "editTweetIds": [
+          "2096568567798128871"
+        ],
+        "id": "2096568567798128871",
+        "media": [
+          {
+            "originalHeight": 2048,
+            "originalWidth": 1536,
+            "urlHash": "49a97195521e36b96e73518bb4e20b06d3eb721b9c80c651831e7ecf4660c685"
+          }
+        ],
+        "name": "いと",
+        "observedAt": "2026-09-06T14:59:10.694684Z",
+        "payloadHash": "4780d92c1e8d2e3d90e687d2bb9f63b872d84a3a8ed4739d2d72e95506cd92bf",
+        "url": "https://x.com/ito_zettai/status/2096568567798128871"
+      },
+      "status": "valid"
+    }
+  }
+}
