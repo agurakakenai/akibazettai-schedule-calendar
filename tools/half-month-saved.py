@@ -182,7 +182,7 @@ def validate_reanalysis_basis(state, authorization, source, images, half_month):
 
 
 def apply_amendments(state, entries, usage, half_month, *, schedule, insights, accounts,
-                     personal_state, now):
+                     personal_state, now, approved_selections=None, approved_selection_apply=None):
     _require(isinstance(entries, list) and len(entries) <= 1)
     if state is not None:
         half_month.validate_state(state)
@@ -193,14 +193,17 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
         half_month.valid_hash(entry['expectedSubjectHash'])
         amendment = entry['amendment']
         timing_only = isinstance(amendment, dict) and 'operation' in amendment
+        selected_mode = isinstance(amendment, dict) and 'selectionProof' in amendment
         half_month.require_keys(amendment, ('source', 'schedules', 'analysis', 'proof',
-                                           *(half_month.TIMING_AMENDMENT_FIELDS if timing_only else ())))
+                                           *(half_month.TIMING_AMENDMENT_FIELDS if timing_only else ()),
+                                           *(('selectionProof',) if selected_mode else ())))
         source, analysis, proof = (amendment[key] for key in ('source', 'analysis', 'proof'))
         half_month.validate_source(source)
         half_month.validate_analysis(analysis)
         _require(analysis['contract'] != half_month.TIMING_VERSION or timing_only,
                  'schedule_timing_authorization_required')
         timing_contract = analysis['contract'] == half_month.TIMING_VERSION
+        _require(not selected_mode or timing_contract, 'timing_selection_contract')
         half_month.require_keys(proof, (*PROOF_HASHES, 'issuedAt', 'searchCreatedAt',
                                        *(('accountingKind',) if timing_contract else ())))
         for field in PROOF_HASHES:
@@ -240,6 +243,15 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
                     else _import_capacity(usage, proof, analysis, half_month))
         _require(capacity > 0,
                  'saved_half_month_usage_model')
+        selection = amendment.get('selectionProof')
+        _require(not selected_mode or isinstance(selection, dict), 'timing_selection_contract')
+        timing_product = None
+        if timing_contract:
+            timing_product = half_month.load_module('half-month-timing.py', 'saved_timing_selection')
+            timing_product.validate_selection_record(
+                analysis, {**{field: amendment[field] for field in half_month.TIMING_AMENDMENT_FIELDS},
+                           'expectedSubjectHash': entry['expectedSubjectHash']},
+                source, amendment['schedules'], selection)
         key = half_month.digest(amendment)
         if key in result.get('savedImports', {}):
             if timing_only:
@@ -251,6 +263,16 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
             continue
         _require(entry['expectedSubjectHash'] == subject_hash(state, half_month),
                  'saved_half_month_subject_changed')
+        if selected_mode:
+            # The trusted dispatcher supplies approved manifests separately from untrusted amendment data.
+            _require(isinstance(approved_selections, dict) and len(approved_selections) == 1,
+                     'timing_selection_approval_missing')
+            approved = approved_selections.get(selection['approvalManifestHash'])
+            timing_product.validate_approved_selection(approved)
+            _require(approved == {field: selection[field] for field in timing_product.SELECTION_APPROVAL_FIELDS},
+                     'timing_selection_approval_changed')
+            _require(isinstance(approved_selection_apply, dict), 'timing_selection_apply_approval_required')
+            timing_product.validate_selection_apply_approval(approved_selection_apply, entry)
         authorization = None
         if timing_only:
             _require(proof['searchCreatedAt'] == source['createdAt'],
@@ -261,6 +283,10 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
             half_month.validate_timing_authorization(authorization)
             validate_reanalysis_basis(result, {field: value for field, value in authorization.items()
                                               if field != 'importId'}, source, analysis['images'], half_month)
+            if selected_mode:
+                timing_product._authorize(
+                    result, {field: value for field, value in authorization.items() if field != 'importId'},
+                    source, analysis['images'], usage)
             prior = authorization['previous']
             selected = half_month.select_revisions(result)
             current_keys = {revision_key for revision_key, revision in selected
@@ -288,6 +314,8 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
         imported = {
             **{field: proof[field] for field in PROOF_HASHES},
             **({'accountingKind': proof['accountingKind']} if timing_contract else {}),
+            **({'selectionProof': copy.deepcopy(selection)} if selected_mode else {}),
+            **({'applyApproval': copy.deepcopy(approved_selection_apply)} if selected_mode else {}),
             'receiptId': analysis['receiptId'], 'requestHash': analysis['requestHash'],
             'issuedAt': proof['issuedAt'], 'importedAt': half_month.stamp(now),
         }
@@ -296,6 +324,12 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
                                   timing_amendment=authorization, saved_import=(key, imported))
         if timing_only and not any(table.get('workTiming', {}).get('facts')
                                    for table in amendment['schedules']):
+            continue
+        if selected_mode:
+            working['lastRun'] = {'status': 'partial'}
+            timing_product.validate_selection_delta(
+                result, working, analysis, source, amendment['schedules'], selection, reported=True)
+            result = working
             continue
         result = working
         result['checkedAt'] = half_month.stamp(now)

@@ -391,6 +391,81 @@ class HalfMonthCloudTests(unittest.TestCase):
         self.assertEqual(self.fx.remote_json(cloud.SOURCE_USAGE)[1], source_raw)
         self.assertEqual(self.fx.remote_json(cloud.AI_USAGE)[1], accounted_raw)
 
+    def test_selected_manifest_requires_exact_separate_approval_documents(self):
+        self.seed()
+        approval_hash = 'f' * 64
+        entry = self.facts_entry()
+        entry['amendment']['selectionProof'] = {'approvalManifestHash': approval_hash}
+        manifest = self.manifest(entries=[entry])
+        for approvals in (None, [], {'g' * 64: {}}, {approval_hash: []}, {},
+                          {'e' * 64: {}}, {approval_hash: {}, 'e' * 64: {}}):
+            with self.subTest(approvals=approvals):
+                invalid = copy.deepcopy(manifest)
+                invalid['halfMonthSelections'] = approvals
+                self.fx.saved_mode(invalid)
+                self.before_lease_failure(
+                    'invalid_half_month_selections|half_month_selection_approval_mismatch')
+        separate_document = {'originPacketHash': 'a' * 64}
+        manifest['halfMonthSelections'] = {approval_hash: separate_document}
+        self.fx.saved_mode(manifest)
+        self.before_lease_failure('half_month_selection_apply_approval_mismatch')
+        manifest['halfMonthSelectionApply'] = {}
+        self.fx.saved_mode(manifest)
+        parsed = cloud.read_saved_manifest(self.fx.environment)
+        self.assertEqual(cloud.saved_half_month_selections(parsed),
+                         {approval_hash: separate_document})
+        orphaned = copy.deepcopy(manifest)
+        del orphaned['halfMonthAmendments'][0]['amendment']['selectionProof']
+        self.fx.saved_mode(orphaned)
+        self.before_lease_failure('half_month_selection_approval_mismatch')
+
+    def test_selected_partial_cloud_apply_requires_both_approvals_and_restores_public_subset(self):
+        timing_fixture = load('half_cloud_selected_fixture', Path(__file__).with_name('test_half_month_timing.py'))
+        helper = timing_fixture.TimingOnlyTests(methodName='runTest')
+        self.addCleanup(helper.doCleanups)
+        helper.setUp()
+        packet = helper.packet(helper.partial_pattern())
+        original_packet = copy.deepcopy(packet)
+        proof = helper.accounted_proof(packet)
+        approved = helper.selection_for(packet, helper.independent_expected_sets())
+        entry = helper.selected_entry(packet, proof, approved)
+        self.half_state = copy.deepcopy(helper.state)
+        for receipt in helper.usage['imports'].values():
+            self.ai.apply_import(self.usage, receipt)
+        self.source_state = self.baseline()
+        self.now = NOW + dt.timedelta(hours=1)
+        self.seed()
+        self.schedule_inputs()
+        manifest = self.manifest(entries=[entry])
+        manifest['halfMonthSelections'] = {approved['approvalManifestHash']: approved['document']}
+        self.fx.saved_mode(manifest)
+        self.before_lease_failure('half_month_selection_apply_approval_mismatch')
+        manifest['halfMonthSelectionApply'] = helper.final_approval(entry)
+        for field in ('entryHash', 'selectionApprovalHash', 'stage'):
+            invalid = copy.deepcopy(manifest)
+            invalid['halfMonthSelectionApply'][field] = 'wrong'
+            self.fx.saved_mode(invalid)
+            self.before_lease_failure('saved_manifest_rejected')
+        invalid = copy.deepcopy(manifest)
+        invalid['halfMonthSelections'][approved['approvalManifestHash']]['untouchedSlotIds'] = []
+        self.fx.saved_mode(invalid)
+        self.before_lease_failure('saved_manifest_rejected')
+        untouched = {name: self.fx.remote_json(name)[1] for name in (
+            cloud.SNAPSHOT, cloud.HTTP_STATE, cloud.PERSONAL, cloud.AI_USAGE, cloud.SOURCE_USAGE,
+            cloud.OWNER_FILE)}
+        self.apply(manifest)
+        self.half_state, selected_bytes = self.fx.remote_json(cloud.HALF_MONTH)
+        self.assertEqual(self.half_state, helper.apply_entry(helper.state, entry))
+        self.assertEqual(packet, original_packet)
+        self.assertEqual(packet['status'], 'partial')
+        self.assertEqual(len(packet['analysis']['timingOnly']['pendingSlotIds']), 4)
+        for name, expected in untouched.items():
+            self.assertEqual(self.fx.remote_json(name)[1], expected)
+        manifest['expectedStateSHA'] = self.fx.git(self.fx.remote, 'rev-parse', cloud.REF).decode().strip()
+        self.apply(manifest)
+        self.assertEqual(self.fx.remote_json(cloud.HALF_MONTH)[1], selected_bytes)
+        self.assert_restored_public_site(seed=False)
+
     def test_canonical_restore_is_byte_exact_and_pages_exposes_only_normalized_feed(self):
         self.ai.apply_import(self.usage, self.schedule_import())
         self.source_state = self.baseline()
@@ -446,8 +521,9 @@ class HalfMonthCloudTests(unittest.TestCase):
         self.assertEqual(self.half_state['savedImports'][self.half.digest(entry['amendment'])]['accountingKind'], 'native')
         self.assert_restored_public_site()
 
-    def assert_restored_public_site(self):
-        self.seed()
+    def assert_restored_public_site(self, *, seed=True):
+        if seed:
+            self.seed()
         self.fx.bare_commit({
             cloud.SNAPSHOT: json.loads((TOOLS.parent / 'data' / cloud.SNAPSHOT).read_bytes())})
         expected = {name: self.fx.remote_json(name)[1] for name in (
@@ -484,6 +560,7 @@ class HalfMonthCloudTests(unittest.TestCase):
             self.assertFalse((output / 'data' / name).exists())
         for forbidden in ('savedImports', 'revisions', 'timingAmendment', 'timingOnly', 'authorizationHash',
                           'semanticResultHash', 'resultAttestation', 'accountingKind',
+                          'selectionProof', 'approvalManifestHash', 'untouchedSlotIds', 'applyApproval',
                           'coreHash', 'slotId', 'pendingSlotIds', 'requestHash', 'bodyHash', 'payloadHash', RAW):
             self.assertNotIn(forbidden, json.dumps(public))
         script = """

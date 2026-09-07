@@ -14,6 +14,15 @@ the caller verifies original bytes and accepted results offline. This module
 cannot reconstruct or revalidate a body from its hash, and never fetches sources,
 executes analysis, copies raw/evidence/cache, or reserves usage.
 
+Before projecting unselected comparison channels to null, reviewed candidate
+builders must call validate_selection_core(post, raw, text, shifts, personal)
+with the original response/body and collector module. This pure v8 check returns
+the grounded channels only after every nonempty raw event/link has the same date,
+scope and semantic core as the existing post (including effective legacy links).
+The caller must separately bind source/request/response/core hashes and approve
+the exact timing subset; null projection is not proof that raw core is compatible.
+apply_amendments cannot reconstruct those originals from opaque attestation hashes.
+
 savedPersonalImports is a private map keyed by SHA256 of the amendment's canonical
 JSON. validate_imports(value, personal) raises ValueError on invalid data. personal
 may be the collector module or its azure_context() (official and valid_post).
@@ -38,6 +47,7 @@ Normal v8 imports can create a known post for the first time, but cannot replace
 an existing post; that requires the authorized work-timing-only revision path.
 """
 import copy
+import datetime as dt
 import hashlib
 import importlib.util
 import json
@@ -228,6 +238,26 @@ def core_hash(post):
 
 def timing_hash(post):
     return data_hash(post.get('workTiming'))
+
+
+def validate_selection_core(post, raw, text, shifts, personal):
+    """Validate original v8 core before a reviewed timing-only projection; no adoption."""
+    personal.valid_post(post)
+    normalized = azure_contract.grounded_assessment_v8(
+        raw, text, dt.date.fromisoformat(post['date']), shifts, personal)
+    reason = 'saved_personal_selection_core_mismatch'
+    for field, scope_key in (('events', 'shift'), ('links', 'scope')):
+        for claim in raw[field] or []:
+            _require(claim['serviceDate'] == post['date']
+                     and (claim[scope_key] in shifts
+                          or field == 'links' and claim[scope_key] == 'unspecified'), reason)
+    fields = ('shift', 'kind', 'storeId', 'time')
+    existing_events = {tuple(event.get(key) for key in fields) for event in post['events']}
+    _require(all(tuple(event.get(key) for key in fields) in existing_events
+                 for event in normalized[0]), reason)
+    existing_links = post.get('links', personal.legacy_links(post))
+    _require(all(link in existing_links for link in normalized[1]), reason)
+    return normalized
 
 
 def _target_scopes(amendment):

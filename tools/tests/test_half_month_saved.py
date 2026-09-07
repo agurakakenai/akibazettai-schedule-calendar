@@ -116,8 +116,9 @@ class SavedHalfMonthTests(unittest.TestCase):
                                   issuedAt=analysis['analyzedAt'])
         return entry
 
-    def apply_timing(self, state, entry):
-        return self.apply(state, [entry], now=fixture.NOW + dt.timedelta(hours=1))
+    def apply_timing(self, state, entry, *, approved_selections=None, approved_selection_apply=None):
+        return self.apply(state, [entry], now=fixture.NOW + dt.timedelta(hours=1),
+                          approved_selections=approved_selections, approved_selection_apply=approved_selection_apply)
 
     def test_v1_to_v2_explicit_timing_amendment_keeps_core_and_all_history(self):
         before = self.legacy_state()

@@ -3,6 +3,7 @@ import argparse
 import contextlib
 import copy
 import datetime as dt
+import hashlib
 import importlib.util
 import io
 import json
@@ -2561,6 +2562,130 @@ class PersonalSavedTests(unittest.TestCase):
         self.saved.validate_accounting(after['savedPersonalImports'], usage, self.personal)
         self.assertEqual(state, before)
         self.assertEqual(usage, before_usage)
+
+    def test_work_timing_word_only_selection_uses_existing_api_and_preserves_exact_core(self):
+        text = '9月6日\n2号店夜\n16時から22時\n早め夜です'
+        initial_entries = copy.deepcopy(self.entries)
+        for explicit_legacy_links in (False, True):
+            with self.subTest(explicit_legacy_links=explicit_legacy_links):
+                self.entries = copy.deepcopy(initial_entries)
+                prior = self.entries[0]['amendment']
+                prior['events'] = [{'shift': '夜', 'kind': 'placement', 'storeId': 's2', 'excerpt': '2号店'}]
+                if explicit_legacy_links:
+                    prior['links'] = [{'scope': '夜', 'status': 'work'}]
+                else:
+                    del prior['links']
+                prior['source']['bodyHash'] = hashlib.sha256(text.encode('utf-8')).hexdigest()
+                prior['source']['sourceHash'] = self.saved.data_hash({'synthetic': True, 'text': text})
+                state, usage, entry = self.timing_revision()
+                post = next(item for item in state['posts'] if item['id'] == prior['id'])
+                raw = {
+                    'events': [],
+                    'links': [{'serviceDate': post['date'], 'scope': '夜', 'status': 'work',
+                               'evidenceLineIds': [1, 2, 4]}],
+                    'workTiming': [{'serviceDate': post['date'], 'shift': '夜', 'kind': 'early',
+                                    'time': None, 'evidenceLineIds': [1, 3, 4]}],
+                }
+                original_raw = copy.deepcopy(raw)
+                events, links, facts, reason = self.saved.validate_selection_core(
+                    post, raw, text, ('夜',), self.personal)
+                self.assertEqual((events, links, reason), ([], self.personal.legacy_links(post), 'links'))
+                self.assertNotEqual(events, post['events'])
+                self.assertEqual((facts[0]['qualifier'], facts[0]['explicitTime']), ('early', None))
+                amendment = entry['amendment']
+                # Comparison channels are explicitly unselected, not a rewrite of the model's raw links.
+                amendment.update(
+                    events=events, links=None,
+                    targetScopes=[{'name': post['name'], 'serviceDate': post['date'],
+                                   'shift': '夜', 'boundary': 'start'}],
+                    workTiming=self.saved.timing.bind(facts, post, 'personal-work-post'))
+                selection = {
+                    'synthetic': True, 'fullTrialAccepted': False, 'selectedChannels': ['workTiming'],
+                    'rawHash': self.saved.data_hash(raw), 'rawPointer': '/workTiming/0',
+                    'selectedFacts': facts, 'expectedCoreHash': amendment['expectedCoreHash'],
+                }
+                amendment['source']['analysisResultHash'] = self.saved.data_hash(selection)
+                before, before_usage = copy.deepcopy(state), copy.deepcopy(usage)
+                if not explicit_legacy_links:
+                    unselected_links = copy.deepcopy(entry)
+                    unselected_links['amendment']['links'] = links
+                    with self.assertRaisesRegex(ValueError, 'saved_personal_core_mismatch'):
+                        self.apply(state=state, usage=usage, entries=[unselected_links])
+                    self.assertEqual(state, before)
+                    self.assertEqual(usage, before_usage)
+                after = self.apply(state=state, usage=usage, entries=[entry])
+                current = next(item for item in after['posts'] if item['id'] == post['id'])
+                self.assertEqual({key: value for key, value in current.items() if key != 'workTiming'}, post)
+                self.assertEqual(self.saved.core_hash(current), amendment['expectedCoreHash'])
+                self.assertEqual('links' in current, explicit_legacy_links)
+                self.assertEqual(current['workTiming'], amendment['workTiming'])
+                self.assertIsNone(current['workTiming']['facts'][0]['explicitTime'])
+                for key, receipt in before['savedPersonalImports'].items():
+                    self.assertEqual(after['savedPersonalImports'][key], receipt)
+                for field in before.keys() - {'posts', 'savedPersonalImports'}:
+                    self.assertEqual(after[field], before[field])
+                self.assertEqual(self.apply(state=after, usage=usage, entries=[entry]), after)
+                self.saved.validate_revisions(after, self.personal)
+                self.saved.validate_accounting(after['savedPersonalImports'], usage, self.personal)
+                self.assertEqual(raw, original_raw)
+                self.assertEqual((state, usage), (before, before_usage))
+
+    def test_word_selection_rejects_original_core_changes_before_null_projection(self):
+        state, _, entry = self.timing_revision()
+        post = copy.deepcopy(next(item for item in state['posts'] if item['id'] == entry['amendment']['id']))
+        post['events'] = [{'shift': '夜', 'kind': 'late', 'storeId': 's2',
+                           'time': '18:00', 'excerpt': '2号店'}]
+        post.pop('links', None)
+        text = '9月6日 夜2号店、18時と19時\n早め夜\n翌日の昼3号店、夜4号店'
+        raw = {
+            'events': [],
+            'links': [{'serviceDate': post['date'], 'scope': '夜', 'status': 'work',
+                       'evidenceLineIds': [1, 2]}],
+            'workTiming': [{'serviceDate': post['date'], 'shift': '夜', 'kind': 'early',
+                            'time': None, 'evidenceLineIds': [1, 2]}],
+        }
+        same_event = {'serviceDate': post['date'], 'shift': '夜', 'kind': 'late',
+                      'storeId': 's2', 'time': '18:00', 'evidenceLineIds': [1]}
+        accepted = {**copy.deepcopy(raw), 'events': [same_event]}
+        normalized = self.saved.validate_selection_core(post, accepted, text, ('昼', '夜'), self.personal)
+        self.assertEqual(normalized[0][0]['time'], '18:00')
+        self.assertIsNone(normalized[2][0]['explicitTime'])
+        changes = (
+            ('withdrawn', 'links', [{**raw['links'][0], 'status': 'withdrawn'}]),
+            ('conflict', 'links', [{**raw['links'][0], 'status': 'conflict'}]),
+            ('other_link_shift', 'links', [{**raw['links'][0], 'scope': '昼'}]),
+            ('other_link_date', 'links', [{**raw['links'][0], 'serviceDate': '2026-09-07'}]),
+            ('absence', 'events', [{**same_event, 'kind': 'absence', 'storeId': None, 'time': None}]),
+            ('placement', 'events', [{**same_event, 'kind': 'placement', 'time': None}]),
+            ('other_store', 'events', [{**same_event, 'storeId': 's4', 'evidenceLineIds': [1, 3]}]),
+            ('changed_clock', 'events', [{**same_event, 'time': '19:00'}]),
+            ('omitted_clock', 'events', [{**same_event, 'time': None}]),
+            ('other_event_shift', 'events', [{**same_event, 'shift': '昼'}]),
+            ('other_event_date', 'events', [{**same_event, 'serviceDate': '2026-09-07'}]),
+        )
+        before_post, before_raw = copy.deepcopy(post), copy.deepcopy(raw)
+        for name, field, value in changes:
+            proposed = {**copy.deepcopy(raw), field: value}
+            original = copy.deepcopy(proposed)
+            # These are grounded claims, not malformed fixtures rejected before compatibility checks.
+            self.saved.azure_contract.grounded_assessment_v8(
+                proposed, text, dt.date.fromisoformat(post['date']), ('昼', '夜'), self.personal)
+            with self.subTest(name=name), mock.patch.object(self.saved, 'apply_amendments') as apply:
+                with self.assertRaisesRegex(ValueError, 'saved_personal_selection_core_mismatch'):
+                    self.saved.validate_selection_core(post, proposed, text, ('昼', '夜'), self.personal)
+                apply.assert_not_called()
+            self.assertEqual(proposed, original)
+            self.assertEqual(post, before_post)
+        for field, change in (('links', {'status': 'cancel'}),
+                              ('links', {'serviceDate': '2026-02-30'}),
+                              ('events', {'serviceDate': '2026-02-30'})):
+            proposed = copy.deepcopy(raw)
+            proposed[field] = [{**(same_event if field == 'events' else raw['links'][0]), **change}]
+            with self.subTest(field=field, change=change), self.assertRaises(
+                    self.saved.azure_contract.AnalysisFailure):
+                self.saved.validate_selection_core(post, proposed, text, ('昼', '夜'), self.personal)
+        self.assertEqual(raw, before_raw)
+        self.assertEqual(post, before_post)
 
     def test_work_timing_chain_replaces_only_target_and_rejects_branches_and_tampering(self):
         state, usage, first = self.timing_revision()

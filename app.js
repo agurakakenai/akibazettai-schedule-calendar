@@ -213,7 +213,7 @@
       return `${label}・${fact.explicitTime}${fact.boundary === "start" ? "入り" : "まで"}（${origin}に時刻記載）`;
     }
     const term = Object.values(WORK_TIMING_TERMS).find((value) => value.label === label);
-    return `${label}（店舗の呼称では${term.shift}${term.time}${term.boundary === "start" ? "入り" : "まで"}。出典に数値記載なし）`;
+    return `${label}（明示語に基づく補足。店舗の呼称では${term.shift}${term.time}${term.boundary === "start" ? "入り" : "まで"}）`;
   }
 
   function workTimingPresentation(value, key, shift) {

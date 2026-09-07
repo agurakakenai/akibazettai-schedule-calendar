@@ -26,6 +26,7 @@ class TimingOnlyTests(base.Offline):
         self.usage = self.fx.usage
         self.text = base.payload()['text']
         self.images = [{'bytes': base.png(), 'mime': 'image/png'}]
+        self.selection_approvals = {}
         self.configure()
 
     def configure(self):
@@ -81,7 +82,7 @@ class TimingOnlyTests(base.Offline):
             self.response() if result is None else result, self.usage, now=NOW,
             receipt_id=facts.digest(label.encode()))
 
-    def entry(self, packet, label='timing-only'):
+    def accounted_proof(self, packet, label='timing-only'):
         receipt_id, source_hash = facts.digest(('usage:' + label).encode()), facts.digest(('source:' + label).encode())
         receipt = {'receiptId': receipt_id, 'sourceHash': source_hash, 'date': '2026-09-07',
                    'counts': {'requests': 1}, 'modelBreakdown': [{
@@ -90,15 +91,50 @@ class TimingOnlyTests(base.Offline):
                    'resultAttestation': timing.result_attestation(packet)}
         timing.ledger.apply_import(self.usage, receipt)
         self.fx.usage = self.usage
-        proof = timing.imported_proof(
+        return timing.imported_proof(
             packet, self.usage, receipt_id=receipt_id, issued_at=packet['analysis']['analyzedAt'],
             source_manifest_hash=facts.digest(b'new-authorized-source-manifest'))
+
+    def entry(self, packet, label='timing-only'):
+        proof = self.accounted_proof(packet, label)
+        if packet['status'] == 'partial':
+            return self.selected_entry(packet, proof, self.selection_for(packet))
         return timing.to_amendment(packet, proof, self.usage)
+
+    def selection_for(self, packet, expected_facts=None):
+        slots = {(slot['serviceDate'], slot['shift']): slot['slotId']
+                 for slot in packet['analysis']['timingOnly']['slots']}
+        if expected_facts is None:
+            expected_facts = [fact for row in packet['schedules'] for fact in row.get('workTiming', {}).get('facts', [])]
+        manifest = {
+            'schemaVersion': 1, 'kind': 'half-month-timing-selection-approval-v1', 'stage': 'selection-only',
+            'mode': 'confirmed-set-only', 'originPacketHash': facts.digest(packet),
+            'independentGoldHash': facts.digest(b'independent-synthetic-selection-gold'),
+            'selected': sorted([{'slotId': slots[(fact['serviceDate'], fact['shift'])], 'factHash': facts.digest(fact)}
+                                for fact in expected_facts], key=lambda item: item['slotId'])}
+        manifest['untouchedSlotIds'] = sorted(set(slots.values()) - {item['slotId'] for item in manifest['selected']})
+        return {'document': manifest, 'approvalManifestHash': timing.selection_manifest_hash(manifest)}
+
+    def selected_entry(self, packet, proof, approved):
+        self.selection_approvals[approved['approvalManifestHash']] = copy.deepcopy(approved)
+        return timing.to_selected_amendment(packet, proof, approved, self.state, self.usage)
+
+    def apply_entry(self, state, entry):
+        selection = entry['amendment'].get('selectionProof')
+        approvals = ({selection['approvalManifestHash']: self.selection_approvals[selection['approvalManifestHash']]}
+                     if selection is not None else None)
+        return self.fx.apply_timing(state, entry, approved_selections=approvals,
+                                    approved_selection_apply=self.final_approval(entry) if selection is not None else None)
+
+    def final_approval(self, entry):
+        return {'schemaVersion': 1, 'kind': 'half-month-timing-selection-apply-v1', 'stage': 'apply-exact',
+                'selectionApprovalHash': entry['amendment']['selectionProof']['approvalManifestHash'],
+                'entryHash': facts.digest(entry)}
 
     def apply(self, packet, label='timing-only'):
         entry = self.entry(packet, label)
         self.fx.usage = self.usage
-        return self.fx.apply_timing(self.state, entry), entry
+        return self.apply_entry(self.state, entry), entry
 
     def analyzer(self, result):
         usage = mock.Mock(component='schedule', state=self.usage)
@@ -119,6 +155,495 @@ class TimingOnlyTests(base.Offline):
             self.usage = copy.deepcopy(usage.state)
         self.fx.usage = self.usage
         return packet, timing.native_proof(packet, self.usage)
+
+    def partial_pattern(self):
+        response = self.response()
+        for row in response['slots']:
+            if not row['workTiming']:
+                row['workTiming'] = None
+        return response
+
+    def independent_expected_sets(self):
+        return facts.timing().bind([{
+            'serviceDate': date, 'shift': '昼', 'boundary': 'end', 'status': 'set',
+            'qualifier': 'long', 'explicitTime': None}
+            for date in ('2026-09-05', '2026-09-12')], self.source, 'half-month-schedule')['facts']
+
+    def unchecked_history(self, entry):
+        """Assemble synthetic private records to exercise validation without the public apply gate."""
+        amendment = entry['amendment']
+        key = facts.digest(amendment)
+        state = copy.deepcopy(self.state)
+        authorization = {field: copy.deepcopy(amendment[field]) for field in facts.TIMING_AMENDMENT_FIELDS}
+        authorization.update(importId=key, expectedSubjectHash=entry['expectedSubjectHash'])
+        analysis = amendment['analysis']
+        imported = {field: amendment['proof'][field] for field in (*timing.saved.PROOF_HASHES, 'issuedAt')}
+        imported.update(accountingKind=amendment['proof']['accountingKind'], receiptId=analysis['receiptId'],
+                        requestHash=analysis['requestHash'], importedAt=facts.stamp(NOW))
+        if 'selectionProof' in amendment:
+            imported['selectionProof'] = copy.deepcopy(amendment['selectionProof'])
+            imported['applyApproval'] = self.final_approval(entry)
+        keys = []
+        for table in amendment['schedules']:
+            revision = {'schedule': copy.deepcopy(table), 'source': copy.deepcopy(amendment['source']),
+                        'sourceKey': facts.source_key(amendment['source']), 'analysis': copy.deepcopy(analysis),
+                        'timingAmendment': copy.deepcopy(authorization)}
+            revision_key = facts.digest(revision)
+            state['revisions'][revision_key] = revision
+            keys.append(revision_key)
+        state['savedImports'][key] = imported
+        state['receipts'][analysis['receiptId']] = keys
+        return state
+
+    def test_selected_partial_preserves_full_origin_and_exact_unselected_state_with_both_accounting_kinds(self):
+        historical = self.fx.entry()
+        original_source = historical['amendment']['source']
+        old_facts = [
+            {'serviceDate': '2026-09-02', 'shift': '夜', 'boundary': 'start', 'status': 'set',
+             'qualifier': 'late', 'explicitTime': '18:00'},
+            {'serviceDate': '2026-09-07', 'shift': '昼', 'boundary': 'end', 'status': 'excluded',
+             'qualifier': 'short', 'explicitTime': None},
+            {'serviceDate': '2026-09-10', 'shift': '夜', 'boundary': 'start', 'status': 'conflict',
+             'qualifier': None, 'explicitTime': None},
+            {'serviceDate': '2026-09-14', 'shift': '昼', 'boundary': 'end', 'status': 'set',
+             'qualifier': None, 'explicitTime': '17:00'},
+            {'serviceDate': '2026-09-05', 'shift': '昼', 'boundary': 'end', 'status': 'set',
+             'qualifier': 'short', 'explicitTime': '16:00'}]
+        historical['amendment']['schedules'][0]['workTiming'] = facts.timing().bind(
+            old_facts, original_source, 'half-month-schedule')
+        self.state = self.fx.apply(None, [historical])
+        self.configure()
+        baseline = copy.deepcopy(self.usage)
+        expected_facts = self.independent_expected_sets()
+        exact = lambda value: json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+        for kind in ('native', 'imported'):
+            self.usage = copy.deepcopy(baseline)
+            with self.subTest(kind=kind):
+                if kind == 'native':
+                    packet, proof = self.native_packet(self.partial_pattern())
+                else:
+                    packet = self.packet(self.partial_pattern())
+                    proof = self.accounted_proof(packet)
+                approved = self.selection_for(packet, expected_facts)
+                frozen = exact((packet, proof, approved, self.state, self.usage))
+                entry = self.selected_entry(packet, proof, approved)
+                selection = entry['amendment']['selectionProof']
+                self.assertEqual(len(entry['amendment']['targetScopes']), 6)
+                self.assertEqual(len(selection['document']['selected']), 2)
+                self.assertEqual(selection['document']['untouchedSlotIds'], packet['pendingSlotIds'])
+                self.assertEqual(entry['amendment']['analysis'], packet['analysis'])
+                self.assertNotIn('selectionProof', packet['analysis'])
+                self.assertEqual(timing.result_attestation(packet)['semanticResultHash'],
+                                 packet['analysis']['timingOnly']['semanticResultHash'])
+                after = self.apply_entry(self.state, entry)
+                self.assertEqual(exact((packet, proof, approved, self.state, self.usage)), frozen)
+                self.assertEqual(after['lastRun'], {'status': 'partial'})
+                mutable = {'schedules', 'revisions', 'receipts', 'savedImports', 'lastRun'}
+                for field in set(self.state) - mutable:
+                    self.assertEqual(exact(after[field]), exact(self.state[field]), field)
+                for field in ('revisions', 'receipts', 'savedImports'):
+                    for key, value in self.state[field].items():
+                        self.assertEqual(exact(after[field][key]), exact(value))
+                self.assertEqual(exact(timing.core_copy(after['schedules'])),
+                                 exact(timing.core_copy(self.state['schedules'])))
+                notes = after['schedules'][0]['workTiming']['facts']
+                selected_dates = {'2026-09-05', '2026-09-12'}
+                self.assertEqual([fact for fact in notes if fact['serviceDate'] not in selected_dates],
+                                 [fact for fact in historical['amendment']['schedules'][0]['workTiming']['facts']
+                                  if fact['serviceDate'] not in selected_dates])
+                self.assertEqual([fact for fact in notes if fact['serviceDate'] in selected_dates], expected_facts)
+                self.assertEqual(self.fx.apply_timing(after, entry), after)
+                timing.saved.validate_accounting(after, self.usage, facts)
+                with self.assertRaisesRegex(ValueError, 'timing_response_pending'):
+                    timing.require_complete(packet, proof, self.usage)
+
+    def test_partial_adoption_requires_selection_at_public_apply_and_private_history_layers(self):
+        packet, proof = self.native_packet(self.partial_pattern())
+        approved = self.selection_for(packet, self.independent_expected_sets())
+        entry = self.selected_entry(packet, proof, approved)
+        before = copy.deepcopy((self.state, self.usage))
+        with self.assertRaisesRegex(ValueError, 'timing_selection_authorization_required'):
+            timing.to_amendment(packet, proof, self.usage)
+        with self.assertRaisesRegex(ValueError, 'timing_selection_approval_missing'):
+            self.fx.apply_timing(self.state, entry)
+        ordinary = copy.deepcopy(entry)
+        del ordinary['amendment']['selectionProof']
+        with self.assertRaisesRegex(ValueError, 'timing_selection_authorization_required'):
+            self.fx.apply_timing(self.state, ordinary)
+        forged = self.unchecked_history(ordinary)
+        with self.assertRaisesRegex(ValueError, 'timing_selection_authorization_required'):
+            facts.select_revisions(forged)
+        with self.assertRaisesRegex(ValueError, 'timing_selection_authorization_required'):
+            facts.validate_state(forged)
+        self.assertEqual((self.state, self.usage), before)
+
+    def test_selection_document_and_final_exact_apply_approval_are_two_distinct_stages(self):
+        packet, proof = self.native_packet(self.partial_pattern())
+        approved = self.selection_for(packet, self.independent_expected_sets())
+        document = copy.deepcopy(approved['document'])
+        self.assertEqual(document['stage'], 'selection-only')
+        self.assertEqual(document['untouchedSlotIds'], packet['pendingSlotIds'])
+        self.assertEqual(approved['approvalManifestHash'], facts.digest(document))
+        self.assertNotIn('approvalManifestHash', document)
+        entry = self.selected_entry(packet, proof, approved)
+        final = self.final_approval(entry)
+        approvals = {approved['approvalManifestHash']: approved}
+        original = copy.deepcopy((packet, proof, approved, entry, self.state, self.usage))
+        with self.assertRaisesRegex(ValueError, 'timing_selection_apply_approval_required'):
+            self.fx.apply_timing(self.state, entry, approved_selections=approvals)
+        with self.assertRaises(ValueError):
+            self.fx.apply_timing(self.state, entry, approved_selections=approvals,
+                                 approved_selection_apply=document)
+        self.assertEqual(final['entryHash'], facts.digest(entry))
+        self.assertEqual(final['selectionApprovalHash'], facts.digest(document))
+        self.assertNotEqual(final['entryHash'], approved['approvalManifestHash'])
+        self.assertNotEqual(facts.digest(final), approved['approvalManifestHash'])
+        self.assertNotIn('applyApproval', entry['amendment'])
+        self.assertNotIn('entryHash', document)
+        after = self.fx.apply_timing(self.state, entry, approved_selections=approvals, approved_selection_apply=final)
+        self.assertEqual((packet, proof, approved, entry, self.state, self.usage), original)
+        audit = after['savedImports'][facts.digest(entry['amendment'])]
+        self.assertEqual(audit['selectionProof']['document'], document)
+        self.assertEqual(audit['applyApproval'], final)
+        self.assertEqual(after['sources'], self.state['sources'])
+        self.assertEqual(self.fx.apply_timing(after, entry), after)
+        with self.assertRaisesRegex(ValueError, 'timing_response_pending'):
+            timing.require_complete(packet, proof, self.usage)
+
+    def test_full_trial_apply_manifest_and_self_reference_cannot_authorize_selection(self):
+        packet, proof = self.native_packet(self.partial_pattern())
+        approved = self.selection_for(packet, self.independent_expected_sets())
+        entry = self.selected_entry(packet, proof, approved)
+        old_trial = {'schemaVersion': 1, 'kind': 'timing1', 'requests': [],
+                     'status': 'STOPPED_NO_RETRY_USAGE_MUST_SETTLE', 'policy': {'apply_allowed': False}}
+        apply_manifest = {'schemaVersion': 1, 'kind': 'final-apply-manifest', 'entries': [entry]}
+        self_reference = {**copy.deepcopy(approved['document']), 'approvalManifestHash': approved['approvalManifestHash']}
+        final_reference = {**copy.deepcopy(approved['document']), 'entryHash': facts.digest(entry)}
+        wrong_stage = {**copy.deepcopy(approved['document']), 'stage': 'apply-exact'}
+        documents = (old_trial, apply_manifest, self.final_approval(entry), copy.deepcopy(approved),
+                     self_reference, final_reference, wrong_stage)
+        before = copy.deepcopy((self.state, self.usage, packet))
+        for document in documents:
+            wrapper = {'approvalManifestHash': facts.digest(document), 'document': document}
+            with self.subTest(fields=sorted(document)):
+                with self.assertRaises(ValueError):
+                    timing.selection_manifest_hash(document)
+                with self.assertRaises(ValueError):
+                    timing.to_selected_amendment(packet, proof, wrapper, self.state, self.usage)
+                changed = copy.deepcopy(entry)
+                changed['amendment']['selectionProof'] = wrapper
+                with self.assertRaises(ValueError):
+                    self.fx.apply_timing(
+                        self.state, changed, approved_selections={wrapper['approvalManifestHash']: wrapper},
+                        approved_selection_apply=self.final_approval(changed))
+                # Even rehashed private history cannot turn another document kind into this authorization.
+                with self.assertRaises(ValueError):
+                    facts.select_revisions(self.unchecked_history(changed))
+        self.assertEqual((self.state, self.usage, packet), before)
+
+    def test_selection_document_explicitly_binds_untouched_scope_even_after_rehash(self):
+        packet, proof = self.native_packet(self.partial_pattern())
+        approved = self.selection_for(packet, self.independent_expected_sets())
+        for change in ('omission', 'overlap', 'unknown', 'duplicate'):
+            altered = copy.deepcopy(approved)
+            document = altered['document']
+            if change == 'omission':
+                document['untouchedSlotIds'].pop()
+            elif change == 'overlap':
+                document['untouchedSlotIds'][0] = document['selected'][0]['slotId']
+                document['untouchedSlotIds'].sort()
+            elif change == 'unknown':
+                document['untouchedSlotIds'][0] = 's0000000000'
+                document['untouchedSlotIds'].sort()
+            else:
+                document['untouchedSlotIds'].append(document['untouchedSlotIds'][-1])
+            altered['approvalManifestHash'] = facts.digest(document)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                timing.to_selected_amendment(packet, proof, altered, self.state, self.usage)
+
+    def test_final_apply_approval_is_exact_and_retained_outside_the_amendment_hash(self):
+        packet, proof = self.native_packet(self.partial_pattern())
+        approved = self.selection_for(packet, self.independent_expected_sets())
+        entry = self.selected_entry(packet, proof, approved)
+        final = self.final_approval(entry)
+        approvals = {approved['approvalManifestHash']: approved}
+        before = copy.deepcopy((self.state, self.usage))
+        for change in ('amendmentOnlyHash', 'selectionHash', 'stage', 'selfReference'):
+            wrong = copy.deepcopy(final)
+            if change == 'amendmentOnlyHash':
+                wrong['entryHash'] = facts.digest(entry['amendment'])
+            elif change == 'selectionHash':
+                wrong['selectionApprovalHash'] = facts.digest(final)
+            elif change == 'stage':
+                wrong['stage'] = 'selection-only'
+            else:
+                wrong['applyManifestHash'] = facts.digest(final)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.fx.apply_timing(self.state, entry, approved_selections=approvals, approved_selection_apply=wrong)
+        self.assertEqual((self.state, self.usage), before)
+        after = self.apply_entry(self.state, entry)
+        key = facts.digest(entry['amendment'])
+        for change in ('missing', 'wrongEntry', 'wrongDocument'):
+            forged = copy.deepcopy(after)
+            if change == 'missing':
+                del forged['savedImports'][key]['applyApproval']
+            elif change == 'wrongEntry':
+                forged['savedImports'][key]['applyApproval']['entryHash'] = 'f' * 64
+            else:
+                forged['savedImports'][key]['applyApproval'] = copy.deepcopy(approved['document'])
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                facts.validate_state(forged)
+
+    def test_selected_manifest_rejects_wrong_independent_expectations_and_untrusted_replacement(self):
+        expected = self.independent_expected_sets()
+        packet, proof = self.native_packet(self.partial_pattern())
+        approved = self.selection_for(packet, expected)
+        entry = self.selected_entry(packet, proof, approved)
+        before = copy.deepcopy((self.state, self.usage))
+        for change in ('short', 'inventedClock', 'wrongSource', 'partialSelection', 'pending', 'unknown',
+                       'duplicate', 'extraField', 'originHash', 'goldHash', 'approvalHash'):
+            altered = copy.deepcopy(approved)
+            document = altered['document']
+            if change in ('short', 'inventedClock', 'wrongSource'):
+                wrong = copy.deepcopy(expected)
+                if change == 'short':
+                    wrong[0]['qualifier'] = 'short'
+                elif change == 'inventedClock':
+                    wrong[0]['explicitTime'] = '18:00'
+                else:
+                    wrong[0]['source']['authorId'] = '123'
+                altered = self.selection_for(packet, wrong)
+            elif change == 'partialSelection':
+                document['selected'].pop()
+            elif change in ('pending', 'unknown'):
+                document['selected'][0]['slotId'] = packet['pendingSlotIds'][0] if change == 'pending' else 's0000000000'
+                document['selected'].sort(key=lambda item: item['slotId'])
+            elif change == 'duplicate':
+                document['selected'].append(copy.deepcopy(document['selected'][-1]))
+            elif change == 'extraField':
+                document['selected'][0]['boundary'] = 'start'
+            elif change == 'originHash':
+                document['originPacketHash'] = 'f' * 64
+            elif change == 'goldHash':
+                document['independentGoldHash'] = 'f' * 64
+            else:
+                altered['approvalManifestHash'] = 'f' * 64
+            if change in ('partialSelection', 'pending', 'unknown', 'originHash'):
+                document['untouchedSlotIds'] = sorted(
+                    {item['slotId'] for item in packet['analysis']['timingOnly']['slots']}
+                    - {item['slotId'] for item in document['selected']})
+                altered['approvalManifestHash'] = timing.selection_manifest_hash(document)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                timing.to_selected_amendment(packet, proof, altered, self.state, self.usage)
+        # Even a self-consistent replacement manifest is not the separately pinned dispatcher approval.
+        replacement = copy.deepcopy(approved)
+        replacement['document']['independentGoldHash'] = 'f' * 64
+        replacement['approvalManifestHash'] = timing.selection_manifest_hash(replacement['document'])
+        changed = timing.to_selected_amendment(packet, proof, replacement, self.state, self.usage)
+        with self.assertRaises(ValueError):
+            self.fx.apply_timing(self.state, changed, approved_selections={approved['approvalManifestHash']: approved})
+        with self.assertRaisesRegex(ValueError, 'timing_selection_manifest_changed'):
+            wrong_approval = copy.deepcopy(approved)
+            wrong_approval['document']['independentGoldHash'] = 'f' * 64
+            self.fx.apply_timing(self.state, entry,
+                                 approved_selections={approved['approvalManifestHash']: wrong_approval})
+        self.assertEqual((self.state, self.usage), before)
+
+    def test_selection_cannot_hide_third_claim_nonsets_or_pending_origin(self):
+        baseline = copy.deepcopy(self.usage)
+        expected = self.independent_expected_sets()
+        for kind in ('thirdSet', 'excluded', 'withdrawn', 'conflict', 'pending'):
+            self.usage = copy.deepcopy(baseline)
+            response = self.partial_pattern()
+            if kind == 'pending':
+                response = {'slots': None}
+            else:
+                note_kind = {'thirdSet': 'long', 'excluded': 'not-long',
+                             'withdrawn': 'withdrawn', 'conflict': 'conflict'}[kind]
+                response['slots'][2]['workTiming'] = [{'kind': note_kind, 'time': None}]
+            packet = self.packet(response)
+            proof = self.accounted_proof(packet)
+            approved = self.selection_for(packet, expected)
+            before = copy.deepcopy((packet, self.state, self.usage))
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                timing.to_selected_amendment(packet, proof, approved, self.state, self.usage)
+            self.assertEqual((packet, self.state, self.usage), before)
+
+    def test_selected_packet_source_core_attestation_and_subject_tampering_remain_rejected(self):
+        packet, proof = self.native_packet(self.partial_pattern())
+        approved = self.selection_for(packet, self.independent_expected_sets())
+        original = copy.deepcopy((self.state, self.usage))
+        for change in ('status', 'pending', 'clock', 'source', 'core', 'semanticHash',
+                       'resultHash', 'receipt', 'subject', 'basis', 'image', 'accounting'):
+            altered, auth, accounting = copy.deepcopy((packet, approved, proof))
+            state, usage = copy.deepcopy((self.state, self.usage))
+            if change == 'status':
+                altered['status'] = 'ok'
+            elif change == 'pending':
+                altered['pendingSlotIds'] = []
+                altered['analysis']['timingOnly']['pendingSlotIds'] = []
+                altered['status'] = 'ok'
+            elif change == 'clock':
+                altered['schedules'][0]['workTiming']['facts'][0]['explicitTime'] = '16:00'
+            elif change == 'source':
+                altered['source']['bodyHash'] = 'f' * 64
+            elif change == 'core':
+                altered['schedules'][0]['days'].reverse()
+            elif change == 'semanticHash':
+                altered['analysis']['timingOnly']['semanticResultHash'] = 'f' * 64
+            elif change in ('resultHash', 'receipt'):
+                altered['analysis']['resultHash' if change == 'resultHash' else 'receiptId'] = 'f' * 64
+            elif change == 'subject':
+                state['checkedAt'] = facts.stamp(NOW)
+            elif change == 'basis':
+                altered['authorization']['basisRevisionKeys'] = ['f' * 64]
+            elif change == 'image':
+                altered['analysis']['images'][0]['sha256'] = 'f' * 64
+            else:
+                accounting['usageReceiptId'] = 'f' * 64
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                timing.to_selected_amendment(altered, accounting, auth, state, usage)
+        self.assertEqual((self.state, self.usage), original)
+
+    def test_private_selection_audit_is_hash_bound_and_records_untouched_scopes(self):
+        packet, proof = self.native_packet(self.partial_pattern())
+        entry = self.selected_entry(packet, proof, self.selection_for(packet, self.independent_expected_sets()))
+        for change in ('untouched', 'factHash', 'manifest', 'origin', 'extra', 'drop'):
+            changed = copy.deepcopy(entry)
+            selection = changed['amendment']['selectionProof']
+            if change == 'untouched':
+                selection['document']['untouchedSlotIds'].pop()
+            elif change == 'factHash':
+                selection['document']['selected'][0]['factHash'] = 'f' * 64
+            elif change == 'manifest':
+                selection['approvalManifestHash'] = 'f' * 64
+            elif change == 'origin':
+                selection['document']['originPacketHash'] = 'f' * 64
+            elif change == 'extra':
+                selection['fullTrialAccepted'] = True
+            else:
+                del changed['amendment']['selectionProof']
+            forged = self.unchecked_history(changed)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                facts.select_revisions(forged)
+        after = self.apply_entry(self.state, entry)
+        audit = after['savedImports'][facts.digest(entry['amendment'])]
+        self.assertEqual(audit['selectionProof']['document']['untouchedSlotIds'], packet['pendingSlotIds'])
+        facts.validate_state(after)
+
+    def test_selected_delta_guard_rejects_every_unrelated_mutation(self):
+        packet, proof = self.native_packet(self.partial_pattern())
+        entry = self.selected_entry(packet, proof, self.selection_for(packet, self.independent_expected_sets()))
+        after = self.apply_entry(self.state, entry)
+        for change in ('sourceIndex', 'lastSuccess', 'checkedAt', 'history', 'core', 'unselected', 'status', 'identity'):
+            changed = copy.deepcopy(after)
+            if change == 'sourceIndex':
+                next(iter(changed['sources'].values()))['requestHash'] = packet['analysis']['requestHash']
+            elif change in ('lastSuccess', 'checkedAt'):
+                changed['lastSuccessAt' if change == 'lastSuccess' else 'checkedAt'] = facts.stamp(NOW)
+            elif change == 'history':
+                next(iter(changed['revisions'].values()))['analysis']['resultHash'] = 'f' * 64
+            elif change == 'core':
+                changed['schedules'][0]['days'].reverse()
+            elif change == 'unselected':
+                claim = copy.deepcopy(changed['schedules'][0]['workTiming']['facts'][0])
+                claim['serviceDate'] = '2026-09-07'
+                changed['schedules'][0]['workTiming']['facts'].append(claim)
+            elif change == 'status':
+                changed['lastRun'] = {'status': 'ok'}
+            else:
+                next(iter(changed['identityBindings'].values()))['verifiedAt'] = facts.stamp(NOW)
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, 'timing_selection_'):
+                timing.validate_selection_delta(self.state, changed, packet['analysis'], packet['source'],
+                                                packet['schedules'], entry['amendment']['selectionProof'],
+                                                reported=True)
+
+    def test_selected_partial_keeps_two_periods_and_all_64_read_bounds(self):
+        raw = base.maximum_timing_result()
+        for period in raw['periods']:
+            for row in period['days']:
+                del row['workTiming']
+        self.seed_source(photos=4, raw=raw)
+        slots = self.prepared()['analysis']['timingOnly']['slots']
+        selected_slot = slots[-1]
+        qualifier = 'long' if selected_slot['shift'] == '昼' else 'early'
+        expected = facts.timing().bind([{
+            'serviceDate': selected_slot['serviceDate'], 'shift': selected_slot['shift'],
+            'boundary': 'end' if selected_slot['shift'] == '昼' else 'start', 'status': 'set',
+            'qualifier': qualifier, 'explicitTime': None}], self.source, 'half-month-schedule')['facts']
+        response = {'slots': [{'slotId': slot['slotId'], 'workTiming': (
+            [{'kind': qualifier, 'time': None}] if slot['slotId'] == selected_slot['slotId'] else None)}
+            for slot in slots]}
+        packet = self.packet(response)
+        proof = self.accounted_proof(packet)
+        entry = self.selected_entry(packet, proof, self.selection_for(packet, expected))
+        after = self.apply_entry(self.state, entry)
+        self.assertEqual(len(entry['amendment']['targetScopes']), 64)
+        self.assertEqual(len(entry['amendment']['selectionProof']['document']['untouchedSlotIds']), 63)
+        self.assertEqual(after['schedules'][0], self.state['schedules'][0])
+        self.assertEqual(after['schedules'][1]['workTiming']['facts'], expected)
+        self.assertEqual(len(after['revisions']) - len(self.state['revisions']), 2)
+        self.assertEqual(after['sources'], self.state['sources'])
+        self.assertEqual(self.fx.apply_timing(after, entry), after)
+
+    def test_selected_other_period_preserves_existing_timing_after_sorted_json_roundtrip(self):
+        raw = base.maximum_timing_result()
+        for period in raw['periods']:
+            for row in period['days']:
+                del row['workTiming']
+        self.seed_source(photos=4, raw=raw)
+        slots = self.prepared()['analysis']['timingOnly']['slots']
+        existing = {slot['slotId']: 'long' if slot['shift'] == '昼' else 'early'
+                    for slot in (slots[0], slots[-1])}
+        initial = {'slots': [{'slotId': slot['slotId'], 'workTiming': (
+            [{'kind': existing[slot['slotId']], 'time': None}] if slot['slotId'] in existing else [])} for slot in slots]}
+        baseline, _ = self.apply(self.packet(initial, label='existing-other-period'), label='existing-other-period')
+        baseline_usage = copy.deepcopy(self.usage)
+        exact = lambda value: json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+        for sorted_roundtrip in (False, True):
+            with self.subTest(sorted_roundtrip=sorted_roundtrip):
+                self.state = (json.loads(json.dumps(baseline, sort_keys=True, ensure_ascii=False))
+                              if sorted_roundtrip else copy.deepcopy(baseline))
+                self.usage = copy.deepcopy(baseline_usage)
+                self.configure()
+                untouched = copy.deepcopy(self.state['schedules'][0])
+                self.assertTrue(untouched['workTiming']['facts'])
+                if sorted_roundtrip:
+                    self.assertEqual(list(untouched['workTiming']), ['facts', 'schemaVersion'])
+                current_slots = self.prepared()['analysis']['timingOnly']['slots']
+                selected = current_slots[-1]
+                kind = 'short' if selected['shift'] == '昼' else 'late'
+                response = {'slots': [{'slotId': slot['slotId'], 'workTiming': (
+                    [{'kind': kind, 'time': None}] if slot['slotId'] == selected['slotId'] else None)}
+                    for slot in current_slots]}
+                packet = self.packet(response, label='sorted-selection-' + str(sorted_roundtrip))
+                after, entry = self.apply(packet, label='sorted-selection-' + str(sorted_roundtrip))
+                self.assertEqual(exact(after['schedules'][0]), exact(untouched))
+                self.assertEqual(after['sources'], self.state['sources'])
+                self.assertEqual(after['lastSuccessAt'], self.state['lastSuccessAt'])
+                self.assertEqual(after['lastRun'], {'status': 'partial'})
+                facts.validate_state(after)
+                facts.validate_state(json.loads(json.dumps(after, sort_keys=True)))
+                self.assertEqual(self.fx.apply_timing(after, entry), after)
+
+    def test_selection_does_not_replace_complete_acceptance_or_allow_stale_rebase(self):
+        complete, complete_proof = self.native_packet()
+        with self.assertRaisesRegex(ValueError, 'timing_selection_requires_partial_sets'):
+            timing.to_selected_amendment(complete, complete_proof, self.selection_for(complete),
+                                         self.state, self.usage)
+        ordinary = timing.to_amendment(complete, complete_proof, self.usage)
+        self.assertNotIn('selectionProof', ordinary['amendment'])
+        timing.require_complete(complete, complete_proof, self.usage)
+        self.state = self.fx.apply_timing(self.state, ordinary)
+        self.configure()
+        partial = self.packet(self.partial_pattern(), label='next-partial')
+        proof = self.accounted_proof(partial, label='next-partial')
+        approved = self.selection_for(partial, self.independent_expected_sets())
+        entry = self.selected_entry(partial, proof, approved)
+        after = self.apply_entry(self.state, entry)
+        with self.assertRaisesRegex(ValueError, 'subject_changed'):
+            timing.to_selected_amendment(partial, proof, approved, after, self.usage)
+        self.assertEqual(self.fx.apply_timing(after, entry), after)
 
     def test_distinct_contract_copies_core_and_never_reuses_failed_calendar_output(self):
         failed = base.timing_result({5: [base.work_note()], 12: [base.work_note()]})
@@ -316,7 +841,7 @@ class TimingOnlyTests(base.Offline):
                 with self.assertRaises(ValueError):
                     self.fx.apply_timing(self.state, changed)
         self.assertEqual((packet, self.state, self.usage, raw), frozen)
-        after = self.fx.apply_timing(self.state, entry)
+        after = self.apply_entry(self.state, entry)
         self.assertEqual(after['lastRun']['status'], 'partial')
         self.assertEqual(after['schedules'][0]['days'], self.state['schedules'][0]['days'])
 
@@ -324,7 +849,7 @@ class TimingOnlyTests(base.Offline):
         raw = self.response()
         raw['slots'][0]['workTiming'] = None
         packet, proof = self.native_packet(raw)
-        entry = timing.to_amendment(packet, proof, self.usage)
+        entry = self.selected_entry(packet, proof, self.selection_for(packet))
         original = copy.deepcopy((self.state, self.usage))
         for change in ('promote', 'claims', 'rawHash'):
             bad, changed_proof = copy.deepcopy((packet, proof))
@@ -350,7 +875,7 @@ class TimingOnlyTests(base.Offline):
                 with self.assertRaisesRegex(ValueError, 'result_attestation'):
                     self.fx.apply_timing(self.state, changed)
         self.assertEqual((self.state, self.usage), original)
-        after = self.fx.apply_timing(self.state, entry)
+        after = self.apply_entry(self.state, entry)
         self.assertEqual(after['lastRun']['status'], 'partial')
         self.assertEqual(self.fx.apply_timing(after, entry), after)
         with self.assertRaisesRegex(ValueError, 'timing_response_pending'):

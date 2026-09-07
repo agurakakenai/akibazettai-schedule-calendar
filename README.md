@@ -1158,6 +1158,8 @@ cloudのAI（手動`personal/both`を含む）は**公式＋本人合算3回/run
 
 本人の当日投稿と半月予定表に根拠がある場合だけ、名前下へ短い補足を出します。昼の**勤務終了16:00は「短め」、18:00は「ながめ」**、夜の**勤務開始16:00は「早め」、18:00は「おそめ」**です。明示語だけでも表示しますが、title/読み上げでは店舗の呼称と出典に実記載された数字を区別します。昼夜だけの予定、オーラス、お昼寝・途中休憩、投稿時刻からは補完しません。
 
+`explicitTime: null`は今回の補足で数値時刻を確認していない状態で、原投稿に数字が存在しないという断定ではありません。明示語だけを確認した場合は「明示語に基づく補足」として店舗の呼称の意味を説明し、sourceの時刻値を補完しません。
+
 一般的な「あとから／遅れ／到着予定」は小補足に表示しません。後着の店舗案内・非実績分類・元の出典や履歴は残し、勤務時間の根拠へ読み替えません。公式集合投稿の勤務時間抽出は対象外です。日別・店舗別・月間popup・人物別は同じresolverを使い、人数・CSV・予測係数・厨房区分やcollectorの締切は変えません。名前・人物別の日付リンクは当日本人postを優先し、無い場合に対応する有効な半月postを開きます。独立した「予定の出典」リンクは置かず、時間補足を含むsource-kind・provenanceの区別はデータ内に保持します。
 
 時間の根拠は同じ本人・勤務日・昼夜・開始/終了に限定し、具体的な当日案内を半月予定より優先します。同種の根拠は元投稿日時順です。未記載・保留・空の解析結果は旧補足を消しません。一方、明示取消や相反する根拠、別の終了/開始時刻への訂正では古いラベルに戻しません。開始側の更新だけで終了側を消すこともありません。
@@ -1181,6 +1183,14 @@ wireでは昼終了／夜開始に絞り、本人は最大8 facts、半月は1�
 新契約も最大64slot・64notes・元勤務日あたり2notes、出力3584 tokensで、コード参照とnullable情報を含む出力を制限します。専用のhash固定admission profileは既存v1/v2/本人のprofileとは別です。原画像や旧coreが変わった場合、既存coreを再利用して不足を埋めずに拒否します。`saved_result()`によるAPI0再生にも同じ認可が必要で、実推論や本番反映の承認を代替しません。
 
 完全性・正規化した補足・元のresult hashは`semanticResultHash`と信頼済み会計receiptのhash-only `resultAttestation`へ結合します。呼出側がpending/statusや補足を書き換え、再hashしただけでは完全受入へ昇格できません。native経路は`native_proof(packet, usage_state)`を使い、既に消費したnative1件を再import・再計上せず適用できます。別環境で発行した実解析は、独立承認されたusage importの同じattestationを`imported_proof()`で照合します。`require_complete(packet, proof, usage_state)`と`to_amendment(packet, proof, usage_state)`はこの証拠も検証します。raw応答・gold・本文・画像を公開stateへ格納する方式ではなく、旧receiptの値や過去の失敗記録も書き換えません。
+
+部分結果の確定した指定だけを採用する場合は、通常の完全適用とは別に`to_selected_amendment()`の明示選択経路を使います。全canonical slotの読取範囲・source・旧core・subject・basis・会計attestationを検証し、元結果の全claimが非空の`set`で、選択したslot/fact hashがその全claimと一致する場合に限ります。保留・取消・相反・値の否定を混ぜたり、都合のよいclaimだけを残したりはできません。元の`partial`・pending slot・semantic resultは不変で、`require_complete()`が成功したとは記録しません。
+
+`selectionProof.approvalManifestHash`は、元packet hash・選択slot/fact hash・未変更範囲を明記した**別の親selection承認document**のhashです。最終amendmentや適用manifest自身のhash、旧full-trialの実行許可では代用しません。この選択承認と最終適用のexact承認は別段階です。cloudの適用manifestでは`halfMonthSelections`にそのhashと別documentのmapを渡し、対象amendmentと過不足なく対応させます。更新は選択slotの補足と新revisionの監査記録だけに限定し、非選択slotの補足、旧core・source・既存履歴、source管理indexを保持します。通常適用経路と保存履歴の検証でも選択証拠を要求し、部分結果を完全結果へ読み替える迂回を拒否します。
+
+独立documentは`kind: "half-month-timing-selection-approval-v1"`／`stage: "selection-only"`で、`independentGoldHash`も保持します。hashはUTF-8・キー順整列・空白なし・末尾改行なしのcanonical JSONに対するSHA256です。最終GOは別の`halfMonthSelectionApply`（`kind: "half-month-timing-selection-apply-v1"`／`stage: "apply-exact"`）に、選択承認hashと完成したentry全体の`entryHash`を結び付けます。これはentry自身には埋め込まず、適用後のprivate auditへ保存します。両documentがあっても、外側の`expectedMainSHA`／`expectedStateSHA`・既存lease/CAS・精算済みusage検証は必要です。
+
+本人の補足限定適用も、raw再抽出の完全一致と、明示的に選択したchannelを非破壊mergeした後のcore保全を区別します。空`events`は配置の削除命令ではありません。候補builderは元raw全体を`personal-saved.validate_selection_core()`で再groundingし、非空のcore/linkに取消・別日shift・配置や時刻変更などの不一致がないことを確認してから、非選択の比較channelを`null`へ投影します。これは適用scopeの指定で、元rawが`null`だったという記録ではありません。既存applyはhashから原文を復元できないため、この投影前検証と親の明示承認はcaller側の必須条件です。勤務時間だけを選択した承認は元raw・失敗した完全比較・一意の実usageを別証跡として保持し、既存の`work-timing-only`検証を通します。語だけを確認した`early/null`を、原投稿に数字があることを理由に`16:00`へ書き換えません。
 
 ### GitHub Actionsから収集・公開する構成
 

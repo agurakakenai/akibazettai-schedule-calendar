@@ -509,7 +509,12 @@ def select_revisions(state):
             if current in visited:
                 raise ValueError('schedule_timing_cycle')
             visited.add(current)
-            channel = timing().merge(channel, revisions[current]['schedule'].get('workTiming'))
+            update = revisions[current]['schedule'].get('workTiming')
+            selected_update = 'selectionProof' in state.get('savedImports', {}).get(
+                revisions[current]['timingAmendment']['importId'], {})
+            # A selection must not add an empty channel to a wholly untouched period.
+            if not (selected_update and channel is None and update is None):
+                channel = timing().merge(channel, update)
         if visited != set(keys):
             raise ValueError('schedule_timing_branch')
         effective = copy.deepcopy(revisions[current])
@@ -540,6 +545,10 @@ def select_revisions(state):
                          analysis=first['analysis'],
                          proof={**{field: imported[field] for field in proof_fields},
                                 'searchCreatedAt': source['createdAt']})
+        if 'selectionProof' in imported:
+            if not timing_contract or not isinstance(imported['selectionProof'], dict):
+                raise ValueError('timing_selection_contract')
+            amendment['selectionProof'] = imported['selectionProof']
         if digest(amendment) != import_id:
             raise ValueError('schedule_timing_amendment_hash')
         if core_hash(prior_rows) != auth['expectedCoreHash'] or core_hash(new_rows) != auth['expectedCoreHash']:
@@ -568,9 +577,16 @@ def select_revisions(state):
         if timing_hash(target_rows) != auth['expectedTimingHash']:
             raise ValueError('schedule_timing_stale_hash')
         if first['analysis']['contract'] == TIMING_VERSION:
-            load_module('half-month-timing.py', 'half_month_timing_binding').validate_bound_result(
+            timing_product = load_module('half-month-timing.py', 'half_month_timing_binding')
+            timing_product.validate_bound_result(
                 first['analysis'], auth, source, prior_rows,
                 [revisions[key]['schedule'] for key in receipt_keys])
+            timing_product.validate_selection_record(
+                first['analysis'], auth, source, amendment['schedules'], imported.get('selectionProof'))
+            if 'selectionProof' in imported:
+                timing_product.validate_selection_apply_approval(
+                    imported.get('applyApproval'),
+                    {'expectedSubjectHash': auth['expectedSubjectHash'], 'amendment': amendment})
     return selected
 
 
@@ -690,7 +706,11 @@ def validate_state(value, private=True):
         valid_hash(amendment_hash)
         require_keys(imported, (*SAVED_IMPORT_HASH_FIELDS, 'issuedAt', 'importedAt',
                                *(('accountingKind',) if isinstance(imported, dict)
-                                 and 'accountingKind' in imported else ())))
+                                 and 'accountingKind' in imported else ()),
+                               *(('selectionProof',) if isinstance(imported, dict)
+                                 and 'selectionProof' in imported else ()),
+                               *(('applyApproval',) if isinstance(imported, dict)
+                                 and 'applyApproval' in imported else ())))
         for field in SAVED_IMPORT_HASH_FIELDS:
             valid_hash(imported[field])
         if timestamp(imported['importedAt']) < timestamp(imported['issuedAt']):
@@ -702,6 +722,10 @@ def validate_state(value, private=True):
         if (timing_contract != ('accountingKind' in imported)
                 or timing_contract and imported['accountingKind'] not in ('native', 'imported')):
             raise ValueError('invalid_schedule_saved_accounting')
+        if 'selectionProof' in imported and not timing_contract:
+            raise ValueError('timing_selection_contract')
+        if ('selectionProof' in imported) != ('applyApproval' in imported):
+            raise ValueError('timing_selection_apply_approval_required')
         if any(value['revisions'][key]['analysis']['requestHash'] != imported['requestHash']
                for key in linked):
             raise ValueError('schedule_saved_import_request_mismatch')
@@ -812,9 +836,15 @@ def apply_revision(state, schedules, source, analysis, *, timing_amendment=None,
         raise ValueError('duplicate_schedule_period')
     working = copy.deepcopy(state)
     bind_identity(working, source)
-    key = record_source(working, source, 'valid', 'valid_schedule',
-                        timestamp(analysis['analyzedAt']), analysis['requestHash'],
-                        [image['sha256'] for image in analysis['images']])
+    selected_mode = saved_import is not None and 'selectionProof' in saved_import[1]
+    if selected_mode:
+        key = source_key(source)
+        if working['sources'].get(key, {}).get('source') != source:
+            raise ValueError('timing_selection_source_changed')
+    else:
+        key = record_source(working, source, 'valid', 'valid_schedule',
+                            timestamp(analysis['analyzedAt']), analysis['requestHash'],
+                            [image['sha256'] for image in analysis['images']])
     revisions = [{'schedule': copy.deepcopy(schedule), 'sourceKey': key, 'source': copy.deepcopy(source),
                   'analysis': copy.deepcopy(analysis)} for schedule in schedules]
     if timing_amendment is not None:
@@ -848,7 +878,10 @@ def apply_revision(state, schedules, source, analysis, *, timing_amendment=None,
     projected = _project([revision for _, revision in select_revisions(working)])
     if analysis['contract'] == TIMING_VERSION:
         working['schedules'] = copy.deepcopy(state['schedules'])
+        updated_pairs = {_pair(row) for row in schedules if row.get('workTiming', {}).get('facts')}
         for row in working['schedules']:
+            if selected_mode and _pair(row) not in updated_pairs:
+                continue
             update = projected[_pair(row)]
             if 'workTiming' in update:
                 row['workTiming'] = copy.deepcopy(update['workTiming'])
@@ -856,6 +889,9 @@ def apply_revision(state, schedules, source, analysis, *, timing_amendment=None,
         working['schedules'] = sorted(projected.values(), key=lambda item: (item['period']['from'], item['name']))
     changed = working['schedules'] != state['schedules']
     validate_state(working)
+    if selected_mode:
+        load_module('half-month-timing.py', 'half_month_selected_delta').validate_selection_delta(
+            state, working, analysis, source, schedules, saved_import[1]['selectionProof'])
     state.clear()
     state.update(working)
     return changed

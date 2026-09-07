@@ -64,7 +64,9 @@ test("work timing strictly separates source words, exact clocks and work boundar
     assert.equal(api.validateWorkTiming(channel), channel);
     assert.equal(api.workTimingLabel(fact), label);
     if (label) {
-      assert.match(api.workTimingDescription(fact), explicitTime === null ? /数値記載なし/ : /予定表に時刻記載/);
+      assert.match(api.workTimingDescription(fact), explicitTime === null ? /明示語に基づく補足/ : /予定表に時刻記載/);
+      assert.doesNotMatch(api.workTimingDescription(fact), /数値記載なし|出典に数字がない/);
+      assert.equal(fact.explicitTime, explicitTime, "describing house meaning never fills an unconfirmed source clock");
     }
   }
   assert.equal(api.workTimingLabel(timingFact(source, { qualifier: "long", explicitTime: "16:00" })), null);

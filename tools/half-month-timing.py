@@ -385,11 +385,166 @@ def saved_result(state, authorization, source, text, images, result, usage, *, n
 def to_amendment(packet, proof, usage):
     """Bind separately accounted usage evidence through the existing saved-import product API."""
     validate_packet(packet, proof, usage)
+    _require(packet['status'] != 'partial', 'timing_selection_authorization_required')
+    return _amendment(packet, proof)
+
+
+def _amendment(packet, proof):
     authorization = packet['authorization']
     return {'expectedSubjectHash': authorization['expectedSubjectHash'], 'amendment': {
         **{key: copy.deepcopy(authorization[key]) for key in facts.TIMING_AMENDMENT_FIELDS},
         'source': copy.deepcopy(packet['source']), 'schedules': copy.deepcopy(packet['schedules']),
         'analysis': copy.deepcopy(packet['analysis']), 'proof': copy.deepcopy(proof)}}
+
+
+SELECTION_MANIFEST_FIELDS = ('schemaVersion', 'kind', 'stage', 'mode', 'originPacketHash',
+                             'independentGoldHash', 'selected', 'untouchedSlotIds')
+SELECTION_APPROVAL_FIELDS = ('approvalManifestHash', 'document')
+
+
+def selection_manifest_hash(manifest):
+    """Hash the separate selection-only document, which cannot contain its own hash or a final entry."""
+    facts.require_keys(manifest, SELECTION_MANIFEST_FIELDS)
+    _require(type(manifest['schemaVersion']) is int and manifest['schemaVersion'] == 1
+             and manifest['kind'] == 'half-month-timing-selection-approval-v1'
+             and manifest['stage'] == 'selection-only'
+             and manifest['mode'] == 'confirmed-set-only', 'timing_selection_contract')
+    for field in ('originPacketHash', 'independentGoldHash'):
+        facts.valid_hash(manifest[field])
+    selected = manifest['selected']
+    _require(isinstance(selected, list) and 1 <= len(selected) <= MAX_NOTES, 'timing_selection_empty_or_limit')
+    ids, hashes = [], []
+    for item in selected:
+        facts.require_keys(item, ('slotId', 'factHash'))
+        _require(isinstance(item['slotId'], str) and SLOT_ID.fullmatch(item['slotId']), 'timing_selection_slot')
+        facts.valid_hash(item['factHash'])
+        ids.append(item['slotId'])
+        hashes.append(item['factHash'])
+    _require(ids == sorted(set(ids)) and len(hashes) == len(set(hashes)), 'timing_selection_duplicate_or_order')
+    untouched = manifest['untouchedSlotIds']
+    _require(isinstance(untouched, list) and 1 <= len(untouched) < MAX_SLOTS
+             and all(isinstance(item, str) and SLOT_ID.fullmatch(item) for item in untouched)
+             and untouched == sorted(set(untouched)) and not set(untouched) & set(ids)
+             and len(untouched) + len(ids) <= MAX_SLOTS, 'timing_selection_untouched_changed')
+    return facts.digest(manifest)
+
+
+def validate_approved_selection(approved):
+    facts.require_keys(approved, SELECTION_APPROVAL_FIELDS)
+    facts.valid_hash(approved['approvalManifestHash'])
+    _require(approved['approvalManifestHash'] == selection_manifest_hash(approved['document']),
+             'timing_selection_manifest_changed')
+    return approved
+
+
+def _selection_proof(packet, approved):
+    _validate_packet(packet)
+    validate_approved_selection(approved)
+    document = approved['document']
+    _require(packet['status'] == 'partial', 'timing_selection_requires_partial_sets')
+    _require(document['originPacketHash'] == facts.digest(packet), 'timing_selection_origin_changed')
+    binding = packet['analysis']['timingOnly']
+    slots = {(slot['serviceDate'], slot['shift']): slot['slotId'] for slot in binding['slots']}
+    selected = []
+    for table in packet['schedules']:
+        for fact in table.get('workTiming', {}).get('facts', []):
+            _require(fact['status'] == 'set', 'timing_selection_non_set_origin')
+            slot_id = slots[(fact['serviceDate'], fact['shift'])]
+            _require(slot_id not in binding['pendingSlotIds'], 'timing_selection_pending_slot')
+            selected.append({'slotId': slot_id, 'factHash': facts.digest(fact)})
+    selected.sort(key=lambda item: item['slotId'])
+    _require(document['selected'] == selected, 'timing_selection_claims_mismatch')
+    untouched = sorted(set(slots.values()) - {item['slotId'] for item in selected})
+    _require(document['untouchedSlotIds'] == untouched, 'timing_selection_untouched_changed')
+    return copy.deepcopy(approved)
+
+
+def validate_selection_record(analysis, authorization, source, tables, selection_proof):
+    """Validate the unchanged normalized origin already present in revision fields, not raw output."""
+    pending = analysis['timingOnly']['pendingSlotIds']
+    claims = any(table.get('workTiming', {}).get('facts') for table in tables)
+    partial = bool(pending and claims)
+    if selection_proof is None:
+        _require(not partial, 'timing_selection_authorization_required')
+        return
+    facts.require_keys(selection_proof, SELECTION_APPROVAL_FIELDS)
+    packet = {'source': source, 'schedules': tables, 'analysis': analysis,
+              'authorization': {key: value for key, value in authorization.items() if key != 'importId'},
+              'status': 'partial' if partial else 'pending' if pending else 'ok' if claims else 'no-new',
+              'pendingSlotIds': pending}
+    _selection_proof(packet, selection_proof)
+
+
+def to_selected_amendment(packet, accountingProof, approvedSelection, state, usage):
+    """Stage an entry from a separately approved selection document; this does not authorize applying it.
+
+    approvalManifestHash hashes only approvedSelection.document. The final
+    exact-entry apply approval is created afterward and is never embedded here.
+    """
+    packet, accountingProof, approvedSelection = copy.deepcopy((packet, accountingProof, approvedSelection))
+    validate_packet(packet, accountingProof, usage)
+    selection_proof = _selection_proof(packet, approvedSelection)
+    core = _authorize(state, packet['authorization'], packet['source'], packet['analysis']['images'], usage)
+    _require(core_copy(packet['schedules']) == core, 'timing_immutable_core_changed')
+    entry = _amendment(packet, accountingProof)
+    entry['amendment']['selectionProof'] = selection_proof
+    return entry
+
+
+def validate_selection_apply_approval(approval, entry):
+    """A second trusted approval pins the completed entry without creating a self-referential hash."""
+    facts.require_keys(approval, ('schemaVersion', 'kind', 'stage', 'selectionApprovalHash', 'entryHash'))
+    _require(type(approval['schemaVersion']) is int and approval['schemaVersion'] == 1
+             and approval['kind'] == 'half-month-timing-selection-apply-v1'
+             and approval['stage'] == 'apply-exact', 'timing_selection_apply_contract')
+    for field in ('selectionApprovalHash', 'entryHash'):
+        facts.valid_hash(approval[field])
+    _require(approval['selectionApprovalHash'] == entry['amendment']['selectionProof']['approvalManifestHash']
+             and approval['entryHash'] == facts.digest(entry), 'timing_selection_apply_changed')
+    return approval
+
+
+def validate_selection_delta(before, after, analysis, source, tables, selection_proof, *, reported=False):
+    """Allow only selected timing, append-only proof/history, and an explicitly partial run status."""
+    exact = lambda value: json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+    history_fields = ('revisions', 'receipts', 'savedImports')
+    mutable = {*history_fields, 'schedules', *(('lastRun',) if reported else ())}
+    _require(set(after) == set(before) | {'savedImports'}, 'timing_selection_state_delta')
+    for key in set(before) - mutable:
+        _require(exact(before[key]) == exact(after[key]), 'timing_selection_state_delta')
+    if reported:
+        _require(after['lastRun'] == {'status': 'partial'}, 'timing_selection_state_delta')
+    for field in history_fields:
+        old, new = before.get(field, {}), after[field]
+        _require(list(new)[:len(old)] == list(old)
+                 and all(exact(new.get(key)) == exact(value) for key, value in old.items()),
+                 'timing_selection_history_changed')
+    added_receipts = set(after['receipts']) - set(before['receipts'])
+    added_revisions = set(after['revisions']) - set(before['revisions'])
+    added_imports = set(after['savedImports']) - set(before.get('savedImports', {}))
+    _require(added_receipts == {analysis['receiptId']} and len(added_imports) == 1
+             and added_revisions == set(after['receipts'][analysis['receiptId']])
+             and len(added_revisions) == len(tables), 'timing_selection_history_changed')
+    audit = after['savedImports'][next(iter(added_imports))]
+    _require(audit.get('selectionProof') == selection_proof and audit['receiptId'] == analysis['receiptId'],
+             'timing_selection_history_changed')
+    selected_ids = {item['slotId'] for item in selection_proof['document']['selected']}
+    selected_scopes = {(source['name'], slot['serviceDate'], slot['shift'],
+                        'end' if slot['shift'] == '昼' else 'start')
+                       for slot in analysis['timingOnly']['slots'] if slot['slotId'] in selected_ids}
+    updates = {facts._pair(table): table for table in tables}
+    _require(len(before['schedules']) == len(after['schedules']), 'timing_selection_state_delta')
+    for old, new in zip(before['schedules'], after['schedules']):
+        _require(exact(core_copy([old])) == exact(core_copy([new])), 'timing_selection_state_delta')
+        outside = lambda row: [fact for fact in row.get('workTiming', {}).get('facts', [])
+                               if (row['name'], *facts.timing().scope(fact)) not in selected_scopes]
+        _require(exact(outside(old)) == exact(outside(new)), 'timing_selection_unselected_changed')
+        update = updates.get(facts._pair(old), {}).get('workTiming')
+        expected = copy.deepcopy(old)
+        if update is not None:
+            expected['workTiming'] = facts.timing().merge(
+                old.get('workTiming'), update, days={row['date']: row['shifts'] for row in old['days']})
+        _require(exact(new) == exact(expected), 'timing_selection_state_delta')
 
 
 class AzureAnalyzer:

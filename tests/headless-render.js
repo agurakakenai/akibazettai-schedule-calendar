@@ -2370,7 +2370,8 @@ test(`half-month plans reach all four views with exact source scope and retained
         assert.deepEqual(withClass(current[0], "work-timing-note").map(node => node.textContent),
           ["2026-09-05", "2026-09-12"].includes(key) ? ["ながめ"] : []);
         if (key === "2026-09-05") {
-          assert.match(current[0].title, /出典に数値記載なし/);
+          assert.match(current[0].title, /明示語に基づく補足/);
+          assert.doesNotMatch(current[0].title + current[0].getAttribute("aria-label"), /数値記載なし/);
           assert.match(current[0].getAttribute("aria-label"), /ながめ/);
         }
         assert.equal(withClass(current[0], "maid-name")[0].href, source.url, "the scoped half post is the name link");

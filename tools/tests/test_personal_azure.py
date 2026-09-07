@@ -466,6 +466,60 @@ class AzureTests(base.Offline):
                     self.assertIsNone(facts[0]['qualifier'])
         self.opener.open.assert_not_called()
 
+    def test_saved_empty_events_keep_effective_core_and_word_early_without_filling_source_clock(self):
+        text = '9月6日\n2号店夜\n16時から22時\n早め夜です'
+        payload = base.post(text)
+        previous, _ = personal.validate_post(base.candidate(), payload, base.AMU, self.clock)
+        self.assertEqual([(item['shift'], item['storeId']) for item in previous['events']], [('夜', 's2')])
+        self.assertNotIn('links', previous)
+        self.state['posts'] = [copy.deepcopy(previous)]
+        self.state['identityBindings'][base.AMU['name']] = {
+            'authorId': base.UID, 'authorScreenName': base.AMU['handle'],
+            'verifiedAt': personal.stamp(self.clock)}
+        raw = result(
+            links=[link('夜', line_ids=[1, 2, 4])],
+            work_timing=[timing_fact('夜', 'start', 'early', None, line_ids=[1, 3, 4])])
+        original_raw = copy.deepcopy(raw)
+        analyzer = mock.Mock()
+        analyzer.state = self.analyzer.state
+
+        def grounded(body, created, date, shifts, name, **identity):
+            self.assertEqual((body, date, identity['post_id']), (text, base.DATE, base.TID))
+            normalized = azure.grounded_assessment_v8(raw, body, date, shifts, personal.azure_context())
+            events, links, facts, reason = normalized
+            self.assertEqual((events, links, reason), ([], personal.legacy_links(previous), 'links'))
+            self.assertEqual((facts[0]['qualifier'], facts[0]['explicitTime']), ('early', None))
+            return normalized
+
+        analyzer.parse_with_timing.side_effect = grounded
+        self.clock += dt.timedelta(minutes=5)
+        with mock.patch.object(personal, 'parse_events', side_effect=AssertionError('No semantic fallback')):
+            report, code, client = self.collect(payloads={base.TID: payload}, analyzer=analyzer)
+        current = self.state['posts'][0]
+
+        def effective_core(post):
+            return {**{key: value for key, value in post.items()
+                       if key not in ('observedAt', 'links', 'workTiming')},
+                    'links': post.get('links', personal.legacy_links(post))}
+
+        self.assertEqual((code, report['status'], report['failures']), (0, 'ok', []))
+        self.assertEqual(effective_core(current), effective_core(previous))
+        self.assertEqual(current['events'], previous['events'])
+        self.assertNotEqual(current['observedAt'], previous['observedAt'])
+        self.assertEqual(current['links'], [{'scope': '夜', 'status': 'work'}])
+        self.assertEqual(analyzer.state['history'], [previous])
+        fact = current['workTiming']['facts'][0]
+        self.assertEqual((fact['boundary'], fact['status'], fact['qualifier'], fact['explicitTime']),
+                         ('start', 'set', 'early', None))
+        self.assertEqual(fact['source'], personal.timing.source_metadata(previous, 'personal-work-post'))
+        self.assertEqual(raw, original_raw)
+        self.assertEqual(report['requests'], {'searches': 0, 'posts': 0})
+        analyzer.parse_with_timing.assert_called_once()
+        client.search.assert_not_called()
+        client.fetch_post.assert_not_called()
+        self.opener.open.assert_not_called()
+        self.assertEqual(self.analyzer.used, 0)
+
     def test_work_timing_compact_maximum_response_fits_transport_and_rejects_ninth_scope(self):
         text, value = maximum_timing_response()
         lines = azure.source_lines(text)
