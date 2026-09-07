@@ -1,5 +1,22 @@
 {
   "candidateHistory": {
+    "059e8b4896d3689c1811d8cded096306d8f2ec8cccfd2f6bdc95825ebffc91b5": {
+      "candidate": {
+        "authorId": "1954467457902809088",
+        "authorScreenName": "akubi_zettai",
+        "discoveredAt": "2026-09-07T08:31:44.304527Z",
+        "discoveryHash": "8c69acc0749beae0d2ff5d5ad19317deac8a845a7038a083dacc86845a81a842",
+        "id": "2096646065768583294",
+        "lastAttemptAt": "2026-09-07T15:08:05.146684Z",
+        "name": "あくび",
+        "nextAttemptAt": null,
+        "priority": 1,
+        "searchCreatedAt": "2026-09-06T17:05:50Z",
+        "url": "https://x.com/akubi_zettai/status/2096646065768583294"
+      },
+      "checkedAt": "2026-09-07T15:08:16.939151Z",
+      "reason": "source_failed"
+    },
     "c8aba1e1fd94e5192bdefce7fb25f8471c4e0def2e79607d61f333d86b6721cf": {
       "candidate": {
         "authorId": "1954467457902809088",
@@ -18,13 +35,12 @@
       "reason": "source_failed"
     }
   },
-  "checkedAt": "2026-09-07T08:31:54.533044Z",
+  "checkedAt": "2026-09-07T15:08:16.940785Z",
   "complete": false,
   "coverage": {
     "2026-09-01": {
       "あくび": {
         "candidateIds": [
-          "2096646065768583294",
           "2096641101172269085",
           "2096565249105404343",
           "2096545528297492701",
@@ -434,7 +450,6 @@
     "2026-09-16": {
       "あくび": {
         "candidateIds": [
-          "2096646065768583294",
           "2096641101172269085",
           "2096565249105404343",
           "2096545528297492701",
@@ -848,23 +863,10 @@
     }
   },
   "lastRun": {
-    "status": "partial"
+    "status": "unavailable"
   },
   "lastSuccessAt": "2026-09-07T01:17:33.785207Z",
   "pending": [
-    {
-      "authorId": "1954467457902809088",
-      "authorScreenName": "akubi_zettai",
-      "discoveredAt": "2026-09-07T08:31:44.304527Z",
-      "discoveryHash": "8c69acc0749beae0d2ff5d5ad19317deac8a845a7038a083dacc86845a81a842",
-      "id": "2096646065768583294",
-      "lastAttemptAt": null,
-      "name": "あくび",
-      "nextAttemptAt": null,
-      "priority": 1,
-      "searchCreatedAt": "2026-09-06T17:05:50Z",
-      "url": "https://x.com/akubi_zettai/status/2096646065768583294"
-    },
     {
       "authorId": "1954467457902809088",
       "authorScreenName": "akubi_zettai",

@@ -1,23 +1,23 @@
 {
-  "checkedAt": "2026-09-07T08:30:50Z",
+  "checkedAt": "2026-09-07T15:07:37Z",
   "complete": false,
   "cooldowns": {},
   "lastRun": {
-    "attemptedCount": 4,
+    "attemptedCount": 1,
     "complete": false,
     "dateBasis": "JST service day, 05:00 boundary",
     "dateFrom": "2026-09-06",
     "dateTo": "2026-09-07",
     "deferredCount": 0,
     "discoveredCount": 36,
-    "eligibleCount": 4,
+    "eligibleCount": 1,
     "failures": [],
-    "fetchedCount": 4,
-    "finishedAt": "2026-09-07T08:33:03Z",
+    "fetchedCount": 1,
+    "finishedAt": "2026-09-07T15:07:42Z",
     "lastSuccessMeaning": "Both searches and every selected post handled without failure or deferral",
     "maxPosts": 20,
-    "newNameCount": 16,
-    "newPostCount": 3,
+    "newNameCount": 4,
+    "newPostCount": 1,
     "pendingCount": 0,
     "pendingOutsideRangeCount": 0,
     "rejected": [
@@ -108,42 +108,44 @@
       {
         "id": "2093898123106238881",
         "reason": "outside_date_range"
-      },
-      {
-        "id": "2093643360347230604",
-        "reason": "outside_date_range"
-      },
-      {
-        "id": "2096784433416445955",
-        "reason": "not_shift_post"
       }
     ],
     "requests": {
-      "posts": 4,
+      "posts": 1,
       "searches": 2
     },
     "skippedCuratedCount": 0,
-    "skippedObservedCount": 6,
-    "skippedResolvedCount": 3,
+    "skippedObservedCount": 9,
+    "skippedResolvedCount": 4,
     "sourceCount": 2,
     "sourcePageLimit": 2,
     "sources": [
       {
-        "candidateCount": 20,
+        "candidateCount": 21,
         "status": "ok",
         "url": "https://search.yahoo.co.jp/realtime/search?p=%E3%82%A2%E3%82%AD%E3%83%90%E7%B5%B6%E5%AF%BE%E9%A0%98%E5%9F%9F&ei=UTF-8"
       },
       {
-        "candidateCount": 24,
+        "candidateCount": 23,
         "status": "ok",
         "url": "https://search.yahoo.co.jp/realtime/search?p=%E3%81%B2%E3%82%8B%E3%81%AB%E3%82%83%E3%82%93%E3%81%93&ei=UTF-8"
       }
     ],
     "status": "ok"
   },
-  "lastSuccessAt": "2026-09-07T08:33:03Z",
+  "lastSuccessAt": "2026-09-07T15:07:42Z",
   "officialAnalysis": {
     "cache": {
+      "241396919149fb9c6dfac714d2171e62ee653cf91e32dd67b1cade790d72d21c": {
+        "at": "2026-09-07T15:07:41.116200Z",
+        "bodyHash": "fee95667855c71d3e4911a0df7c934fb20de7f293b61746486095d11ea834bf0",
+        "createdAt": "2026-09-07T09:22:12Z",
+        "fetchedAt": "2026-09-07T15:07:41.111232Z",
+        "notices": [],
+        "postId": "2096891774757466622",
+        "reason": "no_event",
+        "versionHash": "8475ffd64a25d8d1e858e0169e6f70feb3f66c5e5449d23548b94501813bebb5"
+      },
       "4d4c6a02c408a6e144611c653d0ed5ecc7466be774e0404177566245970e12a7": {
         "at": "2026-09-07T08:31:01.360904Z",
         "bodyHash": "1bb1a6ac3125df7b60e2f7761f1e05d7efab6a400b81a1a1dd23138571c2032a",
@@ -549,6 +551,23 @@
       "shift": "夜",
       "storeId": "s3",
       "url": "https://x.com/akibazettai/status/2096872425237663814"
+    },
+    {
+      "authorId": "822429861218131969",
+      "authorScreenName": "akibazettai",
+      "createdAt": "2026-09-07T09:22:12Z",
+      "date": "2026-09-07",
+      "id": "2096891774757466622",
+      "names": [
+        "みえる",
+        "ちょこ",
+        "もなか",
+        "こえび"
+      ],
+      "observedAt": "2026-09-07T15:07:41Z",
+      "shift": "夜",
+      "storeId": "s1",
+      "url": "https://x.com/akibazettai/status/2096891774757466622"
     }
   ],
   "resolved": [
