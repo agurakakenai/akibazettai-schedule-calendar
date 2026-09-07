@@ -568,6 +568,49 @@ class ImageTests(base.Offline):
 
 
 class TransportTests(base.Offline):
+    def test_registry_guard_blocks_ai_before_reserve_and_after_each_issuance_boundary(self):
+        verified, text, _ = base.source()
+        for boundary in ('before', 'reserve', 'on_issued', 'issued'):
+            with self.subTest(boundary=boundary):
+                path = self.registry_file()
+                guard = base.collector.members.RegistryGuard(path, bindings=({},))
+                usage, client, issued = mock.Mock(), mock.Mock(), mock.Mock()
+                def change(*unused):
+                    registry = base.collector.members.load_registry(path)
+                    registry['members'][0]['collection'] = 'paused'
+                    path.write_bytes(base.collector.members.json_bytes(registry))
+                analyzer = azure.AzureAnalyzer(
+                    usage, clock=lambda: base.NOW, client=client, registry_guard=guard)
+                if boundary == 'before':
+                    change()
+                elif boundary == 'on_issued':
+                    issued.side_effect = change
+                else:
+                    getattr(usage, boundary).side_effect = change
+                with self.assertRaisesRegex(azure.RegistryFailure, 'registry_changed'):
+                    analyzer.analyze(verified, text, [{'bytes': base.png(), 'mime': 'image/png'}],
+                                     facts.target_periods(base.NOW), issued)
+                client.structured.assert_not_called()
+                self.assertEqual(analyzer.used, 0)
+                if boundary == 'before':
+                    usage.reserve.assert_not_called()
+                    usage.finish.assert_not_called()
+                else:
+                    usage.finish.assert_called_once()
+
+    def test_registry_guard_rejects_inactive_member_without_ai_reservation(self):
+        registry = base.registry_fixture()
+        registry['members'][0].update(membership='inactive', collection='paused')
+        guard = base.collector.members.RegistryGuard(self.registry_file(registry), bindings=({},))
+        usage, client = mock.Mock(), mock.Mock()
+        analyzer = azure.AzureAnalyzer(usage, clock=lambda: base.NOW, client=client, registry_guard=guard)
+        source, text, _ = base.source()
+        with self.assertRaisesRegex(azure.RegistryFailure, 'membership_inactive'):
+            analyzer.analyze(source, text, [{'bytes': base.png(), 'mime': 'image/png'}],
+                             facts.target_periods(base.NOW), lambda _: None)
+        usage.reserve.assert_not_called()
+        client.structured.assert_not_called()
+
     def analyzer(self, result=None):
         usage = mock.Mock()
         client = mock.Mock()

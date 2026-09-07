@@ -539,6 +539,7 @@ class HalfMonthCloudTests(unittest.TestCase):
         for name in (*pages.PUBLIC_FILES, 'unauthorized.html'):
             if not name.endswith('.json'):
                 shutil.copyfile(TOOLS.parent / name, self.fx.root / name)
+        shutil.copyfile(TOOLS.parent / 'data' / 'members.json', self.fx.root / 'data' / 'members.json')
         for name in ('tests', 'tools/data', 'assets/events'):
             shutil.copytree(TOOLS.parent / name, self.fx.root / name, dirs_exist_ok=True)
         node = shutil.which('node') or str(self.personal.NODE_FALLBACK)

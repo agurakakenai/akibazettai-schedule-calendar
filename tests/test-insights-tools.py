@@ -54,17 +54,17 @@ class ReadmeClaims(unittest.TestCase):
         for space in (" ", "\t", "\u3000", "\n"):
             with self.subTest(space=repr(space)):
                 changed = self.text.replace(
-                    f"在籍{self.roster_n}名",
+                    f"roster{self.roster_n}名",
                     f"在籍{space}{self.roster_n - 2}{space}名", 1)
                 self.assertNotEqual(changed, self.text)
                 code, output = self.run_main(changed)
                 self.assertEqual(code, 1)
-                self.assertIn("現在の在籍人数", output)
+                self.assertIn("保存された統計の名簿人数", output)
 
     def test_main_accepts_correct_roster_count_with_whitespace(self):
         for prefix in ("在籍", "roster は"):
             with self.subTest(prefix=prefix):
-                changed = self.text.replace(f"在籍{self.roster_n}名",
+                changed = self.text.replace(f"roster{self.roster_n}名",
                                             f"{prefix} {self.roster_n} 名", 1)
                 self.assertEqual(self.run_main(changed)[0], 0)
 
@@ -102,7 +102,7 @@ class ReadmeClaims(unittest.TestCase):
     def test_arbitrary_roster_errors_not_only_neighbors(self):
         for n in (self.roster_n - 2, self.roster_n - 1, self.roster_n + 1, self.roster_n * 10):
             with self.subTest(n=n):
-                changed = self.text.replace(f"在籍{self.roster_n}名", f"在籍{n}名", 1)
+                changed = self.text.replace(f"roster{self.roster_n}名", f"在籍{n}名", 1)
                 self.assertNotEqual(changed, self.text)
                 self.assertTrue(checker.check(changed, self.data))
 

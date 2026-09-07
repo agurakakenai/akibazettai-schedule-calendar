@@ -23,6 +23,10 @@ AnalysisFailure = transport.AzureFailure
 strict_json = transport.strict_json
 NoRedirect = transport.NoRedirect
 
+
+class RegistryFailure(AnalysisFailure):
+    pass
+
 TIMING_SPEC = importlib.util.spec_from_file_location(
     'personal_work_timing', Path(__file__).with_name('work-timing.py'))
 timing = importlib.util.module_from_spec(TIMING_SPEC)
@@ -446,13 +450,20 @@ def grounded_events(result, text, date, shifts, personal, lines=None):
     return events, 'events' if events else 'no_event'
 
 
-def _grounded_event_items(proposals, text, shifts, personal, lines):
+def explicit_shift(lines, shift):
+    words = {'昼': r'昼|ひる', '夜': r'夜|よる'}
+    return shift in words and any(
+        re.search(words[shift], unicodedata.normalize('NFKC', line['text'])) for line in lines)
+
+
+def _grounded_event_items(proposals, text, shifts, personal, lines, *, discovery=False):
     events, seen = [], set()
     for proposed in proposals:
         if not isinstance(proposed, dict) or set(proposed) != set(EVENT_SCHEMA['required']):
             raise AnalysisFailure('azure_invalid_output')
         shift, kind, store, when = (proposed[key] for key in ('shift', 'kind', 'storeId', 'time'))
-        if (not isinstance(shift, str) or shift not in shifts or shift in seen
+        if (not isinstance(shift, str) or shift not in ('昼', '夜')
+                or (shift not in shifts and not discovery) or shift in seen
                 or not isinstance(kind, str) or kind not in ('placement', 'absence', 'late', 'return')
                 or store not in (None, 's1', 's2', 's3', 's4')
                 or kind == 'placement' and store is None
@@ -460,6 +471,8 @@ def _grounded_event_items(proposals, text, shifts, personal, lines):
                 or kind in ('placement', 'absence') and when is not None):
             raise AnalysisFailure('azure_ungrounded')
         selected = selected_lines(lines, proposed['evidenceLineIds'])
+        if discovery and not explicit_shift(selected, shift):
+            raise AnalysisFailure('azure_ungrounded')
         references, times = numeric_references(text, selected)
         if store is not None and store not in references:
             raise AnalysisFailure('azure_ungrounded')
@@ -564,11 +577,14 @@ def _grounded_v8(result, text, date, shifts, personal, lines=None):
         key = timing.fact_key(fact)
         if key in seen:
             raise AnalysisFailure('azure_invalid_output')
+        if fact['serviceDate'] == date.isoformat() and not shifts and not explicit_shift(
+                selected, fact['shift']):
+            raise AnalysisFailure('azure_ungrounded')
         seen.add(key)
         dates.add(fact['serviceDate'])
         validated.append(fact)
     facts = [fact for fact in validated if fact['serviceDate'] == date.isoformat()]
-    if any(fact['shift'] not in shifts for fact in facts):
+    if shifts and any(fact['shift'] not in shifts for fact in facts):
         raise AnalysisFailure('azure_ungrounded')
     channels['workTiming'] = 'pending' if values is None else 'confirmed' if facts else 'none'
     service_dates['workTiming'] = sorted(dates)
@@ -603,14 +619,15 @@ def _grounded_v7(result, text, date, shifts, personal, lines=None):
         if len(group['events']) > 2 or len(group['links']) > MAX_LINKS:
             raise AnalysisFailure('azure_invalid_output')
         validated[day] = _grounded_facts(group['events'], group['links'], text,
-                                       shifts if day == target else ('昼', '夜'), personal, lines)
+                                       shifts if day == target else ('昼', '夜'), personal, lines,
+                                       discovery=day == target and not shifts)
     events, links = validated.get(target, ([], []))
     channels = {field: 'pending' if result[field] is None else 'confirmed' if facts else 'none'
                 for field, facts in (('events', events), ('links', links))}
     return events, links, channels, service_dates
 
 
-def _grounded_facts(event_items, link_items, text, shifts, personal, lines):
+def _grounded_facts(event_items, link_items, text, shifts, personal, lines, *, discovery=False):
     for proposals, schema in ((event_items, EVENT_SCHEMA), (link_items, LINK_SCHEMA)):
         required = set(schema['required'])
         for proposed in proposals:
@@ -619,7 +636,7 @@ def _grounded_facts(event_items, link_items, text, shifts, personal, lines):
             selected = selected_lines(lines, proposed['evidenceLineIds'])
             if any(not line['text'].strip() for line in selected):
                 raise AnalysisFailure('azure_ungrounded')
-    events = _grounded_event_items(event_items, text, shifts, personal, lines)
+    events = _grounded_event_items(event_items, text, shifts, personal, lines, discovery=discovery)
     links, scopes = [], set()
     for proposed in link_items:
         link = {key: proposed[key] for key in ('scope', 'status')}
@@ -629,7 +646,11 @@ def _grounded_facts(event_items, link_items, text, shifts, personal, lines):
             raise AnalysisFailure('azure_invalid_output') from None
         if link['scope'] in scopes:
             raise AnalysisFailure('azure_invalid_output')
-        if link['status'] != 'work' and link['scope'] not in shifts:
+        if link['status'] != 'work' and link['scope'] not in shifts and not (
+                discovery and explicit_shift(selected_lines(lines, proposed['evidenceLineIds']), link['scope'])):
+            raise AnalysisFailure('azure_ungrounded')
+        if discovery and link['scope'] != 'unspecified' and not explicit_shift(
+                selected_lines(lines, proposed['evidenceLineIds']), link['scope']):
             raise AnalysisFailure('azure_ungrounded')
         scopes.add(link['scope'])
         links.append(link)
@@ -650,11 +671,13 @@ def _assessment_result(events, links, pending, work_timing=()):
 
 class AzureAnalyzer:
     def __init__(self, state, save, personal, environment, *, clock, sleep=time.sleep, opener=None,
-                 usage=None):
+                 usage=None, registry_guard=None, review_names=None, deadline=None):
         self.client = transport.AzureOpenAI(environment, on_http_failure=self.http_failure, opener=opener)
         self.state = state.setdefault('azureAnalysis', empty_state())
         self.save, self.personal, self.clock, self.sleep = save, personal, clock, sleep
         self.usage = usage
+        self.registry_guard = registry_guard
+        self.deadline = deadline
         self.used = usage.used if usage is not None else 0
         self.spacing_at = None
         self.version = digest(json.dumps([VERSION, PROMPT, SCHEMA, MAX_SOURCE_LINES,
@@ -662,7 +685,7 @@ class AzureAnalyzer:
                                          sort_keys=True))
         known = {entry['postId'] for entry in self.state['cache'].values()}
         for item in state['resolved']:
-            if item['id'] not in known:
+            if item['id'] not in known and (review_names is None or item['name'] in review_names):
                 self.state['review'].setdefault(item['id'], 'azure_saved_body_required')
 
     def cache_key(self, text, created, date, shifts, name, *, post_id, author_id):
@@ -675,6 +698,7 @@ class AzureAnalyzer:
         return events, links, reason
 
     def parse_with_timing(self, text, created, date, shifts, name, *, post_id, author_id):
+        self.check_registry(name)
         body_hash = digest(text)
         key = self.cache_key(text, created, date, shifts, name, post_id=post_id, author_id=author_id)
         cached = self.state['cache'].get(key)
@@ -695,16 +719,21 @@ class AzureAnalyzer:
             self.state['cache'][key] = entry
             self.save()
             raise
-        self.reserve(key, entry)
+        self.reserve(key, entry, name=name)
         try:
+            self.check_registry(name)
             if self.usage is not None:
                 self.usage_call('issued', key)
             result = self.request(lines, created, date, shifts, name)
+            self.check_registry(name)
             events, links, work_timing, channels, service_dates = _grounded_v8(
                 result, text, date, shifts, self.personal, lines)
             entry.update(channels=channels, serviceDates=service_dates)
             events, links, reason = _assessment_result(events, links, 'pending' in channels.values(), work_timing)
         except AnalysisFailure as exc:
+            if isinstance(exc, RegistryFailure):
+                self.save()
+                raise
             entry.update(exc.facts())
             if self.usage is not None:
                 self.usage_call('finish', key, exc.reason)
@@ -717,6 +746,17 @@ class AzureAnalyzer:
             self.usage_call('finish', key, reason)
         self.save()
         return events, links, work_timing, reason
+
+    def check_registry(self, name=None):
+        if self.registry_guard is not None:
+            try:
+                self.registry_guard.check(name)
+            except ValueError as exc:
+                raise RegistryFailure(str(exc)) from None
+
+    def check_deadline(self):
+        if self.deadline is not None and not self.deadline():
+            raise AnalysisFailure('azure_deadline')
 
     def usage_call(self, method, *args):
         try:
@@ -734,6 +774,8 @@ class AzureAnalyzer:
             raise AnalysisFailure(reason, status, retry) from None
 
     def check(self):
+        self.check_registry()
+        self.check_deadline()
         if self.usage is not None:
             if self.state['paused']:
                 raise AnalysisFailure('azure_auth_stopped', self.state['paused']['httpStatus'])
@@ -748,6 +790,8 @@ class AzureAnalyzer:
                 raise
 
     def check_capacity(self):
+        self.check_registry()
+        self.check_deadline()
         if self.usage is not None:
             return self.check()
         if self.state['paused']:
@@ -756,7 +800,9 @@ class AzureAnalyzer:
         if self.used >= RUN_LIMIT or self.state['budgets'].get(day, 0) >= DAY_LIMIT:
             raise AnalysisFailure('azure_budget_exhausted')
 
-    def reserve(self, key, entry):
+    def reserve(self, key, entry, *, name=None):
+        self.check_registry(name)
+        self.check_deadline()
         if self.state['paused']:
             if self.usage is not None:
                 self.usage_call('http_failure', self.state['paused']['httpStatus'], None)
@@ -770,6 +816,8 @@ class AzureAnalyzer:
             self.used = self.usage.used
             self.state['cache'][key] = entry
             self.save()
+            self.check_registry(name)
+            self.check_deadline()
             return
         if (self.used >= RUN_LIMIT
                 or self.state['budgets'].get(self.personal.calendar_day(now).isoformat(), 0) >= DAY_LIMIT):
@@ -778,6 +826,8 @@ class AzureAnalyzer:
         if until and self.personal.official.timestamp(until) > now:
             if until == self.spacing_at:
                 self.sleep((self.personal.official.timestamp(until) - now).total_seconds())
+                self.check_registry(name)
+                self.check_deadline()
                 now = self.clock()
             if self.personal.official.timestamp(until) > now:
                 raise AnalysisFailure('azure_backoff', retry_at=until)
@@ -818,5 +868,7 @@ class AzureAnalyzer:
     def request(self, lines, created, date, shifts, name):
         messages, schema, payload = request_components(lines, created, date, shifts, name)
         _admit(payload)
+        self.check_registry(name)
+        self.check_deadline()
         return self.client.structured(messages, schema, name='personal_announcements',
                                        max_completion_tokens=MAX_OUTPUT_TOKENS)

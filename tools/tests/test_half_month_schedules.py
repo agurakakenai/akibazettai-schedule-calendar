@@ -26,6 +26,14 @@ ACCOUNTS = [{'name': TARGET['name'], 'handle': TARGET['handle'], 'source': '公�
 SCHEDULE = {'roster': ['あむ'], 'schedule': {}, 'kitchenStaff': ['あむ']}
 
 
+def registry_fixture(*, name=TARGET['name'], handle=TARGET['handle']):
+    registry = collector.members.empty_registry()
+    registry['members'].append(collector.members.new_member(
+        name, 'https://x.com/' + handle if handle else None, NOW, role='kitchen',
+        member_id='m-' + '1' * 32))
+    return registry
+
+
 def post_id(created=CREATED, suffix=1):
     epoch = int(created.timestamp() * 1000)
     return str(((epoch - 1288834974657) << 22) + suffix)
@@ -164,8 +172,70 @@ class Offline(unittest.TestCase):
         self.addCleanup(shutil.rmtree, path)
         return path
 
+    def registry_file(self, registry=None):
+        path = self.work_dir() / 'members.json'
+        path.write_bytes(collector.members.json_bytes(
+            registry_fixture() if registry is None else registry))
+        return path
+
 
 class StateTests(Offline):
+    def test_registry_is_only_population_truth_without_legacy_metadata(self):
+        registry = registry_fixture()
+        registry['members'].append(collector.members.new_member(
+            '新人', None, NOW, member_id='m-' + '2' * 32))
+        registry['members'].append(collector.members.new_member(
+            '未確認', 'https://x.com/unconfirmed', NOW, member_id='m-' + '3' * 32))
+        registry['members'][2].update(membership='unconfirmed', collection='review')
+        registry['unresolvedNames'].append({
+            'name': '一覧外', 'legacyAccounts': [], 'resolvedMemberId': None})
+        targets, reasons = facts.population(
+            {'roster': ['一覧外']}, {'maidTendency': {'あむ': {'x': 'wrong'}}},
+            [{'name': '一覧外', 'handle': 'outside', 'source': '公式サイト'}], registry=registry)
+        self.assertEqual(set(targets), {'あむ'})
+        self.assertEqual(targets['あむ']['memberId'], registry['members'][0]['memberId'])
+        self.assertEqual(reasons['新人']['reason'], 'account_unknown')
+        self.assertEqual(reasons['未確認']['reason'], 'paused')
+        self.assertEqual(reasons['一覧外']['reason'], 'account_unknown')
+
+    def test_registry_population_compares_both_bindings_symmetrically(self):
+        registry = registry_fixture()
+        good = {'あむ': {'authorId': AUTHOR, 'authorScreenName': TARGET['handle'],
+                        'verifiedAt': facts.stamp(NOW)}}
+        for changed in (
+                {'あむ': {**good['あむ'], 'authorId': '12345'}},
+                {'あむ': {**good['あむ'], 'authorScreenName': 'other'}},
+                {'他人': good['あむ']}):
+            for first, second in ((good, changed), (changed, good)):
+                with self.subTest(first=first, second=second):
+                    targets, reasons = facts.population(
+                        {}, {}, [], first, registry=registry, other_bindings=(second,))
+                    self.assertFalse(targets)
+                    self.assertEqual(reasons['あむ']['reason'], 'account_identity_mismatch')
+        self.assertTrue(facts.population({}, {}, [], registry=registry)[0])
+
+    def test_lifecycle_plan_gating_preserves_exact_history_and_source_timing(self):
+        source_, tables, proof = normalized(value=timing_result({5: [work_note()]}))
+        state = facts.empty_state()
+        facts.apply_revision(state, tables, source_, proof)
+        before = copy.deepcopy(state)
+        registry = registry_fixture()
+        registry['members'][0].update(membership='inactive', collection='paused')
+        registry['members'][0]['xProfileUrl'] = 'https://x.com/new_account'
+        manual = {'2026-09-14': {'昼': [{'name': 'あむ', 'store': 's1'}]}}
+        pending_review = facts.effective_schedule(manual, state, registry=registry)
+        person = pending_review['2026-09-05']['昼'][0]
+        self.assertEqual(person['planPolicy'], 'retained_requires_review')
+        self.assertEqual(person['scheduleSources'][0]['id'], source_['id'])
+        registry['members'][0]['inactiveFrom'] = '2026-09-07'
+        projection = facts.effective_schedule(manual, state, registry=registry)
+        self.assertTrue(projection['2026-09-05']['昼'])
+        self.assertFalse(projection['2026-09-07']['昼'])
+        self.assertFalse(projection['2026-09-14']['昼'])
+        self.assertEqual(state, before)
+        self.assertEqual(manual['2026-09-14']['昼'][0], {'name': 'あむ', 'store': 's1'})
+        self.assertEqual(facts.public_state(state)['schedules'], before['schedules'])
+
     def test_late_then_not_early_preserves_late_and_original_denial_provenance(self):
         first = result([(10, '木', ['夜'])])
         first['periods'][0]['days'][0]['workTiming'] = [work_note('夜', 'start', 'late', '18:00')]

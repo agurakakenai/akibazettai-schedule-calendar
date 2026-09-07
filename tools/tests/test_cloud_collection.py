@@ -221,6 +221,7 @@ class CloudTests(unittest.TestCase):
         self.git(self.root, 'init', '--quiet', '-b', 'main')
         self.output = self.root / 'data' / cloud.SNAPSHOT
         collector.atomic_json(self.output, collector.empty_snapshot())
+        (self.root / 'data' / 'members.json').write_bytes((ROOT / 'data' / 'members.json').read_bytes())
         (self.root / 'tools' / 'data').mkdir(parents=True)
         (self.root / 'tools' / 'data' / 'shifts.csv').write_text('tweet_id\n', encoding='utf-8')
         (self.root / 'trusted.py').write_text('main checkout only\n', encoding='utf-8')
@@ -1416,6 +1417,7 @@ class CloudTests(unittest.TestCase):
             cloud.invoke_personal_collector(self.root, self.root, self.root / 'report.json', environment)
             argv = child.call_args.args[0]
             self.assertEqual(argv[argv.index('--analysis-backend') + 1], 'azure')
+            self.assertEqual(argv[argv.index('--members') + 1], str(self.root / 'data' / 'members.json'))
             self.assertEqual(child.call_args.kwargs['environment']['AZURE_OPENAI_API_KEY'],
                              'OFFLINE_AZURE_SENTINEL')
             self.assertEqual(child.call_args.kwargs['environment']['AZURE_OPENAI_DEPLOYMENT'],
@@ -1551,6 +1553,7 @@ class CloudTests(unittest.TestCase):
         for option, expected in (('--analysis-limit', '1'), ('--max-searches', '1'),
                                  ('--max-posts', '1'), ('--max-images', '4')):
             self.assertEqual(argv[argv.index(option) + 1], expected)
+        self.assertEqual(argv[argv.index('--members') + 1], str(self.root / 'data' / 'members.json'))
         self.assertNotIn('OFFLINE_SENTINEL', repr(argv))
         actual_environment = child.call_args.kwargs['environment']
         self.assertNotIn('GH_TOKEN', actual_environment)

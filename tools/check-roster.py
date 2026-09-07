@@ -26,6 +26,7 @@ README には「集計期間に記録が無いので追加できない」と書�
 `shopNum01`〜`04` が `s1`〜`s4` に対応し、掲載順が `roster` の並びです。
 """
 import json
+import importlib.util
 import os
 import re
 import sys
@@ -94,16 +95,14 @@ def parse_site(html):
 
 
 def read_schedule():
-    src = open(os.path.join(ROOT, 'data', 'schedule.js'), encoding='utf-8').read()
-
-    def block(key, open_c, close_c):
-        m = re.search(r'%s:\s*\%s(.*?)\n  \%s' % (key, open_c, close_c), src, re.S)
-        return m.group(1) if m else ''
-
-    roster = re.findall(r'"([^"]+)"', block('roster', '[', ']'))
-    home = dict(re.findall(r'"([^"]+)":\s*"(s\d)"', block('homeStore', '{', '}')))
-    m = re.search(r'unpostedMaids:\s*\[(.*?)\]', src, re.S)
-    unposted = re.findall(r'"([^"]+)"', m.group(1)) if m else []
+    spec = importlib.util.spec_from_file_location('roster_registry', os.path.join(HERE, 'member-registry.py'))
+    members = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(members)
+    registry = members.load_registry(os.path.join(ROOT, 'data', 'members.json'))
+    active = [member for member in registry['members'] if member['membership'] == 'active']
+    roster = [member['canonicalName'] for member in active]
+    home = {member['canonicalName']: member['homeStore'] for member in active if member['homeStore']}
+    unposted = [member['canonicalName'] for member in active if member['officialListing'] != 'listed']
     return roster, home, unposted
 
 
@@ -142,7 +141,7 @@ def main():
     if surprise:
         problems.append('roster_only')
         print('■ roster にいるのにサイトに載っていません')
-        print('  （unpostedMaids に入れるか、卒業なら roster から外してください）')
+        print('  （掲載状況・在籍を確認しmembers.jsonを更新してください。未掲載だけでは退在籍にしません）')
         for n in surprise:
             print('    %-8s roster では %s' % (n, home.get(n, '?')))
         print()
@@ -182,7 +181,7 @@ def main():
         print('差分はありません。')
         return 0
 
-    print('直したら `python tools/build-insights.py` を流し直してください。')
+    print('更新後は `python tools/member-registry.py export` を実行してください。統計の再集計は不要です。')
     return 1
 
 

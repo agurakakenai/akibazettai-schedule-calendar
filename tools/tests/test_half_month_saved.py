@@ -25,6 +25,128 @@ ledger = load('saved_half_usage', ROOT / 'tools' / 'analysis-state.py')
 
 
 class SavedHalfMonthTests(unittest.TestCase):
+    def test_registry_admits_trusted_kitchen_without_legacy_population_inputs(self):
+        entry = self.entry()
+        before = copy.deepcopy((entry, self.usage))
+        registry = fixture.registry_fixture()
+        state = self.apply(None, [entry], registry=registry, schedule=None, insights=None, accounts=None)
+        self.assertEqual(state['schedules'], entry['amendment']['schedules'])
+        self.assertEqual(state['identityBindings']['あむ']['authorId'], fixture.AUTHOR)
+        self.assertEqual((entry, self.usage), before)
+        self.assertEqual(self.apply(state, [entry], registry=registry,
+                                   schedule=None, insights=None, accounts=[]), state)
+
+    def test_registry_new_source_requires_active_trusted_resolved_identity(self):
+        entry = self.entry()
+        for condition in ('inactive', 'paused', 'unknown', 'unconfirmed', 'unresolved', 'wrong_handle'):
+            registry = fixture.registry_fixture()
+            member = registry['members'][0]
+            if condition in ('inactive', 'unconfirmed'):
+                member.update(membership=condition, collection='paused')
+            elif condition == 'paused':
+                member['collection'] = 'paused'
+            elif condition == 'unknown':
+                member.update(xProfileUrl=None, accountTrust=None)
+            elif condition == 'wrong_handle':
+                member['xProfileUrl'] = 'https://x.com/different'
+            else:
+                registry['members'] = []
+                registry['unresolvedNames'].append({
+                    'name': 'あむ', 'legacyAccounts': [], 'resolvedMemberId': None})
+            before = copy.deepcopy((entry, self.usage))
+            with self.subTest(condition=condition), self.assertRaisesRegex(ValueError, 'account_mismatch'):
+                self.apply(None, [entry], registry=registry)
+            self.assertEqual((entry, self.usage), before)
+
+    def test_registry_preserves_admitted_replay_after_lifecycle_or_account_changes(self):
+        entry = self.entry()
+        state = self.apply(None, [entry])
+        for condition in ('inactive', 'paused', 'unknown', 'unresolved', 'different_handle'):
+            registry = fixture.registry_fixture()
+            member = registry['members'][0]
+            if condition == 'inactive':
+                member.update(membership='inactive', collection='paused', inactiveFrom='2026-09-07')
+            elif condition == 'paused':
+                member['collection'] = 'paused'
+            elif condition == 'unknown':
+                member.update(xProfileUrl=None, accountTrust=None)
+            elif condition == 'different_handle':
+                member['xProfileUrl'] = 'https://x.com/review_needed'
+            else:
+                registry['members'] = []
+                registry['unresolvedNames'].append({
+                    'name': 'あむ', 'legacyAccounts': [], 'resolvedMemberId': None})
+            before = copy.deepcopy((state, self.usage, entry))
+            with self.subTest(condition=condition):
+                replay = self.apply(state, [entry], registry=registry,
+                                    schedule=None, insights=None, accounts=[])
+                self.assertEqual(replay, state)
+                self.assertEqual((state, self.usage, entry), before)
+                facts.validate_state(replay)
+                saved.validate_accounting(replay, self.usage, facts)
+
+    def test_registry_allows_accounted_same_source_timing_after_inactivation(self):
+        state = self.legacy_state()
+        entry = self.timing_entry(state)
+        registry = fixture.registry_fixture()
+        registry['members'][0].update(membership='inactive', collection='paused',
+                                      xProfileUrl='https://x.com/review_needed')
+        before = copy.deepcopy((state, self.usage, entry))
+        updated = self.apply(state, [entry], registry=registry, schedule=None, insights=None, accounts=[],
+                             now=fixture.NOW + dt.timedelta(hours=1))
+        self.assertEqual(facts.core_hash(updated['schedules']), facts.core_hash(state['schedules']))
+        self.assertTrue(updated['schedules'][0]['workTiming']['facts'])
+        for field in ('revisions', 'receipts', 'savedImports', 'identityBindings'):
+            self.assertTrue(all(updated[field][key] == value for key, value in state[field].items()))
+        self.assertTrue(all(updated['sources'][key]['source'] == value['source']
+                            for key, value in state['sources'].items()))
+        self.assertEqual((state, self.usage, entry), before)
+        self.assertEqual(self.apply(updated, [entry], registry=registry, accounts=[],
+                                    now=fixture.NOW + dt.timedelta(hours=1)), updated)
+
+    def test_registry_historical_admission_requires_same_post_content_and_images(self):
+        state = self.apply(None, [self.entry()])
+        registry = fixture.registry_fixture()
+        registry['members'][0].update(membership='inactive', collection='paused')
+        for change in ('new_post', 'body', 'image', 'pending_only'):
+            target_state = copy.deepcopy(state)
+            entry = self.entry(target_state, suffix=2 if change == 'new_post' else 1)
+            if change == 'body':
+                entry['amendment']['source']['bodyHash'] = 'f' * 64
+            elif change == 'image':
+                entry['amendment']['analysis']['images'][0]['sha256'] = 'f' * 64
+            elif change == 'pending_only':
+                target_state = facts.empty_state()
+                facts.record_source(target_state, entry['amendment']['source'],
+                                    'pending', 'not_issued', fixture.NOW)
+                entry['expectedSubjectHash'] = facts.digest(target_state)
+            before = copy.deepcopy((target_state, self.usage, entry))
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, 'account_mismatch'):
+                self.apply(target_state, [entry], registry=registry, accounts=[])
+            self.assertEqual((target_state, self.usage, entry), before)
+
+    def test_registry_stored_bindings_remain_strict_for_new_and_historical_sources(self):
+        entry = self.entry()
+        state = self.apply(None, [entry])
+        registry = fixture.registry_fixture()
+        binding = state['identityBindings']['あむ']
+        for personal in (
+                {'あむ': {**binding, 'authorId': '12345'}},
+                {'別人': copy.deepcopy(binding)},
+                {'別人': {**binding, 'authorScreenName': 'other'}}):
+            for prior in (None, state):
+                candidate = self.entry(prior)
+                before = copy.deepcopy((prior, self.usage, candidate))
+                with self.subTest(personal=personal, historical=prior is not None), \
+                        self.assertRaisesRegex(ValueError, 'binding_(mismatch|ambiguous)'):
+                    self.apply(prior, [candidate], registry=registry,
+                               personal_state={'identityBindings': personal}, accounts=[])
+                self.assertEqual((prior, self.usage, candidate), before)
+        alias_registry = copy.deepcopy(registry)
+        alias_registry['members'][0]['aliases'] = ['あむ旧']
+        self.assertEqual(self.apply(state, [entry], registry=alias_registry, accounts=[],
+                                    personal_state={'identityBindings': {'あむ旧': binding}}), state)
+
     def setUp(self):
         patch = mock.patch('urllib.request.OpenerDirector.open',
                            side_effect=AssertionError('live network forbidden'))

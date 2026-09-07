@@ -550,13 +550,17 @@ def validate_selection_delta(before, after, analysis, source, tables, selection_
 class AzureAnalyzer:
     """Explicit product API; returned evidence uses to_amendment and the accounted saved importer."""
 
-    def __init__(self, usage, environment=None, *, clock, client=None):
+    def __init__(self, usage, environment=None, *, clock, client=None, registry_guard=None):
         _require(usage is not None and usage.component == 'schedule', 'shared_schedule_accounting_required')
         self.usage, self.environment, self.clock, self.client = usage, environment or {}, clock, client
         self.used = 0
+        self.registry_guard = registry_guard
 
     def analyze(self, state, authorization, source, text, images, on_issued):
         authorization, source = copy.deepcopy((authorization, source))
+        def guard():
+            azure.check_registry(self.registry_guard, source['name'])
+        guard()
         prepared = prepare_request(state, authorization, source, text, images, self.usage.state)
         _check_clock(state, authorization, self.clock())
         _require(self.used < 1, 'azure_budget_exhausted')
@@ -567,11 +571,19 @@ class AzureAnalyzer:
             ('model', facts.MODEL), ('modelVersion', facts.MODEL_VERSION), ('deployment', facts.MODEL))),
             'azure_model_mismatch')
         key = prepared['analysis']['requestHash']
-        self.usage.reserve(key, self.client.identity)
         try:
+            guard()
+            self.usage.reserve(key, self.client.identity)
+        except BaseException:
+            prepared['messages'].clear()
+            raise
+        try:
+            guard()
             on_issued(key)
+            guard()
             _authorize(state, authorization, source, prepared['analysis']['images'], self.usage.state)
             self.usage.issued(key)
+            guard()
             self.used += 1
             result = self.client.structured(prepared['messages'], prepared['schema'],
                                             name='half_month_timing', max_completion_tokens=MAX_OUTPUT_TOKENS)

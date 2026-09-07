@@ -1,4 +1,4 @@
-"""Offline member administration; no collectors, network, inference or asset stamping.
+"""Offline member administration; no collection, network, inference or statistics build.
 
 members.json is authoritative; members.js is a deterministic public projection.
 Existing schedules, statistics and author bindings are never rewritten here.
@@ -10,6 +10,7 @@ import copy
 import csv
 import datetime as dt
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -460,6 +461,46 @@ def collection_population(registry, *binding_maps):
     return targets, coverage
 
 
+class RegistryGuard:
+    """Recheck local authority immediately before I/O, including after any wait."""
+
+    def __init__(self, path, *, bindings=()):
+        self.path = Path(path)
+        self.bindings = bindings
+        self.registry, self.revision = self._read()
+        self._seen_bindings, _ = binding_index(self.registry, self._binding_maps())
+
+    def _read(self):
+        try:
+            raw = read_bytes(self.path)
+            return (validate_registry(strict_json(raw.decode('utf-8-sig'))),
+                    hashlib.sha256(raw).hexdigest())
+        except (OSError, UnicodeError):
+            raise RegistryError('registry_unavailable') from None
+
+    def _binding_maps(self):
+        maps = self.bindings() if callable(self.bindings) else self.bindings
+        require(isinstance(maps, (list, tuple)), 'invalid_identity_bindings')
+        return maps
+
+    def check(self, name=None):
+        current, revision = self._read()
+        require(revision == self.revision, 'registry_changed')
+        maps = self._binding_maps()
+        records, _ = binding_index(current, maps)
+        require(all(records.get(owner) == identity for owner, identity in self._seen_bindings.items()),
+                'account_identity_mismatch')
+        self._seen_bindings.update(records)
+        if name is None:
+            return current
+        member = lookup(current, name)
+        require(member is not None, 'unknown_member')
+        targets, coverage = collection_population(current, *maps)
+        mid = member['memberId']
+        require(mid in targets, coverage[mid]['reason'])
+        return targets[mid]
+
+
 def public_projection(registry):
     validate_registry(registry)
     return {'schemaVersion': 1, 'members': [
@@ -700,6 +741,55 @@ def check_projection(path, registry):
             'generated_projection_mismatch')
 
 
+def registry_project_root(path):
+    path = Path(path).resolve()
+    root = path.parent.parent
+    return root if path.parent.name == 'data' and (root / 'index.html').is_file() else None
+
+
+def stamp_registry_assets(path):
+    root = registry_project_root(path)
+    if root is None:
+        return False
+    spec = importlib.util.spec_from_file_location(
+        'member_registry_asset_stamps', Path(__file__).with_name('build-insights.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.stamp_assets(root=root)
+
+
+def local_plan_references(path):
+    root = registry_project_root(path)
+    if root is None:
+        return None
+    spec = importlib.util.spec_from_file_location(
+        'member_registry_schedule_reader', Path(__file__).with_name('collect-personal-shifts.py'))
+    loader = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(loader)
+    schedule = loader.read_js(root / 'data' / 'schedule.js', 'SCHEDULE_DATA')
+    require(isinstance(schedule, dict) and isinstance(schedule.get('schedule'), dict),
+            'invalid_local_schedule')
+    refs = []
+    for day, shifts in schedule['schedule'].items():
+        date_key(day)
+        require(isinstance(shifts, dict), 'invalid_local_schedule')
+        for shift, people in shifts.items():
+            choice(shift, {'昼', '夜'}, 'invalid_plan_shift')
+            require(isinstance(people, list), 'invalid_local_schedule')
+            for person in people:
+                require(isinstance(person, dict), 'invalid_local_schedule')
+                refs.append({'name': valid_name(person.get('name')), 'date': day, 'shift': shift})
+    spec = importlib.util.spec_from_file_location(
+        'member_registry_half_reader', Path(__file__).with_name('half-month-schedules.py'))
+    half = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(half)
+    feed = half.public_state(strict_json(read_bytes(root / 'data' / 'half-month-schedules.json').decode('utf-8-sig')))
+    for item in feed['schedules']:
+        for day in item['days']:
+            refs.extend({'name': item['name'], 'date': day['date'], 'shift': shift} for shift in day['shifts'])
+    return refs
+
+
 def argument_parser():
     parser = argparse.ArgumentParser(description='Offline member registry; no collection or inference')
     parser.add_argument('--registry', type=Path, default=ROOT / 'data' / 'members.json')
@@ -780,17 +870,23 @@ def main(argv=None, *, clock=lambda: dt.datetime.now(UTC)):
                     'account_identity_mismatch')
         impact = None
         if args.command == 'set-status':
-            plans = strict_json(read_bytes(args.plans).decode('utf-8-sig')) if args.plans else None
+            plans = (strict_json(read_bytes(args.plans).decode('utf-8-sig')) if args.plans
+                     else local_plan_references(args.registry))
             impact = plan_impact(registry, args.member, plans, clock().astimezone(JST).date().isoformat())
         if args.command == 'check':
             check_projection(args.registry, registry)
         elif args.command != 'report':
             save_registry(args.registry, registry, original_hash)
+            try:
+                stamp_registry_assets(args.registry)
+            except (OSError, UnicodeError):
+                raise RegistryError('registry_saved_asset_stamps_incomplete') from None
         result = {'command': args.command, 'published': False, 'scope': 'offline_registry',
                   'baselineChecked': args.baseline is not None,
                   'sourceRequests': 0, 'analysisRequests': 0, **report}
         if impact is not None:
             result['planImpact'] = impact
+            result['planScope'] = 'explicit_references' if args.plans else 'local_saved_inputs'
             result['message'] = (
                 '既存の予定・実績・出典は削除していません。退在籍日不明では将来予定は照合要です。'
                 '確認済みのinactiveFromだけがplan-only表示の打切りに使われます。'
@@ -804,6 +900,10 @@ def main(argv=None, *, clock=lambda: dt.datetime.now(UTC)):
             error.update(registrySaved=True, projectionComplete=False, recoveryCommands=['check', 'export'],
                          message='members.jsonは保存済みですが、members.jsの生成が完了していません。'
                                  '追加操作は繰り返さず、同じregistryにcheckとexportを実行してください。')
+        elif reason == 'registry_saved_asset_stamps_incomplete':
+            error.update(registrySaved=True, recoveryCommands=['export'],
+                         message='名簿は保存済みですが、index.htmlの刻印更新が完了していません。'
+                                 '同じregistryにexportを実行してください。')
         print(json.dumps(error, ensure_ascii=False), file=sys.stderr)
         return 2
 

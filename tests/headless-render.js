@@ -208,6 +208,7 @@ function run(relativePath) {
 
 run("data/schedule.js");
 run("data/store-insights.js");
+run("data/members.js");
 run("app.js");
 
 const insights = sandbox.window.STORE_INSIGHTS;
@@ -1592,7 +1593,8 @@ assert.equal(
 // 未提出の注意書きは、カレンダーの下に1行だけ出す。シフトごとに繰り返さない。
 {
   const line = elementById("schedule-pending-note");
-  const pending = insights.schedulePending?.pending ?? [];
+  const pending = windowShim.MEMBER_REGISTRY.members.filter(member => member.membership === "active")
+    .map(member => member.canonicalName);
   if (pending.length > 0) {
     assert.equal(line.hidden, false, "with names outstanding the line must be shown");
     assert.ok(line.textContent.includes(`${pending.length}名`), "the line must count them");
@@ -1602,7 +1604,7 @@ assert.equal(
       "screen readers must get the same warning as the tooltip"
     );
     for (const name of pending) {
-      assert.ok(line.title.includes(name), `${name} must be named in the detail`);
+      assert.ok(line.title.includes(schedule.displayNames?.[name] ?? name), `${name} must be named in the detail`);
     }
   } else {
     assert.equal(line.hidden, true, "with nobody outstanding the line must stay hidden");
@@ -2718,3 +2720,168 @@ console.log(
     `${viewModeValues.length} view modes with ${plans.length} per-maid plans agreeing with the calendar, ` +
     "and no explanation block below the calendar."
 );
+
+function initializeRegistryApp(memberRegistry, { manual = {}, records = {}, tendencies = {} } = {}) {
+  const nodes = new Map([...declaredIds].map(id => [id, makeElement("div")]));
+  const modes = viewModeValues.map(value => Object.assign(makeElement("input"), { value }));
+  const document = {
+    ...documentShim, activeElement: null,
+    querySelector: selector => nodes.get(selector.slice(1)),
+    querySelectorAll: () => modes, getElementById: id => nodes.get(id),
+    body: makeElement("body"), documentElement: makeElement("html")
+  };
+  const window = {
+    ...windowShim,
+    MEMBER_REGISTRY: memberRegistry,
+    SCHEDULE_DATA: { ...JSON.parse(JSON.stringify(schedule)), schedule: manual },
+    STORE_INSIGHTS: { ...JSON.parse(JSON.stringify(insights)), actual: {}, actualRoster: records,
+      maidTendency: tendencies, schedulePending: { pending: [], rostered: 40 } },
+    HALF_MONTH_SCHEDULES: emptyHalfMonthSchedules(),
+    PERSONAL_SHIFTS: { ...windowShim.PERSONAL_SHIFTS, posts: [] },
+    OBSERVED_SHIFTS: { ...windowShim.OBSERVED_SHIFTS, posts: [] },
+    localStorage: { getItem: () => null, setItem() {} },
+    fetch: () => { throw new Error("registry UI tests must not fetch"); },
+    setInterval: () => { throw new Error("registry UI tests must not poll"); }
+  };
+  const raw = JSON.stringify([window.SCHEDULE_DATA, window.STORE_INSIGHTS, memberRegistry]);
+  const context = { ...sandbox, window, document, console };
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(repo, "app.js"), "utf8"), context);
+  const trigger = (target, type) => {
+    const found = listeners.filter(entry => entry.element === target && entry.type === type);
+    assert.ok(found.length, `${target.id ?? target.value ?? target.tagName} needs a ${type} handler`);
+    found.forEach(entry => entry.fn({ target, type }));
+  };
+  return {
+    nodes, window, document, raw,
+    trigger, dispatch: (id, type) => trigger(nodes.get(id), type),
+    selectMode: value => {
+      const input = modes.find(input => input.value === value);
+      modes.forEach(candidate => { candidate.checked = candidate === input; });
+      trigger(input, "change");
+    }
+  };
+}
+
+const registryUiMember = (changes = {}) => ({
+  memberId: "m-00000000000000000000000000000001", canonicalName: "新しい人", displayName: "新しい人",
+  aliases: [], role: "normal", membership: "active", collection: "enabled", inactiveFrom: null,
+  xProfileUrl: "https://x.com/new_member", homeStore: null, homeStoreSource: null,
+  officialListing: "unknown", orderBefore: null, ...changes
+});
+
+test("registry-only members have a selectable profile without inventing a shift or store", () => {
+  const member = registryUiMember({ displayName: "新表示", aliases: ["新表示"] });
+  const publicRegistry = { schemaVersion: 1, members: [member], unresolvedNames: ["未解決"] };
+  const app = initializeRegistryApp(publicRegistry);
+  const filters = app.nodes.get("maid-checkboxes");
+  const rows = withClass(filters, "checkbox-label");
+  assert.equal(rows.length, 1, "legacy schedule.roster and unresolved names cannot become active filters");
+  assert.equal(rows[0].dataset.name, "新しい人");
+  const checkbox = walk(rows[0]).find(node => node.tagName === "INPUT");
+  assert.equal(checkbox.value, "新しい人");
+  assert.equal(checkbox.checked, true);
+  const label = walk(rows[0]).find(node => node.tagName === "LABEL");
+  assert.equal(label.textContent, "新表示");
+  assert.equal(label.getAttribute("for"), checkbox.id);
+  const profile = walk(rows[0]).find(node => node.tagName === "A");
+  assert.equal(profile.href, member.xProfileUrl);
+  assert.equal(profile.getAttribute("aria-label"), "新表示のXを開く");
+  assert.equal(profile.rel, "noopener noreferrer");
+  assert.equal(profile.target, "_blank");
+  const warning = app.nodes.get("schedule-pending-note");
+  assert.equal(warning.hidden, false);
+  assert.match(warning.title, /新表示/);
+  assert.match(warning.textContent, /在籍1名のうち1名/);
+  for (const mode of ["calendar", "roster", "forecast", "maid"]) {
+    app.selectMode(mode);
+    assert.equal(withClass(app.nodes.get("calendar"), "maid-entry").length, 0);
+    assert.equal(withClass(app.nodes.get("calendar"), "maid-plan").length, 0);
+  }
+  checkbox.checked = false;
+  app.trigger(checkbox, "change");
+  assert.match(app.nodes.get("maid-filter-summary").textContent, /0\/1名/);
+  assert.equal(JSON.stringify([app.window.SCHEDULE_DATA, app.window.STORE_INSIGHTS, publicRegistry]), app.raw);
+});
+
+test("missing or malformed registry stops UI without a stale roster or source fetch", () => {
+  for (const value of [undefined, null, {}, { schemaVersion: 2, members: [], unresolvedNames: [] },
+    { schemaVersion: 1, members: [registryUiMember({ xProfileUrl: "https://x.com/home" })], unresolvedNames: [] }]) {
+    const app = initializeRegistryApp(value);
+    assert.equal(app.nodes.get("calendar").children.length, 0);
+    assert.equal(app.nodes.get("maid-checkboxes").children.length, 0);
+    assert.equal(app.nodes.get("schedule-pending-note").hidden, false);
+    assert.equal(app.nodes.get("schedule-pending-note").getAttribute("role"), "alert");
+    assert.match(app.nodes.get("schedule-pending-note").textContent, /古い名簿への切替は行いません/);
+    assert.match(app.nodes.get("result-summary").textContent, /表示を停止/);
+  }
+});
+
+test("retired kitchen history stays filterable while dated retirement hides only planned rows", () => {
+  const member = registryUiMember({ role: "kitchen", membership: "inactive", collection: "paused", inactiveFrom: "2026-09-07" });
+  const publicRegistry = { schemaVersion: 1, members: [member], unresolvedNames: [] };
+  const manual = { "2026-09-06": { 昼: [{ name: member.canonicalName }] },
+    "2026-09-07": { 昼: [{ name: member.canonicalName, featured: true, eventLabel: "記念日" }] } };
+  const records = { "2026-09-07": { 夜: { stores: { s2: [member.canonicalName] }, trainees: [] } } };
+  const app = initializeRegistryApp(publicRegistry, { manual, records });
+  const filters = app.nodes.get("maid-checkboxes");
+  const row = withClass(filters, "checkbox-label")[0];
+  assert.equal(row.dataset.name, member.canonicalName);
+  assert.equal(row.classList.contains("is-kitchen"), true);
+  assert.match(row.textContent, /履歴/);
+  assert.equal(withClass(row, "kitchen-badge")[0].getAttribute("aria-label"), "キッチンにゃんこ");
+  app.selectMode("roster");
+  let entries = withClass(app.nodes.get("calendar"), "maid-entry");
+  assert.equal(entries.length, 2, "only the pre-retirement plan and later actual row survive");
+  assert.equal(entries.filter(entry => entry.dataset.evidence === "recorded").length, 1);
+  assert.equal(entries.filter(entry => entry.classList.contains("is-featured")).length, 0);
+  app.nodes.get("hide-kitchen").checked = true;
+  app.dispatch("hide-kitchen", "change");
+  assert.equal(withClass(app.nodes.get("calendar"), "maid-entry").length, 0);
+  app.nodes.get("hide-kitchen").checked = false;
+  app.dispatch("hide-kitchen", "change");
+  app.nodes.get("date-from").value = "2026-09-08";
+  app.nodes.get("date-to").value = "2026-09-15";
+  app.dispatch("date-from", "change");
+  assert.equal(withClass(filters, "checkbox-label").length, 0, "no evidence means no inactive checkbox in this range");
+  app.nodes.get("date-from").value = "2026-09-07";
+  app.nodes.get("date-to").value = "2026-09-07";
+  app.dispatch("date-from", "change");
+  assert.equal(withClass(filters, "checkbox-label").length, 1);
+  app.dispatch("select-all", "click");
+  app.selectMode("calendar");
+  const button = withClass(app.nodes.get("calendar"), "day-button").find(node => node.dataset.date === "2026-09-07");
+  app.trigger(button, "click");
+  entries = withClass(app.nodes.get("day-dialog-content"), "maid-entry");
+  assert.equal(entries.length, 1, "opening the popup cannot restore a plan excluded by inactiveFrom");
+  assert.equal(entries[0].dataset.evidence, "recorded");
+  assert.equal(JSON.stringify([app.window.SCHEDULE_DATA, app.window.STORE_INSIGHTS, publicRegistry]), app.raw);
+});
+
+for (const membership of ["active", "inactive"]) {
+test(`${membership} paused plans preserve the distinction between collection pause and unknown retirement`, () => {
+  const member = registryUiMember({ membership, collection: "paused" });
+  const publicRegistry = { schemaVersion: 1, members: [member], unresolvedNames: [] };
+  const app = initializeRegistryApp(publicRegistry, {
+    manual: { "2026-09-07": { 夜: [{ name: member.canonicalName }] } }
+  });
+  for (const mode of ["roster", "forecast"]) {
+    app.selectMode(mode);
+    const entries = withClass(app.nodes.get("calendar"), "maid-entry");
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].dataset.store, undefined);
+    assert.equal(/要確認/.test(entries[0].textContent), membership === "inactive");
+    assert.equal(/適用日が未確認/.test(entries[0].title), membership === "inactive");
+  }
+  app.selectMode("maid");
+  const plan = withClass(app.nodes.get("calendar"), "maid-plan")[0];
+  const profile = withClass(plan, "maid-name")[0];
+  assert.equal(profile.href, member.xProfileUrl);
+  const stop = withClass(plan, "maid-plan-stop")[0];
+  assert.equal(withClass(stop, "maid-plan-where")[0].dataset.store, "");
+  assert.equal(/要確認/.test(stop.textContent), membership === "inactive");
+  assert.equal(/適用日が未確認/.test(stop.title), membership === "inactive");
+  assert.doesNotMatch(plan.textContent, /行き先は推測|店舗推測/);
+});
+}

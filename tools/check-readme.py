@@ -116,7 +116,7 @@ def build_claims(data):
         add("店舗枠の見習い率", sid + "見習い", pattern, (
             row["cells"], row["traineePersonAppearances"], row["traineesPerCell"],
             row["cellsWithTrainees"], round(row["cellsWithTraineesRate"] * 100, 1)))
-    add(None, "現在の在籍人数",
+    add(None, "保存された統計の名簿人数",
         r"(?:在籍|roster\s*(?:は)?)\s*(\d+)\s*名", (data["schedulePending"]["rostered"],))
     return claims
 

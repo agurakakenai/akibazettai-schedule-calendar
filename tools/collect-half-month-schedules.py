@@ -1,7 +1,6 @@
 """Bounded original-post/photo half-month producer; raw inputs are transient only."""
 import argparse
 from contextlib import ExitStack
-import csv
 import datetime as dt
 import email.utils
 import http.client
@@ -31,7 +30,22 @@ azure = _module('schedule-azure.py', 'half_month_azure')
 official = _module('collect-shifts.py', 'half_month_official')
 personal = _module('collect-personal-shifts.py', 'half_month_personal')
 yahoo = _module('yahoo-search.py', 'half_month_yahoo')
+members = facts.member_registry()
 Failure = official.FetchFailure
+
+
+class RegistryFailure(Failure):
+    pass
+
+
+def check_registry(guard, name=None):
+    if guard is not None:
+        try:
+            return guard.check(name)
+        except ValueError as exc:
+            raise RegistryFailure(str(exc)) from None
+
+
 MAX_DOCUMENT_BYTES = 4_000_000
 TIMEOUT = 35
 PHOTO_HOST = 'pbs.twimg.com'
@@ -51,6 +65,19 @@ def author_id(value):
 def matching_author(value, expected):
     supplied = [value[key] for key in ('id_str', 'id') if key in value]
     return bool(supplied) and all(author_id(item) == expected for item in supplied)
+
+
+def matching_binding(bindings, name, uid, handle, *, registry=None):
+    for owner, bound in (bindings or {}).items():
+        if registry is not None:
+            member = members.lookup(registry, owner)
+            owner = member['canonicalName'] if member else owner
+        same_id = bound['authorId'] == uid
+        same_handle = bound['authorScreenName'].casefold() == handle.casefold()
+        if (owner == name and not (same_id and same_handle)
+                or owner != name and (same_id or same_handle)):
+            return False
+    return True
 
 
 def media_url(url):
@@ -87,7 +114,7 @@ def selected_image_url(url):
     return f'https://{PHOTO_HOST}/media/{asset}?format={"png" if mime == "image/png" else "jpg"}&name=medium'
 
 
-def discover(document, targets, now, bindings=None):
+def discover(document, targets, now, bindings=None, *, registry=None, other_bindings=()):
     """Yahoo bestTweet + timeline, but a half-period-specific publication window."""
     if not isinstance(document, str) or len(document.encode('utf-8')) > MAX_DOCUMENT_BYTES:
         raise ValueError('invalid_search_response')
@@ -99,13 +126,13 @@ def discover(document, targets, now, bindings=None):
                              error.get('errorType') not in (None, '', 'zeromatch')):
         raise ValueError('invalid_search_response')
     entries = yahoo.candidate_entries(page)
-    handles = {target['handle']: target for target in targets.values()}
+    handles = {target['handle'].casefold(): target for target in targets.values()}
     candidates, conflicts = {}, set()
     start = facts.candidate_start(now)
     evidence_hash = facts.digest(document.encode('utf-8'))
     for entry in entries[:200]:
         handle = entry.get('screenName')
-        if not isinstance(handle, str) or handle not in handles:
+        if not isinstance(handle, str) or handle.casefold() not in handles:
             continue
         tid, uid = official.post_id(entry.get('id')), author_id(entry.get('userId'))
         epoch = entry.get('createdAt')
@@ -125,9 +152,9 @@ def discover(document, targets, now, bindings=None):
                     or not start <= when.astimezone(facts.JST).date() or when > now
                     or abs((official.snowflake_time(tid) - when).total_seconds()) >= 2):
                 continue
-            target = handles[handle]
-            bound = (bindings or {}).get(target['name'])
-            if bound and (bound['authorId'] != uid or bound['authorScreenName'] != handle):
+            target = handles[handle.casefold()]
+            if not all(matching_binding(mapping, target['name'], uid, handle, registry=registry)
+                       for mapping in (bindings, *other_bindings)):
                 continue
             candidate = {'id': tid, 'url': facts.public_url(handle, tid), 'name': target['name'],
                          'authorId': uid, 'authorScreenName': handle,
@@ -157,8 +184,9 @@ def validate_post(candidate, payload, target, now, binding=None, *, payload_hash
     author = payload.get('user')
     if (not isinstance(author, dict) or not matching_author(author, uid)
             or author.get('screen_name') != handle or uid == official.AUTHOR_ID
-            or candidate['name'] != target['name'] or handle != target['handle']
-            or binding and (binding['authorId'] != uid or binding['authorScreenName'] != handle)):
+            or candidate['name'] != target['name'] or handle.casefold() != target['handle'].casefold()
+            or binding and (binding['authorId'] != uid
+                            or binding['authorScreenName'].casefold() != handle.casefold())):
         raise ValueError('author_mismatch')
     created = official.timestamp(payload.get('created_at'))
     if (created > now or abs((created - facts.timestamp(candidate['searchCreatedAt'])).total_seconds()) >= 1
@@ -244,11 +272,12 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class SourceClient:
-    def __init__(self, source, *, clock, opener=None, http_state=None):
+    def __init__(self, source, *, clock, opener=None, http_state=None, registry_guard=None):
         if source is None:
             raise ValueError('shared_source_state_required')
         self.source, self.clock = source, clock
         self.http_state = http_state
+        self.registry_guard, self.registry_name = registry_guard, None
         self.opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
         self.seen = set()
         self.images = {}
@@ -300,14 +329,23 @@ class SourceClient:
             until = official.load_transport(self.http_state).get(host)
             if until is not None:
                 self.source.set_cooldown(host, official.timestamp(until))
+        def guard():
+            if self.registry_guard is not None:
+                if self.registry_name is None:
+                    raise RegistryFailure('unknown_member')
+                check_registry(self.registry_guard, self.registry_name)
+        guard()
         self.source.check(kind)
+        guard()
         receipt = self.source.reserve(kind, url)
         self.seen.add(url)
         finished = False
         raw = None
         http_status = None
         try:
+            guard()
             self.source.issued(receipt)
+            guard()
             self.requests[kind] += 1
             with self.opener.open(urllib.request.Request(url), timeout=TIMEOUT) as response:
                 status = response.getcode()
@@ -401,9 +439,9 @@ class SourceClient:
         return image
 
 
-def refresh_coverage(state, reasons, now, manual):
+def refresh_coverage(state, reasons, now, manual, *, registry=None):
     periods = facts.target_periods(now)
-    merged = facts.effective_schedule(manual, state)
+    merged = facts.effective_schedule(manual, state, registry=registry)
     for start, end in periods:
         people = state['coverage'].setdefault(start, {})
         date, empty_day = facts.day(start), False
@@ -416,13 +454,16 @@ def refresh_coverage(state, reasons, now, manual):
                 'name': name, 'handle': reason['handle'], 'to': end,
                 'lastSearchedAt': None, 'nextCheckAt': None,
                 'candidateIds': [], 'confirmedIds': [], 'reason': reason['reason']})
+            previously_unavailable = row['handle'] is None
             row['handle'] = reason['handle']
             row['confirmedIds'] = sorted({item['id'] for item in state['schedules']
                                           if item['name'] == name and item['period']['from'] == start}, key=int)
             row['candidateIds'] = [item['id'] for item in state['pending'] if item['name'] == name]
             if reason['handle'] is None:
                 row['reason'] = reason['reason']
-            elif row['confirmedIds'] and row['reason'] not in {
+            elif previously_unavailable:
+                row['reason'] = 'post_unverified' if row['candidateIds'] else 'not_searched'
+            if reason['handle'] is not None and row['confirmedIds'] and row['reason'] not in {
                     facts.TIMING_STORAGE_LIMIT_REASON, *facts.CAPACITY_HOLD_REASONS}:
                 row['reason'] = 'valid_schedule'
             if row['lastSearchedAt'] is not None:
@@ -463,8 +504,35 @@ def _set_reason(state, name, periods, reason):
             state['coverage'][start][name]['reason'] = reason
 
 
-def target_population(state, schedule, insights, accounts, existing_bindings=None):
+def waiting_candidates(state, targets, now):
+    last_attempt = {}
+    for item in state['pending']:
+        name = item['name']
+        last_attempt[name] = max(last_attempt.get(name, ''), item['lastAttemptAt'] or '')
+    for record in state['sources'].values():
+        name = record['source']['name']
+        last_attempt[name] = max(last_attempt.get(name, ''), record['checkedAt'])
+    for record in state['candidateHistory'].values():
+        name = record['candidate']['name']
+        last_attempt[name] = max(last_attempt.get(name, ''), record['checkedAt'])
+    return sorted((item for item in state['pending'] if item['name'] in targets
+                   and (item['nextAttemptAt'] is None or facts.timestamp(item['nextAttemptAt']) <= now)),
+                  key=lambda item: (last_attempt[item['name']], item['lastAttemptAt'] or '',
+                                    item['discoveredAt'], item['priority'], -int(item['id'])))
+
+
+def target_population(state, schedule, insights, accounts, existing_bindings=None, *, registry=None):
     bindings = dict(existing_bindings or {})
+    if registry is not None:
+        targets, reasons = facts.population(
+            schedule, insights, accounts, existing_bindings, registry=registry,
+            other_bindings=(state['identityBindings'],))
+        bindings = {}
+        for mapping in (existing_bindings or {}, state['identityBindings']):
+            for name, bound in mapping.items():
+                member = members.lookup(registry, name)
+                bindings[member['canonicalName'] if member else name] = bound
+        return targets, reasons, bindings
     conflicts = set()
     for name, bound in state['identityBindings'].items():
         if name in bindings and any(bound[field] != bindings[name][field]
@@ -480,15 +548,24 @@ def target_population(state, schedule, insights, accounts, existing_bindings=Non
     return targets, reasons, bindings
 
 
-def completion_report(state, status, counts, now):
+def completion_report(state, status, counts, now, *, registry=None, existing_bindings=None,
+                      registry_error=None):
     code = (3 if status in ('paused', 'unavailable') else
             2 if status in ('partial', 'budget-exhausted') else 0)
-    return {'completed': True, 'component': 'schedule', 'collectionStatus': status,
+    report = {'completed': True, 'component': 'schedule', 'collectionStatus': status,
             'status': status, 'exitCode': code, 'complete': False,
             'requests': {kind: counts[kind] for kind in ('searches', 'posts', 'images')},
             'analysisRequests': counts.get('analysis', 0),
             'scheduleCount': len(state['schedules']), 'pendingCount': len(state['pending']),
-            'finishedAt': facts.stamp(now)}, code
+            'finishedAt': facts.stamp(now)}
+    if registry is not None:
+        report['registry'] = members.registry_report(
+            registry, existing_bindings or {}, state['identityBindings'])
+        report['registry']['unresolvedNames'] = [
+            row['name'] for row in registry['unresolvedNames'] if row['resolvedMemberId'] is None]
+        if registry_error is not None:
+            report['registry']['stopReason'] = registry_error
+    return report, code
 
 
 def update_check_time(state, now, *, successful=False):
@@ -501,8 +578,9 @@ def update_check_time(state, now, *, successful=False):
 
 
 def collect(state, schedule, insights, accounts, client, source, analyzer, *,
-            clock, save, max_searches=1, max_posts=1, max_images=4, existing_bindings=None):
-    """One person, at most one search/post/AI; authoritative ledgers are mandatory."""
+            clock, save, max_searches=1, max_posts=1, max_images=4, existing_bindings=None,
+            registry=None, registry_guard=None):
+    """At most one search/post/AI, with first-pass search and pending-post fairness."""
     if source is None or analyzer is None:
         raise ValueError('shared_schedule_accounting_required')
     if (type(max_searches) is not int or max_searches not in (0, 1)
@@ -510,25 +588,44 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
             or type(max_images) is not int or not 0 <= max_images <= 4):
         raise ValueError('invalid_schedule_limits')
     facts.validate_state(state)
+    if registry_guard is not None:
+        if registry is None:
+            registry = registry_guard.registry
+        client.registry_guard = analyzer.registry_guard = registry_guard
     now = clock()
     update_check_time(state, now)
-    targets, reasons, bindings = target_population(state, schedule, insights, accounts, existing_bindings)
-    periods = refresh_coverage(state, reasons, now, schedule.get('schedule', {}))
+    targets, reasons, bindings = target_population(
+        state, schedule, insights, accounts, existing_bindings, registry=registry)
+    binding_maps = (existing_bindings or {}, state['identityBindings'])
+    manual = (schedule or {}).get('schedule') or {}
+    periods = refresh_coverage(state, reasons, now, manual, registry=registry)
     counts = {'searches': 0, 'posts': 0, 'images': 0, 'analysis': 0}
     outcome, target, verified = 'no-results', None, None
     selected = None
     payload_received = False
     image_hashes = None
+    registry_error = None
+    search_target, search_before = None, None
+
+    def guard(name=None):
+        check_registry(registry_guard, name)
+        client.registry_name = name
+
     try:
+        guard()
         analyzer.check()
         # Expired metadata is accounted for in coverage, never in valid revisions.
         retained = []
         for item in state['pending']:
-            if facts.timestamp(item['searchCreatedAt']).astimezone(facts.JST).date() < facts.candidate_start(now):
+            if item['name'] not in targets:
+                retained.append(item)
+            elif facts.timestamp(item['searchCreatedAt']).astimezone(facts.JST).date() < facts.candidate_start(now):
                 _set_reason(state, item['name'], periods, 'stale_candidate')
-            elif item['name'] in targets and item['authorScreenName'] == targets[item['name']]['handle']:
-                bound = bindings.get(item['name'])
-                if bound and bound['authorId'] != item['authorId']:
+            else:
+                if (item['authorScreenName'].casefold() != targets[item['name']]['handle'].casefold()
+                        or not all(matching_binding(
+                            mapping, item['name'], item['authorId'], item['authorScreenName'], registry=registry)
+                            for mapping in (bindings, *binding_maps))):
                     state['candidateHistory'][facts.candidate_key(item)] = {
                         'candidate': dict(item), 'reason': 'account_identity_mismatch',
                         'checkedAt': facts.stamp(now)}
@@ -536,53 +633,59 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
                 else:
                     retained.append(item)
         state['pending'] = retained
-        waiting = sorted((item for item in state['pending'] if item['nextAttemptAt'] is None
-                          or facts.timestamp(item['nextAttemptAt']) <= now),
-                         key=lambda item: (item['lastAttemptAt'] or '', item['discoveredAt'],
-                                           item['priority'], -int(item['id'])))
-        if waiting:
+        waiting = waiting_candidates(state, targets, now)
+        due = []
+        for name, possible in targets.items():
+            rows = [state['coverage'][start][name] for start, _ in periods]
+            if any(row['nextCheckAt'] is None or facts.timestamp(row['nextCheckAt']) <= now for row in rows):
+                due.append((min(row['lastSearchedAt'] or '' for row in rows), name, possible))
+        first_pass = [item for item in due if item[0] == '']
+        search_due = first_pass if waiting else due
+        if search_due and max_searches:
+            target = min(search_due)[2]
+            search_target = target
+            guard(target['name'])
+            source.check('searches')
+            guard(target['name'])
+            search_before = {
+                start: (state['coverage'][start][target['name']]['lastSearchedAt'],
+                        state['coverage'][start][target['name']]['nextCheckAt'])
+                for start, _ in periods}
+            for start, _ in periods:
+                row = state['coverage'][start][target['name']]
+                row['lastSearchedAt'] = facts.stamp(clock())
+                row['nextCheckAt'] = facts.stamp(clock() + dt.timedelta(hours=24))
+            save()
+            counts['searches'] += 1
+            document = client.search(target['handle'])
+            candidates, truncated = discover(
+                document, {target['name']: target}, clock(), bindings,
+                registry=registry, other_bindings=binding_maps)
+            del document
+            _set_reason(state, target['name'], periods, 'candidate_limit' if truncated
+                        else 'post_unverified' if candidates else 'no_candidates')
+            enqueue(state, candidates, clock())
+            guard(target['name'])
+            waiting = waiting_candidates(state, targets, clock())
+            selected = waiting[0] if waiting else None
+            save()
+        elif waiting:
             selected = waiting[0]
-            target = targets[selected['name']]
+        elif due:
+            outcome = 'budget-exhausted'
         else:
-            due = []
-            for name, possible in targets.items():
-                rows = [state['coverage'][start][name] for start, _ in periods]
-                if any(row['nextCheckAt'] is None or facts.timestamp(row['nextCheckAt']) <= now for row in rows):
-                    due.append((min(row['lastSearchedAt'] or '' for row in rows), name, possible))
-            if due and max_searches:
-                target = min(due)[2]
-                source.check('searches')
-                for start, _ in periods:
-                    row = state['coverage'][start][target['name']]
-                    row['lastSearchedAt'] = facts.stamp(clock())
-                    row['nextCheckAt'] = facts.stamp(clock() + dt.timedelta(hours=24))
-                save()
-                counts['searches'] += 1
-                document = client.search(target['handle'])
-                candidates, truncated = discover(document, {target['name']: target},
-                                                  clock(), bindings)
-                del document
-                _set_reason(state, target['name'], periods, 'candidate_limit' if truncated
-                            else 'post_unverified' if candidates else 'no_candidates')
-                enqueue(state, candidates, clock())
-                waiting = sorted((item for item in state['pending'] if item['name'] == target['name']),
-                                 key=lambda item: (item['lastAttemptAt'] or '', item['discoveredAt'],
-                                                   item['priority'], -int(item['id'])))
-                waiting = [item for item in waiting if item['nextAttemptAt'] is None
-                           or facts.timestamp(item['nextAttemptAt']) <= clock()]
-                selected = waiting[0] if waiting else None
-                save()
-            elif due:
-                outcome = 'budget-exhausted'
-            else:
-                outcome = 'no-new'
+            outcome = 'no-new'
         if selected is not None and max_posts:
+            target = targets[selected['name']]
+            guard(target['name'])
             analyzer.check()
             source.check('posts')
+            guard(target['name'])
             selected['lastAttemptAt'] = facts.stamp(clock())
             save()
             counts['posts'] += 1
             payload, payload_hash = client.post(selected['id'])
+            guard(target['name'])
             payload_received = True
             verified, text, urls = validate_post(
                 selected, payload, target, clock(), bindings.get(target['name']),
@@ -612,6 +715,7 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
                 images = []
                 try:
                     for url in urls:
+                        guard(target['name'])
                         analyzer.check()
                         counts['images'] += 1
                         image = client.image(url)
@@ -636,6 +740,7 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
                         outcome = 'no-new'
                         _set_reason(state, target['name'], periods, 'known_source')
                     else:
+                        guard(target['name'])
                         schedules, analysis = analyzer.analyze(verified, text, images, periods, on_issued)
                         if schedules:
                             try:
@@ -671,6 +776,15 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
                                 record.get('requestHash'), image_hashes)
         if selected is not None and selected in state['pending']:
             state['pending'].remove(selected)
+    except (RegistryFailure, azure.RegistryFailure) as exc:
+        outcome, registry_error = 'paused', exc.reason
+        if target is not None:
+            _set_reason(state, target['name'], periods, 'paused')
+        if verified is not None:
+            record = state['sources'].get(facts.source_key(verified))
+            if record and record['status'] == 'issued':
+                facts.record_source(state, verified, 'failed', 'analysis_failed',
+                                    clock(), record['requestHash'])
     except Exception as exc:
         reason = getattr(exc, 'reason', str(exc))
         if 'budget' in reason:
@@ -704,14 +818,22 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
                     state['pending'].remove(selected)
     finally:
         client.close()
+    if (search_before is not None and isinstance(getattr(client, 'requests', None), dict)
+            and client.requests['searches'] == 0):
+        for start, previous in search_before.items():
+            row = state['coverage'][start][search_target['name']]
+            row['lastSearchedAt'], row['nextCheckAt'] = previous
     state['lastRun'] = {'status': outcome}
-    refresh_coverage(state, reasons, clock(), schedule.get('schedule', {}))
+    refresh_coverage(state, reasons, clock(), manual, registry=registry)
+    if registry_error is not None and target is not None:
+        _set_reason(state, target['name'], periods, 'paused')
     update_check_time(state, clock(), successful=outcome in ('ok', 'no-new', 'no-results'))
     facts.validate_state(state)
     save()
     if isinstance(getattr(client, 'requests', None), dict):
         counts.update(client.requests)
-    return completion_report(state, outcome, counts, clock())
+    return completion_report(state, outcome, counts, clock(), registry=registry,
+                             existing_bindings=existing_bindings, registry_error=registry_error)
 
 
 def replay_saved(state, *, document, payload_bytes, images, result, schedule, insights,
@@ -787,6 +909,7 @@ def argument_parser():
     parser.add_argument('--schedule', type=Path, default=ROOT / 'data' / 'schedule.js')
     parser.add_argument('--insights', type=Path, default=ROOT / 'data' / 'store-insights.js')
     parser.add_argument('--accounts', type=Path, default=ROOT / 'tools' / 'data' / 'accounts.csv')
+    parser.add_argument('--members', type=Path, default=ROOT / 'data' / 'members.json')
     parser.add_argument('--node', type=Path)
     parser.add_argument('--publish', type=Path)
     parser.add_argument('--report', type=Path)
@@ -799,7 +922,8 @@ def run(args, *, clock=official.utc_now, sleep=time.sleep, environment=None):
         raise ValueError('schedule_run_id_mismatch')
     writes = [path.resolve() for path in (args.snapshot, args.source_state, args.http_state,
                                          args.ai_state, args.publish, args.report) if path]
-    inputs = {path.resolve() for path in (args.schedule, args.insights, args.accounts, args.personal_state) if path}
+    inputs = {path.resolve() for path in (
+        args.schedule, args.insights, args.accounts, args.personal_state, args.members) if path}
     if (len(set(writes)) != len(writes) or set(writes) & inputs
             or any(path.suffix != '.json' for path in writes)
             or args.snapshot.resolve().parent == (ROOT / 'data').resolve()):
@@ -808,12 +932,17 @@ def run(args, *, clock=official.utc_now, sleep=time.sleep, environment=None):
     usage_module = _module('analysis-state.py', 'half_month_ai_usage')
 
     def defer(state, status):
+        check_registry(registry_guard)
+        _, reasons, _ = target_population(
+            state, {}, {}, [], personal_state['identityBindings'], registry=registry)
+        refresh_coverage(state, reasons, clock(), {}, registry=registry)
         state['lastRun'] = {'status': status}
         update_check_time(state, clock())
         facts.validate_state(state)
         official.atomic_json(args.snapshot, state)
         report, code = completion_report(state, status, {
-            'searches': 0, 'posts': 0, 'images': 0, 'analysis': 0}, clock())
+            'searches': 0, 'posts': 0, 'images': 0, 'analysis': 0}, clock(),
+            registry=registry, existing_bindings=personal_state['identityBindings'])
         report['exitCode'] = code
         if args.publish and not args.dry_run:
             official.atomic_json(args.publish, facts.public_state(state))
@@ -821,23 +950,34 @@ def run(args, *, clock=official.utc_now, sleep=time.sleep, environment=None):
             official.atomic_json(args.report, report)
         return report, code
 
-    if args.analysis_limit == 0:
-        with official.ProcessLock(args.snapshot.with_suffix('.lock')):
-            state = facts.read_state(args.snapshot)
-            source_module.validate_legacy(
-                source_module.load_state(args.source_state, required=True),
-                personal.read_state(args.personal_state),
-                usage_module.load_state(args.ai_state, required=True))
-            return defer(state, 'budget-exhausted')
     with ExitStack() as stack:
         stack.enter_context(official.ProcessLock(args.snapshot.with_suffix('.lock')))
         state = facts.read_state(args.snapshot)
+        personal_state = personal.read_state(args.personal_state)
+        registry_guard = members.RegistryGuard(args.members, bindings=lambda: (
+            personal.read_state(args.personal_state)['identityBindings'], state['identityBindings']))
+        registry = registry_guard.registry
+        if args.analysis_limit == 0:
+            source_module.validate_legacy(
+                source_module.load_state(args.source_state, required=True),
+                personal_state,
+                usage_module.load_state(args.ai_state, required=True))
+            return defer(state, 'budget-exhausted')
+        current_name = [None]
+
+        def guarded_sleep(seconds):
+            check_registry(registry_guard, current_name[0])
+            sleep(seconds)
+            check_registry(registry_guard, current_name[0])
+
         source = stack.enter_context(source_module.SharedSource(
             args.source_state, run_id=args.analysis_run_id, component='schedule',
-            clock=clock, sleep=sleep, personal_path=args.personal_state))
+            clock=clock, sleep=guarded_sleep, personal_path=args.personal_state))
         usage = stack.enter_context(usage_module.SharedUsage(
             args.ai_state, run_id=args.analysis_run_id, component='schedule', clock=clock,
-            sleep=sleep, request_limit=1))
+            sleep=guarded_sleep, request_limit=1))
+        if source.state['paused'] is not None:
+            return defer(state, 'paused')
         try:
             usage.check()
         except usage_module.UsageFailure as exc:
@@ -846,22 +986,28 @@ def run(args, *, clock=official.utc_now, sleep=time.sleep, environment=None):
             if exc.reason in ('azure_auth_stopped', 'azure_backoff'):
                 return defer(state, 'paused')
             raise
-        personal_state = personal.read_state(args.personal_state)
+        if not target_population(state, {}, {}, [], personal_state['identityBindings'],
+                                 registry=registry)[0]:
+            return defer(state, 'no-new')
+        remaining = source.report()['remaining']
+        if not (args.max_searches and remaining['searches'] or args.max_posts and remaining['posts']):
+            return defer(state, 'budget-exhausted')
         schedule = personal.read_js(args.schedule, 'SCHEDULE_DATA', args.node)
-        insights = personal.read_js(args.insights, 'STORE_INSIGHTS', args.node)
-        with args.accounts.open(encoding='utf-8-sig', newline='') as stream:
-            accounts = list(csv.DictReader(stream))
-        analyzer = azure.AzureAnalyzer(usage, os.environ if environment is None else environment, clock=clock)
-        client = SourceClient(source, clock=clock, http_state=args.http_state)
+        analyzer = azure.AzureAnalyzer(
+            usage, os.environ if environment is None else environment, clock=clock,
+            registry_guard=registry_guard)
+        client = SourceClient(source, clock=clock, http_state=args.http_state, registry_guard=registry_guard)
 
         def save():
+            current_name[0] = client.registry_name
             facts.validate_state(state)
             official.atomic_json(args.snapshot, state)
 
-        report, code = collect(state, schedule, insights, accounts, client, source, analyzer,
+        report, code = collect(state, schedule, {}, [], client, source, analyzer,
                                clock=clock, save=save, max_searches=args.max_searches,
                                max_posts=args.max_posts, max_images=args.max_images,
-                               existing_bindings=personal_state['identityBindings'])
+                               existing_bindings=personal_state['identityBindings'],
+                               registry=registry, registry_guard=registry_guard)
         report['exitCode'] = code
         if args.publish and not args.dry_run:
             official.atomic_json(args.publish, facts.public_state(state))

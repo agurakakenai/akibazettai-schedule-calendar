@@ -431,6 +431,39 @@ class StorageAndCLITests(unittest.TestCase):
     def digest(self):
         return hashlib.sha256(self.path.read_bytes()).hexdigest()
 
+    def test_guard_rechecks_stops_between_selection_and_request(self):
+        guard = registry.RegistryGuard(self.path, bindings=({}, {}))
+        self.assertEqual(guard.check(NAME)['handle'], 'fixture_member')
+        stopped = registry.update_member(self.value, NAME, now=LATER, collection='paused')
+        registry.save_registry(self.path, stopped, self.digest())
+        with self.assertRaisesRegex(registry.RegistryError, 'registry_changed'):
+            guard.check(NAME)
+        restarted = registry.RegistryGuard(self.path, bindings=({}, {}))
+        with self.assertRaisesRegex(registry.RegistryError, 'collection_paused'):
+            restarted.check(NAME)
+
+    def test_guard_catches_binding_change_but_allows_first_verified_binding(self):
+        personal, half = {}, {}
+        guard = registry.RegistryGuard(self.path, bindings=lambda: (personal, half))
+        guard.check(NAME)
+        half[NAME] = binding()
+        guard.check(NAME)
+        personal[NAME] = binding()
+        guard.check(NAME)
+        personal[NAME] = binding('67890')
+        with self.assertRaisesRegex(registry.RegistryError, 'account_identity_mismatch'):
+            guard.check(NAME)
+        personal.clear()
+        half[NAME] = binding('67890')
+        with self.assertRaisesRegex(registry.RegistryError, 'account_identity_mismatch'):
+            guard.check(NAME)
+
+    def test_guard_never_treats_unavailable_registry_as_empty(self):
+        guard = registry.RegistryGuard(self.path)
+        self.path.unlink()
+        with self.assertRaisesRegex(registry.RegistryError, 'registry_unavailable'):
+            guard.check(NAME)
+
     def cli(self, *arguments):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -546,6 +579,32 @@ class StorageAndCLITests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertFalse(result['planImpact']['evaluated'])
         self.assertIn('未確認', result['message'])
+
+    def test_project_cli_reads_saved_plans_and_stamps_without_rebuilding_statistics(self):
+        data = self.root / 'data'
+        data.mkdir()
+        path = data / 'members.json'
+        registry.save_registry(path, self.value, None)
+        index = self.root / 'index.html'
+        index.write_text('<script src="data/members.js?v=0000000000"></script>', encoding='utf-8')
+        (data / 'schedule.js').write_text('window.SCHEDULE_DATA = ' + json.dumps({
+            'schedule': {'2026-09-09': {'夜': [{'name': NAME}]}}}) + ';', encoding='utf-8')
+        (data / 'half-month-schedules.json').write_bytes(registry.json_bytes({
+            'schemaVersion': 1, 'complete': False, 'checkedAt': None, 'lastSuccessAt': None,
+            'schedules': [], 'lastRun': {'status': 'never'}}))
+        stats = data / 'store-insights.js'
+        stats.write_text('unchanged statistics', encoding='utf-8')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = registry.main(['--registry', str(path), 'set-status', '--member', NAME,
+                                  '--membership', 'inactive'], clock=lambda: LATER)
+        self.assertEqual(code, 0)
+        result = json.loads(out.getvalue())
+        self.assertEqual(result['planScope'], 'local_saved_inputs')
+        self.assertEqual(result['planImpact']['reviewCount'], 1)
+        expected = hashlib.sha256(path.with_suffix('.js').read_bytes()).hexdigest()[:10]
+        self.assertIn('members.js?v=' + expected, index.read_text())
+        self.assertEqual(stats.read_text(), 'unchanged statistics')
 
     def test_bad_plan_input_rejects_before_status_is_written(self):
         plans = self.root / 'bad-plans.json'

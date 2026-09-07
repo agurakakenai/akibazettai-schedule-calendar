@@ -1446,7 +1446,7 @@ def build():
     }
 
 
-def stamp_assets():
+def stamp_assets(root=None):
     """index.html の読み込みに中身のハッシュを付ける。
 
     GitHub Pages は `max-age=600` を返すので、データを更新しても
@@ -1456,12 +1456,13 @@ def stamp_assets():
 
     実際に、9月1日と2日の実績を反映したあと、画面には予測が出たままだった。
     """
-    index = os.path.join(ROOT, 'index.html')
+    root = ROOT if root is None else root
+    index = os.path.join(root, 'index.html')
     with open(index, encoding='utf-8') as f:
         html = f.read()
 
     def digest(rel):
-        path = os.path.join(ROOT, *rel.split('/'))
+        path = os.path.join(root, *rel.split('/'))
         if not os.path.exists(path):
             return None
         with open(path, 'rb') as f:
