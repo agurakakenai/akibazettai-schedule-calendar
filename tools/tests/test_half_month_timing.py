@@ -626,6 +626,60 @@ class TimingOnlyTests(base.Offline):
                 facts.validate_state(json.loads(json.dumps(after, sort_keys=True)))
                 self.assertEqual(self.fx.apply_timing(after, entry), after)
 
+    def test_saved_complete_empty_period_can_be_reanalyzed_complete_or_selected_after_json_roundtrip(self):
+        raw = base.maximum_timing_result()
+        for period in raw['periods']:
+            period['days'] = period['days'][:1]
+            period['days'][0]['shifts'] = period['days'][0]['shifts'][:1]
+            del period['days'][0]['workTiming']
+        self.seed_source(photos=4, raw=raw)
+        slots = self.prepared()['analysis']['timingOnly']['slots']
+        first = {'slots': [{'slotId': slot['slotId'], 'workTiming': (
+            [{'kind': 'long', 'time': None}] if index == 0 else [])} for index, slot in enumerate(slots)]}
+        baseline, first_entry = self.apply(self.packet(first, label='complete-with-empty'), label='complete-with-empty')
+        baseline_usage = copy.deepcopy(self.usage)
+        self.assertEqual(baseline['schedules'][1]['workTiming'], {'schemaVersion': 1, 'facts': []})
+        self.assertNotIn('workTiming', first_entry['amendment']['schedules'][1])
+        exact = lambda value: json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+        frozen_baseline = exact(baseline)
+        for sorted_roundtrip in (False, True):
+            for selected in (False, True):
+                with self.subTest(sorted_roundtrip=sorted_roundtrip, selected=selected):
+                    self.state = (json.loads(json.dumps(baseline, sort_keys=True, ensure_ascii=False))
+                                  if sorted_roundtrip else copy.deepcopy(baseline))
+                    self.usage = copy.deepcopy(baseline_usage)
+                    self.configure()
+                    before = copy.deepcopy(self.state)
+                    slots = self.prepared()['analysis']['timingOnly']['slots']
+                    response = {'slots': [{'slotId': slot['slotId'], 'workTiming': (
+                        [{'kind': 'long', 'time': None}] if index == 1 else None if selected else [])}
+                        for index, slot in enumerate(slots)]}
+                    label = 'next-' + str(sorted_roundtrip) + '-' + str(selected)
+                    packet = self.packet(response, label=label)
+                    entry = self.entry(packet, label=label)
+                    accounted = copy.deepcopy(self.usage)
+                    after = self.apply_entry(self.state, entry)
+                    self.assertEqual(self.state, before)
+                    self.assertEqual(self.usage, accounted)
+                    self.assertEqual(timing.core_copy(after['schedules']), timing.core_copy(before['schedules']))
+                    self.assertEqual(after['schedules'][0]['workTiming'], before['schedules'][0]['workTiming'])
+                    self.assertEqual(after['schedules'][1]['workTiming'], packet['schedules'][1]['workTiming'])
+                    for field in ('revisions', 'receipts', 'savedImports'):
+                        for key, value in before[field].items():
+                            self.assertEqual(exact(after[field][key]), exact(value))
+                    basis = facts._project([facts._effective_revision(before, key)
+                                            for key in packet['authorization']['basisRevisionKeys']])
+                    basis_rows = [basis[facts._pair(row)] for row in before['schedules']]
+                    self.assertEqual(facts.timing_hash(basis_rows), packet['authorization']['expectedTimingHash'])
+                    if selected:
+                        self.assertEqual(exact(after['schedules'][0]), exact(before['schedules'][0]))
+                        self.assertEqual(after['sources'], before['sources'])
+                        self.assertEqual(after['lastRun'], {'status': 'partial'})
+                    facts.validate_state(after)
+                    facts.validate_state(json.loads(json.dumps(after, sort_keys=True)))
+                    self.assertEqual(self.fx.apply_timing(after, entry), after)
+        self.assertEqual(exact(baseline), frozen_baseline)
+
     def test_selection_does_not_replace_complete_acceptance_or_allow_stale_rebase(self):
         complete, complete_proof = self.native_packet()
         with self.assertRaisesRegex(ValueError, 'timing_selection_requires_partial_sets'):

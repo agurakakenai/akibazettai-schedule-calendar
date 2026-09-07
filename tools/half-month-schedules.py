@@ -401,6 +401,16 @@ def projection_basis(state, receipt_id):
                   and _post_order(revision['schedule']) <= targets[_pair(revision['schedule'])])
 
 
+def _extend_revision_timing(state, channel, revision):
+    update = revision['schedule'].get('workTiming')
+    selected_update = 'selectionProof' in state.get('savedImports', {}).get(
+        revision['timingAmendment']['importId'], {})
+    # Replay historical empty-channel creation, while keeping selected no-info scopes untouched.
+    if selected_update and channel is None and update is None:
+        return None
+    return timing().merge(channel, update)
+
+
 def _effective_revision(state, key):
     revisions, chain, visited = state['revisions'], [], set()
     current = key
@@ -419,10 +429,10 @@ def _effective_revision(state, key):
         if len(parents) != 1:
             raise ValueError('invalid_schedule_timing_basis')
         current = parents[0]
-    effective, channel = copy.deepcopy(revisions[key]), None
-    for ancestor in reversed(chain):
-        if 'workTiming' in ancestor['schedule']:
-            channel = timing().merge(channel, ancestor['schedule']['workTiming'])
+    effective = copy.deepcopy(revisions[key])
+    channel = copy.deepcopy(chain[-1]['schedule'].get('workTiming'))
+    for ancestor in reversed(chain[:-1]):
+        channel = _extend_revision_timing(state, channel, ancestor)
     if channel is not None:
         effective['schedule']['workTiming'] = channel
     return effective
@@ -509,12 +519,7 @@ def select_revisions(state):
             if current in visited:
                 raise ValueError('schedule_timing_cycle')
             visited.add(current)
-            update = revisions[current]['schedule'].get('workTiming')
-            selected_update = 'selectionProof' in state.get('savedImports', {}).get(
-                revisions[current]['timingAmendment']['importId'], {})
-            # A selection must not add an empty channel to a wholly untouched period.
-            if not (selected_update and channel is None and update is None):
-                channel = timing().merge(channel, update)
+            channel = _extend_revision_timing(state, channel, revisions[current])
         if visited != set(keys):
             raise ValueError('schedule_timing_branch')
         effective = copy.deepcopy(revisions[current])
