@@ -547,6 +547,11 @@
       "authorScreenName": "ito_zettai",
       "verifiedAt": "2026-09-07T16:55:05.547597Z"
     },
+    "うな": {
+      "authorId": "1959230080657563648",
+      "authorScreenName": "una_zettai",
+      "verifiedAt": "2026-09-07T16:53:41.509454Z"
+    },
     "かなた": {
       "authorId": "1988584542077370368",
       "authorScreenName": "kanata2_zettai",
@@ -1504,6 +1509,40 @@
       "name": "ちゆ",
       "observedAt": "2026-09-07T16:40:55.165430Z",
       "url": "https://x.com/chiyu_zettai/status/2096800195745140831"
+    },
+    {
+      "authorId": "2080944098043977728",
+      "authorScreenName": "ito_zettai",
+      "createdAt": "2026-09-07T05:06:39Z",
+      "date": "2026-09-07",
+      "events": [],
+      "id": "2096827464404353313",
+      "links": [
+        {
+          "scope": "unspecified",
+          "status": "work"
+        }
+      ],
+      "name": "いと",
+      "observedAt": "2026-09-07T16:41:19.087696Z",
+      "url": "https://x.com/ito_zettai/status/2096827464404353313"
+    },
+    {
+      "authorId": "1959230080657563648",
+      "authorScreenName": "una_zettai",
+      "createdAt": "2026-09-07T09:50:38Z",
+      "date": "2026-09-07",
+      "events": [],
+      "id": "2096898930898612618",
+      "links": [
+        {
+          "scope": "unspecified",
+          "status": "work"
+        }
+      ],
+      "name": "うな",
+      "observedAt": "2026-09-07T16:53:41.509454Z",
+      "url": "https://x.com/una_zettai/status/2096898930898612618"
     }
   ],
   "resolved": [
@@ -1983,6 +2022,46 @@
       },
       "expectedSubjectHash": "ed1c4fa7636810348902eb7d64c5925b71c333704c8f0103c6aad284a4ceefef"
     },
+    "8be7c6b8bf81cbb6b536f9272ef9e31f710a4d153eb82bbfa9b1f5c191cd8013": {
+      "amendment": {
+        "events": [],
+        "id": "2096827464404353313",
+        "links": [
+          {
+            "scope": "unspecified",
+            "status": "work"
+          }
+        ],
+        "operation": "manual-saved-post",
+        "schemaVersion": 1,
+        "source": {
+          "analysisReceiptHash": "dd6c0b5db89131c12a5bce28990c8af8fd011a2fb31cf40624f69a491e4e83c9",
+          "analysisResultHash": "51dc33158dc8ef2fccd029031effff61632a4e681c41cc6d30641b61951deb1e",
+          "analyzedAt": "2026-09-07T17:23:40.419761Z",
+          "authorId": "2080944098043977728",
+          "authorScreenName": "ito_zettai",
+          "bodyHash": "a30503cc1f13397ef8de4b06477d06758de5a6e829afc1d0f2837ec466657ab6",
+          "contractHash": "ec45c49aa773f90cd1d38a049af4904470692ecd824f5e0e20d3a685ad8e92c6",
+          "contractVersion": "personal-line-ids-v8",
+          "createdAt": "2026-09-07T05:06:39Z",
+          "date": "2026-09-07",
+          "deployment": "gpt-5.6-luna",
+          "fetchedAt": "2026-09-07T16:41:19.087696Z",
+          "model": "gpt-5.6-luna",
+          "modelVersion": "2026-07-09",
+          "name": "いと",
+          "provenance": "search",
+          "searchCreatedAt": "2026-09-07T05:06:39Z",
+          "sourceHash": "77bce540e14691186760e9298bfa85ad28d6d00c011c8c5b1ecae03f4bd3ea01",
+          "sourceManifestHash": "a143e6ff9fc538438bbb5ae76bb765ca608d77abb96c00eb0e4f4fea1526b8f5",
+          "url": "https://x.com/ito_zettai/status/2096827464404353313",
+          "usageReceiptId": "cd83dd9e2479e2802f4c5d2692ad91277df9b2a38d9a99e77ef18674a4785264",
+          "usageSourceHash": "1c2378c730ed3addfb39d988b6b91b693fea175eaccde50bfd5ba86468d8d4e9"
+        },
+        "workTiming": null
+      },
+      "expectedSubjectHash": "ed1c4fa7636810348902eb7d64c5925b71c333704c8f0103c6aad284a4ceefef"
+    },
     "8c93700a36d0634b5f95b1956f6d89dd61d3e5e4f20a609e056b70fccbcd9a79": {
       "amendment": {
         "events": [
@@ -2212,6 +2291,46 @@
           ],
           "schemaVersion": 1
         }
+      },
+      "expectedSubjectHash": "ed1c4fa7636810348902eb7d64c5925b71c333704c8f0103c6aad284a4ceefef"
+    },
+    "f6ede251c868a870d43e97546f173fc7ca7974725fc3c580f9486a10698056e5": {
+      "amendment": {
+        "events": [],
+        "id": "2096898930898612618",
+        "links": [
+          {
+            "scope": "unspecified",
+            "status": "work"
+          }
+        ],
+        "operation": "manual-saved-post",
+        "schemaVersion": 1,
+        "source": {
+          "analysisReceiptHash": "fa471c682ce4b0f3ed1c0d6eecd84202ca3ffe3e9a4e99c3c7dbbba98821caac",
+          "analysisResultHash": "e69479c084461467d828856a5084770db147abfb1cc1607effb124105fda4ebb",
+          "analyzedAt": "2026-09-07T17:13:39.181065Z",
+          "authorId": "1959230080657563648",
+          "authorScreenName": "una_zettai",
+          "bodyHash": "1367e27f47cb4478990a18cb9f5a7b8137a2224dfdd648bb540d9285270440af",
+          "contractHash": "ec45c49aa773f90cd1d38a049af4904470692ecd824f5e0e20d3a685ad8e92c6",
+          "contractVersion": "personal-line-ids-v8",
+          "createdAt": "2026-09-07T09:50:38Z",
+          "date": "2026-09-07",
+          "deployment": "gpt-5.6-luna",
+          "fetchedAt": "2026-09-07T16:53:41.509454Z",
+          "model": "gpt-5.6-luna",
+          "modelVersion": "2026-07-09",
+          "name": "うな",
+          "provenance": "search",
+          "searchCreatedAt": "2026-09-07T09:50:38Z",
+          "sourceHash": "4d0899027814da88cd5ad52782aebed0b534bfb7f9a007eceb851b390f06a332",
+          "sourceManifestHash": "a143e6ff9fc538438bbb5ae76bb765ca608d77abb96c00eb0e4f4fea1526b8f5",
+          "url": "https://x.com/una_zettai/status/2096898930898612618",
+          "usageReceiptId": "cd83dd9e2479e2802f4c5d2692ad91277df9b2a38d9a99e77ef18674a4785264",
+          "usageSourceHash": "1c2378c730ed3addfb39d988b6b91b693fea175eaccde50bfd5ba86468d8d4e9"
+        },
+        "workTiming": null
       },
       "expectedSubjectHash": "ed1c4fa7636810348902eb7d64c5925b71c333704c8f0103c6aad284a4ceefef"
     }
