@@ -37,6 +37,196 @@ const halfFeed = (sources = [halfSource()]) => ({
   lastSuccessAt: "2026-09-06T12:00:00Z", schedules: sources, lastRun: { status: "ok" }
 });
 
+function timingSource(post, sourceKind) {
+  return { ...Object.fromEntries(["id", "url", "name", "authorId", "authorScreenName", "createdAt"]
+    .map(field => [field, post[field]])), sourceKind };
+}
+
+function timingFact(source, changes = {}) {
+  return { serviceDate: "2026-09-07", shift: "昼", boundary: "end", status: "set",
+    qualifier: "long", explicitTime: null, source, ...changes };
+}
+
+test("work timing strictly separates source words, exact clocks and work boundaries", () => {
+  const source = timingSource(halfSource(), "half-month-schedule");
+  for (const [shift, boundary, explicitTime, qualifier, label] of [
+    ["昼", "end", "16:00", null, "短め"], ["昼", "end", "18:00", null, "ながめ"],
+    ["夜", "start", "16:00", null, "早め"], ["夜", "start", "18:00", null, "おそめ"],
+    ["昼", "end", null, "short", "短め"], ["昼", "end", null, "long", "ながめ"],
+    ["夜", "start", null, "early", "早め"], ["夜", "start", null, "late", "おそめ"],
+    ["昼", "start", "16:00", null, null], ["夜", "end", "18:00", null, null],
+    ["昼", "end", "15:00", null, null], ["昼", "end", "17:00", null, null],
+    ["昼", "end", "19:00", null, null], ["夜", "start", "17:00", null, null],
+    ["夜", "start", "19:00", null, null]
+  ]) {
+    const fact = timingFact(source, { shift, boundary, explicitTime, qualifier });
+    const channel = { schemaVersion: 1, facts: [fact] };
+    assert.equal(api.validateWorkTiming(channel), channel);
+    assert.equal(api.workTimingLabel(fact), label);
+    if (label) {
+      assert.match(api.workTimingDescription(fact), explicitTime === null ? /明示語に基づく補足/ : /予定表に時刻記載/);
+      assert.doesNotMatch(api.workTimingDescription(fact), /数値記載なし|出典に数字がない/);
+      assert.equal(fact.explicitTime, explicitTime, "describing house meaning never fills an unconfirmed source clock");
+    }
+  }
+  assert.equal(api.workTimingLabel(timingFact(source, { qualifier: "long", explicitTime: "16:00" })), null);
+  for (const status of ["withdrawn", "conflict"]) {
+    assert.equal(api.workTimingLabel(timingFact(source, { status, qualifier: null })), null);
+  }
+  const valid = { schemaVersion: 1, facts: [timingFact(source)] };
+  for (const mutate of [
+    x => { x.raw = "private"; }, x => { x.schemaVersion = "1"; }, x => { x.facts = null; },
+    x => { delete x.facts[0].explicitTime; }, x => { x.facts[0].evidenceLineIds = [1]; },
+    x => { x.facts[0].serviceDate = "2026-09-31"; }, x => { x.facts[0].shift = "unspecified"; },
+    x => { x.facts[0].boundary = "break"; }, x => { x.facts[0].status = "pending"; },
+    x => { x.facts[0].qualifier = null; }, x => { x.facts[0].qualifier = "early"; },
+    x => { x.facts[0].qualifier = "__proto__"; }, x => { x.facts[0].explicitTime = "24:00"; },
+    x => { x.facts[0].source.url = "javascript:alert(1)"; }, x => { x.facts[0].source.body = "private"; },
+    x => { x.facts[0].source.id = 12345; }, x => { x.facts[0].source.createdAt = "2026-09-05T00:00:00Z"; },
+    x => { x.facts.push(copyOf(x.facts[0])); }
+  ]) {
+    const bad = copyOf(valid);
+    mutate(bad);
+    assert.throws(() => api.validateWorkTiming(bad), mutate.toString());
+  }
+  assert.throws(() => api.validateWorkTiming(valid, { owner: { ...halfSource(), authorId: "888" } }));
+  assert.throws(() => api.validateWorkTiming(valid, { date: "2026-09-08" }));
+  assert.throws(() => api.validateWorkTiming(valid, { days: { "2026-09-07": ["夜"] } }));
+  assert.throws(() => api.validateWorkTiming(valid, { sourceKind: "personal-work-post" }));
+});
+
+test("timing is display-only for curated and planned entries without inventing links or attendance", () => {
+  const table = halfSource();
+  table.workTiming = { schemaVersion: 1, facts: [
+    timingFact(timingSource(table, "half-month-schedule")),
+    timingFact(timingSource(table, "half-month-schedule"),
+      { serviceDate: "2026-09-02", shift: "夜", boundary: "start", qualifier: "early" })
+  ] };
+  assert.equal(api.validateHalfMonthSchedules(halfFeed([table]), { roster: schedule.roster, insights }).schedules[0], table);
+  const plain = api.buildEffectiveSchedule(schedule.schedule, halfFeed());
+  const effective = api.buildEffectiveSchedule(schedule.schedule, halfFeed([table]));
+  for (const [dateKey, shift, label] of [["2026-09-02", "夜", "早め"], ["2026-09-07", "昼", "ながめ"]]) {
+    const options = { insights, observations: null, personal: null, dateKey, shift, roster: schedule.roster };
+    const before = api.resolveShiftRoster({ ...options, schedule: plain });
+    const after = api.resolveShiftRoster({ ...options, schedule: effective });
+    assert.deepEqual(after.entries.map(entry => entry.name), before.entries.map(entry => entry.name));
+    assert.equal(api.workTimingLabel(after.entries.find(entry => entry.name === "いと").workTimingNote), label);
+    assert.equal(after.observed.byMaid.size, before.observed.byMaid.size);
+    assert.equal(after.personal.byMaid.size, before.personal.byMaid.size);
+  }
+  const before = JSON.stringify([table, effective, insights]);
+  const post = { ...table, date: "2026-09-06", events: [], links: [] };
+  delete post.period;
+  delete post.days;
+  delete post.sourceKind;
+  post.workTiming = { schemaVersion: 1, facts: [
+    timingFact(timingSource(post, "personal-work-post"), { serviceDate: post.date })
+  ] };
+  const personal = { schemaVersion: 1, complete: false, posts: [post],
+    checkedAt: post.observedAt, lastSuccessAt: post.observedAt, lastRun: { status: "ok" } };
+  assert.equal(api.validatePersonalShifts(personal), personal);
+  const result = api.resolveShiftRoster({ insights: null, observations: null, personal,
+    dateKey: post.date, shift: "昼", roster: schedule.roster, schedule: {} });
+  assert.deepEqual(result.entries, []);
+  assert.equal(api.dayHasPersonStoreEvidence(null, null, post.date, personal), false);
+  assert.equal(api.personalPostLink({ personal, insights: null, observations: null, dateKey: post.date, shift: "昼", name: post.name }), null);
+  assert.equal(JSON.stringify([table, effective, insights]), before);
+});
+
+test("timing precedence retains unmentioned facts and never revives explicitly blocked old labels", () => {
+  const table = halfSource("あむ");
+  table.workTiming = { schemaVersion: 1, facts: [timingFact(timingSource(table, "half-month-schedule"))] };
+  const effective = api.buildEffectiveSchedule({}, halfFeed([table]));
+  const makePost = (hour, changes = {}) => {
+    const createdAt = `2026-09-07T${String(hour).padStart(2, "0")}:00:00Z`;
+    const id = (((BigInt(Date.parse(createdAt)) - 1288834974657n) << 22n) + 1n).toString();
+    return { id, url: `https://x.com/${table.authorScreenName}/status/${id}`, name: table.name,
+      authorId: table.authorId, authorScreenName: table.authorScreenName, createdAt, observedAt: createdAt,
+      date: "2026-09-07", events: [], links: [{ scope: "昼", status: "work" }], ...changes };
+  };
+  const short = makePost(1);
+  short.workTiming = { schemaVersion: 1, facts: [
+    timingFact(timingSource(short, "personal-work-post"), { qualifier: null, explicitTime: "16:00" })
+  ] };
+  const resolve = (posts, changes = {}) => api.resolveWorkTiming({
+    personal: { posts }, schedule: effective, insights, dateKey: "2026-09-07", shift: "昼", name: "あむ", ...changes
+  });
+  const unrelated = makePost(2);
+  assert.equal(api.workTimingLabel(resolve([unrelated, short])), "短め");
+  assert.equal(api.workTimingLabel(resolve([makePost(3, { workTiming: { schemaVersion: 1, facts: [] } }), short])), "短め");
+  const changedTime = makePost(3);
+  changedTime.workTiming = { schemaVersion: 1, facts: [
+    timingFact(timingSource(changedTime, "personal-work-post"), { qualifier: null, explicitTime: "17:00" })
+  ] };
+  assert.equal(resolve([changedTime, short]), null);
+  for (const status of ["withdrawn", "conflict"]) {
+    const cancelled = makePost(3);
+    cancelled.workTiming = { schemaVersion: 1, facts: [
+      timingFact(timingSource(cancelled, "personal-work-post"), { status, qualifier: null })
+    ] };
+    assert.equal(resolve([cancelled, short, makePost(4)]), null);
+  }
+  assert.equal(resolve([short, makePost(3, { events: [{ shift: "昼", kind: "absence", excerpt: "お休み" }] }),
+    makePost(4, { events: [{ shift: "昼", kind: "return", excerpt: "復帰" }] })]), null);
+  assert.equal(resolve([short, makePost(3, { links: [{ scope: "昼", status: "withdrawn" }] })]), null);
+  const future = makePost(4, { date: "2026-09-08" });
+  future.workTiming = { schemaVersion: 1, facts: [
+    timingFact(timingSource(future, "personal-work-post"), { serviceDate: future.date, status: "withdrawn", qualifier: null })
+  ] };
+  assert.equal(api.workTimingLabel(resolve([short, future])), "短め");
+  assert.equal(api.workTimingLabel(resolve([makePost(4, { events: [{ shift: "昼", kind: "late", time: "16:00", excerpt: "遅れ" }] })])), "ながめ");
+  assert.equal(resolve([short], { shift: "夜" }), null);
+});
+
+test("value-specific timing denials do not cancel unrelated labels or revive older labels", () => {
+  const table = halfSource("あむ", { days: [{ date: "2026-09-07", shifts: ["夜"] }] });
+  const base = timingFact(timingSource(table, "half-month-schedule"),
+    { shift: "夜", boundary: "start", qualifier: "late" });
+  const earlyDenial = timingFact(base.source,
+    { shift: "夜", boundary: "start", status: "excluded", qualifier: "early" });
+  const timeDenial = { ...earlyDenial, qualifier: null, explicitTime: "18:00" };
+  table.workTiming = { schemaVersion: 1, facts: [base, earlyDenial, timeDenial] };
+  const feed = halfFeed([table]);
+  assert.equal(api.validateHalfMonthSchedules(feed), feed);
+  const resolve = (facts, posts = []) => {
+    const schedule = api.buildEffectiveSchedule({}, halfFeed([{ ...table, workTiming: { schemaVersion: 1, facts } }]));
+    return api.resolveWorkTiming({ personal: { posts }, schedule, insights, dateKey: "2026-09-07", shift: "夜", name: "あむ" });
+  };
+  assert.equal(api.workTimingLabel(resolve([base, earlyDenial])), "おそめ");
+  assert.equal(resolve([{ ...base, qualifier: null, explicitTime: "16:00" }, earlyDenial]), null);
+  assert.equal(api.workTimingLabel(resolve([{ ...base, qualifier: null, explicitTime: "18:00" }, earlyDenial])), "おそめ");
+  assert.equal(resolve([base, timeDenial]), null, "a denied clock matches the label's house meaning without inventing a source clock");
+  assert.equal(resolve([base, timeDenial, earlyDenial]), null);
+  assert.equal(resolve([{ ...base, qualifier: null, explicitTime: "18:00" },
+    { ...earlyDenial, qualifier: "late" }]), null);
+  const post = (hour, changes) => {
+    const createdAt = `2026-09-07T0${hour}:00:00Z`;
+    const id = (((BigInt(Date.parse(createdAt)) - 1288834974657n) << 22n) + 1n).toString();
+    const value = { id, url: `https://x.com/${table.authorScreenName}/status/${id}`,
+      name: table.name, authorId: table.authorId, authorScreenName: table.authorScreenName,
+      date: "2026-09-07", createdAt, observedAt: createdAt, events: [], links: [] };
+    value.workTiming = { schemaVersion: 1, facts: [
+      timingFact(timingSource(value, "personal-work-post"),
+        { shift: "夜", boundary: "start", status: "excluded", qualifier: "early", ...changes })
+    ] };
+    return value;
+  };
+  const notEarly = post(1, {});
+  const notLate = post(2, { qualifier: "late" });
+  const unrelatedLater = post(3, {});
+  assert.equal(api.workTimingLabel(resolve([base], [notEarly])), "おそめ");
+  assert.equal(resolve([base], [notLate, notEarly, unrelatedLater]), null);
+  assert.equal(api.workTimingLabel(resolve([base], [notLate, notEarly, unrelatedLater,
+    post(4, { status: "set", qualifier: "early" })])), "早め");
+  for (const facts of [
+    [{ ...earlyDenial, explicitTime: "16:00" }],
+    [{ ...earlyDenial, qualifier: null, explicitTime: null }],
+    [earlyDenial, copyOf(earlyDenial)]
+  ]) {
+    assert.throws(() => api.validateWorkTiming({ schemaVersion: 1, facts }));
+  }
+});
+
 test("half-month feed strictly validates the public-only contract and calendar", () => {
   const snapshot = halfFeed();
   assert.equal(api.validateHalfMonthSchedules(snapshot, { roster: schedule.roster, insights }), snapshot);

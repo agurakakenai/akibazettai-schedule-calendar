@@ -40,6 +40,7 @@ SPEC.loader.exec_module(official)
 AZURE_SPEC = importlib.util.spec_from_file_location('personal_azure', ROOT / 'tools' / 'personal-azure.py')
 azure = importlib.util.module_from_spec(AZURE_SPEC)
 AZURE_SPEC.loader.exec_module(azure)
+timing = work_timing = azure.timing
 SEARCH_SPEC = importlib.util.spec_from_file_location('personal_yahoo', ROOT / 'tools' / 'yahoo-search.py')
 yahoo = importlib.util.module_from_spec(SEARCH_SPEC)
 SEARCH_SPEC.loader.exec_module(yahoo)
@@ -190,7 +191,10 @@ def validate_last_run(value):
 
 def valid_post(post):
     require_keys(post, ('id', 'url', 'name', 'authorId', 'authorScreenName',
-                       'createdAt', 'observedAt', 'date', 'events'), ('links',))
+                       'createdAt', 'observedAt', 'date', 'events'), ('links', 'workTiming'))
+    if 'workTiming' in post:
+        work_timing.validate(post['workTiming'], owner=post, date=post['date'],
+                             source_kind='personal-work-post')
     tid = official.post_id(post['id'])
     handle = post['authorScreenName']
     if (not isinstance(post['id'], str) or not tid
@@ -203,7 +207,8 @@ def valid_post(post):
             or post['url'] != public_url(handle, tid)
             or calendar_day(official.timestamp(post['createdAt'])).isoformat() != post['date']
             or not isinstance(post['events'], list)
-            or not post['events'] and not post.get('links')):
+            or not post['events'] and not post.get('links')
+            and not post.get('workTiming', {}).get('facts')):
         raise ValueError('invalid_personal_post')
     created, observed = official.timestamp(post['createdAt']), official.timestamp(post['observedAt'])
     if observed < created or abs((official.snowflake_time(tid) - created).total_seconds()) >= 2:
@@ -302,7 +307,7 @@ def read_state(path, private=True):
                     'personal_saved_validation', ROOT / 'tools' / 'personal-saved.py')
                 saved = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(saved)
-                saved.validate_imports(value['savedPersonalImports'], azure_context())
+                saved.validate_revisions(value, azure_context())
             for key in ('pending', 'resolved', 'budgets', 'paused', 'identityBindings',
                         'originalTargets', 'lastRequests'):
                 if key not in value:
@@ -996,11 +1001,12 @@ def validate_post(candidate, payload, target, now, binding=None, roster=(), anal
     if analyzer is None:
         events, reason = parse_events(text, created, date, target['shifts'], target['name'], roster)
         links = None
+        timing_facts = []
     else:
-        events, links, reason = analyzer.parse(
+        events, links, timing_facts, reason = analyzer.parse_with_timing(
             text, created, date, target['shifts'], target['name'],
             post_id=tid, author_id=uid)
-    if not events and not links:
+    if not events and not links and not timing_facts:
         return None, reason
     post = {
         'id': tid, 'url': public_url(target['handle'], tid), 'name': target['name'],
@@ -1009,6 +1015,8 @@ def validate_post(candidate, payload, target, now, binding=None, roster=(), anal
     }
     if links is not None:
         post['links'] = links
+    if timing_facts:
+        post['workTiming'] = work_timing.bind(timing_facts, post, 'personal-work-post')
     valid_post(post)
     return post, reason
 
@@ -1451,6 +1459,21 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
             previous = next((entry for entry in state['posts'] if entry['id'] == item['id']), None)
             if analyzer is not None and previous and reason == 'no_event':
                 raise azure.AnalysisFailure('azure_no_event_conflict')
+            if (analyzer is not None and previous and post
+                    and ('workTiming' in previous or 'workTiming' in post)):
+                old_timing, update = previous.get('workTiming'), post.get('workTiming')
+                if old_timing is not None and not (update or {}).get('facts'):
+                    post['workTiming'] = copy.deepcopy(old_timing)
+                else:
+                    try:
+                        merged = work_timing.merge(old_timing, update)
+                    except work_timing.WorkTimingLimitError:
+                        raise azure.AnalysisFailure('azure_work_timing_storage_limit') from None
+                    if old_timing is not None and (
+                            {work_timing.fact_key(fact): fact for fact in merged['facts']}
+                            == {work_timing.fact_key(fact): fact for fact in old_timing['facts']}):
+                        merged = copy.deepcopy(old_timing)
+                    post['workTiming'] = merged
             state['identityBindings'][item['name']] = {
                 'authorId': item['authorId'], 'authorScreenName': item['authorScreenName'],
                 'verifiedAt': stamp(clock())}
@@ -1471,7 +1494,8 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                         post.setdefault('links', []).extend(copy.deepcopy(link) for link in retained
                                                             if link['scope'] not in supplied_scopes)
                 if (post and previous['events'] == post['events']
-                        and previous.get('links') == post.get('links')):
+                        and previous.get('links') == post.get('links')
+                        and previous.get('workTiming') == post.get('workTiming')):
                     post = previous
                 else:
                     analyzer.state['history'].append(copy.deepcopy(previous))
@@ -1503,6 +1527,9 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         status = early_status
     elif codes & {'budget_exhausted', 'azure_budget_exhausted', 'source_budget_exhausted'}:
         status = 'budget-exhausted'
+    elif codes and codes <= {'azure_work_timing_storage_limit', 'azure_capacity_hold',
+                            'azure_capacity_profile_stale'}:
+        status = 'partial'
     elif failures:
         status = 'partial' if any(source['status'] == 'ok' for source in sources) or new_posts else 'unavailable'
     elif deferred:

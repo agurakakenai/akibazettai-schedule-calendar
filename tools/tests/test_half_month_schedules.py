@@ -84,23 +84,72 @@ def source(created=CREATED, suffix=1, photos=1, mime='png'):
                                    TARGET, observed)
 
 
-def result(days=None, *, month=9, half='first', printed=None, text_year=None, images=True):
+def result(days=None, *, month=9, half='first', printed=None, text_year=None, images=True,
+           contract_version=facts.VERSION):
     if days is None:
         days = [(2, '水', ['夜']), (5, '土', ['昼']), (7, '月', ['昼']),
                 (10, '木', ['夜']), (12, '土', ['昼']), (14, '月', ['昼'])]
     return {'periods': [{'month': month, 'half': half, 'printedYear': printed, 'textYear': text_year,
                          'imageIndexes': [0] if images else [],
-                         'days': [{'day': number, 'weekday': weekday, 'shifts': shifts}
+                         'days': [{'day': number, 'weekday': weekday, 'shifts': shifts,
+                                  **({'workTiming': []} if contract_version == facts.VERSION else {})}
                                   for number, weekday, shifts in days]}]}
 
 
-def normalized(created=CREATED, suffix=1, value=None):
+def normalized(created=CREATED, suffix=1, value=None, contract_version=facts.VERSION):
     verified, text, _ = source(created, suffix)
     images = [{'bytes': png(), 'mime': 'image/png'}]
-    return verified, *azure.saved_result(verified, text, images, result() if value is None else value,
+    return verified, *azure.saved_result(verified, text, images,
+                                         result(contract_version=contract_version) if value is None else value,
                                          now=facts.timestamp(verified['observedAt']),
                                          receipt_id=facts.digest(str(suffix).encode()),
-                                         allowed_periods=None)
+                                         allowed_periods=None, contract_version=contract_version)
+
+
+def work_note(shift='昼', boundary='end', qualifier='long', explicit_time=None,
+              status='set', images=True):
+    if boundary != ('end' if shift == '昼' else 'start'):
+        raise ValueError('fixture_non_display_boundary')
+    kind = qualifier or 'time'
+    if status == 'excluded':
+        kind = 'not-' + kind
+    elif status != 'set':
+        kind = status
+    return {'shift': shift, 'kind': kind, 'time': explicit_time}
+
+
+def timing_result(notes=None):
+    value = result()
+    for row in value['periods'][0]['days']:
+        row['workTiming'] = (notes or {}).get(row['day'], [])
+    return value
+
+
+def maximum_timing_result(*, excluded=False):
+    periods = []
+    for month in (8, 10):
+        period = result([
+            (number, azure.WEEKDAYS[dt.date(2026, month, number).weekday()], ['昼', '夜'])
+            for number in range(16, 32)], month=month, half='second', printed=2026)['periods'][0]
+        period['imageIndexes'] = [0, 1, 2, 3]
+        for row in period['days']:
+            row['workTiming'] = [
+                work_note(qualifier=None if excluded else 'short', explicit_time='16:00',
+                          status='excluded' if excluded else 'set'),
+                work_note('夜', 'start', None if excluded else 'early', '16:00',
+                          status='excluded' if excluded else 'set')]
+        periods.append(period)
+    return {'periods': periods}
+
+
+def full_timing_channel(source):
+    timing = facts.timing()
+    values = [timing.expand_compact(work_note(), '2026-09-05')]
+    for minute in range(timing.MAX_FACTS - 1):
+        values.append(timing.expand_compact(
+            {'shift': '昼', 'kind': 'not-time', 'time': f'{minute // 60:02d}:{minute % 60:02d}'},
+            '2026-09-05'))
+    return timing.bind(values, source, 'half-month-schedule')
 
 
 class Offline(unittest.TestCase):
@@ -117,6 +166,155 @@ class Offline(unittest.TestCase):
 
 
 class StateTests(Offline):
+    def test_late_then_not_early_preserves_late_and_original_denial_provenance(self):
+        first = result([(10, '木', ['夜'])])
+        first['periods'][0]['days'][0]['workTiming'] = [work_note('夜', 'start', 'late', '18:00')]
+        source_, schedules, proof = normalized(value=first)
+        state = facts.empty_state()
+        facts.apply_revision(state, schedules, source_, proof)
+        denial = result([(10, '木', ['夜'])])
+        denial['periods'][0]['days'][0]['workTiming'] = [
+            work_note('夜', 'start', 'early', status='excluded')]
+        later_source, later, later_proof = normalized(CREATED + dt.timedelta(hours=1), 2, denial)
+        facts.apply_revision(state, later, later_source, later_proof)
+        notes = copy.deepcopy(state['schedules'][0]['workTiming']['facts'])
+        self.assertEqual([(fact['status'], fact['qualifier'], fact['explicitTime']) for fact in notes],
+                         [('set', 'late', '18:00'), ('excluded', 'early', None)])
+        self.assertEqual([fact['source']['id'] for fact in notes], [source_['id'], later_source['id']])
+        self.assertEqual(len({facts.timing().scope(fact) for fact in notes}), 1)
+        for suffix, channel in ((3, None), (4, [])):
+            no_info = result([(10, '木', ['夜'])])
+            no_info['periods'][0]['days'][0]['workTiming'] = channel
+            fresh_source, fresh, fresh_proof = normalized(
+                CREATED + dt.timedelta(hours=suffix), suffix, no_info)
+            facts.apply_revision(state, fresh, fresh_source, fresh_proof)
+            self.assertEqual(state['schedules'][0]['workTiming']['facts'], notes)
+        earlier = result([(10, '木', ['夜'])])
+        earlier['periods'][0]['days'][0]['workTiming'] = [work_note('夜', 'start', 'early', '16:00')]
+        old_source, old, old_proof = normalized(CREATED - dt.timedelta(hours=1), 9, earlier)
+        facts.apply_revision(state, old, old_source, old_proof)
+        self.assertEqual(state['schedules'][0]['workTiming']['facts'], notes)
+        facts.validate_state(state)
+        self.assertEqual(facts.public_state(state)['schedules'][0]['workTiming']['facts'], notes)
+
+    def test_aggregate_exclusions_accept_512_without_enlarging_raw_row_cap(self):
+        source_, schedules, _ = normalized()
+        def exclusion(minute):
+            return {'serviceDate': '2026-09-05', 'shift': '昼', 'boundary': 'end',
+                    'status': 'excluded', 'qualifier': None,
+                    'explicitTime': f'{minute // 60:02d}:{minute % 60:02d}'}
+        schedules[0]['workTiming'] = facts.timing().bind(
+            [exclusion(minute) for minute in range(512)], source_, 'half-month-schedule')
+        facts.validate_schedule(schedules[0])
+        self.assertEqual(len(schedules[0]['workTiming']['facts']), 512)
+        self.assertEqual(azure.DAY_SCHEMA['properties']['workTiming']['maxItems'], 2)
+        extra = facts.timing().bind([exclusion(512)], source_, 'half-month-schedule')['facts'][0]
+        schedules[0]['workTiming']['facts'].append(extra)
+        with self.assertRaises(ValueError):
+            facts.validate_schedule(schedules[0])
+
+    def test_legacy_contract_raw_hashes_and_core_are_not_upgraded(self):
+        value = result(contract_version=facts.LEGACY_VERSION)
+        untouched = copy.deepcopy(value)
+        source_, schedules, proof = normalized(value=value, contract_version=facts.LEGACY_VERSION)
+        state = facts.empty_state()
+        facts.apply_revision(state, schedules, source_, proof)
+        snapshot = copy.deepcopy(state)
+        self.assertEqual(value, untouched)
+        self.assertEqual(proof['contract'], 'half-month-schedule-v1')
+        self.assertNotIn('workTiming', schedules[0])
+        facts.validate_state(state)
+        self.assertEqual(state, snapshot)
+        changed = copy.deepcopy(schedules)
+        changed[0]['workTiming'] = facts.timing().bind(
+            [facts.timing().expand_compact(work_note(), '2026-09-05')], source_, 'half-month-schedule')
+        with self.assertRaisesRegex(ValueError, 'timing_source'):
+            facts.apply_revision(facts.empty_state(), changed, source_, proof)
+
+    def test_timing_merges_new_posts_by_original_order_and_truthful_source(self):
+        source_, first, proof = normalized(value=timing_result({
+            5: [work_note()], 12: [work_note()]}))
+        state = facts.empty_state()
+        facts.apply_revision(state, first, source_, proof)
+        newer_source, newer, newer_proof = normalized(
+            CREATED + dt.timedelta(hours=1), 2, timing_result({
+                5: [work_note(qualifier=None, explicit_time='17:00')]}))
+        facts.apply_revision(state, newer, newer_source, newer_proof)
+        notes = state['schedules'][0]['workTiming']['facts']
+        self.assertEqual([(note['serviceDate'], note['explicitTime'], note['source']['id']) for note in notes],
+                         [('2026-09-05', '17:00', newer_source['id']),
+                          ('2026-09-12', None, source_['id'])])
+        facts.validate_state(state)
+        unchanged = copy.deepcopy(state)
+        self.assertFalse(facts.apply_revision(state, first, source_, proof))
+        self.assertEqual(state, unchanged)
+        last_source, last, last_proof = normalized(
+            CREATED + dt.timedelta(hours=2), 3, result([(5, '土', ['夜'])]))
+        facts.apply_revision(state, last, last_source, last_proof)
+        self.assertEqual(state['schedules'][0]['workTiming']['facts'], [])
+        self.assertEqual(state['schedules'][0]['days'], [{'date': '2026-09-05', 'shifts': ['夜']}])
+
+    def test_timing_cancellation_conflict_suppresses_older_and_preserves_other_boundary(self):
+        both = result([(5, '土', ['昼', '夜'])])
+        both['periods'][0]['days'][0]['workTiming'] = [
+            work_note(), work_note('夜', 'start', 'early', '16:00')]
+        source_, first, proof = normalized(value=both)
+        # Retain a pre-existing stored facet that the compact wire no longer requests.
+        first[0]['workTiming']['facts'].extend(facts.timing().bind([{
+            'serviceDate': '2026-09-05', 'shift': '昼', 'boundary': 'start', 'status': 'set',
+            'qualifier': None, 'explicitTime': '11:00'}], source_, 'half-month-schedule')['facts'])
+        for status in ('withdrawn', 'conflict'):
+            state = facts.empty_state()
+            facts.apply_revision(state, first, source_, proof)
+            update = result([(5, '土', ['昼', '夜'])])
+            update['periods'][0]['days'][0]['workTiming'] = [work_note(qualifier=None, status=status)]
+            new_source, new, new_proof = normalized(CREATED + dt.timedelta(hours=1), 2, update)
+            facts.apply_revision(state, new, new_source, new_proof)
+            facts_ = state['schedules'][0]['workTiming']['facts']
+            self.assertEqual(len(facts_), 3)
+            self.assertEqual(next(note['status'] for note in facts_ if (
+                note['shift'], note['boundary']) == ('昼', 'end')), status)
+            newer_source, newer, newer_proof = normalized(
+                CREATED + dt.timedelta(hours=2), 3, result([(5, '土', ['昼', '夜'])]))
+            facts.apply_revision(state, newer, newer_source, newer_proof)
+            self.assertEqual(state['schedules'][0]['workTiming']['facts'], facts_)
+
+    def test_same_post_timing_cannot_win_by_later_analysis_without_authorization(self):
+        source_, first, proof = normalized()
+        state = facts.empty_state()
+        facts.apply_revision(state, first, source_, proof)
+        new_source, new, new_proof = normalized(value=timing_result({5: [work_note()]}))
+        new_proof.update(receiptId=facts.digest(b'new-receipt'),
+                         analyzedAt=facts.stamp(NOW + dt.timedelta(days=10)))
+        before = copy.deepcopy(state)
+        with self.assertRaisesRegex(ValueError, 'same_revision_conflict'):
+            facts.apply_revision(state, new, new_source, new_proof)
+        self.assertEqual(state, before)
+
+    def test_public_timing_allowlist_day_shift_identity_and_source_are_strict(self):
+        source_, schedules, _ = normalized(value=timing_result({5: [work_note()]}))
+        for change in ('unknown', 'date', 'shift', 'owner', 'kind', 'source', 'duplicate', 'nullable'):
+            table = copy.deepcopy(schedules[0])
+            note = table['workTiming']['facts'][0]
+            if change == 'unknown':
+                note['duration'] = 18
+            elif change == 'date':
+                note['serviceDate'] = '2026-09-06'
+            elif change == 'shift':
+                note.update(shift='夜', boundary='start', qualifier='early')
+            elif change == 'owner':
+                note['source']['name'] = '別人'
+            elif change == 'kind':
+                note['source']['sourceKind'] = 'official'
+            elif change == 'source':
+                note['source']['bodyHash'] = source_['bodyHash']
+            elif change == 'duplicate':
+                table['workTiming']['facts'].append(copy.deepcopy(note))
+            else:
+                table['workTiming'] = None
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                facts.validate_schedule(table)
+
     def test_empty_and_missing_are_distinct(self):
         state = facts.empty_state()
         self.assertEqual(facts.validate_state(state), state)

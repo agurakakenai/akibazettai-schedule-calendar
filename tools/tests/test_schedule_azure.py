@@ -12,6 +12,20 @@ import test_half_month_schedules as base
 facts, azure = base.facts, base.azure
 
 
+def http_envelope(value, *, indent=None, ensure_ascii=False):
+    options = {'ensure_ascii': ensure_ascii, 'indent': indent}
+    if indent is None:
+        options['separators'] = (',', ':')
+    return json.dumps({
+        'id': 'chatcmpl-SYNTHETIC-CAPACITY-NOT-A-LIVE-RESULT', 'object': 'chat.completion',
+        'created': int(base.NOW.timestamp()), 'model': facts.MODEL + '-' + facts.MODEL_VERSION,
+        'choices': [{'index': 0, 'finish_reason': 'stop',
+                     'message': {'role': 'assistant', 'content': json.dumps(value, **options),
+                                 'refusal': None}}],
+        'usage': {'prompt_tokens': 6000, 'completion_tokens': 6000, 'total_tokens': 12000},
+    }, **options).encode('utf-8')
+
+
 class CalendarTests(base.Offline):
     def normalize(self, value, *, created=base.CREATED, text=None, count=1):
         verified, body, _ = base.source(created=created, photos=count)
@@ -24,6 +38,209 @@ class CalendarTests(base.Offline):
         self.assertEqual([(row['date'], row['shifts']) for row in schedules[0]['days']],
                          [('2026-09-02', ['夜']), ('2026-09-05', ['昼']), ('2026-09-07', ['昼']),
                           ('2026-09-10', ['夜']), ('2026-09-12', ['昼']), ('2026-09-14', ['昼'])])
+
+    def test_synthetic_six_core_gold_word_only_long_is_two_facets_not_invented_hours(self):
+        value = base.timing_result({5: [base.work_note()], 12: [base.work_note()]})
+        schedules = self.normalize(value)
+        self.assertEqual(schedules[0]['days'], self.normalize(base.result())[0]['days'])
+        self.assertEqual([(note['serviceDate'], note['shift'], note['boundary'],
+                          note['qualifier'], note['explicitTime'])
+                          for note in schedules[0]['workTiming']['facts']],
+                         [('2026-09-05', '昼', 'end', 'long', None),
+                          ('2026-09-12', '昼', 'end', 'long', None)])
+
+    def test_all_four_explicit_words_and_nonmapped_display_clocks(self):
+        for shift, boundary, qualifier, clock in [
+                ('昼', 'end', 'short', '16:00'), ('昼', 'end', 'long', '18:00'),
+                ('夜', 'start', 'early', '16:00'), ('夜', 'start', 'late', '18:00'),
+                ('昼', 'end', None, '15:00'), ('昼', 'end', None, '17:00'),
+                ('昼', 'end', None, '19:00'), ('夜', 'start', None, '17:00')]:
+            value = base.result([(5, '土', [shift])])
+            value['periods'][0]['days'][0]['workTiming'] = [
+                base.work_note(shift, boundary, qualifier, clock)]
+            with self.subTest(shift=shift, boundary=boundary, clock=clock):
+                note = self.normalize(value)[0]['workTiming']['facts'][0]
+                self.assertEqual((note['qualifier'], note['explicitTime']), (qualifier, clock))
+
+    def test_numeric_only_never_invents_a_source_word(self):
+        for shift, boundary, clock in [('昼', 'end', '16:00'), ('昼', 'end', '18:00'),
+                                        ('夜', 'start', '16:00'), ('夜', 'start', '18:00')]:
+            value = base.result([(5, '土', [shift])])
+            value['periods'][0]['days'][0]['workTiming'] = [
+                {'shift': shift, 'kind': 'time', 'time': clock}]
+            fact = self.normalize(value)[0]['workTiming']['facts'][0]
+            self.assertEqual((fact['shift'], fact['boundary'], fact['qualifier'], fact['explicitTime']),
+                             (shift, boundary, None, clock))
+
+    def test_compact_wire_requests_only_display_boundaries_and_keeps_words_clockless(self):
+        self.assertEqual(azure.TIMING_SCHEMA, facts.timing().COMPACT_SCHEMA)
+        self.assertEqual(set(azure.TIMING_SCHEMA['required']), {'shift', 'kind', 'time'})
+        self.assertEqual(azure.DAY_SCHEMA['properties']['workTiming']['maxItems'], 2)
+        self.assertIn('Do NOT extract daytime starts, nighttime ends', azure.PROMPT)
+        for shift, kind in [('昼', 'short'), ('昼', 'long'), ('夜', 'early'), ('夜', 'late')]:
+            value = base.result([(5, '土', [shift])])
+            value['periods'][0]['days'][0]['workTiming'] = [{'shift': shift, 'kind': kind, 'time': None}]
+            fact = self.normalize(value)[0]['workTiming']['facts'][0]
+            self.assertEqual(fact['qualifier'], kind)
+            self.assertIsNone(fact['explicitTime'])
+        for shift, boundary in [('昼', 'start'), ('夜', 'end')]:
+            value = base.result([(5, '土', [shift])])
+            value['periods'][0]['days'][0]['workTiming'] = [
+                {'shift': shift, 'kind': 'time', 'time': '16:00', 'boundary': boundary}]
+            with self.assertRaises(ValueError):
+                self.normalize(value)
+
+    def test_targeted_denials_keep_exact_word_or_clock_target(self):
+        for shift, kind, word, clock in [
+                ('昼', 'not-short', 'short', None), ('昼', 'not-long', 'long', None),
+                ('夜', 'not-early', 'early', None), ('夜', 'not-late', 'late', None),
+                ('昼', 'not-time', None, '17:00')]:
+            value = base.result([(5, '土', [shift])])
+            value['periods'][0]['days'][0]['workTiming'] = [{'shift': shift, 'kind': kind, 'time': clock}]
+            fact = self.normalize(value)[0]['workTiming']['facts'][0]
+            self.assertEqual((fact['status'], fact['qualifier'], fact['explicitTime']),
+                             ('excluded', word, clock))
+        for note in [
+                {'shift': '昼', 'kind': 'not-long', 'time': '18:00'},
+                {'shift': '昼', 'kind': 'not-time', 'time': None},
+                {'shift': '昼', 'kind': 'not-early', 'time': None},
+                {'shift': '昼', 'kind': 'not-usual', 'time': None}]:
+            value = base.timing_result({5: [note]})
+            with self.subTest(note=note), self.assertRaises(ValueError):
+                self.normalize(value)
+
+    def test_same_shift_distinct_targets_are_valid_but_duplicate_fact_keys_are_not(self):
+        def note(kind, clock=None):
+            return {'shift': '夜', 'kind': kind, 'time': clock}
+        for notes in [
+                [note('late', '18:00'), note('not-early')],
+                [note('not-early'), note('not-late')],
+                [note('not-time', '16:00'), note('not-time', '17:00')]]:
+            value = base.result([(5, '土', ['夜'])])
+            value['periods'][0]['days'][0]['workTiming'] = notes
+            parsed = self.normalize(value)[0]['workTiming']['facts']
+            self.assertEqual(len(parsed), 2)
+            self.assertEqual(len({facts.timing().scope(fact) for fact in parsed}), 1)
+            self.assertEqual(len({facts.timing().fact_key(fact) for fact in parsed}), 2)
+        for notes in [
+                [note('not-early'), note('not-early')],
+                [note('not-time', '16:00'), note('not-time', '16:00')],
+                [note('late'), note('time', '18:00')],
+                [note('withdrawn'), note('conflict')]]:
+            value = base.result([(5, '土', ['夜'])])
+            value['periods'][0]['days'][0]['workTiming'] = notes
+            with self.subTest(notes=notes), self.assertRaisesRegex(ValueError, 'timing_shift'):
+                self.normalize(value)
+
+    def test_normal_usual_no_info_is_not_a_withdrawal_or_inferred_hour_contract(self):
+        self.assertIn('Normal/usual/no-info alone does NOT withdraw a boundary or imply any hour.', azure.PROMPT)
+        self.assertIn('followed by "not early" must retain late', azure.PROMPT)
+        for body in ('通常です', 'いつもどおり', 'normal', 'usual', 'no-info'):
+            for channel in (None, []):
+                value = base.result([(5, '土', ['昼'])], images=False)
+                value['periods'][0]['days'][0]['workTiming'] = channel
+                parsed = self.normalize(value, text=body, count=0)[0]
+                self.assertEqual(parsed['days'], [{'date': '2026-09-05', 'shifts': ['昼']}])
+                self.assertNotIn('workTiming', parsed)
+            value['periods'][0]['days'][0]['workTiming'] = [
+                {'shift': '昼', 'kind': 'time', 'time': '18:00'}]
+            with self.assertRaisesRegex(ValueError, 'clock_ungrounded'):
+                self.normalize(value, text=body, count=0)
+        for kind in ('normal', 'usual', 'no-info'):
+            value = base.timing_result({5: [{'shift': '昼', 'kind': kind, 'time': None}]})
+            with self.assertRaises(ValueError):
+                self.normalize(value)
+
+    def test_required_nullable_timing_independent_of_confirmed_core(self):
+        value = base.result()
+        value['periods'][0]['days'][0]['workTiming'] = None
+        schedules = self.normalize(value)
+        self.assertEqual(len(schedules[0]['days']), 6)
+        self.assertNotIn('workTiming', schedules[0])
+        for field in ('workTiming', 'shifts'):
+            invalid = copy.deepcopy(value)
+            del invalid['periods'][0]['days'][0][field]
+            with self.assertRaises(ValueError):
+                self.normalize(invalid)
+        for word in ('お昼寝', '休憩', 'オーラス', '投稿は18:00', '翌日だけのお知らせ'):
+            self.assertNotIn('workTiming', self.normalize(base.result(), text=word)[0])
+
+    def test_timing_row_image_scope_boundary_status_and_unknown_are_strict(self):
+        for change in ('shift', 'boundary', 'status', 'image', 'emptyimage', 'duplicateimage',
+                       'day', 'name', 'store', 'clock', 'unknown', 'empty', 'duplicate', 'notarray',
+                       'kind', 'missing', 'three', 'withdrawnClock'):
+            value = base.timing_result({5: [base.work_note()]})
+            row = value['periods'][0]['days'][1]
+            note = row['workTiming'][0]
+            if change == 'shift':
+                note['shift'] = '夜'
+            elif change == 'boundary':
+                note['boundary'] = 'start'
+            elif change == 'status':
+                note['status'] = 'withdrawn'
+            elif change == 'image':
+                note['imageIndexes'] = [1]
+            elif change == 'emptyimage':
+                value['periods'][0]['imageIndexes'] = []
+            elif change == 'duplicateimage':
+                note['imageIndexes'] = [0, 0]
+            elif change == 'day':
+                note['serviceDate'] = '2026-09-06'
+            elif change in ('name', 'store', 'unknown'):
+                note[change] = 'not allowed'
+            elif change == 'clock':
+                note['time'] = '24:00'
+            elif change == 'empty':
+                note['kind'] = 'time'
+            elif change == 'duplicate':
+                row['workTiming'].append(copy.deepcopy(note))
+            elif change == 'kind':
+                note['kind'] = 'early'
+            elif change == 'missing':
+                del note['time']
+            elif change == 'three':
+                row['shifts'] = ['昼', '夜']
+                row['workTiming'] += [
+                    {'shift': '夜', 'kind': 'early', 'time': None},
+                    {'shift': '夜', 'kind': 'withdrawn', 'time': None}]
+            elif change == 'withdrawnClock':
+                note.update(kind='withdrawn', time='16:00')
+            else:
+                row['workTiming'] = {}
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.normalize(value)
+
+    def test_text_clocks_are_in_body_not_source_posting_time(self):
+        value = base.result([(5, '土', ['昼'])], images=False)
+        value['periods'][0]['days'][0]['workTiming'] = [
+            base.work_note(qualifier='short', explicit_time='16:00', images=False)]
+        for text in ('5日 昼16時まで', '5日 昼16:00まで', '5日 昼１６時まで', '5日 昼11〜16'):
+            self.assertEqual(self.normalize(value, text=text, count=0)[0]['workTiming']['facts'][0]
+                             ['explicitTime'], '16:00')
+        with self.assertRaisesRegex(ValueError, 'clock_ungrounded'):
+            self.normalize(value, text='5日 昼のみ', count=0)
+        value['periods'][0]['imageIndexes'] = [0]
+        self.assertEqual(self.normalize(value, text='5日 昼16時まで', count=1)[0]
+                         ['workTiming']['facts'][0]['explicitTime'], '16:00')
+
+    def test_legacy_wire_is_explicit_and_does_not_mutate_v1_raw(self):
+        value = base.result(contract_version=facts.LEGACY_VERSION)
+        before = copy.deepcopy(value)
+        source, body, _ = base.source()
+        with self.assertRaises(ValueError):
+            azure.normalize_result(value, source, body, 1)
+        schedules = azure.normalize_result(value, source, body, 1, contract_version=facts.LEGACY_VERSION)
+        self.assertEqual(value, before)
+        self.assertNotIn('workTiming', schedules[0])
+        with self.assertRaises(ValueError):
+            azure.normalize_result(base.result(), source, body, 1, contract_version=facts.LEGACY_VERSION)
+        messages, proof = azure.prepare_request(source, body, [{'bytes': base.png(), 'mime': 'image/png'}],
+                                               contract_version=facts.LEGACY_VERSION)
+        wire = azure.wire_payload(messages, facts.LEGACY_VERSION)
+        self.assertEqual(proof['contract'], facts.LEGACY_VERSION)
+        self.assertEqual(wire['max_completion_tokens'], 1200)
+        self.assertEqual(proof['requestHash'], facts.digest(json.dumps(wire).encode('utf-8')))
+        self.assertNotIn('workTiming', repr(azure.LEGACY_SCHEMA))
 
     def test_late_and_fifteenth_advance_post(self):
         for created in (dt.datetime(2026, 9, 2, tzinfo=facts.UTC), dt.datetime(2026, 9, 15, tzinfo=facts.UTC)):
@@ -103,6 +320,25 @@ class CalendarTests(base.Offline):
         self.assertEqual(azure.normalize_result(base.result(), verified, text, 1,
                                                 [('2027-09-01', '2027-09-15')]), [])
 
+    def test_valid_other_half_timing_does_not_reject_target_half_and_is_not_persisted(self):
+        verified, text, _ = base.source()
+        value = base.result([(5, '土', ['昼']), (20, '日', ['夜'])], half='full')
+        value['periods'][0]['days'][0]['workTiming'] = [base.work_note()]
+        value['periods'][0]['days'][1]['workTiming'] = [
+            base.work_note('夜', 'start', 'late', '18:00')]
+        allowed = [('2026-09-01', '2026-09-15')]
+        parsed = azure.normalize_result(value, verified, text, 1, allowed)
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]['days'], [{'date': '2026-09-05', 'shifts': ['昼']}])
+        self.assertEqual([note['serviceDate'] for note in parsed[0]['workTiming']['facts']],
+                         ['2026-09-05'])
+        value['periods'][0]['days'][0]['workTiming'] = None
+        parsed = azure.normalize_result(value, verified, text, 1, allowed)
+        self.assertNotIn('workTiming', parsed[0])
+        value['periods'][0]['days'][1]['workTiming'][0]['time'] = 'not-a-clock'
+        with self.assertRaises(ValueError):
+            azure.normalize_result(value, verified, text, 1, allowed)
+
     def test_complete_full_month_projects_current_half_after_validation(self):
         verified, text, _ = base.source()
         now = dt.datetime(2026, 9, 20, tzinfo=facts.UTC)
@@ -136,6 +372,153 @@ class CalendarTests(base.Offline):
             for periods in ([bad, valid_second], [valid_second, bad]):
                 with self.subTest(periods=periods), self.assertRaises(ValueError):
                     azure.normalize_result({'periods': periods}, verified, text, 1, allowed)
+
+
+class CapacityTests(base.Offline):
+    def inputs(self, caption=None, photos=4):
+        source, body, _ = base.source(photos=photos)
+        if caption is not None:
+            body = caption
+            source['bodyHash'] = facts.digest(body.encode('utf-8'))
+        images = [{'bytes': base.png(), 'mime': 'image/png'} for _ in range(photos)]
+        return source, body, images
+
+    def test_large_caption_is_held_before_reserve_issue_or_model_client(self):
+        source, caption, images = self.inputs('x' * 6000)
+        usage, client, issued = mock.Mock(), mock.Mock(), mock.Mock()
+        analyzer = azure.AzureAnalyzer(usage, clock=lambda: base.NOW, client=client)
+        with self.assertRaisesRegex(azure.capacity.CapacityHold, '^azure_capacity_hold$'):
+            analyzer.analyze(source, caption, images, facts.target_periods(base.NOW), issued)
+        usage.reserve.assert_not_called()
+        usage.issued.assert_not_called()
+        usage.finish.assert_not_called()
+        issued.assert_not_called()
+        client.structured.assert_not_called()
+        self.assertEqual(analyzer.used, 0)
+        with self.assertRaisesRegex(azure.capacity.CapacityHold, '^azure_capacity_hold$'):
+            azure.check_caption_capacity(source, caption)
+
+    def test_full_model_visible_metadata_is_checked_after_caption_lower_bound(self):
+        source, caption, images = self.inputs('')
+        messages, _ = azure.build_request(source, caption, images)
+        report = azure.capacity.half_month(
+            messages[1]['content'][0]['text'], azure.PROMPT, azure.SCHEMA, azure.MAX_OUTPUT_TOKENS)
+        caption = 'x' * (azure.capacity.LIMIT - report['textReservationBound'] + 1)
+        source['bodyHash'] = facts.digest(caption.encode('utf-8'))
+        lower_bound = azure.check_caption_capacity(source, caption)
+        self.assertLessEqual(lower_bound['textReservationBound'], azure.capacity.LIMIT)
+        with self.assertRaisesRegex(azure.capacity.CapacityHold, '^azure_capacity_hold$'):
+            azure.prepare_request(source, caption, images)
+
+    def test_small_known_fixture_admitted_without_claiming_vision_or_service_tpm(self):
+        source, caption, images = self.inputs()
+        diagnostic = azure.build_request(source, caption, images)
+        prepared = azure.prepare_request(source, caption, images)
+        self.assertEqual(prepared, diagnostic)
+        report = azure.capacity.half_month(
+            prepared[0][1]['content'][0]['text'], azure.PROMPT, azure.SCHEMA, azure.MAX_OUTPUT_TOKENS)
+        self.assertLessEqual(report['textReservationBound'], 10000)
+        self.assertFalse(report['imageTokensIncluded'])
+        self.assertFalse(report['serviceTpmGuaranteed'])
+        self.assertEqual(azure.MAX_INPUT_BYTES, 6000)
+        self.assertEqual(azure.MAX_OUTPUT_TOKENS, 3840)
+
+    def test_stale_profile_fails_closed_before_issue_and_diagnostic_construction_is_pure(self):
+        source, caption, images = self.inputs()
+        usage, client, issued = mock.Mock(), mock.Mock(), mock.Mock()
+        analyzer = azure.AzureAnalyzer(usage, clock=lambda: base.NOW, client=client)
+        unchanged = azure.build_request(source, caption, images)
+        with mock.patch.dict(azure.capacity.HALF_MONTH, {'schemaHash': 'f' * 64}):
+            self.assertEqual(azure.build_request(source, caption, images), unchanged)
+            with self.assertRaisesRegex(azure.capacity.CapacityHold, '^azure_capacity_profile_stale$'):
+                analyzer.analyze(source, caption, images, facts.target_periods(base.NOW), issued)
+        usage.reserve.assert_not_called()
+        usage.issued.assert_not_called()
+        usage.finish.assert_not_called()
+        issued.assert_not_called()
+        client.structured.assert_not_called()
+
+    def test_legacy_v1_remains_byte_exact_and_is_not_subject_to_new_admission_policy(self):
+        source, caption, images = self.inputs('x' * 6000)
+        expected = azure.build_request(source, caption, images, contract_version=facts.LEGACY_VERSION)
+        with mock.patch.object(azure.capacity, 'half_month', side_effect=AssertionError('v1 policy changed')):
+            actual = azure.prepare_request(source, caption, images, contract_version=facts.LEGACY_VERSION)
+            self.assertIsNone(azure.check_caption_capacity(source, caption, contract_version=facts.LEGACY_VERSION))
+        self.assertEqual(actual, expected)
+        wire = azure.wire_payload(actual[0], facts.LEGACY_VERSION)
+        self.assertEqual(wire['max_completion_tokens'], 1200)
+        self.assertEqual(facts.digest(json.dumps(wire).encode('utf-8')), actual[1]['requestHash'])
+
+    def test_held_request_still_has_a_data_only_diagnostic_representation(self):
+        source, caption, images = self.inputs('x' * 6000)
+        with mock.patch.object(azure.transport, 'AzureOpenAI', side_effect=AssertionError('no client')):
+            messages, proof = azure.build_request(source, caption, images)
+        self.assertEqual(json.loads(messages[1]['content'][0]['text'])['body'], caption)
+        self.assertEqual(len(proof['images']), 4)
+        self.assertEqual(facts.digest(json.dumps(azure.wire_payload(messages)).encode('utf-8')),
+                         proof['requestHash'])
+        with self.assertRaises(azure.capacity.CapacityHold):
+            azure.prepare_request(source, caption, images)
+
+    def test_maximum_32_rows_64_notes_keeps_core_and_filters_only_after_full_validation(self):
+        value = base.maximum_timing_result()
+        verified, text, _ = base.source(photos=4)
+        parsed = azure.normalize_result(value, verified, text, 4)
+        self.assertEqual(len(parsed), 2)
+        self.assertEqual(sum(len(table['days']) for table in parsed), 32)
+        self.assertEqual(sum(len(table['workTiming']['facts']) for table in parsed), 64)
+        self.assertTrue(all(set(note) == set(facts.timing().FACT_FIELDS) | {'source'}
+                            for table in parsed for note in table['workTiming']['facts']))
+        legacy = copy.deepcopy(value)
+        for period in legacy['periods']:
+            for row in period['days']:
+                del row['workTiming']
+        old_core = azure.normalize_result(legacy, verified, text, 4, contract_version=facts.LEGACY_VERSION)
+        self.assertEqual(facts.core_hash(parsed), facts.core_hash(old_core))
+        self.assertEqual(azure.MAX_INPUT_BYTES, 6000)
+        self.assertEqual(azure.SCHEMA['properties']['periods']['maxItems'], 2)
+        self.assertEqual(azure.PERIOD_SCHEMA['properties']['imageIndexes']['maxItems'], 4)
+
+        allowed = [('2026-10-16', '2026-10-31')]
+        projected = azure.normalize_result(value, verified, text, 4, allowed)
+        self.assertEqual(len(projected), 1)
+        self.assertEqual(len(projected[0]['days']), 16)
+        self.assertEqual(len(projected[0]['workTiming']['facts']), 32)
+        self.assertTrue(all(note['serviceDate'].startswith('2026-10-')
+                            for note in projected[0]['workTiming']['facts']))
+        value['periods'][0]['days'][0]['workTiming'][0]['time'] = 'not-a-clock'
+        with self.assertRaises(ValueError):
+            azure.normalize_result(value, verified, text, 4, allowed)
+
+    def test_maximum_compact_and_indented_http_envelopes_fit_unchanged_transport_limit(self):
+        verified, text, _ = base.source(photos=4)
+        images = [{'bytes': base.png(width=width), 'mime': 'image/png'} for width in range(9, 13)]
+        messages, _ = azure.prepare_request(verified, text, images)
+        self.assertEqual(azure.transport.MAX_RESPONSE_BYTES, 24000)
+        for excluded in (False, True):
+            value = base.maximum_timing_result(excluded=excluded)
+            parsed = azure.normalize_result(value, verified, text, 4)
+            self.assertEqual(sum(len(table['workTiming']['facts']) for table in parsed), 64)
+            for indent, ensure_ascii in ((None, False), (None, True), (2, False), (2, True)):
+                raw = http_envelope(value, indent=indent, ensure_ascii=ensure_ascii)
+                with self.subTest(excluded=excluded, indent=indent, ensure_ascii=ensure_ascii, bytes=len(raw)):
+                    self.assertLess(len(raw), azure.transport.MAX_RESPONSE_BYTES)
+                    response = mock.MagicMock()
+                    response.__enter__.return_value = response
+                    response.getcode.return_value = 200
+                    response.read.return_value = raw
+                    opener = mock.Mock()
+                    opener.open.return_value = response
+                    client = azure.transport.AzureOpenAI(
+                        {'AZURE_OPENAI_ENDPOINT': 'https://offline.openai.azure.com',
+                         'AZURE_OPENAI_API_KEY': 'SYNTHETIC_ONLY'},
+                        on_http_failure=mock.Mock(), opener=opener)
+                    returned = client.structured(
+                        messages, azure.SCHEMA, name='half_month_schedule',
+                        max_completion_tokens=azure.MAX_OUTPUT_TOKENS)
+                    self.assertEqual(returned, value)
+                    opener.open.assert_called_once()
+                    response.read.assert_called_once_with(azure.transport.MAX_RESPONSE_BYTES + 1)
 
 
 class ImageTests(base.Offline):
@@ -204,7 +587,7 @@ class TransportTests(base.Offline):
         usage.issued.assert_called_once_with(proof['requestHash'])
         usage.finish.assert_called_once_with(proof['requestHash'], 'events')
         issued.assert_called_once_with(proof['requestHash'])
-        self.assertEqual(client.structured.call_args.kwargs['max_completion_tokens'], 1200)
+        self.assertEqual(client.structured.call_args.kwargs['max_completion_tokens'], azure.MAX_OUTPUT_TOKENS)
         with self.assertRaises(azure.AnalysisFailure):
             analyzer.analyze(verified, text, [image], facts.target_periods(base.NOW), issued)
         self.assertEqual(client.structured.call_count, 1)
@@ -244,7 +627,8 @@ class TransportTests(base.Offline):
             messages, proof = azure.prepare_request(verified, text, [{'bytes': base.png(), 'mime': 'image/png'}])
             with self.subTest(model=output_model, refusal=refusal, finish=finish):
                 if succeeds:
-                    client.structured(messages, azure.SCHEMA, name='half_month_schedule', max_completion_tokens=1200)
+                    client.structured(messages, azure.SCHEMA, name='half_month_schedule',
+                                      max_completion_tokens=azure.MAX_OUTPUT_TOKENS)
                     request = opener.open.call_args.args[0]
                     self.assertEqual(facts.digest(request.data), proof['requestHash'])
                     self.assertEqual(json.loads(request.data)['reasoning_effort'], 'none')

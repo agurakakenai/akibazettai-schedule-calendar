@@ -311,7 +311,7 @@ class MetadataTests(Offline):
 
     def test_independent_link_does_not_require_a_store_or_generate_events(self):
         analyzer = mock.Mock()
-        analyzer.parse.return_value = ([], [{'scope': 'unspecified', 'status': 'work'}], 'links')
+        analyzer.parse_with_timing.return_value = ([], [{'scope': 'unspecified', 'status': 'work'}], [], 'links')
         value, reason = personal.validate_post(candidate(), post('今日お給仕します'), AMU, NOW,
                                                analyzer=analyzer)
         self.assertEqual(reason, 'links')
@@ -323,6 +323,35 @@ class MetadataTests(Offline):
                       [{'scope': '夜', 'status': 'work', 'evidenceLineIds': [1]}]):
             with self.subTest(links=links), self.assertRaises(ValueError):
                 personal.valid_post({**value, 'links': links})
+
+    def test_timing_only_post_has_strict_identity_date_and_public_source(self):
+        self.assertIs(personal.timing, personal.work_timing)
+        analyzer = mock.Mock()
+        fact = {'serviceDate': DATE.isoformat(), 'shift': '昼', 'boundary': 'end',
+                'status': 'set', 'qualifier': 'short', 'explicitTime': '16:00'}
+        analyzer.parse_with_timing.return_value = ([], [], [fact], 'work_timing')
+        value, reason = personal.validate_post(candidate(), post('今日昼16時終了'), AMU, NOW, analyzer=analyzer)
+        self.assertEqual(reason, 'work_timing')
+        self.assertEqual((value['events'], value['links'], personal.legacy_links(value)), ([], [], []))
+        personal.valid_post(value)
+        for field, changed in (('serviceDate', '2026-09-07'), ('status', 'pending'),
+                               ('boundary', 'start'), ('evidenceLineIds', [1])):
+            bad = copy.deepcopy(value)
+            bad['workTiming']['facts'][0][field] = changed
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                personal.valid_post(bad)
+        for field, changed in (('name', '別人'), ('authorId', '123'), ('sourceKind', 'half-month-schedule'),
+                               ('id', snowflake('2026-09-05T15:00:03Z')), ('createdAt', '2026-09-05T15:00:03Z')):
+            bad = copy.deepcopy(value)
+            bad['workTiming']['facts'][0]['source'][field] = changed
+            with self.subTest(source=field), self.assertRaises(ValueError):
+                personal.valid_post(bad)
+        for channel in (None, {}, {'schemaVersion': 1, 'facts': []},
+                        {'schemaVersion': 1, 'facts': value['workTiming']['facts'] * 2}):
+            with self.subTest(channel=channel), self.assertRaises(ValueError):
+                personal.valid_post({**value, 'workTiming': channel})
+        legacy, _ = personal.validate_post(candidate(), post(), AMU, NOW)
+        self.assertNotIn('workTiming', legacy)
 
     def test_saved_binding_metadata_is_not_a_fabricated_search_timestamp(self):
         state = personal.empty_state()
@@ -692,10 +721,10 @@ class StateTests(Offline):
         self.assertEqual(self.state['pending'][0]['reason'], 'analysis_capacity_deferred')
         self.assertEqual(self.state['pending'][0]['attempts'], 0)
         client.fetch_post.assert_not_called()
-        analyzer.parse.assert_not_called()
+        analyzer.parse_with_timing.assert_not_called()
         analyzer.check_capacity.side_effect = None
-        analyzer.parse.return_value = ([{'shift': '昼', 'kind': 'placement',
-                                         'storeId': 's1', 'excerpt': '昼1号店'}], [], 'events')
+        analyzer.parse_with_timing.return_value = ([{'shift': '昼', 'kind': 'placement',
+                                         'storeId': 's1', 'excerpt': '昼1号店'}], [], [], 'events')
         next_durable = self.durable()
         next_durable.preflight()
         next_client = self.fake_client(next_durable, entries=[])
@@ -714,14 +743,90 @@ class StateTests(Offline):
         durable.preflight()
         analyzer = mock.Mock()
         analyzer.state = {'history': []}
-        analyzer.parse.return_value = ([{'shift': '夜', 'kind': 'placement',
-                                         'storeId': 's4', 'excerpt': '夜4号店'}], [], 'events')
+        analyzer.parse_with_timing.return_value = ([{'shift': '夜', 'kind': 'placement',
+                                         'storeId': 's4', 'excerpt': '夜4号店'}], [], [], 'events')
         personal.collect(self.state, durable, None, self.targets, DATE, 2, 3,
                          clock=durable.clock, roster=self.schedule['roster'], analyzer=analyzer,
                          saved_payloads={TID: post('9月6日 夜4号店')})
         self.assertEqual([(event['shift'], event['storeId']) for event in self.state['posts'][0]['events']],
                          [('昼', 's1'), ('夜', 's4')])
         self.assertEqual(analyzer.state['history'], [previous])
+
+    def test_timing_reanalysis_preserves_other_facets_and_core_without_relabeling_sources(self):
+        previous, _ = personal.validate_post(candidate(), post(), AMU, NOW)
+        previous['links'] = [{'scope': '昼', 'status': 'work'}, {'scope': '夜', 'status': 'work'}]
+        facts = [
+            {'serviceDate': DATE.isoformat(), 'shift': '昼', 'boundary': 'end',
+             'status': 'set', 'qualifier': 'long', 'explicitTime': '18:00'},
+            {'serviceDate': DATE.isoformat(), 'shift': '夜', 'boundary': 'start',
+             'status': 'set', 'qualifier': 'early', 'explicitTime': '16:00'},
+        ]
+        previous['workTiming'] = personal.work_timing.bind(facts, previous, 'personal-work-post')
+        for update in (
+                [{**facts[0], 'qualifier': None, 'explicitTime': '17:00'}],
+                [{**facts[0], 'status': 'withdrawn', 'qualifier': None, 'explicitTime': None}],
+                [{**facts[0], 'status': 'conflict', 'qualifier': None, 'explicitTime': None}],
+                []):
+            with self.subTest(update=update):
+                self.state = personal.empty_state()
+                self.state['posts'] = [copy.deepcopy(previous)]
+                self.state['identityBindings'][AMU['name']] = {
+                    'authorId': UID, 'authorScreenName': AMU['handle'], 'verifiedAt': personal.stamp(NOW)}
+                durable = self.durable()
+                analyzer = mock.Mock()
+                analyzer.state = {'history': []}
+                analyzer.parse_with_timing.return_value = ([], previous['links'], update, 'links')
+                personal.collect(self.state, durable, None, self.targets, DATE, 2, 3,
+                                 clock=durable.clock, analyzer=analyzer,
+                                 saved_payloads={TID: post('今日昼終了の訂正')})
+                current = self.state['posts'][0]
+                self.assertEqual(current['events'], previous['events'])
+                self.assertEqual(current['links'], previous['links'])
+                keyed = {personal.work_timing.scope(fact): fact for fact in current['workTiming']['facts']}
+                self.assertEqual(keyed[(DATE.isoformat(), '夜', 'start')], previous['workTiming']['facts'][1])
+                if update:
+                    self.assertEqual(keyed[(DATE.isoformat(), '昼', 'end')]['explicitTime'], update[0]['explicitTime'])
+                    self.assertEqual(keyed[(DATE.isoformat(), '昼', 'end')]['status'], update[0]['status'])
+                    self.assertEqual(analyzer.state['history'], [previous])
+                else:
+                    self.assertEqual(current, previous)
+                    self.assertEqual(analyzer.state['history'], [])
+                personal.read_state(self.snapshot)
+
+    def test_timing_specific_denial_retains_late_and_does_not_hide_a_later_set_update(self):
+        previous, _ = personal.validate_post(candidate(), post(), AMU, NOW)
+        previous['links'] = personal.legacy_links(previous)
+        late = {'serviceDate': DATE.isoformat(), 'shift': '夜', 'boundary': 'start',
+                'status': 'set', 'qualifier': 'late', 'explicitTime': None}
+        not_early = {**late, 'status': 'excluded', 'qualifier': 'early'}
+        previous['workTiming'] = personal.work_timing.bind([late], previous, 'personal-work-post')
+        self.state['posts'] = [copy.deepcopy(previous)]
+        self.state['identityBindings'][AMU['name']] = {
+            'authorId': UID, 'authorScreenName': AMU['handle'], 'verifiedAt': personal.stamp(NOW)}
+        analyzer = mock.Mock()
+        analyzer.state = {'history': []}
+
+        def apply(facts, links=()):
+            analyzer.parse_with_timing.return_value = ([], list(links), facts, 'work_timing' if facts else 'links')
+            durable = self.durable()
+            personal.collect(self.state, durable, None, self.targets, DATE, 2, 3,
+                             clock=durable.clock, analyzer=analyzer,
+                             saved_payloads={TID: post('本日夜はおそめ。早めではありません。19時開始です。')})
+            return copy.deepcopy(self.state['posts'][0])
+
+        denied = apply([not_early])
+        self.assertEqual([(fact['status'], fact['qualifier']) for fact in denied['workTiming']['facts']],
+                         [('set', 'late'), ('excluded', 'early')])
+        self.assertEqual(denied['workTiming']['facts'][0], previous['workTiming']['facts'][0])
+        updated = apply([{**late, 'qualifier': None, 'explicitTime': '19:00'}])
+        self.assertEqual(updated['workTiming']['facts'][0]['explicitTime'], '19:00')
+        self.assertEqual(updated['workTiming']['facts'][1], denied['workTiming']['facts'][1])
+        self.assertEqual(updated['events'], previous['events'])
+        self.assertEqual(updated['links'], previous['links'])
+        self.assertEqual(analyzer.state['history'], [previous, denied])
+        self.assertEqual(apply([], previous['links']), updated)
+        self.assertEqual(analyzer.state['history'], [previous, denied])
+        personal.read_state(self.snapshot)
 
     def test_first_partial_v5_reanalysis_retains_legacy_links_for_unsupplied_scopes(self):
         previous, _ = personal.validate_post(candidate(), post(), AMU, NOW)
@@ -732,7 +837,7 @@ class StateTests(Offline):
         durable.preflight()
         analyzer = mock.Mock()
         analyzer.state = {'history': []}
-        analyzer.parse.return_value = ([], [{'scope': '昼', 'status': 'work'}], 'links')
+        analyzer.parse_with_timing.return_value = ([], [{'scope': '昼', 'status': 'work'}], [], 'links')
         personal.collect(self.state, durable, None, self.targets, DATE, 2, 3,
                          clock=durable.clock, analyzer=analyzer,
                          saved_payloads={TID: post('9月6日 昼のお給仕')})
@@ -752,8 +857,8 @@ class StateTests(Offline):
         durable.preflight()
         analyzer = mock.Mock()
         analyzer.state = {'history': []}
-        analyzer.parse.return_value = ([{'shift': '夜', 'kind': 'placement', 'storeId': 's2',
-                                         'excerpt': '2号店'}], [], 'events')
+        analyzer.parse_with_timing.return_value = ([{'shift': '夜', 'kind': 'placement', 'storeId': 's2',
+                                         'excerpt': '2号店'}], [], [], 'events')
         personal.collect(self.state, durable, None, self.targets, DATE, 2, 3,
                          clock=durable.clock, analyzer=analyzer,
                          saved_payloads={TID: post('9月6日 夜2号店')})
@@ -1448,7 +1553,7 @@ class TransportTests(StateTests):
             report, code = personal.collect(
                 self.state, durable, client, self.targets, DATE, 2, 3,
                 clock=durable.clock, roster=self.schedule['roster'], analyzer=analyzer)
-        analyzer.parse.assert_not_called()
+        analyzer.parse_with_timing.assert_not_called()
         self.assertEqual((code, report['deferredCount']), (2, 1))
         self.assertEqual(self.state['pending'][0]['reason'], 'outside_window')
 

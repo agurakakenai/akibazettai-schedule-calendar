@@ -1,12 +1,14 @@
 """Half-month-specific multimodal contract over the unchanged shared transport."""
 import base64
 import calendar
+import copy
 import datetime as dt
 import importlib.util
 import json
 from pathlib import Path
 import re
 import struct
+import unicodedata
 import zlib
 
 
@@ -19,6 +21,7 @@ def _module(filename, name):
 
 facts = _module('half-month-schedules.py', 'schedule_facts')
 transport = _module('azure-openai.py', 'schedule_transport')
+capacity = _module('request-capacity.py', 'schedule_capacity')
 AnalysisFailure = transport.AzureFailure
 VERSION = facts.VERSION
 MAX_INPUT_BYTES, MAX_OUTPUT_TOKENS = 6000, 1200
@@ -74,6 +77,61 @@ SCHEMA = {
     'type': 'object', 'additionalProperties': False, 'required': ['periods'],
     'properties': {'periods': {'type': ['array', 'null'], 'maxItems': 2, 'items': PERIOD_SCHEMA}},
 }
+LEGACY_PROMPT, LEGACY_SCHEMA = PROMPT, copy.deepcopy(SCHEMA)
+LEGACY_MAX_OUTPUT_TOKENS = MAX_OUTPUT_TOKENS
+MAX_OUTPUT_TOKENS = 3840
+PROMPT = PROMPT.replace(
+    'No store, time, quotations, line IDs or explanation.',
+    'No store, quotations, line IDs or explanation outside the typed timing channel.'
+) + """
+Each day additionally requires workTiming: null if timing cannot be read, [] if
+there is no new timing evidence. This channel is independent: preserve completely
+readable day/shifts even when timing is null. At most 2 timing items per day,
+each tied to an actual explicit shift. Distinct targeted exclusions or a set
+plus a targeted exclusion may share a shift. Never repeat the same fact target.
+Each item has EXACTLY shift, kind, time.
+Only extract the displayed boundary: daytime work END or nighttime work START.
+Do NOT extract daytime starts, nighttime ends, or another day's/person's hours.
+Naps, breaks, return from a break, all-day/オーラス alone, shop, usual hours,
+and implied hours are not work timing. Do not infer shifts from clocks.
+Timing evidence is the entire verified period/post, using the period's existing
+imageIndexes and body. Do not invent per-note image proof or repeat imageIndexes.
+Code supplies serviceDate and the shift's displayed boundary after calendar
+resolution. Never output boundary, status, qualifier, explicitTime, year, name,
+author or source IDs in timing. Do not derive timing from postedAtJST.
+kind is short/long/early/late ONLY for an explicit source word:
+短め昼 means day end short; 長め昼/ながめ昼 means day end long.
+早め夜 means night start early; おそめ夜 means night start late.
+time is an actually stated numeric HH:MM, or null. A word without a number keeps
+time null: never invent 18. A numeric-only boundary uses kind=time, never an
+invented source word. Preserve other clock times, especially a new daytime end
+17:00 that supersedes an old long end. Downstream numeric mappings are EXACT:
+day END 16:00 short / 18:00 long; night START 16:00 early / 18:00 late.
+Never use <= or >= thresholds. For an explicit withdrawal of that shift's
+displayed boundary use kind=withdrawn; contradictory evidence uses kind=conflict.
+Both require time=null. Unreadability is workTiming=null, not withdrawn/conflict.
+Target-specific denials are NOT whole-boundary withdrawals:
+not short/long/early/late uses kind=not-short/not-long/not-early/not-late with
+time=null. Denying one actual numeric clock uses kind=not-time with that HH:MM.
+Never attach an invented clock to a denied word. A current late night start
+followed by "not early" must retain late: return not-early, not withdrawn.
+Keep an exclusion's exact target even when it does not match a current label.
+Normal/usual/no-info alone does NOT withdraw a boundary or imply any hour.
+Without a stated boundary or specific denial, return [] (or null if unreadable),
+never fabricate withdrawn, not-early, a qualifier, or a customary 18:00.
+"""
+TIMING_SCHEMA = copy.deepcopy(facts.timing().COMPACT_SCHEMA)
+DAY_SCHEMA['required'].append('workTiming')
+DAY_SCHEMA['properties']['workTiming'] = {
+    'type': ['array', 'null'], 'maxItems': 2, 'items': TIMING_SCHEMA}
+
+
+def contract_parts(version):
+    if version == facts.LEGACY_VERSION:
+        return LEGACY_PROMPT, LEGACY_SCHEMA, LEGACY_MAX_OUTPUT_TOKENS
+    if version == VERSION:
+        return PROMPT, SCHEMA, MAX_OUTPUT_TOKENS
+    raise ValueError('invalid_schedule_contract')
 
 
 def probe_image(raw, mime):
@@ -165,43 +223,72 @@ def image_facts(images):
     return result
 
 
-def wire_payload(messages):
+def wire_payload(messages, contract_version=VERSION):
+    _, schema, max_tokens = contract_parts(contract_version)
     return {'model': transport.DEPLOYMENT, 'reasoning_effort': 'none',
-            'max_completion_tokens': MAX_OUTPUT_TOKENS, 'messages': messages,
+            'max_completion_tokens': max_tokens, 'messages': messages,
             'response_format': {'type': 'json_schema', 'json_schema': {
-                'name': 'half_month_schedule', 'strict': True, 'schema': SCHEMA}}}
+                'name': 'half_month_schedule', 'strict': True, 'schema': schema}}}
 
 
-def prepare_request(source, text, images):
+def _validate_request_text(source, text):
     facts.validate_source(source)
     if not isinstance(text, str) or len(text.encode('utf-8')) > MAX_INPUT_BYTES:
         raise ValueError('azure_input_limit')
     if facts.digest(text.encode('utf-8')) != source['bodyHash']:
         raise ValueError('schedule_body_mismatch')
+
+
+def _request_context(source, text, metadata):
+    created = facts.timestamp(source['createdAt']).astimezone(facts.JST)
+    return {'name': source['name'], 'authorId': source['authorId'],
+            'authorScreenName': source['authorScreenName'], 'postId': source['id'],
+            'postedAtJST': created.isoformat(), 'body': text,
+            'images': [{**item, 'index': index,
+                       'originalWidth': source['media'][index]['originalWidth'],
+                       'originalHeight': source['media'][index]['originalHeight']}
+                      for index, item in enumerate(metadata)]}
+
+
+def check_caption_capacity(source, text, *, contract_version=VERSION):
+    """Early rejection using a text lower bound; prepare_request still checks the full context."""
+    prompt, schema, output = contract_parts(contract_version)
+    _validate_request_text(source, text)
+    if contract_version == VERSION:
+        return capacity.half_month(
+            json.dumps(_request_context(source, text, []), ensure_ascii=False), prompt, schema, output)
+    return None
+
+
+def build_request(source, text, images, *, contract_version=VERSION):
+    """Pure diagnostic construction, not inference admission; never opens a client."""
+    prompt, schema, _ = contract_parts(contract_version)
+    _validate_request_text(source, text)
     metadata = image_facts(images)
     if len(metadata) != len(source['media']):
         raise ValueError('schedule_images_incomplete')
-    created = facts.timestamp(source['createdAt']).astimezone(facts.JST)
-    context = {'name': source['name'], 'authorId': source['authorId'],
-               'authorScreenName': source['authorScreenName'], 'postId': source['id'],
-               'postedAtJST': created.isoformat(), 'body': text,
-               'images': [{**item, 'index': index,
-                           'originalWidth': source['media'][index]['originalWidth'],
-                           'originalHeight': source['media'][index]['originalHeight']}
-                          for index, item in enumerate(metadata)]}
+    context = _request_context(source, text, metadata)
     content = [{'type': 'text', 'text': json.dumps(context, ensure_ascii=False)}]
     for image in images:
         encoded = base64.b64encode(image['bytes']).decode('ascii')
         content.append({'type': 'image_url', 'image_url': {
             'url': 'data:' + image['mime'] + ';base64,' + encoded, 'detail': 'high'}})
-    messages = [{'role': 'system', 'content': PROMPT}, {'role': 'user', 'content': content}]
-    serialized = json.dumps(wire_payload(messages)).encode('utf-8')
+    messages = [{'role': 'system', 'content': prompt}, {'role': 'user', 'content': content}]
+    serialized = json.dumps(wire_payload(messages, contract_version)).encode('utf-8')
     if len(serialized) > MAX_REQUEST_BYTES:
         raise ValueError('azure_input_limit')
-    proof = {'contract': VERSION, 'model': facts.MODEL, 'modelVersion': facts.MODEL_VERSION,
-             'promptHash': facts.digest(PROMPT.encode('utf-8')), 'schemaHash': facts.digest(SCHEMA),
+    proof = {'contract': contract_version, 'model': facts.MODEL, 'modelVersion': facts.MODEL_VERSION,
+             'promptHash': facts.digest(prompt.encode('utf-8')), 'schemaHash': facts.digest(schema),
              'contextHash': facts.digest(context), 'requestHash': facts.digest(serialized),
              'images': metadata}
+    return messages, proof
+
+
+def prepare_request(source, text, images, *, contract_version=VERSION):
+    messages, proof = build_request(source, text, images, contract_version=contract_version)
+    if contract_version == VERSION:
+        prompt, schema, output = contract_parts(contract_version)
+        capacity.half_month(messages[1]['content'][0]['text'], prompt, schema, output)
     return messages, proof
 
 
@@ -215,9 +302,23 @@ def _year_candidates(month, printed, text_year, created):
                    if (index + offset) % 12 + 1 == month})
 
 
-def normalize_result(result, source, text, image_count, allowed_periods=None):
+def validate_clock_text(text, explicit_time):
+    hour, minute = explicit_time.split(':')
+    clock = r'(?<!\d)0?' + str(int(hour)) + r'(?::|：)' + minute + r'(?!\d)'
+    japanese = r'(?<!\d)0?' + str(int(hour)) + r'時' + (
+        r'(?:00分)?' if minute == '00' else minute + r'分')
+    numeric_text = unicodedata.normalize('NFKC', text)
+    ranges = (r'|(?<!\d)0?' + str(int(hour)) + r'(?=\s*[-〜~])'
+              + r'|(?<=[-〜~])\s*0?' + str(int(hour)) + r'(?!\d)' if minute == '00' else '')
+    if not re.search(clock + '|' + japanese + ranges, numeric_text):
+        raise ValueError('schedule_timing_clock_ungrounded')
+
+
+def normalize_result(result, source, text, image_count, allowed_periods=None, *, contract_version=VERSION):
     """Resolve calendar from source evidence, never the collector's target year."""
     facts.require_keys(result, ('periods',))
+    _, schema, _ = contract_parts(contract_version)
+    day_fields = schema['properties']['periods']['items']['properties']['days']['items']['required']
     periods = result['periods']
     if periods is None:
         raise ValueError('schedule_pending')
@@ -254,7 +355,7 @@ def normalize_result(result, source, text, image_count, allowed_periods=None):
             raise ValueError('invalid_schedule_days')
         seen_days = set()
         for row in rows:
-            facts.require_keys(row, DAY_SCHEMA['required'])
+            facts.require_keys(row, day_fields)
             number, shifts, weekday = row['day'], row['shifts'], row['weekday']
             if number is None or shifts is None:
                 raise ValueError('schedule_pending')
@@ -280,11 +381,25 @@ def normalize_result(result, source, text, image_count, allowed_periods=None):
             raise ValueError('schedule_calendar_unresolved')
         year, dates = candidates[0]
         basis = 'printed' if printed is not None else 'text' if text_year is not None else 'post-context'
-        groups = {}
+        groups, notes = {}, {}
         for row, date in zip(rows, dates):
             first, last = facts.half_period(date)
             groups.setdefault((first, last), []).append(
                 {'date': date.isoformat(), 'shifts': [shift for shift in ('昼', '夜') if shift in row['shifts']]})
+            if contract_version == VERSION:
+                values = row['workTiming']
+                if values is not None and (not isinstance(values, list) or len(values) > 2):
+                    raise ValueError('invalid_schedule_work_timing')
+                seen_timing_facts = set()
+                for item in values or []:
+                    fact = facts.timing().expand_compact(item, date.isoformat())
+                    fact_key = facts.timing().fact_key(fact)
+                    if fact['shift'] not in row['shifts'] or fact_key in seen_timing_facts:
+                        raise ValueError('invalid_schedule_timing_shift')
+                    seen_timing_facts.add(fact_key)
+                    if not indexes and fact['explicitTime'] is not None:
+                        validate_clock_text(text, fact['explicitTime'])
+                    notes.setdefault((first, last), []).append(fact)
         for (first, last), days in sorted(groups.items()):
             if first in seen_periods:
                 raise ValueError('duplicate_schedule_period')
@@ -294,6 +409,9 @@ def normalize_result(result, source, text, image_count, allowed_periods=None):
             schedule.update(sourceKind='half-month-schedule',
                             period={'from': first, 'to': last, 'printedYear': printed, 'yearBasis': basis},
                             days=sorted(days, key=lambda item: item['date']))
+            if notes.get((first, last)):
+                schedule['workTiming'] = facts.timing().bind(
+                    notes[(first, last)], source, 'half-month-schedule')
             facts.validate_schedule(schedule)
             output.append(schedule)
     if len(output) > 2:
@@ -305,11 +423,13 @@ def normalize_result(result, source, text, image_count, allowed_periods=None):
     return output
 
 
-def saved_result(source, text, images, result, *, now, receipt_id, allowed_periods=None):
+def saved_result(source, text, images, result, *, now, receipt_id, allowed_periods=None,
+                 contract_version=VERSION):
     """Data-only API0 normalization. Caller must verify canonical usage/import receipt."""
-    messages, proof = prepare_request(source, text, images)
+    messages, proof = prepare_request(source, text, images, contract_version=contract_version)
     del messages
-    schedules = normalize_result(result, source, text, len(images), allowed_periods)
+    schedules = normalize_result(result, source, text, len(images), allowed_periods,
+                                 contract_version=contract_version)
     proof.update(resultHash=facts.digest(result), receiptId=receipt_id, analyzedAt=facts.stamp(now))
     facts.validate_analysis(proof)
     return schedules, proof

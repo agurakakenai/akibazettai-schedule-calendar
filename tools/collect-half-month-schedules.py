@@ -422,7 +422,8 @@ def refresh_coverage(state, reasons, now, manual):
             row['candidateIds'] = [item['id'] for item in state['pending'] if item['name'] == name]
             if reason['handle'] is None:
                 row['reason'] = reason['reason']
-            elif row['confirmedIds']:
+            elif row['confirmedIds'] and row['reason'] not in {
+                    facts.TIMING_STORAGE_LIMIT_REASON, *facts.CAPACITY_HOLD_REASONS}:
                 row['reason'] = 'valid_schedule'
             if row['lastSearchedAt'] is not None:
                 interval = 6 if empty_day and not row['confirmedIds'] else 24
@@ -517,6 +518,7 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
     outcome, target, verified = 'no-results', None, None
     selected = None
     payload_received = False
+    image_hashes = None
     try:
         analyzer.check()
         # Expired metadata is accounted for in coverage, never in valid revisions.
@@ -601,6 +603,7 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
                 facts.bind_identity(state, verified)
                 facts.record_source(state, verified, 'pending', 'not_issued', clock())
                 save()
+                azure.check_caption_capacity(verified, text)
                 analyzer.check()
                 if len(urls) > max_images:
                     raise Failure('source_budget_exhausted')
@@ -635,9 +638,16 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
                     else:
                         schedules, analysis = analyzer.analyze(verified, text, images, periods, on_issued)
                         if schedules:
-                            changed = facts.apply_revision(state, schedules, verified, analysis)
-                            outcome = 'ok' if changed else 'no-new'
-                            _set_reason(state, target['name'], periods, 'valid_schedule')
+                            try:
+                                changed = facts.apply_revision(state, schedules, verified, analysis)
+                            except facts.timing().WorkTimingLimitError:
+                                outcome = 'partial'
+                                facts.record_source(state, verified, 'failed', facts.TIMING_STORAGE_LIMIT_REASON,
+                                                    clock(), analysis['requestHash'], image_hashes)
+                                _set_reason(state, target['name'], periods, facts.TIMING_STORAGE_LIMIT_REASON)
+                            else:
+                                outcome = 'ok' if changed else 'no-new'
+                                _set_reason(state, target['name'], periods, 'valid_schedule')
                         else:
                             facts.record_source(state, verified, 'negative', 'not_schedule',
                                                 clock(), analysis['requestHash'], image_hashes)
@@ -651,6 +661,16 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
         elif selected is not None:
             outcome = 'budget-exhausted'
             _set_reason(state, selected['name'], periods, 'budget_wait')
+    except azure.capacity.CapacityHold as exc:
+        outcome = 'partial'
+        if target is not None:
+            _set_reason(state, target['name'], periods, exc.reason)
+        if verified is not None:
+            record = state['sources'].get(facts.source_key(verified), {})
+            facts.record_source(state, verified, 'failed', exc.reason, clock(),
+                                record.get('requestHash'), image_hashes)
+        if selected is not None and selected in state['pending']:
+            state['pending'].remove(selected)
     except Exception as exc:
         reason = getattr(exc, 'reason', str(exc))
         if 'budget' in reason:
@@ -695,7 +715,8 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
 
 
 def replay_saved(state, *, document, payload_bytes, images, result, schedule, insights,
-                 accounts, post_id, now, receipt_id, allowed_periods=None, existing_bindings=None):
+                 accounts, post_id, now, receipt_id, allowed_periods=None, existing_bindings=None,
+                 contract_version=facts.VERSION):
     """Offline bootstrap from verified roster/account + actual discovery and raw hashes.
 
     This produces validation material, not authorization: the caller must bind
@@ -716,7 +737,8 @@ def replay_saved(state, *, document, payload_bytes, images, result, schedule, in
     if len(images) != len(urls):
         raise ValueError('schedule_images_incomplete')
     parsed, proof = azure.saved_result(source, text, images, result, now=now, receipt_id=receipt_id,
-                                      allowed_periods=allowed_periods or facts.target_periods(now))
+                                      allowed_periods=allowed_periods or facts.target_periods(now),
+                                      contract_version=contract_version)
     target = targets[selected['name']]
     account = next(row for row in accounts if row['handle'] == target['handle'])
     subject = {'name': target['name'], 'handle': target['handle'], 'accountSource': account['source'],

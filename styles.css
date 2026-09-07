@@ -1594,6 +1594,7 @@ summary:focus-visible { outline: 3px solid var(--cp-accent); outline-offset: 2px
 .official-embed iframe { width: 100% !important; pointer-events: none; }
 .embed-fallback, .shift-change { color: var(--cp-text-muted); font-size: 0.72rem; overflow-wrap: anywhere; }
 .entry-update { flex-basis: 100%; color: var(--cp-text-muted); font-size: 0.65rem; }
+.maid-plan-stop > .work-timing-note { grid-column: 1 / -1; }
 #personal-status[data-error="true"], #half-month-status[data-error="true"] { color: var(--cp-danger); }
 .observation-status { margin-top: 12px; padding-top: 8px; border-top: 1px dashed var(--calendar-line); }
 .day-hint.is-observed { color: #396448; font-weight: 700; }
