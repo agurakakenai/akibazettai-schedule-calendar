@@ -34,7 +34,7 @@ class TimingOnlyTests(base.Offline):
         receipt_id = revision['analysis']['receiptId']
         import_id = next(key for key, value in self.state['savedImports'].items()
                          if value['receiptId'] == receipt_id)
-        self.source = copy.deepcopy(self.state['revisions'][revision_key]['source'])
+        self.source = copy.deepcopy(revision.get('source', self.state['sources'][revision['sourceKey']]['source']))
         self.approval = {
             'operation': 'work-timing-only', 'updateChannels': ['workTiming'],
             'expectedSubjectHash': facts.digest(self.state),
@@ -194,6 +194,160 @@ class TimingOnlyTests(base.Offline):
         state['savedImports'][key] = imported
         state['receipts'][analysis['receiptId']] = keys
         return state
+
+    def direct_apply_entry(self, state, entry):
+        staged = self.unchecked_history(entry)
+        amendment = entry['amendment']
+        revision = staged['revisions'][staged['receipts'][amendment['analysis']['receiptId']][0]]
+        key = facts.digest(amendment)
+        staged['savedImports'][key]['importedAt'] = facts.stamp(base.NOW + dt.timedelta(hours=1))
+        return facts.apply_revision(
+            state, amendment['schedules'], amendment['source'], amendment['analysis'],
+            timing_amendment=revision['timingAmendment'], saved_import=(key, staged['savedImports'][key]))
+
+    def seed_later_capture(self):
+        entry = self.fx.timing_entry(self.state, label='later-capture', notes={
+            2: [base.work_note('夜', 'start', 'late', '18:00')]})
+        later = facts.stamp(base.NOW + dt.timedelta(seconds=1))
+        entry['amendment']['source'].update(
+            observedAt=later, payloadHash=facts.digest(b'later-payload'),
+            discoveryHash=facts.digest(b'later-discovery'))
+        for row in entry['amendment']['schedules']:
+            row['observedAt'] = later
+        self.state = self.fx.apply_timing(self.state, entry)
+        self.configure()
+
+    def test_selected_later_capture_preserves_first_index_and_exact_predecessor(self):
+        self.seed_later_capture()
+        baseline, baseline_usage = copy.deepcopy((self.state, self.usage))
+        exact = lambda value: json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+        for sorted_roundtrip in (False, True):
+            for kind in ('native', 'imported'):
+                with self.subTest(sorted_roundtrip=sorted_roundtrip, kind=kind):
+                    self.state = (json.loads(json.dumps(baseline, sort_keys=True)) if sorted_roundtrip
+                                  else copy.deepcopy(baseline))
+                    self.usage = copy.deepcopy(baseline_usage)
+                    self.fx.usage = self.usage
+                    self.configure()
+                    indexed = self.state['sources'][facts.source_key(self.source)]['source']
+                    for field in ('observedAt', 'payloadHash', 'discoveryHash'):
+                        self.assertNotEqual(indexed[field], self.source[field])
+                    if kind == 'native':
+                        packet, proof = self.native_packet(self.partial_pattern())
+                    else:
+                        packet = self.packet(self.partial_pattern())
+                        proof = self.accounted_proof(packet)
+                    entry = self.selected_entry(packet, proof, self.selection_for(packet))
+                    frozen = exact((self.state, self.usage, packet))
+                    direct = copy.deepcopy(self.state)
+                    self.assertTrue(self.direct_apply_entry(direct, entry))
+                    facts.validate_state(direct)
+                    timing.saved.validate_accounting(direct, self.usage, facts)
+                    self.assertEqual(exact(direct['sources']), exact(self.state['sources']))
+                    after = self.apply_entry(self.state, entry)
+                    direct['lastRun'] = {'status': 'partial'}
+                    self.assertEqual(after, direct)
+                    timing.validate_selection_delta(
+                        self.state, after, packet['analysis'], packet['source'], packet['schedules'],
+                        entry['amendment']['selectionProof'], reported=True)
+                    receipt = packet['analysis']['receiptId']
+                    for key in after['receipts'][receipt]:
+                        self.assertEqual(after['revisions'][key]['source'], self.source)
+                    self.assertEqual(after['schedules'][0]['workTiming']['facts'][0],
+                                     self.state['schedules'][0]['workTiming']['facts'][0])
+                    restored = json.loads(json.dumps(after, sort_keys=True))
+                    facts.validate_state(restored)
+                    timing.saved.validate_accounting(restored, self.usage, facts)
+                    saved = exact(restored)
+                    self.assertFalse(self.direct_apply_entry(restored, entry))
+                    self.assertEqual(exact(restored), saved)
+                    self.assertEqual(exact(self.fx.apply_timing(restored, entry)), saved)
+                    self.assertEqual(exact((self.state, self.usage, packet)), frozen)
+                    with self.assertRaisesRegex(ValueError, 'timing_response_pending'):
+                        timing.require_complete(packet, proof, self.usage)
+
+    def test_selected_later_capture_rejects_source_substitution_before_issue_apply_and_history(self):
+        self.seed_later_capture()
+        packet = self.packet(self.partial_pattern())
+        entry = self.entry(packet)
+        indexed = self.state['sources'][facts.source_key(self.source)]['source']
+        frozen = copy.deepcopy((self.state, self.usage))
+        for field in ('wholeCapture', 'observedAt', 'payloadHash', 'discoveryHash'):
+            changed = copy.deepcopy(entry)
+            source = copy.deepcopy(self.source)
+            if field == 'wholeCapture':
+                source = copy.deepcopy(indexed)
+            else:
+                source[field] = indexed[field]
+            changed['amendment']['source'] = source
+            with self.subTest(field=field):
+                analyzer, usage, client = self.analyzer(self.partial_pattern())
+                with self.assertRaisesRegex(ValueError, 'timing_original_source_changed'):
+                    analyzer.analyze(self.state, self.approval, source, self.text, self.images, mock.Mock())
+                usage.reserve.assert_not_called()
+                client.structured.assert_not_called()
+                with self.assertRaisesRegex(ValueError, 'timing_selection_source_changed'):
+                    self.direct_apply_entry(self.state, changed)
+                with self.assertRaises(ValueError):
+                    self.apply_entry(self.state, changed)
+                with self.assertRaisesRegex(ValueError, 'schedule_timing_source_changed'):
+                    facts.select_revisions(self.unchecked_history(changed))
+        self.assertEqual((self.state, self.usage), frozen)
+
+    def test_selected_later_capture_rejects_missing_index_identity_and_wrong_predecessor(self):
+        self.seed_later_capture()
+        entry = self.entry(self.packet(self.partial_pattern()))
+        original_receipt = next(iter(self.state['receipts']))
+        for change in ('missingIndex', 'indexIdentity', 'indexPostIdentity', 'sourceIdentity',
+                       'missingPrevious', 'oldPrevious'):
+            state, changed = copy.deepcopy((self.state, entry))
+            source_key = facts.source_key(self.source)
+            if change == 'missingIndex':
+                del state['sources'][source_key]
+                reason = 'missing_schedule_source'
+            elif change == 'indexIdentity':
+                state['sources'][source_key]['source']['authorId'] = '12345'
+                reason = 'invalid_schedule_source_record'
+            elif change == 'indexPostIdentity':
+                state['sources'][source_key]['source']['createdAt'] = facts.stamp(
+                    base.CREATED + dt.timedelta(milliseconds=500))
+                reason = 'schedule_source_identity_mismatch'
+            elif change == 'sourceIdentity':
+                changed['amendment']['source']['authorId'] = '12345'
+                reason = 'schedule_binding_mismatch'
+            else:
+                changed['amendment']['previous']['analysisReceiptId'] = (
+                    'f' * 64 if change == 'missingPrevious' else original_receipt)
+                reason = 'timing_selection_source_changed'
+            frozen = copy.deepcopy((state, changed, self.usage))
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, reason):
+                self.direct_apply_entry(state, changed)
+            self.assertEqual((state, changed, self.usage), frozen)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.apply_entry(state, changed)
+
+    def test_selected_legacy_predecessor_resolves_original_index_without_rewriting_history(self):
+        receipt = next(iter(self.state['receipts']))
+        previous_key = self.state['receipts'][receipt][0]
+        previous = self.state['revisions'].pop(previous_key)
+        del previous['source']
+        legacy_key = facts.digest(previous)
+        self.state['revisions'][legacy_key] = previous
+        self.state['receipts'][receipt] = [legacy_key]
+        facts.validate_state(self.state)
+        self.configure()
+        entry = self.entry(self.packet(self.partial_pattern()))
+        direct = copy.deepcopy(self.state)
+        self.assertTrue(self.direct_apply_entry(direct, entry))
+        facts.validate_state(direct)
+        after = self.apply_entry(self.state, entry)
+        self.assertEqual(after['sources'], self.state['sources'])
+        self.assertEqual(after['revisions'][legacy_key], previous)
+        self.assertNotIn('source', after['revisions'][legacy_key])
+        restored = json.loads(json.dumps(after, sort_keys=True))
+        facts.validate_state(restored)
+        self.assertFalse(self.direct_apply_entry(restored, entry))
+        self.assertEqual(self.fx.apply_timing(restored, entry), restored)
 
     def test_selected_partial_preserves_full_origin_and_exact_unselected_state_with_both_accounting_kinds(self):
         historical = self.fx.entry()

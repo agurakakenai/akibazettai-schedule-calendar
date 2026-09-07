@@ -844,7 +844,13 @@ def apply_revision(state, schedules, source, analysis, *, timing_amendment=None,
     selected_mode = saved_import is not None and 'selectionProof' in saved_import[1]
     if selected_mode:
         key = source_key(source)
-        if working['sources'].get(key, {}).get('source') != source:
+        validate_timing_authorization(timing_amendment)
+        prior_keys = working['receipts'].get(timing_amendment['previous']['analysisReceiptId'], [])
+        # The index retains the first capture; approval binds the exact predecessor capture.
+        if key not in working['sources'] or not prior_keys or any(
+                working['revisions'][prior].get(
+                    'source', working['sources'][working['revisions'][prior]['sourceKey']]['source']) != source
+                for prior in prior_keys):
             raise ValueError('timing_selection_source_changed')
     else:
         key = record_source(working, source, 'valid', 'valid_schedule',
