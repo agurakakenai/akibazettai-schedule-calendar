@@ -35,7 +35,7 @@
       "reason": "source_failed"
     }
   },
-  "checkedAt": "2026-09-08T08:14:54.044219Z",
+  "checkedAt": "2026-09-08T12:58:26.881583Z",
   "complete": false,
   "coverage": {
     "2026-09-01": {
@@ -55,13 +55,20 @@
         "to": "2026-09-15"
       },
       "あむ": {
-        "candidateIds": [],
+        "candidateIds": [
+          "2096976785279996399",
+          "2096252018260062487",
+          "2095889622886740016",
+          "2095527242847932773",
+          "2095164861156073777",
+          "2094588258198147437"
+        ],
         "confirmedIds": [],
         "handle": "amu_zettai",
-        "lastSearchedAt": null,
+        "lastSearchedAt": "2026-09-08T12:58:25.663513Z",
         "name": "あむ",
-        "nextCheckAt": null,
-        "reason": "source_failed",
+        "nextCheckAt": "2026-09-09T12:58:25.663513Z",
+        "reason": "budget_wait",
         "to": "2026-09-15"
       },
       "あめる": {
@@ -574,13 +581,20 @@
         "to": "2026-09-30"
       },
       "あむ": {
-        "candidateIds": [],
+        "candidateIds": [
+          "2096976785279996399",
+          "2096252018260062487",
+          "2095889622886740016",
+          "2095527242847932773",
+          "2095164861156073777",
+          "2094588258198147437"
+        ],
         "confirmedIds": [],
         "handle": "amu_zettai",
-        "lastSearchedAt": null,
+        "lastSearchedAt": "2026-09-08T12:58:25.663529Z",
         "name": "あむ",
-        "nextCheckAt": null,
-        "reason": "source_failed",
+        "nextCheckAt": "2026-09-08T18:58:25.663529Z",
+        "reason": "budget_wait",
         "to": "2026-09-30"
       },
       "あめる": {
@@ -1083,7 +1097,7 @@
     }
   },
   "lastRun": {
-    "status": "partial"
+    "status": "budget-exhausted"
   },
   "lastSuccessAt": "2026-09-07T01:17:33.785207Z",
   "pending": [
@@ -1138,6 +1152,84 @@
       "priority": 1,
       "searchCreatedAt": "2026-09-06T03:16:17Z",
       "url": "https://x.com/akubi_zettai/status/2096437301509513578"
+    },
+    {
+      "authorId": "1180156105181159424",
+      "authorScreenName": "amu_zettai",
+      "discoveredAt": "2026-09-08T12:58:26.789876Z",
+      "discoveryHash": "0dd76c181574d85c094bbdc42e6f6719029d4fdbfb87d75dd5958efdc03781a2",
+      "id": "2096976785279996399",
+      "lastAttemptAt": null,
+      "name": "あむ",
+      "nextAttemptAt": "2026-09-08T13:13:26.862052Z",
+      "priority": 1,
+      "searchCreatedAt": "2026-09-07T15:00:00Z",
+      "url": "https://x.com/amu_zettai/status/2096976785279996399"
+    },
+    {
+      "authorId": "1180156105181159424",
+      "authorScreenName": "amu_zettai",
+      "discoveredAt": "2026-09-08T12:58:26.789876Z",
+      "discoveryHash": "0dd76c181574d85c094bbdc42e6f6719029d4fdbfb87d75dd5958efdc03781a2",
+      "id": "2096252018260062487",
+      "lastAttemptAt": null,
+      "name": "あむ",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-05T15:00:02Z",
+      "url": "https://x.com/amu_zettai/status/2096252018260062487"
+    },
+    {
+      "authorId": "1180156105181159424",
+      "authorScreenName": "amu_zettai",
+      "discoveredAt": "2026-09-08T12:58:26.789876Z",
+      "discoveryHash": "0dd76c181574d85c094bbdc42e6f6719029d4fdbfb87d75dd5958efdc03781a2",
+      "id": "2095889622886740016",
+      "lastAttemptAt": null,
+      "name": "あむ",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-04T15:00:00Z",
+      "url": "https://x.com/amu_zettai/status/2095889622886740016"
+    },
+    {
+      "authorId": "1180156105181159424",
+      "authorScreenName": "amu_zettai",
+      "discoveredAt": "2026-09-08T12:58:26.789876Z",
+      "discoveryHash": "0dd76c181574d85c094bbdc42e6f6719029d4fdbfb87d75dd5958efdc03781a2",
+      "id": "2095527242847932773",
+      "lastAttemptAt": null,
+      "name": "あむ",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-03T15:00:02Z",
+      "url": "https://x.com/amu_zettai/status/2095527242847932773"
+    },
+    {
+      "authorId": "1180156105181159424",
+      "authorScreenName": "amu_zettai",
+      "discoveredAt": "2026-09-08T12:58:26.789876Z",
+      "discoveryHash": "0dd76c181574d85c094bbdc42e6f6719029d4fdbfb87d75dd5958efdc03781a2",
+      "id": "2095164861156073777",
+      "lastAttemptAt": null,
+      "name": "あむ",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-02T15:00:03Z",
+      "url": "https://x.com/amu_zettai/status/2095164861156073777"
+    },
+    {
+      "authorId": "1180156105181159424",
+      "authorScreenName": "amu_zettai",
+      "discoveredAt": "2026-09-08T12:58:26.789876Z",
+      "discoveryHash": "0dd76c181574d85c094bbdc42e6f6719029d4fdbfb87d75dd5958efdc03781a2",
+      "id": "2094588258198147437",
+      "lastAttemptAt": null,
+      "name": "あむ",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-01T00:48:50Z",
+      "url": "https://x.com/amu_zettai/status/2094588258198147437"
     }
   ],
   "receipts": {

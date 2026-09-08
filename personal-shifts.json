@@ -72,7 +72,7 @@
       "searches": 18
     }
   },
-  "checkedAt": "2026-09-08T08:13:53.909717Z",
+  "checkedAt": "2026-09-08T12:58:25Z",
   "complete": false,
   "coverage": {
     "2026-09-07": {
@@ -758,46 +758,16 @@
     "search.yahoo.co.jp": "2026-09-08T08:14:07.107616Z"
   },
   "lastRun": {
-    "activeTargetCount": 10,
-    "attemptedCount": 2,
     "complete": false,
     "date": "2026-09-08",
-    "dateBasis": "JST calendar date, 00:00 boundary",
-    "deferredCount": 1,
-    "failures": [
-      {
-        "id": "2097159098584473787",
-        "reason": "azure_ungrounded"
-      },
-      {
-        "id": "2096976785279996399",
-        "reason": "azure_budget_exhausted"
-      }
-    ],
-    "finishedAt": "2026-09-08T08:14:53.697725Z",
-    "newEventCount": 1,
-    "newPostCount": 1,
+    "deferredCount": 11,
+    "finishedAt": "2026-09-08T12:58:25Z",
     "pendingCount": 11,
     "requests": {
-      "posts": 2,
-      "searches": 2
+      "posts": 0,
+      "searches": 0
     },
-    "skippedResolvedCount": 0,
-    "sourceCount": 2,
-    "sources": [
-      {
-        "candidateCount": 2,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Aamu_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 1,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Aameru_zettai&ei=UTF-8"
-      }
-    ],
-    "status": "budget-exhausted",
-    "targetCount": 18
+    "status": "outside-window"
   },
   "lastSuccessAt": "2026-09-06T04:14:02.214117Z",
   "originalTargets": {
