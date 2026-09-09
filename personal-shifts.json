@@ -86,7 +86,7 @@
       "searches": 2
     }
   },
-  "checkedAt": "2026-09-09T08:17:05.095509Z",
+  "checkedAt": "2026-09-09T13:03:46Z",
   "complete": false,
   "coverage": {
     "2026-09-07": {
@@ -1018,54 +1018,16 @@
     "search.yahoo.co.jp": "2026-09-09T08:17:21.056623Z"
   },
   "lastRun": {
-    "activeTargetCount": 4,
-    "attemptedCount": 1,
     "complete": false,
     "date": "2026-09-09",
-    "dateBasis": "JST calendar date, 00:00 boundary",
-    "deferredCount": 3,
-    "failures": [
-      {
-        "id": "2097340268395790758",
-        "reason": "azure_ungrounded"
-      },
-      {
-        "id": "2097542871197065703",
-        "reason": "azure_budget_exhausted"
-      },
-      {
-        "id": "2097367294653727202",
-        "reason": "azure_budget_exhausted"
-      },
-      {
-        "id": "2097340739470631391",
-        "reason": "azure_budget_exhausted"
-      }
-    ],
-    "finishedAt": "2026-09-09T08:18:05.983815Z",
-    "newEventCount": 0,
-    "newPostCount": 0,
+    "deferredCount": 15,
+    "finishedAt": "2026-09-09T13:03:46Z",
     "pendingCount": 15,
     "requests": {
-      "posts": 1,
-      "searches": 2
+      "posts": 0,
+      "searches": 0
     },
-    "skippedResolvedCount": 0,
-    "sourceCount": 2,
-    "sources": [
-      {
-        "candidateCount": 3,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Akanata2_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 1,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Achisato_zettai&ei=UTF-8"
-      }
-    ],
-    "status": "budget-exhausted",
-    "targetCount": 14
+    "status": "outside-window"
   },
   "lastSuccessAt": "2026-09-06T04:14:02.214117Z",
   "originalTargets": {
