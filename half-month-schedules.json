@@ -52,7 +52,7 @@
       "reason": "source_failed"
     }
   },
-  "checkedAt": "2026-09-10T08:17:35.334964Z",
+  "checkedAt": "2026-09-10T13:01:30.428380Z",
   "complete": false,
   "coverage": {
     "2026-09-01": {
@@ -105,7 +105,6 @@
       },
       "あらた": {
         "candidateIds": [
-          "2097139331169407481",
           "2097138206533968033",
           "2097137970361065973",
           "2097137736952189386",
@@ -117,18 +116,25 @@
         "lastSearchedAt": "2026-09-09T13:03:47.135148Z",
         "name": "あらた",
         "nextCheckAt": "2026-09-10T13:03:47.135148Z",
-        "reason": "queue_limit",
+        "reason": "analysis_failed",
         "to": "2026-09-15"
       },
       "いと": {
-        "candidateIds": [],
+        "candidateIds": [
+          "2098018461897437233",
+          "2098004065150214427",
+          "2097975602058027317",
+          "2097800468248539589",
+          "2097284747638817052",
+          "2096827464404353313"
+        ],
         "confirmedIds": [
           "2096568567798128871"
         ],
         "handle": "ito_zettai",
-        "lastSearchedAt": null,
+        "lastSearchedAt": "2026-09-10T13:00:30.978997Z",
         "name": "いと",
-        "nextCheckAt": null,
+        "nextCheckAt": "2026-09-11T13:00:30.978997Z",
         "reason": "valid_schedule",
         "to": "2026-09-15"
       },
@@ -643,7 +649,6 @@
       },
       "あらた": {
         "candidateIds": [
-          "2097139331169407481",
           "2097138206533968033",
           "2097137970361065973",
           "2097137736952189386",
@@ -655,17 +660,24 @@
         "lastSearchedAt": "2026-09-09T13:03:47.135158Z",
         "name": "あらた",
         "nextCheckAt": "2026-09-09T19:03:47.135158Z",
-        "reason": "queue_limit",
+        "reason": "analysis_failed",
         "to": "2026-09-30"
       },
       "いと": {
-        "candidateIds": [],
+        "candidateIds": [
+          "2098018461897437233",
+          "2098004065150214427",
+          "2097975602058027317",
+          "2097800468248539589",
+          "2097284747638817052",
+          "2096827464404353313"
+        ],
         "confirmedIds": [],
         "handle": "ito_zettai",
-        "lastSearchedAt": null,
+        "lastSearchedAt": "2026-09-10T13:00:30.979012Z",
         "name": "いと",
-        "nextCheckAt": null,
-        "reason": "source_failed",
+        "nextCheckAt": "2026-09-10T19:00:30.979012Z",
+        "reason": "queue_limit",
         "to": "2026-09-30"
       },
       "いろは": {
@@ -1136,6 +1148,11 @@
       "authorScreenName": "amu_zettai",
       "verifiedAt": "2026-09-09T08:18:07.954451Z"
     },
+    "あらた": {
+      "authorId": "1404766254552944645",
+      "authorScreenName": "arata_zettai",
+      "verifiedAt": "2026-09-10T13:00:33.461267Z"
+    },
     "いと": {
       "authorId": "2080944098043977728",
       "authorScreenName": "ito_zettai",
@@ -1334,19 +1351,6 @@
       "authorScreenName": "arata_zettai",
       "discoveredAt": "2026-09-09T13:03:48.659759Z",
       "discoveryHash": "ce5ba293feef45ce7e9e4caaf077f4049248632078ef4bc5bfe3e0afd51156ed",
-      "id": "2097139331169407481",
-      "lastAttemptAt": null,
-      "name": "あらた",
-      "nextAttemptAt": null,
-      "priority": 1,
-      "searchCreatedAt": "2026-09-08T01:45:54Z",
-      "url": "https://x.com/arata_zettai/status/2097139331169407481"
-    },
-    {
-      "authorId": "1404766254552944645",
-      "authorScreenName": "arata_zettai",
-      "discoveredAt": "2026-09-09T13:03:48.659759Z",
-      "discoveryHash": "ce5ba293feef45ce7e9e4caaf077f4049248632078ef4bc5bfe3e0afd51156ed",
       "id": "2097138206533968033",
       "lastAttemptAt": null,
       "name": "あらた",
@@ -1406,6 +1410,84 @@
       "priority": 1,
       "searchCreatedAt": "2026-09-08T01:32:03Z",
       "url": "https://x.com/arata_zettai/status/2097135847699263754"
+    },
+    {
+      "authorId": "2080944098043977728",
+      "authorScreenName": "ito_zettai",
+      "discoveredAt": "2026-09-10T13:00:33.184382Z",
+      "discoveryHash": "259b236b03cc51e5b929d0f85a21b66e3a73612c4a24331a55771c71ed505c09",
+      "id": "2098018461897437233",
+      "lastAttemptAt": null,
+      "name": "いと",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-10T11:59:15Z",
+      "url": "https://x.com/ito_zettai/status/2098018461897437233"
+    },
+    {
+      "authorId": "2080944098043977728",
+      "authorScreenName": "ito_zettai",
+      "discoveredAt": "2026-09-10T13:00:33.184382Z",
+      "discoveryHash": "259b236b03cc51e5b929d0f85a21b66e3a73612c4a24331a55771c71ed505c09",
+      "id": "2098004065150214427",
+      "lastAttemptAt": null,
+      "name": "いと",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-10T11:02:02Z",
+      "url": "https://x.com/ito_zettai/status/2098004065150214427"
+    },
+    {
+      "authorId": "2080944098043977728",
+      "authorScreenName": "ito_zettai",
+      "discoveredAt": "2026-09-10T13:00:33.184382Z",
+      "discoveryHash": "259b236b03cc51e5b929d0f85a21b66e3a73612c4a24331a55771c71ed505c09",
+      "id": "2097975602058027317",
+      "lastAttemptAt": null,
+      "name": "いと",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-10T09:08:56Z",
+      "url": "https://x.com/ito_zettai/status/2097975602058027317"
+    },
+    {
+      "authorId": "2080944098043977728",
+      "authorScreenName": "ito_zettai",
+      "discoveredAt": "2026-09-10T13:00:33.184382Z",
+      "discoveryHash": "259b236b03cc51e5b929d0f85a21b66e3a73612c4a24331a55771c71ed505c09",
+      "id": "2097800468248539589",
+      "lastAttemptAt": null,
+      "name": "いと",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-09T21:33:01Z",
+      "url": "https://x.com/ito_zettai/status/2097800468248539589"
+    },
+    {
+      "authorId": "2080944098043977728",
+      "authorScreenName": "ito_zettai",
+      "discoveredAt": "2026-09-10T13:00:33.184382Z",
+      "discoveryHash": "259b236b03cc51e5b929d0f85a21b66e3a73612c4a24331a55771c71ed505c09",
+      "id": "2097284747638817052",
+      "lastAttemptAt": null,
+      "name": "いと",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-08T11:23:44Z",
+      "url": "https://x.com/ito_zettai/status/2097284747638817052"
+    },
+    {
+      "authorId": "2080944098043977728",
+      "authorScreenName": "ito_zettai",
+      "discoveredAt": "2026-09-10T13:00:33.184382Z",
+      "discoveryHash": "259b236b03cc51e5b929d0f85a21b66e3a73612c4a24331a55771c71ed505c09",
+      "id": "2096827464404353313",
+      "lastAttemptAt": null,
+      "name": "いと",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-07T05:06:39Z",
+      "url": "https://x.com/ito_zettai/status/2096827464404353313"
     }
   ],
   "receipts": {
@@ -1915,6 +1997,29 @@
   ],
   "schemaVersion": 1,
   "sources": {
+    "9dea89a72d151c1f6ac2b605ef982a106d41c0e7319e7a0b6b9b9187eae8620f": {
+      "checkedAt": "2026-09-10T13:01:30.409025Z",
+      "imageHashes": [],
+      "reason": "analysis_failed",
+      "requestHash": "322991eea6aff3239873960fb1311f7f33b5bc23511747e5e925a00905b4a8dd",
+      "source": {
+        "authorId": "1404766254552944645",
+        "authorScreenName": "arata_zettai",
+        "bodyHash": "67f78b1aea7376b29c773a621934d739aabc63e00ff01f992610f2dce960dc92",
+        "createdAt": "2026-09-08T01:45:54Z",
+        "discoveryHash": "ce5ba293feef45ce7e9e4caaf077f4049248632078ef4bc5bfe3e0afd51156ed",
+        "editTweetIds": [
+          "2097139331169407481"
+        ],
+        "id": "2097139331169407481",
+        "media": [],
+        "name": "あらた",
+        "observedAt": "2026-09-10T13:00:33.461267Z",
+        "payloadHash": "803c3d951fb789cba80e2b3c24d583eb5e81cd20bd7b181bdfa13e1383d849a9",
+        "url": "https://x.com/arata_zettai/status/2097139331169407481"
+      },
+      "status": "failed"
+    },
     "b042ca5c9a112c37330032aa600acaddbec0dd5011e27b3685a4bc5d20e1d048": {
       "checkedAt": "2026-09-09T08:19:05.090599Z",
       "imageHashes": [],
