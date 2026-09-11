@@ -17,6 +17,23 @@
       "checkedAt": "2026-09-07T15:08:16.939151Z",
       "reason": "source_failed"
     },
+    "39538834be382f52c5952a10940695f919183a1314bc44a21e336313a5b13749": {
+      "candidate": {
+        "authorId": "1959230080657563648",
+        "authorScreenName": "una_zettai",
+        "discoveredAt": "2026-09-11T12:55:34.511303Z",
+        "discoveryHash": "a3eef4a023eac5441b32d7b44690f0f8b093fc7e73da785724c0a90093454e5f",
+        "id": "2098326897541501210",
+        "lastAttemptAt": "2026-09-11T12:55:34.605750Z",
+        "name": "うな",
+        "nextAttemptAt": null,
+        "priority": 1,
+        "searchCreatedAt": "2026-09-11T08:24:52Z",
+        "url": "https://x.com/una_zettai/status/2098326897541501210"
+      },
+      "checkedAt": "2026-09-11T12:55:34.838949Z",
+      "reason": "source_failed"
+    },
     "8444a215cc8e4dbbb9ccc4dc40bbb5708b0d3bac74bffd4e2262fb672a5696ed": {
       "candidate": {
         "authorId": "1822822097141575680",
@@ -52,7 +69,7 @@
       "reason": "source_failed"
     }
   },
-  "checkedAt": "2026-09-11T08:12:50.313851Z",
+  "checkedAt": "2026-09-11T12:55:34.855517Z",
   "complete": false,
   "coverage": {
     "2026-09-01": {
@@ -149,12 +166,18 @@
         "to": "2026-09-15"
       },
       "うな": {
-        "candidateIds": [],
+        "candidateIds": [
+          "2098065485510406499",
+          "2098065057448132855",
+          "2098061118875070703",
+          "2098060876091998643",
+          "2097688162822938896"
+        ],
         "confirmedIds": [],
         "handle": "una_zettai",
-        "lastSearchedAt": null,
+        "lastSearchedAt": "2026-09-11T12:55:32.599505Z",
         "name": "うな",
-        "nextCheckAt": null,
+        "nextCheckAt": "2026-09-12T12:55:32.599505Z",
         "reason": "source_failed",
         "to": "2026-09-15"
       },
@@ -691,12 +714,18 @@
         "to": "2026-09-30"
       },
       "うな": {
-        "candidateIds": [],
+        "candidateIds": [
+          "2098065485510406499",
+          "2098065057448132855",
+          "2098061118875070703",
+          "2098060876091998643",
+          "2097688162822938896"
+        ],
         "confirmedIds": [],
         "handle": "una_zettai",
-        "lastSearchedAt": null,
+        "lastSearchedAt": "2026-09-11T12:55:32.599518Z",
         "name": "うな",
-        "nextCheckAt": null,
+        "nextCheckAt": "2026-09-11T18:55:32.599518Z",
         "reason": "source_failed",
         "to": "2026-09-30"
       },
@@ -1488,6 +1517,71 @@
       "priority": 1,
       "searchCreatedAt": "2026-09-07T05:06:39Z",
       "url": "https://x.com/ito_zettai/status/2096827464404353313"
+    },
+    {
+      "authorId": "1959230080657563648",
+      "authorScreenName": "una_zettai",
+      "discoveredAt": "2026-09-11T12:55:34.511303Z",
+      "discoveryHash": "a3eef4a023eac5441b32d7b44690f0f8b093fc7e73da785724c0a90093454e5f",
+      "id": "2098065485510406499",
+      "lastAttemptAt": null,
+      "name": "うな",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-10T15:06:06Z",
+      "url": "https://x.com/una_zettai/status/2098065485510406499"
+    },
+    {
+      "authorId": "1959230080657563648",
+      "authorScreenName": "una_zettai",
+      "discoveredAt": "2026-09-11T12:55:34.511303Z",
+      "discoveryHash": "a3eef4a023eac5441b32d7b44690f0f8b093fc7e73da785724c0a90093454e5f",
+      "id": "2098065057448132855",
+      "lastAttemptAt": null,
+      "name": "うな",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-10T15:04:24Z",
+      "url": "https://x.com/una_zettai/status/2098065057448132855"
+    },
+    {
+      "authorId": "1959230080657563648",
+      "authorScreenName": "una_zettai",
+      "discoveredAt": "2026-09-11T12:55:34.511303Z",
+      "discoveryHash": "a3eef4a023eac5441b32d7b44690f0f8b093fc7e73da785724c0a90093454e5f",
+      "id": "2098061118875070703",
+      "lastAttemptAt": null,
+      "name": "うな",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-10T14:48:45Z",
+      "url": "https://x.com/una_zettai/status/2098061118875070703"
+    },
+    {
+      "authorId": "1959230080657563648",
+      "authorScreenName": "una_zettai",
+      "discoveredAt": "2026-09-11T12:55:34.511303Z",
+      "discoveryHash": "a3eef4a023eac5441b32d7b44690f0f8b093fc7e73da785724c0a90093454e5f",
+      "id": "2098060876091998643",
+      "lastAttemptAt": null,
+      "name": "うな",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-10T14:47:47Z",
+      "url": "https://x.com/una_zettai/status/2098060876091998643"
+    },
+    {
+      "authorId": "1959230080657563648",
+      "authorScreenName": "una_zettai",
+      "discoveredAt": "2026-09-11T12:55:34.511303Z",
+      "discoveryHash": "a3eef4a023eac5441b32d7b44690f0f8b093fc7e73da785724c0a90093454e5f",
+      "id": "2097688162822938896",
+      "lastAttemptAt": null,
+      "name": "うな",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-09T14:06:45Z",
+      "url": "https://x.com/una_zettai/status/2097688162822938896"
     }
   ],
   "receipts": {

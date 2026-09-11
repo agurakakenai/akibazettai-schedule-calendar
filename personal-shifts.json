@@ -136,7 +136,7 @@
       "searches": 2
     }
   },
-  "checkedAt": "2026-09-11T08:11:50.135173Z",
+  "checkedAt": "2026-09-11T12:55:32Z",
   "complete": false,
   "coverage": {
     "2026-09-07": {
@@ -1582,46 +1582,16 @@
     "search.yahoo.co.jp": "2026-09-11T08:12:03.742786Z"
   },
   "lastRun": {
-    "activeTargetCount": 8,
-    "attemptedCount": 3,
     "complete": false,
     "date": "2026-09-11",
-    "dateBasis": "JST calendar date, 00:00 boundary",
-    "deferredCount": 2,
-    "failures": [
-      {
-        "id": "2098065485510406499",
-        "reason": "azure_ungrounded"
-      },
-      {
-        "id": "2098312952999022834",
-        "reason": "azure_ungrounded"
-      }
-    ],
-    "finishedAt": "2026-09-11T08:12:49.967834Z",
-    "newEventCount": 0,
-    "newPostCount": 1,
+    "deferredCount": 22,
+    "finishedAt": "2026-09-11T12:55:32Z",
     "pendingCount": 22,
     "requests": {
-      "posts": 3,
-      "searches": 2
+      "posts": 0,
+      "searches": 0
     },
-    "skippedResolvedCount": 0,
-    "sourceCount": 2,
-    "sources": [
-      {
-        "candidateCount": 2,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Auna_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 3,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Achiyu_zettai&ei=UTF-8"
-      }
-    ],
-    "status": "partial",
-    "targetCount": 14
+    "status": "outside-window"
   },
   "lastSuccessAt": "2026-09-06T04:14:02.214117Z",
   "originalTargets": {
