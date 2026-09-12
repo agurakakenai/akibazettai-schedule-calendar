@@ -1587,7 +1587,7 @@ class CloudTests(unittest.TestCase):
         acquisition = {'complete': False, 'expired': 2, 'days': [{
             'date': '2026-09-07', 'ageDays': 1, 'targets': 14, 'searched': 10, 'bodyChecked': 3,
             'withSource': 2, 'analyzed': 3, 'pending': 5, 'unsearched': 4, 'dayOnly': 8,
-            'analysisHeld': 1}]}
+            'analysisHeld': 1, 'unavailableTargets': 2}]}
         with contextlib.redirect_stdout(io.StringIO()) as output:
             cloud.emit({'collectionStatus': 'partial', 'persistenceStatus': 'saved',
                         'acquisition': acquisition}, {'GITHUB_STEP_SUMMARY': str(summary)})

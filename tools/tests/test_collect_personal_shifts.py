@@ -594,6 +594,27 @@ class StateTests(Offline):
         self.assertEqual(report['acquisition']['days'][0]['ageDays'], 1)
         personal.read_state(self.snapshot)
 
+    def test_recovery_summary_does_not_mix_unavailable_accounts_into_search_denominator(self):
+        registry = registry_fixture(AMU, {'name': '不明', 'handle': None})
+        schedule = {'schedule': {DATE.isoformat(): {
+            '昼': [{'name': 'あむ'}, {'name': '不明'}, {'name': '名簿外'}]}}}
+        durable = self.durable(searches=0, posts=0)
+        durable.catch_up = True
+        report, code = personal.collect_recovery(
+            self.state, durable, schedule, None, None, registry, (),
+            lambda current: self.fake_client(current, entries=[]), None, lambda: NOW)
+        day = report['acquisition']['days'][0]
+        self.assertEqual((day['targets'], day['searched'], day['unsearched']), (1, 0, 1))
+        self.assertEqual(day['unavailableTargets'], 2)
+        self.assertEqual(code, 2)
+        registry['members'][0]['xProfileUrl'] = None
+        registry['members'][0]['accountTrust'] = None
+        report, code = personal.collect_recovery(
+            self.state, durable, schedule, None, None, registry, (),
+            lambda current: self.fake_client(current, entries=[]), None, lambda: NOW)
+        day = report['acquisition']['days'][0]
+        self.assertEqual((day['targets'], day['unsearched'], day['unavailableTargets']), (0, 0, 3))
+        self.assertEqual(code, 2)
     def test_catch_up_preserves_expired_and_semantic_failures_without_refetch(self):
         registry = registry_fixture(AMU)
         old = candidate()
