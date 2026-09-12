@@ -752,11 +752,11 @@ for (const source of value.schedules) {
             self.assertNotIn(RAW.encode(), self.fx.remote_json(name)[1])
         return result, phases, issued_ai, source_counts, allocations, buffer_sizes
 
-    def test_scheduled_three_components_share_expanded_run_but_keep_daily_thirty_and_source_caps(self):
+    def test_scheduled_three_components_share_expanded_run_but_keep_daily_forty_and_source_caps(self):
         self.ai.apply_import(self.usage, {
-            'receiptId': cloud.data_hash('today-27'), 'sourceHash': cloud.data_hash('today-evidence'),
-            'date': '2026-09-07', 'counts': {'requests': 27},
-            'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'text', 'count': 27}]})
+            'receiptId': cloud.data_hash('today-37'), 'sourceHash': cloud.data_hash('today-evidence'),
+            'date': '2026-09-07', 'counts': {'requests': 37},
+            'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'text', 'count': 37}]})
         self.source_state = self.baseline()
         self.seed()
         result, phases, ai, sources, allocations, _ = self.scheduled_run(buffer_count=1)
@@ -767,7 +767,7 @@ for (const source of value.schedules) {
         self.assertEqual(sum(kind in ('posts', 'images') for _, kind in sources), 20)
         self.assertEqual(sum(component == 'schedule' and kind == 'images' for component, kind in sources), 1)
         usage = self.fx.remote_json(cloud.AI_USAGE)[0]
-        self.assertEqual(self.ai.usage_counts(usage, RUN_ID, self.now), {'run': 3, 'day': 30, 'remaining': 0})
+        self.assertEqual(self.ai.usage_counts(usage, RUN_ID, self.now), {'run': 3, 'day': 40, 'remaining': 0})
         for component in ('official', 'personal', 'schedule'):
             with self.ai.SharedUsage(self.fx.output.parent / cloud.AI_USAGE, run_id='next-run',
                                      component=component, clock=lambda: self.now, sleep=lambda _: None) as shared:
