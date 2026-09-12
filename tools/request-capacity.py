@@ -12,9 +12,10 @@ import re
 LIMIT = 10000
 FRAMING_RESERVE = 512
 PERSONAL = {
-    "promptHash": "8213567ed0473d4e4557e254d1b4f81098d4481305e7beab53d8c452af8dc3ca",
+    "promptHash": "72ce124d3849747f25186f968b61b2585ef50cdf6d7f202172f78f21b8a1e141",
     "schemaHash": "14a171cc8689ebe4996f6aff7f2f97081a46133b8c86622b565883422351268a",
-    "output": 2304, "system": 1664, "schemaBase": 736, "schemaPerLine": 9,
+    # Original measured bound plus all 51 UTF-8 bytes of the added instruction.
+    "output": 2304, "system": 1715, "schemaBase": 736, "schemaPerLine": 9,
     "lineFrame": 11, "bodyFrame": 16,
 }
 HALF_MONTH = {

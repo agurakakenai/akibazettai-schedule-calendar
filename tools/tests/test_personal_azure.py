@@ -1634,6 +1634,19 @@ class AzureTests(base.Offline):
                 self.assertEqual(reason, 'no_event')
         self.assertEqual(self.opener.open.call_count, 2)
 
+    def test_work_expectation_is_semantic_context_not_a_banned_word(self):
+        self.assertIn("Enthusiasm alone is not a dated work announcement", azure.PROMPT)
+        self.assertIn("not evidence of a work date", azure.PROMPT)
+        # These are mocked decisions, not claims that a live model passed an evaluation.
+        with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_pending'):
+            self.parse('次のお給仕が楽しみです', result(links=None))
+        post, reason = self.parse('今日9月6日、夜2号店です。お給仕が楽しみです',
+                                  result(event('夜', 'placement', [1], 's2'), links=[link('夜')]))
+        self.assertEqual(reason, 'events')
+        self.assertEqual(post['events'][0]['storeId'], 's2')
+        self.assertEqual(post['links'], [{'scope': '夜', 'status': 'work'}])
+        self.assertEqual(self.opener.open.call_count, 2)
+
     def test_optional_link_cache_fields_validate_legacy_and_v7_results(self):
         entry = {'postId': base.TID, 'bodyHash': azure.digest('body'),
                  'versionHash': azure.digest('v4'), 'at': base.CREATED, 'reason': 'events',

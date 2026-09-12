@@ -72,6 +72,7 @@ same-day chatter, recruitment, broad half-month schedules, third-party
 announcements and irrelevant quotations. These are not confirmed dated work
 links. Resolve explicit corrections using the final statement, not withdrawn
 claims. Uncertainty in unrelated conversation does not invalidate confirmed work.
+Enthusiasm alone is not a dated work announcement.
 
 For events, return one event per stated shift and serviceDate: placement, absence,
 late, or explicit return to work. If that date has knownShiftsByDate, events must

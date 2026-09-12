@@ -493,7 +493,7 @@ def validate_personal(path, personal=None, *, private=True):
             validate_failure(item, official)
         for item in state['resolved']:
             fields = ('id', 'url', 'name', 'date', 'reason', 'resolvedAt')
-            keys(item, fields, fields)
+            keys(item, (*fields, 'linkReview'), fields)
             name(item['name'])
             require(re.fullmatch(r'https://x\.com/[A-Za-z0-9_]{1,15}/status/' + item['id'],
                                  item['url']))
@@ -1112,7 +1112,7 @@ def read_saved_manifest(environment):
         scan_private(value)
         fields = ('schemaVersion', 'expectedMainSHA', 'expectedStateSHA',
                   'officialAmendments', 'usageImports', 'sourceReceipts')
-        keys(value, (*fields, 'personalAmendments', 'halfMonthAmendments',
+        keys(value, (*fields, 'personalAmendments', 'personalLinkReviews', 'halfMonthAmendments',
                      'halfMonthSelections', 'halfMonthSelectionApply', 'sourceMigration'), fields)
         require(type(value['schemaVersion']) is int and value['schemaVersion'] == 1)
         for field in ('expectedMainSHA', 'expectedStateSHA'):
@@ -1121,6 +1121,8 @@ def read_saved_manifest(environment):
             require(isinstance(value[field], list) and len(value[field]) <= maximum)
         require(isinstance(value.get('personalAmendments', []), list)
                 and len(value.get('personalAmendments', [])) <= 3)
+        require(isinstance(value.get('personalLinkReviews', []), list)
+                and len(value.get('personalLinkReviews', [])) <= 1)
         require(isinstance(value.get('halfMonthAmendments', []), list)
                 and len(value.get('halfMonthAmendments', [])) <= 1)
         saved_half_month_selections(value)
@@ -1134,7 +1136,7 @@ def read_saved_manifest(environment):
             require(isinstance(migration['historicalImages'], list)
                     and len(migration['historicalImages']) <= 10)
         require(any(value.get(field) for field in (
-            'officialAmendments', 'usageImports', 'sourceReceipts', 'personalAmendments',
+            'officialAmendments', 'usageImports', 'sourceReceipts', 'personalAmendments', 'personalLinkReviews',
             'halfMonthAmendments', 'sourceMigration')))
         for entry in value['officialAmendments']:
             keys(entry, ('expectedPostHash', 'amendment'), ('expectedPostHash', 'amendment'))
@@ -1187,6 +1189,8 @@ def prepare_saved(manifest, canonical, personal_state, usage, collector, persona
     personal_result = load_personal_saved().apply_amendments(
         personal_result, manifest.get('personalAmendments', []), usage, personal,
         registry=registry, binding_maps=binding_maps, daily_targets=daily_targets)
+    personal_result = load_personal_saved().apply_link_reviews(
+        personal_result, manifest.get('personalLinkReviews', []), usage, personal)
     ids = set()
     for entry in manifest['officialAmendments']:
         amendment = entry['amendment']
@@ -1750,7 +1754,18 @@ def emit(result, environment):
                 lines.append('| ' + ' | '.join(str(row[key]) for key in (
                     'date', 'ageDays', 'targets', 'searched', 'bodyChecked', 'withSource', 'analyzed',
                     'pending', 'unsearched', 'dayOnly', 'analysisHeld', 'unavailableTargets')) + ' |\n')
+            for row in acquisition['days']:
+                if 'withoutWorkLink' in row:
+                    lines.append(f"\n{row['date']}: personal work-link evidence for "
+                                 f"{row['workLinkShifts']}/{row['personShifts']} person-shifts; "
+                                 f"missing or incomplete: {', '.join(row['withoutWorkLink']) or 'none'}.\n\n")
             lines.append(f"\nExpired metadata outside the recovery window: {acquisition['expired']}.\n")
+            supplemental = acquisition.get('supplemental')
+            if supplemental:
+                lines.append(f"\nSupplemental today-only discovery (not announced shifts): "
+                             f"{supplemental['searched']} searched this run, "
+                             f"{supplemental['bodyChecked']} bodies, {supplemental['withSource']} accepted, "
+                             f"{supplemental['unsearched']}/{supplemental['targets']} not yet searched.\n")
         if half:
             lines.append(f"\nHalf-month {half['period']}: {half['searched']}/{half['targets']} searched, "
                          f"{half['confirmed']} confirmed, {half['pending']} pending candidates.\n")
