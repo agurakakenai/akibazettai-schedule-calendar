@@ -1150,7 +1150,7 @@ def read_saved_manifest(environment):
         for receipt in value['sourceReceipts']:
             require(isinstance(receipt, dict))
             integer(receipt.get('searches'), 0, 60)
-            integer(receipt.get('posts'), 0, 30)
+            integer(receipt.get('posts'), 0, 40)
     except (OSError, ValueError, TypeError, KeyError, RecursionError):
         raise CloudError('invalid_saved_manifest') from None
     return value

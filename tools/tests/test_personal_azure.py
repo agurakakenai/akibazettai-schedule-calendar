@@ -321,7 +321,7 @@ class AzureTests(base.Offline):
         personal.read_state(self.snapshot)
 
     def test_shared_issue_save_crossing_midnight_never_uses_new_day_capacity(self):
-        for next_day_count in (0, 30):
+        for next_day_count in (0, 40):
             with self.subTest(next_day_count=next_day_count):
                 self.clock = dt.datetime(2026, 9, 6, 14, 59, 59, tzinfo=dt.timezone.utc)
                 self.state = personal.empty_state()
@@ -427,7 +427,7 @@ class AzureTests(base.Offline):
 
     def test_shared_external_budget_cannot_be_treated_as_personal_zero(self):
         with self.shared_usage() as ledger:
-            usage.apply_import(ledger.state, historical('2026-09-06', 30))
+            usage.apply_import(ledger.state, historical('2026-09-06', 40))
             ledger._save()
             analyzer = self.make_analyzer(usage=ledger)
             with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_budget_exhausted'):
@@ -1294,7 +1294,7 @@ class AzureTests(base.Offline):
             self.assertEqual(analyzer.state['budgets'], {})
             self.assertGreaterEqual(sum(self.sleeps), 120)
         self.assertEqual(self.opener.open.call_count, 3)
-        self.assertEqual((azure.RUN_LIMIT, azure.DAY_LIMIT, azure.SPACING_SECONDS), (3, 30, 60))
+        self.assertEqual((azure.RUN_LIMIT, azure.DAY_LIMIT, azure.SPACING_SECONDS), (3, 40, 60))
         personal.read_state(self.snapshot)
 
     def test_explicit_negative_links_are_scoped_and_all_day_requires_known_shifts(self):
@@ -2031,7 +2031,7 @@ class AzureTests(base.Offline):
             self.parse('今日 案内なし4', result())
         self.assertEqual(self.opener.open.call_count, 3)
         self.assertGreaterEqual(sum(self.sleeps), 120)
-        self.state['azureAnalysis']['budgets']['2026-09-06'] = 30
+        self.state['azureAnalysis']['budgets']['2026-09-06'] = 40
         self.clock += dt.timedelta(minutes=1)
         with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_budget_exhausted'):
             self.parse('今日 案内なし5', result(), analyzer=self.make_analyzer())
@@ -2145,7 +2145,7 @@ class AzureTests(base.Offline):
             self.assertEqual(self.state['posts'], original)
             self.assertEqual(self.state['resolved'], resolved)
             self.assertEqual(self.state['pending'][0]['reason'], reason)
-        self.analyzer.state['budgets']['2026-09-06'] = 30
+        self.analyzer.state['budgets']['2026-09-06'] = 40
         self.collect(payloads={base.TID: base.post('今日 昼3号店')})
         self.assertEqual(self.state['pending'][0]['reason'], 'azure_budget_exhausted')
         self.assertEqual(self.state['posts'], original)

@@ -15,7 +15,7 @@ import re
 import uuid
 
 
-RUN_LIMIT, DAY_LIMIT, SPACING_SECONDS = 3, 30, 60
+RUN_LIMIT, DAY_LIMIT, SPACING_SECONDS = 3, 40, 60
 CATCHUP_RUN_LIMIT = 16
 JST = dt.timezone(dt.timedelta(hours=9))
 HEX = re.compile(r'[0-9a-f]{64}\Z')
@@ -127,7 +127,7 @@ def _validate_source_import(receipt):
     _hash(receipt['sourceHash'])
     _day(receipt['date'])
     _source_budget({key: receipt[key] for key in ('searches', 'posts')})
-    if (receipt['searches'] > 60 or receipt['posts'] > 30
+    if (receipt['searches'] > 60 or receipt['posts'] > 40
             or receipt['searches'] + receipt['posts'] == 0):
         raise ValueError('invalid_ai_usage')
 
