@@ -855,9 +855,11 @@ def invoke_personal_collector(root, state, report, environment):
     backend = environment.get('PERSONAL_ANALYSIS_BACKEND', 'rules')
     require(backend in ('rules', 'azure'), 'invalid_analysis_backend')
     max_posts = environment.get('CLOUD_COLLECTION_PERSONAL_POSTS', '3')
-    require(max_posts in ('0', '1', '2', '3'), 'invalid_source_limit')
+    catch_up = environment.get('CLOUD_COLLECTION_CATCH_UP') == 'true'
+    cap = 14 if catch_up else 3
+    require(max_posts in tuple(str(n) for n in range(cap + 1)), 'invalid_source_limit')
     max_searches = environment.get('CLOUD_COLLECTION_PERSONAL_SEARCHES', '3')
-    require(max_searches in ('0', '1', '2', '3'), 'invalid_source_limit')
+    require(max_searches in tuple(str(n) for n in range(cap + 1)), 'invalid_source_limit')
     argv = [sys.executable, '-I', '-B', str(root / 'tools' / 'collect-personal-shifts.py'),
             '--once', '--snapshot', str(state / PERSONAL),
             '--members', str(root / 'data' / 'members.json'),
@@ -877,7 +879,8 @@ def invoke_personal_collector(root, state, report, environment):
     try:
         process = child_process(
             argv,
-            cwd=root, environment=safe_environment(environment, azure=backend == 'azure'), timeout=600)
+            cwd=root, environment=safe_environment(environment, azure=backend == 'azure'),
+            timeout=1500 if catch_up else 600)
     except (OSError, subprocess.SubprocessError):
         raise CloudError('personal_process_failed') from None
     return process.returncode
@@ -889,7 +892,8 @@ def source_arguments(state, environment):
     run_id = environment.get('CLOUD_COLLECTION_RUN_ID', '')
     require(bool(re.fullmatch(r'[1-9][0-9]{0,19}-[1-9][0-9]{0,19}', run_id)),
             'invalid_source_run_id')
-    return ['--source-state', str(state / SOURCE_USAGE), '--source-run-id', run_id]
+    return ['--source-state', str(state / SOURCE_USAGE), '--source-run-id', run_id,
+            *(['--catch-up'] if environment.get('CLOUD_COLLECTION_CATCH_UP') == 'true' else [])]
 
 
 def invoke_half_month_collector(root, state, report, environment):
@@ -904,7 +908,8 @@ def invoke_half_month_collector(root, state, report, environment):
             *source_arguments(state, environment),
             '--ai-state', str(state / AI_USAGE),
             '--analysis-run-id', environment['CLOUD_COLLECTION_RUN_ID'],
-            '--analysis-limit', '1', '--max-searches', '1', '--max-posts', '1',
+            '--analysis-limit', environment.get('CLOUD_COLLECTION_HALF_ALLOCATION', '1'),
+            '--max-searches', '1', '--max-posts', '1',
             '--max-images', '4', '--report', str(report)]
     try:
         process = child_process(
@@ -917,8 +922,9 @@ def invoke_half_month_collector(root, state, report, environment):
 def analysis_arguments(state, environment, *, allow_zero=False):
     run_id = environment.get('CLOUD_COLLECTION_RUN_ID', '')
     limit = environment.get('CLOUD_COLLECTION_ANALYSIS_LIMIT', '3')
+    cap = 14 if environment.get('CLOUD_COLLECTION_CATCH_UP') == 'true' else 3
     require(bool(re.fullmatch(r'[1-9][0-9]{0,19}-[1-9][0-9]{0,19}', run_id))
-            and limit in (('0', '1', '2', '3') if allow_zero else ('1', '2', '3')),
+            and limit in tuple(str(n) for n in range(0 if allow_zero else 1, cap + 1)),
             'invalid_analysis_allocation')
     return ['--ai-state', str(state / AI_USAGE), '--analysis-run-id', run_id,
             '--analysis-limit', limit]
@@ -1261,10 +1267,23 @@ def prepare_half_month_saved(manifest, half_state, source_state, personal, usage
 
 
 def combined_status(official, personal):
-    incomplete = {'partial', 'unavailable', 'paused', 'budget-exhausted'}
+    incomplete = {'partial', 'unavailable', 'paused', 'budget-exhausted', 'outside-window'}
     if official in incomplete or personal in incomplete:
         return 'unavailable' if official in incomplete and personal in incomplete else 'partial'
     return 'ok' if 'ok' in (official, personal) else official
+
+
+def recovery_allocation(path, run_id, now):
+    usage, _ = validate_ai_usage(path)
+    ledger = load_analysis_state()
+    left = ledger.usage_counts(usage, run_id, now, ledger.CATCHUP_RUN_LIMIT)['remaining']
+    if left >= 3:
+        return {'official': 1, 'personal': min(14, left - 2), 'schedule': 1}
+    last = {kind: max((item['reservedAt'] for item in usage['receipts'].values()
+                      if item['component'] == kind), default='')
+            for kind in ('personal', 'schedule', 'official')}
+    chosen = sorted(last, key=lambda kind: (last[kind], kind))[:left]
+    return {kind: int(kind in chosen) for kind in last}
 
 
 def validate_completion(path, status, code, component):
@@ -1507,20 +1526,27 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 CLOUD_COLLECTION_OFFICIAL_AZURE='true' if enabled else 'false',
                 CLOUD_COLLECTION_SOURCE_ENABLED='true' if has_source else 'false',
                 CLOUD_COLLECTION_HALF_MONTH_PRESENT='true' if has_half_month else 'false')
+            catch_up = enabled and args.mode in ('both', 'daily-guidance') and has_source and has_ai
+            if catch_up:
+                environment['CLOUD_COLLECTION_CATCH_UP'] = 'true'
+                allocation = recovery_allocation(collected / AI_USAGE,
+                                                 environment['CLOUD_COLLECTION_RUN_ID'], collector.utc_now())
             if enabled:
                 environment['PERSONAL_ANALYSIS_BACKEND'] = 'azure'
             if enabled and collect_official:
                 source_paused = has_source and source_usage_state.get('paused') is not None
                 personal_active = collect_personal and not personal_state.get('paused') and not source_paused
-                if collect_half_month and not half_month_state.get('paused') and not source_paused:
-                    allocation = half_month_official_allocation(
+                if catch_up:
+                    official_limit = 0
+                elif collect_half_month and not half_month_state.get('paused') and not source_paused:
+                    official_limit = half_month_official_allocation(
                         collected / AI_USAGE, environment['CLOUD_COLLECTION_RUN_ID'],
                         collector.utc_now(), personal_active=personal_active, scheduled=scheduled)
                 else:
-                    allocation = official_allocation(
+                    official_limit = official_allocation(
                         collected / AI_USAGE, environment['CLOUD_COLLECTION_RUN_ID'],
                         collector.utc_now(), personal_active, scheduled)
-                environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = str(allocation)
+                environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = str(official_limit)
                 if collect_personal:
                     environment['CLOUD_COLLECTION_BUFFER_MODE'] = 'write'
             if collect_official:
@@ -1535,7 +1561,8 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 require(isinstance(requests, dict), 'official_source_report_missing')
                 integer(requests.get('searches'), 0, 2)
                 integer(requests.get('posts'), 0, 20)
-                environment['CLOUD_COLLECTION_PERSONAL_POSTS'] = str(min(3, 20 - requests['posts']))
+                environment['CLOUD_COLLECTION_PERSONAL_POSTS'] = str(min(14 if catch_up else 3,
+                                                                         20 - requests['posts']))
                 result.update(officialCollectionStatus=status, officialCollectionCode=code)
                 if environment.get('CLOUD_COLLECTION_BUFFER_MODE') == 'write':
                     buffered = load_official_buffer(
@@ -1546,11 +1573,10 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                             buffered['items'][:2], collector.utc_now())
                         collector.atomic_json(analysis_buffer_path(root, collected), buffered)
                     initial_official, initial_requests = copy.deepcopy(canonical), dict(requests)
-            if collect_personal and scheduled and not personal_window_open(
+            if collect_personal and scheduled and not catch_up and not personal_window_open(
                     collector.utc_now(), scheduled=True):
                 # Do not even construct the personal child after its scheduled cutoff.
                 now = collector.utc_now()
-                personal_state['checkedAt'] = collector.iso(now)
                 personal_state['lastRun'] = {
                     'status': 'outside-window', 'date': now.astimezone(JST).date().isoformat(),
                     'finishedAt': collector.iso(now), 'complete': False,
@@ -1562,7 +1588,21 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 result.update(personalCollectionStatus='outside-window', personalCollectionCode=0)
                 collect_personal = False
             if collect_personal:
-                if (collect_half_month and not half_month_state.get('paused')
+                if catch_up:
+                    environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = str(max(1, allocation['personal']))
+                    environment['CLOUD_COLLECTION_PERSONAL_SEARCHES'] = '14'
+                    # Searches can still complete a first pass when AI capacity is absent.
+                    if not allocation['personal']:
+                        environment['CLOUD_COLLECTION_PERSONAL_POSTS'] = '0'
+                    elif collect_half_month:
+                        source_report = load_source_state().usage_counts(
+                            validate_source_usage(collected / SOURCE_USAGE)[0],
+                            environment['CLOUD_COLLECTION_RUN_ID'], collector.utc_now(), 'personal', catch_up=True)
+                        reserve = min(5, source_report['remaining']['posts'] // 3)
+                        environment['CLOUD_COLLECTION_PERSONAL_POSTS'] = str(min(
+                            int(environment.get('CLOUD_COLLECTION_PERSONAL_POSTS', '14')),
+                            max(0, source_report['remaining']['posts'] - reserve)))
+                elif (collect_half_month and not half_month_state.get('paused')
                         and not personal_deadline_near(collector.utc_now(), scheduled=scheduled)):
                     environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = str(
                         half_month_personal_allocation(
@@ -1583,9 +1623,13 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 require(code == (3 if status in ('unavailable', 'paused') else
                                  2 if status in ('partial', 'budget-exhausted') else 0),
                         'personal_status_mismatch')
-                validate_personal_completion(work / 'personal-report.json', status, code)
+                personal_report = validate_personal_completion(work / 'personal-report.json', status, code)
+                if 'acquisition' in personal_report:
+                    result['acquisition'] = personal_report['acquisition']
                 result.update(personalCollectionStatus=status, personalCollectionCode=code)
             if collect_half_month:
+                if catch_up:
+                    environment['CLOUD_COLLECTION_HALF_ALLOCATION'] = str(allocation['schedule'])
                 code = invoke_half_month_collector(
                     root, collected, work / 'half-month-report.json', environment)
                 require(code in (0, 2, 3), 'half_month_local_failure')
@@ -1607,16 +1651,28 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                     integer(report['requests']['analysis'], 0, 1)
                 validate_source_usage(collected / SOURCE_USAGE)
                 result.update(halfMonthCollectionStatus=status, halfMonthCollectionCode=code)
+                registry = load_member_registry().load_registry(root / 'data' / 'members.json')
+                active_names = {member['canonicalName'] for member in registry['members']
+                                if member['membership'] == 'active'}
+                period = load_half_month_state().target_periods(collector.utc_now())[0][0]
+                coverage = half_month_state['coverage'].get(period, {})
+                result['halfMonthAcquisition'] = {
+                    'period': period, 'targets': len(active_names),
+                    'searched': sum(bool(coverage.get(name, {}).get('lastSearchedAt')) for name in active_names),
+                    'confirmed': sum(bool(coverage.get(name, {}).get('confirmedIds')) for name in active_names),
+                    'pending': len(half_month_state['pending'])}
             if buffered and buffered['items']:
                 usage, _ = validate_ai_usage(collected / AI_USAGE)
                 now = collector.utc_now()
                 run_id = environment['CLOUD_COLLECTION_RUN_ID']
-                remaining = load_analysis_state().remaining(usage, run_id, now)
+                remaining = load_analysis_state().usage_counts(
+                    usage, run_id, now, load_analysis_state().CATCHUP_RUN_LIMIT if catch_up else 3)['remaining']
                 used = sum(item['runId'] == run_id and item['component'] == 'official'
                            for item in usage['receipts'].values())
-                if (remaining and used < 3 and usage['paused'] is None
+                official_cap = allocation['official'] if catch_up else 3
+                if (remaining and used < official_cap and usage['paused'] is None
                         and (usage['retryAt'] is None or collector.timestamp(usage['retryAt']) <= now)):
-                    environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = str(min(3, used + remaining))
+                    environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = str(min(official_cap, used + remaining))
                     environment['CLOUD_COLLECTION_BUFFER_MODE'] = 'replay'
                     personal_before = (collected / PERSONAL).read_bytes()
                     code = invoke_collector(root, collected, work / 'official-resume-report.json', environment)
@@ -1682,6 +1738,26 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
 
 
 def emit(result, environment):
+    acquisition = result.get('acquisition')
+    half = result.get('halfMonthAcquisition')
+    if environment.get('GITHUB_STEP_SUMMARY') and (acquisition or half):
+        lines = ['## Collection coverage (publication success is separate)\n',
+                 'Unconfirmed does not mean unposted or absent.\n']
+        if acquisition:
+            lines.extend(['| Work date | Age (days) | Targets | Search attempts | Body checked | Accepted | Analyzed | Pending | Unsearched | Day-only | Analysis held |\n',
+                          '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n'])
+            for row in acquisition['days']:
+                lines.append('| ' + ' | '.join(str(row[key]) for key in (
+                    'date', 'ageDays', 'targets', 'searched', 'bodyChecked', 'withSource', 'analyzed',
+                    'pending', 'unsearched', 'dayOnly', 'analysisHeld')) + ' |\n')
+            lines.append(f"\nExpired metadata outside the recovery window: {acquisition['expired']}.\n")
+        if half:
+            lines.append(f"\nHalf-month {half['period']}: {half['searched']}/{half['targets']} searched, "
+                         f"{half['confirmed']} confirmed, {half['pending']} pending candidates.\n")
+        with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
+            target.writelines(lines)
+    if acquisition and not acquisition['complete']:
+        print('::warning::Personal collection remains incomplete; see work-date coverage in the job summary.')
     output = environment.get('GITHUB_OUTPUT')
     if output:
         # Only fixed names and single-line values; no report/paths/token payloads.

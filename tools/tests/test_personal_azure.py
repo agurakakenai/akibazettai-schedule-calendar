@@ -1870,7 +1870,7 @@ class AzureTests(base.Offline):
         with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_pending'):
             self.parse('今日 夜2号店かも', result(pending_events=True))
         self.opener.open.assert_called_once()
-        for field in ('quoted_tweet', 'retweeted_status', 'in_reply_to_status_id_str'):
+        for field in ('retweeted_tweet', 'retweeted_status'):
             payload = base.post()
             payload[field] = 'present'
             self.assertEqual(personal.validate_post(base.candidate(), payload, base.AMU, self.clock,

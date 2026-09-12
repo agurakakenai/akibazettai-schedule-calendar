@@ -1200,6 +1200,7 @@ def argument_parser():
     parser.add_argument('--source-state', type=Path, help='existing shared source reservation ledger')
     parser.add_argument('--source-run-id', help='shared official/personal/schedule source run identity')
     parser.add_argument('--analysis-limit', type=int, default=3, help='AI request allocation, 0..3')
+    parser.add_argument('--catch-up', action='store_true', help='share the bounded recovery run budget')
     parser.add_argument('--analyze-saved', type=Path, help='known post ID to saved source payload JSON')
     parser.add_argument('--source-fetched-at', help='actual UTC raw acquisition time; required with saved input')
     buffer_mode = parser.add_mutually_exclusive_group()
@@ -1301,7 +1302,8 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
         shared_source = None
         if source_path:
             shared_source = locks.enter_context(source_module().SharedSource(
-                source_path, run_id=args.source_run_id, component='official', clock=clock, sleep=sleep))
+                source_path, run_id=args.source_run_id, component='official', clock=clock, sleep=sleep,
+                catch_up=args.catch_up))
         if saved_payloads is None and replay_path is None:
             client = client or PublicClient(clock=clock, sleep=sleep)
             client.shared_source = shared_source
@@ -1346,7 +1348,8 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
                     analysis = analysis_module()
                     usage = analysis_lock.enter_context(analysis.ledger.SharedUsage(
                         args.ai_state, run_id=args.analysis_run_id, component='official',
-                        clock=clock, sleep=sleep, request_limit=args.analysis_limit))
+                        clock=clock, sleep=sleep, request_limit=args.analysis_limit,
+                        run_limit=analysis.ledger.CATCHUP_RUN_LIMIT if args.catch_up else analysis.ledger.RUN_LIMIT))
                     def save_analysis(partial):
                         checkpoint = copy.deepcopy(state if args.dry_run else partial)
                         checkpoint['officialAnalysis'] = copy.deepcopy(partial['officialAnalysis'])

@@ -65,6 +65,27 @@ class UsageTests(unittest.TestCase):
         ledger.finish(key, reason)
         return key
 
+    def test_catchup_same_run_has_sixteen_shared_slots_but_keeps_daily_thirty_and_spacing(self):
+        with self.shared('personal', request_limit=14, run_limit=16) as ledger:
+            for index in range(14):
+                self.completed(ledger, f'personal-{index}')
+            with self.assertRaises(usage.UsageFailure):
+                ledger.check()
+        for component in ('schedule', 'official'):
+            with self.shared(component, request_limit=1, run_limit=16) as ledger:
+                self.completed(ledger, component)
+        with self.shared('official', request_limit=3, run_limit=16) as ledger:
+            with self.assertRaises(usage.UsageFailure):
+                ledger.check()
+        self.assertTrue(all(seconds >= 60 for seconds in self.sleeps))
+        with self.shared('personal', run_id='next-run', request_limit=14, run_limit=16) as ledger:
+            for index in range(14):
+                self.completed(ledger, f'next-{index}')
+        with self.shared('schedule', run_id='third-run', request_limit=1, run_limit=16) as ledger:
+            with self.assertRaises(usage.UsageFailure):
+                ledger.check()
+            self.assertEqual(usage.usage_counts(ledger.state, 'third-run', self.clock, 16)['day'], 30)
+
     def child(self, code):
         process = subprocess.run(
             [sys.executable, '-c', code, str(TOOLS / 'analysis-state.py'), str(self.path)],

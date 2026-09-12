@@ -90,12 +90,22 @@ class DiscoveryTests(base.Offline):
                 self.assertEqual(collector.discover(base.document(candidate), {'あむ': base.TARGET},
                                                    base.NOW, bindings)[0], [])
         rows = collector.discover(base.document(base.entry()), {'あむ': base.TARGET}, base.NOW)[0]
-        for field, value in [('quoted_tweet', {'id': 'other'}), ('in_reply_to_user_id', 1),
-                             ('retweeted_status', {'id': 'other'})]:
+        for field, value in [('retweeted_tweet', {'id': 'other'}), ('retweeted_status', {'id': 'other'})]:
             payload = base.payload()
             payload[field] = value
             with self.subTest(field=field), self.assertRaises(ValueError):
                 collector.validate_post(rows[0], payload, base.TARGET, base.NOW)
+
+    def test_quote_and_reply_use_only_authors_top_level_text_and_photos(self):
+        entry = {**base.entry(), 'isQuote': True, 'isReply': True, 'quotedTweet': {'id': 'other'}}
+        candidate = collector.discover(base.document(entry), {'あむ': base.TARGET}, base.NOW)[0][0]
+        for field in ('quoted_tweet', 'quoted_status', 'in_reply_to_user_id'):
+            payload = base.payload()
+            payload[field] = {'text': 'other author schedule', 'photos': [{'url': 'https://other.invalid'}]}
+            source, text, images = collector.validate_post(candidate, payload, base.TARGET, base.NOW)
+            self.assertEqual(text, payload['text'])
+            self.assertEqual(len(images), 1)
+            self.assertNotIn('other.invalid', json.dumps(source))
 
     def test_conflicting_duplicate_and_candidate_cap(self):
         first, other = base.entry(), base.entry()
@@ -586,7 +596,7 @@ class ProducerTests(base.Offline):
         self.model.structured.assert_not_called()
         self.client.close.assert_called()
 
-    def test_failed_analysis_never_auto_retries_preserves_previous(self):
+    def test_transient_failed_analysis_keeps_previous_and_recovers_on_a_later_run(self):
         verified, schedules, analysis = base.normalized(suffix=9)
         facts.apply_revision(self.state, schedules, verified, analysis)
         before = copy.deepcopy(self.state['schedules'])
@@ -595,9 +605,52 @@ class ProducerTests(base.Offline):
         report, _ = self.collect()
         self.assertEqual(report['status'], 'partial')
         self.assertEqual(self.state['schedules'], before)
-        self.assertEqual(self.state['pending'], [])
+        self.assertEqual(len(self.state['pending']), 1)
         self.assertTrue(any(record['status'] == 'failed' for record in self.state['sources'].values()))
         self.assertEqual(self.model.structured.call_count, 1)
+        first_key = self.usage.reserve.call_args.args[0]
+        self.model.structured.side_effect = None
+        later = base.NOW + dt.timedelta(hours=2)
+        self.analyzer = azure.AzureAnalyzer(self.usage, clock=lambda: later, client=self.model)
+        collector.collect(self.state, base.SCHEDULE, {}, base.ACCOUNTS, self.client, self.source,
+                          self.analyzer, clock=lambda: later, save=self.save)
+        self.assertEqual(self.model.structured.call_count, 2)
+        self.assertNotEqual(first_key, self.usage.reserve.call_args.args[0])
+        self.assertEqual(self.state['pending'], [])
+        self.assertTrue(any(record['status'] == 'valid' for record in self.state['sources'].values()))
+        self.assertTrue(any(record.get('retry', {}).get('previousRequests') for record in self.state['sources'].values()))
+
+    def test_transient_retry_has_no_immediate_retry_and_stops_after_three_attempts(self):
+        self.model.structured.side_effect = azure.AnalysisFailure('azure_timeout')
+        self.collect()
+        self.analyzer = azure.AzureAnalyzer(self.usage, clock=lambda: base.NOW, client=self.model)
+        self.collect()
+        self.assertEqual(self.model.structured.call_count, 1)
+        for hours in (2, 4, 6):
+            later = base.NOW + dt.timedelta(hours=hours)
+            self.analyzer = azure.AzureAnalyzer(self.usage, clock=lambda: later, client=self.model)
+            collector.collect(self.state, base.SCHEDULE, {}, base.ACCOUNTS, self.client, self.source,
+                              self.analyzer, clock=lambda: later, save=self.save)
+        self.assertEqual(self.model.structured.call_count, 3)
+        self.assertEqual(self.state['pending'], [])
+        self.assertTrue(any(record['reason'] == 'retry_exhausted' for record in self.state['sources'].values()))
+
+    def test_legacy_failed_source_is_recovered_only_when_its_receipt_is_transient(self):
+        verified, _, _ = base.source()
+        key = facts.record_source(self.state, verified, 'failed', 'analysis_failed', base.NOW,
+                                  facts.digest(b'legacy-request'))
+        self.usage.state = {'receipts': {'old': {
+            'requestHash': self.state['sources'][key]['requestHash'], 'reason': 'azure_timeout'}}}
+        original = copy.deepcopy(self.state['sources'])
+        later = base.NOW + dt.timedelta(hours=2)
+        collector.restore_transient_candidates(self.state, self.analyzer, later)
+        self.assertEqual(len(self.state['pending']), 1)
+        self.assertEqual(self.state['pending'][0]['id'], verified['id'])
+        self.assertEqual(self.state['sources'], original)
+        self.state['pending'] = []
+        self.usage.state['receipts']['old']['reason'] = 'azure_invalid_output'
+        collector.restore_transient_candidates(self.state, self.analyzer, later)
+        self.assertEqual(self.state['pending'], [])
 
     def test_storage_overflow_holds_all_old_facts_and_surfaces_fixed_partial_reason(self):
         old_source, old_schedules, old_analysis = base.normalized(
@@ -731,7 +784,8 @@ class ProducerTests(base.Offline):
         record = next(iter(self.state['sources'].values()))
         self.assertEqual(record['status'], 'failed')
         self.assertTrue(record['imageHashes'])
-        self.assertFalse(self.state['pending'])
+        self.assertEqual(len(self.state['pending']), 1)
+        self.assertEqual(record['reason'], 'transient_retry')
         self.model.structured.assert_not_called()
 
     def test_negative_fingerprint_and_text_only(self):
@@ -1009,7 +1063,7 @@ class ProducerTests(base.Offline):
         self.assertEqual(code, 2)
         self.assertEqual(report['status'], 'budget-exhausted')
         self.assertEqual(self.state['lastSuccessAt'], facts.stamp(base.NOW + dt.timedelta(seconds=10)))
-        self.assertEqual(self.state['checkedAt'], facts.stamp(clock[0]))
+        self.assertEqual(self.state['checkedAt'], facts.stamp(base.NOW + dt.timedelta(seconds=10)))
         self.assertTrue(all(facts.timestamp(saved['checkedAt']) >=
                             facts.timestamp(saved['lastSuccessAt']) for saved in self.saved))
         self.client.search.assert_not_called()

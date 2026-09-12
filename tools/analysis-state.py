@@ -16,6 +16,7 @@ import uuid
 
 
 RUN_LIMIT, DAY_LIMIT, SPACING_SECONDS = 3, 30, 60
+CATCHUP_RUN_LIMIT = 16
 JST = dt.timezone(dt.timedelta(hours=9))
 HEX = re.compile(r'[0-9a-f]{64}\Z')
 TOKEN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}\Z')
@@ -337,20 +338,22 @@ def atomic_json(path, state):
         staging.unlink(missing_ok=True)
 
 
-def _counts(state, run_id, now):
+def _counts(state, run_id, now, run_limit=RUN_LIMIT):
     day = _now(now).astimezone(JST).date().isoformat()
     run = sum(item['runId'] == run_id for item in state['receipts'].values())
     daily = (sum(item['date'] == day for item in state['receipts'].values())
              + sum(item['counts']['requests'] for item in state['imports'].values()
                    if item['date'] == day))
-    return {'run': run, 'day': daily, 'remaining': max(0, min(RUN_LIMIT - run, DAY_LIMIT - daily))}
+    return {'run': run, 'day': daily, 'remaining': max(0, min(run_limit - run, DAY_LIMIT - daily))}
 
 
-def usage_counts(state, run_id, now):
+def usage_counts(state, run_id, now, run_limit=RUN_LIMIT):
     """Return actual-JST-day and combined-run counts for fair child scheduling."""
     validate_state(state)
     _token(run_id)
-    return _counts(state, run_id, now)
+    if run_limit not in (RUN_LIMIT, CATCHUP_RUN_LIMIT):
+        raise ValueError('invalid_ai_run_limit')
+    return _counts(state, run_id, now, run_limit)
 
 
 def remaining(state, run_id, now):
@@ -435,15 +438,17 @@ class SharedUsage:
     failure_type = UsageFailure
 
     def __init__(self, path, *, run_id, component, clock, sleep,
-                 request_limit=RUN_LIMIT, deadline=None, create=False):
+                 request_limit=RUN_LIMIT, deadline=None, create=False, run_limit=RUN_LIMIT):
         _token(run_id)
         if (component not in ('official', 'personal', 'schedule') or type(request_limit) is not int
-                or not 0 <= request_limit <= RUN_LIMIT
+                or run_limit not in (RUN_LIMIT, CATCHUP_RUN_LIMIT)
+                or not 0 <= request_limit <= run_limit
                 or deadline is not None and not callable(deadline)):
             raise ValueError('invalid_ai_usage_configuration')
         self.path, self.run_id, self.component = Path(path), run_id, component
         self.clock, self.sleep = clock, sleep
         self.request_limit = min(request_limit, 1) if component == 'schedule' else request_limit
+        self.run_limit = run_limit
         self.deadline, self.create = deadline, create
         self.state, self._lock = None, None
         self._owned, self._active = set(), None
@@ -524,7 +529,7 @@ class SharedUsage:
         self._require_open()
         self._allowed()
         now = _now(self.clock())
-        if self.used >= self.request_limit or not _counts(self.state, self.run_id, now)['remaining']:
+        if self.used >= self.request_limit or not _counts(self.state, self.run_id, now, self.run_limit)['remaining']:
             raise UsageFailure('azure_budget_exhausted')
         retry = self.state['retryAt']
         if retry is not None and _time(retry) > now:
@@ -547,7 +552,7 @@ class SharedUsage:
         if self._active is not None:
             raise UsageFailure('azure_interrupted')
         now = _now(self.clock())
-        if self.used >= self.request_limit or not _counts(self.state, self.run_id, now)['remaining']:
+        if self.used >= self.request_limit or not _counts(self.state, self.run_id, now, self.run_limit)['remaining']:
             raise UsageFailure('azure_budget_exhausted')
         retry = self.state['retryAt']
         if retry is not None and _time(retry) > now:
@@ -561,7 +566,7 @@ class SharedUsage:
                 raise UsageFailure('azure_backoff', retry_at=until)
         self._allowed()
         now = _now(self.clock())
-        if self.used >= self.request_limit or not _counts(self.state, self.run_id, now)['remaining']:
+        if self.used >= self.request_limit or not _counts(self.state, self.run_id, now, self.run_limit)['remaining']:
             raise UsageFailure('azure_budget_exhausted')
         self.state['receipts'][receipt_id] = {
             'runId': self.run_id, 'component': self.component, 'requestHash': key,
