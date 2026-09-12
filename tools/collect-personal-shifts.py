@@ -1766,7 +1766,7 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
         day = today - dt.timedelta(days=offset)
         targets = select_targets(schedule, insights, [], day, state, observations,
                                  registry=registry, binding_maps=bindings)
-        if targets:
+        if targets or state.get('coverage', {}).get(day.isoformat()):
             by_day[day] = targets
     def age(day):
         rows = state.get('searchHistory', {}).get(day.isoformat(), {})
@@ -1775,6 +1775,8 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
     reports, pending_before = [], len(state['pending'])
     for day in days:
         targets = by_day[day]
+        if not targets:
+            continue
         durable.date, durable.targets = day, targets
         search_left = max(0, durable.caps['searches'] - durable.used['searches'])
         post_left = max(0, durable.caps['posts'] - durable.used['posts'])
@@ -1789,14 +1791,17 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
             break
     summaries = []
     for day, targets in by_day.items():
-        rows = update_coverage(state, targets, day, clock(), catch_up=True)
-        active_pending = [item for item in state['pending'] if item['date'] == day.isoformat()]
+        all_rows = update_coverage(state, targets, day, clock(), catch_up=True)
+        rows = {name: row for name, row in all_rows.items() if name in targets}
+        active_pending = [item for item in state['pending'] if item['date'] == day.isoformat()
+                          and target_for_name(targets, item['name']) is not None]
         analyzed_names = {item['name'] for field in ('resolved', 'posts') for item in state[field]
-                          if item['date'] == day.isoformat()}
+                          if item['date'] == day.isoformat() and item['name'] in targets}
         analyzed_ids = {item['postId'] for item in state.get('azureAnalysis', {}).get('cache', {}).values()}
         body_names = analyzed_names | {item['name'] for item in active_pending if item['id'] in analyzed_ids}
         summaries.append({
             'date': day.isoformat(), 'ageDays': (today - day).days, 'targets': len(targets),
+            'unavailableTargets': len(all_rows) - len(rows),
             'searched': sum(bool(row['searchedAt']) for row in rows.values()),
             'withSource': sum(bool(row['postIds']) for row in rows.values()),
             'analyzed': len(analyzed_names), 'bodyChecked': len(body_names),
@@ -1808,7 +1813,8 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
     failures = [failure for report in reports for failure in report['failures']]
     expired = sum((today - dt.date.fromisoformat(item['date'])).days >= RECOVERY_DAYS
                   for item in state['pending'])
-    incomplete = bool(expired) or any(row['unsearched'] or row['pending'] for row in summaries)
+    incomplete = bool(expired) or any(row['unsearched'] or row['pending'] or row['unavailableTargets']
+                                      for row in summaries)
     status = ('paused' if state['paused'] or any(report['status'] == 'paused' for report in reports)
               else 'partial' if incomplete or failures else 'ok' if reports else 'no-results')
     state['lastRun'] = {

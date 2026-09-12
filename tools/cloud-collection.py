@@ -1744,12 +1744,12 @@ def emit(result, environment):
         lines = ['## Collection coverage (publication success is separate)\n',
                  'Unconfirmed does not mean unposted or absent.\n']
         if acquisition:
-            lines.extend(['| Work date | Age (days) | Targets | Search attempts | Body checked | Accepted | Analyzed | Pending | Unsearched | Day-only | Analysis held |\n',
-                          '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n'])
+            lines.extend(['| Work date | Age (days) | Eligible targets | Search attempts | Body checked | Accepted | Analyzed | Pending | Unsearched | Day-only | Analysis held | Account/status held |\n',
+                          '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n'])
             for row in acquisition['days']:
                 lines.append('| ' + ' | '.join(str(row[key]) for key in (
                     'date', 'ageDays', 'targets', 'searched', 'bodyChecked', 'withSource', 'analyzed',
-                    'pending', 'unsearched', 'dayOnly', 'analysisHeld')) + ' |\n')
+                    'pending', 'unsearched', 'dayOnly', 'analysisHeld', 'unavailableTargets')) + ' |\n')
             lines.append(f"\nExpired metadata outside the recovery window: {acquisition['expired']}.\n")
         if half:
             lines.append(f"\nHalf-month {half['period']}: {half['searched']}/{half['targets']} searched, "
