@@ -1614,7 +1614,7 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         target = target_for_name(targets, item['name']) or {'shifts': []}
         deadline = target_deadline(target, scheduled=durable.scheduled)
         if durable.catch_up:
-            return (item['name'] in body_checked, positions[item['id']], deadline,
+            return (positions[item['id']], item['name'] in body_checked, deadline,
                     previous_attempt[item['name']], -int(item['id']))
         return deadline, positions[item['id']], previous_attempt[item['name']], -int(item['id'])
 
