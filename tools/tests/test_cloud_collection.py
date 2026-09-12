@@ -1553,6 +1553,35 @@ class CloudTests(unittest.TestCase):
         collector.atomic_json(path, state)
         self.assertEqual(sum(cloud.recovery_allocation(path, '12345-1', now).values()), 1)
 
+    def test_enabled_official_only_collect_assigns_legacy_limit_without_catchup(self):
+        module, seed = self.personal_seed()
+        private = module.empty_state()
+        module.merge_seed(private, seed)
+        self.seed_branch()
+        ledger = cloud.load_analysis_state()
+        usage = ledger.empty_state()
+        ledger.apply_import(usage, {
+            'receiptId': 'a' * 64, 'sourceHash': 'b' * 64, 'date': '2026-09-07',
+            'counts': {'requests': 1},
+            'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'text', 'count': 1}]})
+        self.bare_commit({cloud.PERSONAL: private, cloud.AI_USAGE: usage})
+        self.environment['DAILY_GUIDANCE_ENABLED'] = 'true'
+        self.args.mode = 'collect'
+        def invoke(root, state, report, environment):
+            self.assertNotIn('CLOUD_COLLECTION_CATCH_UP', environment)
+            self.assertEqual(environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'], '3')
+            snapshot, _ = cloud.validate_snapshot(state / cloud.SNAPSHOT, collector)
+            snapshot['lastRun'] = {**snapshot['lastRun'], 'status': 'no-new', 'sourceCount': 0,
+                                   'requests': {'searches': 0, 'posts': 0}}
+            collector.atomic_json(state / cloud.SNAPSHOT, snapshot)
+            collector.atomic_json(report, {'component': 'official', 'status': 'no-new', 'exitCode': 0,
+                                            'requests': {'searches': 0, 'posts': 0}})
+            return 0
+        with mock.patch.object(cloud, 'invoke_collector', side_effect=invoke) as called:
+            result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                       collector=collector, personal=module)
+        called.assert_called_once()
+        self.assertEqual(result['persistenceStatus'], 'saved')
     def test_acquisition_summary_separates_published_status_from_missing_work_dates(self):
         summary = self.root / 'summary.txt'
         acquisition = {'complete': False, 'expired': 2, 'days': [{
