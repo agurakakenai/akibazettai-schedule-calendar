@@ -1602,10 +1602,9 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                         source_report = load_source_state().usage_counts(
                             validate_source_usage(collected / SOURCE_USAGE)[0],
                             environment['CLOUD_COLLECTION_RUN_ID'], collector.utc_now(), 'personal', catch_up=True)
-                        reserve = min(5, source_report['remaining']['posts'] // 3)
                         environment['CLOUD_COLLECTION_PERSONAL_POSTS'] = str(min(
                             int(environment.get('CLOUD_COLLECTION_PERSONAL_POSTS', '14')),
-                            max(0, source_report['remaining']['posts'] - reserve)))
+                            allocation['personal'], source_report['remaining']['posts']))
                 elif (collect_half_month and not half_month_state.get('paused')
                         and not personal_deadline_near(collector.utc_now(), scheduled=scheduled)):
                     environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = str(

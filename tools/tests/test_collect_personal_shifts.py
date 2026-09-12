@@ -599,6 +599,11 @@ class StateTests(Offline):
                 payloads[tid] = post(text, tid=tid, target=target, uid=uid)
         self.state['pending'] = [{**item, 'reason': 'post_limit', 'firstSeenAt': CREATED,
                                   'lastAttemptAt': None, 'attempts': 0} for item in candidates]
+        self.state['resolved'] = [{
+            'id': str(int(TID) + 10000 + index), 'name': person['name'],
+            'url': personal.public_url(person['handle'], str(int(TID) + 10000 + index)),
+            'date': DATE.isoformat(), 'reason': 'no_event', 'resolvedAt': CREATED}
+            for index, person in enumerate(people) if index < 8 or index >= 12]
         calls = []
         for hour, cap in ((0, 14), (2, 6)):
             now = NOW + dt.timedelta(hours=hour)
