@@ -1,5 +1,23 @@
 {
   "imports": {
+    "020e1981185e3b61b92cc22f17bf07b889c8cc0e4c8ddb1ff126ec6d29d62aca": {
+      "counts": {
+        "requests": 7
+      },
+      "date": "2026-09-13",
+      "modelBreakdown": [
+        {
+          "component": "personal",
+          "count": 7,
+          "deployment": "gpt-5.6-luna",
+          "kind": "text",
+          "model": "gpt-5.6-luna",
+          "modelVersion": "2026-07-09"
+        }
+      ],
+      "receiptId": "020e1981185e3b61b92cc22f17bf07b889c8cc0e4c8ddb1ff126ec6d29d62aca",
+      "sourceHash": "a47ec69cc5b20ade6bfb3a032ce98a7098ddc1189c0e31ace360757d414aa6e3"
+    },
     "11e06fc4a405615b5a43fea4ac67af37ba5a602727233da87e642286cf8e3230": {
       "counts": {
         "requests": 3
@@ -1466,6 +1484,23 @@
         "receiptId": "20480d97bf12e15f4575c35c2f5d72658f79ac4e7c68885c157e58725e125c94",
         "searches": 0,
         "sourceHash": "ec58a86769164928f2eef58b7153f50eaf3d00a8c9ed12725e7c2077eb758fe3"
+      }
+    },
+    "8d92ab650b9b61808b15e63a20c500453c9227debb96d8bc36fe77b3ee3ef4b1": {
+      "budgetAfter": {
+        "posts": 35,
+        "searches": 55
+      },
+      "budgetBefore": {
+        "posts": 28,
+        "searches": 55
+      },
+      "receipt": {
+        "date": "2026-09-13",
+        "posts": 7,
+        "receiptId": "8d92ab650b9b61808b15e63a20c500453c9227debb96d8bc36fe77b3ee3ef4b1",
+        "searches": 0,
+        "sourceHash": "fa67cd90d5073c6d4d735e94b403261888c07af604cb10f2b9cb223c713b3bd8"
       }
     },
     "df2293bdd96211985c085d2334d7b97dc4fad5fc30cc1780c6095fbf2e415db8": {
