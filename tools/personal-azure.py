@@ -37,6 +37,7 @@ capacity = importlib.util.module_from_spec(CAPACITY_SPEC)
 CAPACITY_SPEC.loader.exec_module(capacity)
 
 VERSION = 'personal-line-ids-v8'
+GROUNDING_VERSION = 2
 MAX_INPUT_BYTES = 6000
 MAX_SOURCE_LINES = 128
 MAX_EVIDENCE_LINES = 16
@@ -392,7 +393,7 @@ def selected_lines(lines, ids):
     return selected
 
 
-def numeric_references(text, lines, *, include_ranges=False):
+def numeric_references(text, lines, *, include_ranges=False, official=None):
     spans = [(line['start'], line['end']) for line in lines]
 
     def quoted(match):
@@ -402,12 +403,19 @@ def numeric_references(text, lines, *, include_ranges=False):
     # Never concatenate selected lines to manufacture a number or a quotation.
     horizontal = r'[^\S\r\n\v\f\u0085\u2028\u2029]*'
     stores, times = {}, set()
-    for pattern in (r'(?<!\d)([1-4１-４])' + horizontal + '号店',
+    for pattern in (r'(?<![\d\ufe0f\u20e3])([1-4１-４])(?:\ufe0f?\u20e3)?' + horizontal + '号店',
                     r'(?:昼|夜|ひる|よる)' + horizontal + r'([1-4１-４])(?!\d|時|[:：])'):
         for match in re.finditer(pattern, text):
             if quoted(match):
                 stores.setdefault('s' + unicodedata.normalize('NFKC', match[1]), match[0].replace('\t', ' '))
-    for match in re.finditer(r'(?<!\d)(\d{1,2})(?:[:：](\d{2})|時(?:(\d{1,2})分)?)(?![\d半])', text):
+    if official is not None:
+        for alias, name in official.IMPORTER.STORES:
+            if alias.isdecimal() or '号店' in alias:
+                continue
+            pattern = r'(?<![a-z0-9.])' + re.escape(alias) + r'(?![a-z0-9.])'
+            if any(re.search(pattern, official.IMPORTER.norm(line['text'])) for line in lines):
+                stores.setdefault(official.STORE_IDS[name], alias)
+    for match in re.finditer(r'(?<!\d)(\d{1,2})(?:[:：](\d{2})|(?:時|じ)(?:(\d{1,2})分)?)(?![\d半])', text):
         hour, minute = int(match[1]), int(match[2] or match[3] or 0)
         if quoted(match) and hour <= 23 and minute <= 59:
             times.add(f'{hour:02d}:{minute:02d}')
@@ -457,7 +465,8 @@ def explicit_shift(lines, shift):
         re.search(words[shift], unicodedata.normalize('NFKC', line['text'])) for line in lines)
 
 
-def _grounded_event_items(proposals, text, shifts, personal, lines, *, discovery=False):
+def _grounded_event_items(proposals, text, shifts, personal, lines, *, discovery=False,
+                          ungrounded_placements=None):
     events, seen = [], set()
     for proposed in proposals:
         if not isinstance(proposed, dict) or set(proposed) != set(EVENT_SCHEMA['required']):
@@ -474,15 +483,20 @@ def _grounded_event_items(proposals, text, shifts, personal, lines, *, discovery
         selected = selected_lines(lines, proposed['evidenceLineIds'])
         if discovery and not explicit_shift(selected, shift):
             raise AnalysisFailure('azure_ungrounded')
-        references, times = numeric_references(text, selected)
+        if when is not None and (not isinstance(when, str)
+                                or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', when)):
+            raise AnalysisFailure('azure_ungrounded')
+        references, times = numeric_references(text, selected, official=personal.official)
         if store is not None and store not in references:
+            if kind == 'placement' and ungrounded_placements is not None:
+                ungrounded_placements.append(shift)
+                seen.add(shift)
+                continue
             raise AnalysisFailure('azure_ungrounded')
         event = {'shift': shift, 'kind': kind, 'excerpt': public_excerpt(selected, store, references)}
         if store is not None:
             event['storeId'] = store
         if when is not None:
-            if not isinstance(when, str) or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', when):
-                raise AnalysisFailure('azure_ungrounded')
             if when not in times:
                 raise AnalysisFailure('azure_ungrounded')
             event['time'] = when
@@ -555,7 +569,7 @@ def _grounded_v8(result, text, date, shifts, personal, lines=None):
         raise AnalysisFailure('azure_invalid_output')
     events, links, channels, service_dates = _grounded_v7(
         {field: result[field] for field in ('events', 'links')},
-        text, date, shifts, personal, lines)
+        text, date, shifts, personal, lines, independent_work_links=True)
     values = result['workTiming']
     if values is not None and (not isinstance(values, list) or len(values) > MAX_DATED_TIMING):
         raise AnalysisFailure('azure_invalid_output')
@@ -592,7 +606,8 @@ def _grounded_v8(result, text, date, shifts, personal, lines=None):
     return events, links, facts, channels, service_dates
 
 
-def _grounded_v7(result, text, date, shifts, personal, lines=None):
+def _grounded_v7(result, text, date, shifts, personal, lines=None, *,
+                 independent_work_links=False):
     lines = source_lines(text) if lines is None else lines
     if not isinstance(result, dict) or set(result) != {'events', 'links'}:
         raise AnalysisFailure('azure_invalid_output')
@@ -614,21 +629,36 @@ def _grounded_v7(result, text, date, shifts, personal, lines=None):
             group = groups.setdefault(day, {'events': [], 'links': []})
             group[field].append({key: value for key, value in proposed.items() if key != 'serviceDate'})
         service_dates[field] = sorted(dates)
-    validated = {}
+    validated, pending_events = {}, set()
     target = date.isoformat()
     for day, group in groups.items():
         if len(group['events']) > 2 or len(group['links']) > MAX_LINKS:
             raise AnalysisFailure('azure_invalid_output')
+        ungrounded = [] if independent_work_links else None
         validated[day] = _grounded_facts(group['events'], group['links'], text,
                                        shifts if day == target else ('昼', '夜'), personal, lines,
-                                       discovery=day == target and not shifts)
+                                       discovery=day == target and not shifts,
+                                       ungrounded_placements=ungrounded)
+        if ungrounded:
+            day_links = validated[day][1]
+            if (not day_links or any(link['status'] != 'work' for link in day_links)
+                    or any(event['kind'] != 'placement' for event in group['events'])):
+                raise AnalysisFailure('azure_ungrounded')
+            # A rejected store must not erase independently grounded work links.
+            validated[day] = ([], day_links)
+            pending_events.add(day)
+            service_dates['events'].remove(day)
     events, links = validated.get(target, ([], []))
     channels = {field: 'pending' if result[field] is None else 'confirmed' if facts else 'none'
                 for field, facts in (('events', events), ('links', links))}
+    if target in pending_events:
+        channels['events'] = 'pending'
+        service_dates['events'] = []
     return events, links, channels, service_dates
 
 
-def _grounded_facts(event_items, link_items, text, shifts, personal, lines, *, discovery=False):
+def _grounded_facts(event_items, link_items, text, shifts, personal, lines, *, discovery=False,
+                    ungrounded_placements=None):
     for proposals, schema in ((event_items, EVENT_SCHEMA), (link_items, LINK_SCHEMA)):
         required = set(schema['required'])
         for proposed in proposals:
@@ -637,7 +667,8 @@ def _grounded_facts(event_items, link_items, text, shifts, personal, lines, *, d
             selected = selected_lines(lines, proposed['evidenceLineIds'])
             if any(not line['text'].strip() for line in selected):
                 raise AnalysisFailure('azure_ungrounded')
-    events = _grounded_event_items(event_items, text, shifts, personal, lines, discovery=discovery)
+    events = _grounded_event_items(event_items, text, shifts, personal, lines, discovery=discovery,
+                                  ungrounded_placements=ungrounded_placements)
     links, scopes = [], set()
     for proposed in link_items:
         link = {key: proposed[key] for key in ('scope', 'status')}
@@ -681,7 +712,7 @@ class AzureAnalyzer:
         self.deadline = deadline
         self.used = usage.used if usage is not None else 0
         self.spacing_at = None
-        self.version = digest(json.dumps([VERSION, PROMPT, SCHEMA, MAX_SOURCE_LINES,
+        self.version = digest(json.dumps([VERSION, GROUNDING_VERSION, PROMPT, SCHEMA, MAX_SOURCE_LINES,
                                           self.client.identity, capacity.profile_hash(capacity.PERSONAL)],
                                          sort_keys=True))
         known = {entry['postId'] for entry in self.state['cache'].values()}
