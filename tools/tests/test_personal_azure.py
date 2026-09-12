@@ -71,7 +71,7 @@ def maximum_timing_response():
     source = [f'9月{6 + offset}日 昼1号店。12時から18時まで、ながめ昼。'
               if shift == '昼' else f'9月{6 + offset}日 夜2号店。16時から22時まで、早め夜。'
               for offset in range(4) for shift in ('昼', '夜')]
-    text = '\n'.join(['本文'] * 112 + source * 2)
+    text = '\n'.join(['文'] * 112 + source * 2)
     ids = list(range(113, 129))
     events = [dated(event(shift, 'placement', ids, store), day)
               for day in days[:2] for shift, store in (('昼', 's1'), ('夜', 's2'))]
@@ -135,6 +135,8 @@ class AzureTests(base.Offline):
         content = json.loads(request.data)
         payload = json.loads(content['messages'][1]['content'])
         self.assertEqual(payload['knownShiftsByDate'], {'2026-09-06': []})
+        self.assertEqual(payload['stores'], personal.official.STORE_IDS)
+        self.assertEqual(payload['stores']['2号店 A.D.1912'], 's2')
         self.assertEqual(target['shifts'], [])
         for text, value in (
                 ('今日 終日お休みです', result(event('昼', 'absence', [1]))),
@@ -1176,7 +1178,8 @@ class AzureTests(base.Offline):
             'postedDateJST': '2026-09-06', 'relativeDatesJST': {
                 'yesterday': '2026-09-05', 'today': '2026-09-06',
                 'tomorrow': '2026-09-07', 'dayAfterTomorrow': '2026-09-08'},
-            'author': 'あむ', 'knownShiftsByDate': {'2026-09-06': ['昼', '夜']}})
+            'author': 'あむ', 'knownShiftsByDate': {'2026-09-06': ['昼', '夜']},
+            'stores': personal.official.STORE_IDS})
         self.assertEqual(sent['reasoning_effort'], 'none')
         self.assertEqual(sent['model'], 'gpt-5.6-luna')
         self.assertEqual(sent['max_completion_tokens'], 2304)
@@ -1600,7 +1603,7 @@ class AzureTests(base.Offline):
                                       personal.official.timestamp(created), base.DATE, ['昼'], 'あむ')
                 context = json.loads(structured.call_args.args[0][1]['content'])
                 self.assertEqual(set(context), {'bodyLines', 'postedAtJST', 'postedDateJST',
-                                                'relativeDatesJST', 'author', 'knownShiftsByDate'})
+                                                'relativeDatesJST', 'author', 'knownShiftsByDate', 'stores'})
                 self.assertEqual(context['postedAtJST'], expected_stamp)
                 self.assertEqual(context['postedDateJST'], days[1])
                 self.assertEqual(context['relativeDatesJST'], dict(zip(
@@ -1835,6 +1838,20 @@ class AzureTests(base.Offline):
         self.assertEqual(len(self.state['azureAnalysis']['cache']), 2)
         for key, value in original.items():
             self.assertEqual(self.state['azureAnalysis']['cache'][key], value)
+
+    def test_shared_store_context_is_included_in_capacity_reservation(self):
+        _, _, payload = azure.request_components(
+            azure.source_lines('今日 夜2号店'), personal.official.timestamp(base.CREATED),
+            base.DATE, ('夜',), base.AMU['name'])
+        full = azure._admit(payload)['textReservationBound']
+        without_stores = {key: value for key, value in payload.items() if key != 'stores'}
+        smaller = azure._admit(without_stores)['textReservationBound']
+        metadata = {key: value for key, value in payload.items() if key != 'bodyLines'}
+        previous = {key: value for key, value in metadata.items() if key != 'stores'}
+        self.assertEqual(full - smaller,
+                         len(azure.capacity.canonical(metadata).encode('utf-8'))
+                         - len(azure.capacity.canonical(previous).encode('utf-8')))
+        self.assertGreater(full, smaller)
 
     def test_body_wording_reaches_model_without_a_semantic_prefilter(self):
         for text in ('明日 夜2号店', '今日「夜2号店」', '今日 ららこは夜2号店',

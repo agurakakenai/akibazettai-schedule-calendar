@@ -35,6 +35,10 @@ CAPACITY_SPEC = importlib.util.spec_from_file_location(
     'personal_request_capacity', Path(__file__).with_name('request-capacity.py'))
 capacity = importlib.util.module_from_spec(CAPACITY_SPEC)
 CAPACITY_SPEC.loader.exec_module(capacity)
+STORE_SPEC = importlib.util.spec_from_file_location(
+    'personal_official_store_definitions', Path(__file__).with_name('collect-shifts.py'))
+store_source = importlib.util.module_from_spec(STORE_SPEC)
+STORE_SPEC.loader.exec_module(store_source)
 
 VERSION = 'personal-line-ids-v8'
 GROUNDING_VERSION = 2
@@ -369,6 +373,7 @@ def request_components(lines, created, date, shifts, name):
                              for label, offset in (('yesterday', -1), ('today', 0),
                                                    ('tomorrow', 1), ('dayAfterTomorrow', 2))},
         'author': name, 'knownShiftsByDate': {date.isoformat(): list(shifts)},
+        'stores': store_source.STORE_IDS,
     }
     messages = [{'role': 'system', 'content': PROMPT},
                 {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}]
@@ -713,6 +718,7 @@ class AzureAnalyzer:
         self.used = usage.used if usage is not None else 0
         self.spacing_at = None
         self.version = digest(json.dumps([VERSION, GROUNDING_VERSION, PROMPT, SCHEMA, MAX_SOURCE_LINES,
+                                          store_source.STORE_IDS, store_source.IMPORTER.STORES,
                                           self.client.identity, capacity.profile_hash(capacity.PERSONAL)],
                                          sort_keys=True))
         known = {entry['postId'] for entry in self.state['cache'].values()}
