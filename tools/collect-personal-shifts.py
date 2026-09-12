@@ -291,6 +291,14 @@ def azure_context():
         calendar_day=calendar_day)
 
 
+def saved_validator():
+    spec = importlib.util.spec_from_file_location(
+        'personal_saved_validation', ROOT / 'tools' / 'personal-saved.py')
+    saved = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(saved)
+    return saved
+
+
 def read_state(path, private=True):
     if not path.exists():
         return empty_state()
@@ -317,10 +325,7 @@ def read_state(path, private=True):
                 azure.validate_state(value['azureAnalysis'], azure_context())
             validate_collection_coverage(value)
             if 'savedPersonalImports' in value:
-                spec = importlib.util.spec_from_file_location(
-                    'personal_saved_validation', ROOT / 'tools' / 'personal-saved.py')
-                saved = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(saved)
+                saved = saved_validator()
                 saved.validate_revisions(value, azure_context())
             for key in ('pending', 'resolved', 'budgets', 'paused', 'identityBindings',
                         'originalTargets', 'lastRequests'):
@@ -347,18 +352,25 @@ def read_state(path, private=True):
                             ('httpStatus', 'retryAt', 'metadataSource', 'sourceCreatedAt'))
                     else:
                         require_keys(item, ('id', 'url', 'name', 'date', 'reason', 'resolvedAt'), ('linkReview',))
-                        if (item['reason'] == 'reviewed_undated_work') != ('linkReview' in item):
+                        if item['reason'] == 'reviewed_undated_work' and 'linkReview' not in item:
                             raise ValueError
                         if 'linkReview' in item:
                             review = item['linkReview']
-                            require_keys(review, ('id', 'expectedSubjectHash', 'bodyHash', 'sourceHash'))
-                            if (review['id'] != item['id'] or any(
-                                    not isinstance(review[field], str)
-                                    or not re.fullmatch(r'[a-f0-9]{64}', review[field])
-                                    for field in ('expectedSubjectHash', 'bodyHash', 'sourceHash'))
-                                    or not any(post['id'] == item['id'] for post in
-                                               value.get('azureAnalysis', {}).get('history', []))):
-                                raise ValueError
+                            if isinstance(review, dict) and review.get('operation') == 'confirm-work-link':
+                                reviewed = saved_validator().source_review_post(review, azure_context())
+                                if (item['reason'] != 'no_event' or reviewed not in value['posts']
+                                        or any(reviewed[field] != item[field]
+                                               for field in ('id', 'url', 'name', 'date'))):
+                                    raise ValueError
+                            else:
+                                require_keys(review, ('id', 'expectedSubjectHash', 'bodyHash', 'sourceHash'))
+                                if (item['reason'] != 'reviewed_undated_work' or review['id'] != item['id']
+                                        or any(not isinstance(review[field], str)
+                                               or not re.fullmatch(r'[a-f0-9]{64}', review[field])
+                                               for field in ('expectedSubjectHash', 'bodyHash', 'sourceHash'))
+                                        or not any(post['id'] == item['id'] for post in
+                                                   value.get('azureAnalysis', {}).get('history', []))):
+                                    raise ValueError
                     if (not isinstance(item['id'], str) or not official.post_id(item['id'])
                             or item['id'] in seen
                             or not isinstance(item['name'], str) or not item['name']
