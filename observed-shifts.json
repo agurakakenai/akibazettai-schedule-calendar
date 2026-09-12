@@ -1,22 +1,22 @@
 {
-  "checkedAt": "2026-09-12T08:02:02Z",
+  "checkedAt": "2026-09-12T12:15:22Z",
   "complete": false,
   "cooldowns": {},
   "lastRun": {
-    "attemptedCount": 3,
+    "attemptedCount": 2,
     "complete": false,
     "dateBasis": "JST service day, 05:00 boundary",
     "dateFrom": "2026-09-11",
     "dateTo": "2026-09-12",
     "deferredCount": 0,
-    "discoveredCount": 39,
-    "eligibleCount": 3,
+    "discoveredCount": 41,
+    "eligibleCount": 2,
     "failures": [],
-    "fetchedCount": 3,
-    "finishedAt": "2026-09-12T08:04:11Z",
+    "fetchedCount": 2,
+    "finishedAt": "2026-09-12T12:16:30Z",
     "lastSuccessMeaning": "Both searches and every selected post handled without failure or deferral",
     "maxPosts": 20,
-    "newNameCount": 14,
+    "newNameCount": 13,
     "newPostCount": 2,
     "pendingCount": 1,
     "pendingOutsideRangeCount": 1,
@@ -144,24 +144,20 @@
       {
         "id": "2095345641237131724",
         "reason": "outside_date_range"
-      },
-      {
-        "id": "2098596045156724944",
-        "reason": "not_shift_post"
       }
     ],
     "requests": {
-      "posts": 3,
+      "posts": 2,
       "searches": 2
     },
     "skippedCuratedCount": 0,
-    "skippedObservedCount": 4,
-    "skippedResolvedCount": 1,
+    "skippedObservedCount": 6,
+    "skippedResolvedCount": 2,
     "sourceCount": 2,
     "sourcePageLimit": 2,
     "sources": [
       {
-        "candidateCount": 25,
+        "candidateCount": 24,
         "status": "ok",
         "url": "https://search.yahoo.co.jp/realtime/search?p=%E3%82%A2%E3%82%AD%E3%83%90%E7%B5%B6%E5%AF%BE%E9%A0%98%E5%9F%9F&ei=UTF-8"
       },
@@ -183,6 +179,16 @@
         "fetchedAt": "2026-09-10T12:59:24.559779Z",
         "notices": [],
         "postId": "2097978947925586349",
+        "reason": "no_event",
+        "versionHash": "8475ffd64a25d8d1e858e0169e6f70feb3f66c5e5449d23548b94501813bebb5"
+      },
+      "13104a8d6115063eae131ac4e6f3a7e1f55e4115f800ff098af1894cb8e7ac6e": {
+        "at": "2026-09-12T12:15:30.358373Z",
+        "bodyHash": "e6233fd0c700c9c7b80636414d0a2f7042a72c1c1f5581d25d3fa2fe24a93a0b",
+        "createdAt": "2026-09-12T08:11:27Z",
+        "fetchedAt": "2026-09-12T12:15:28.526103Z",
+        "notices": [],
+        "postId": "2098685912058331462",
         "reason": "no_event",
         "versionHash": "8475ffd64a25d8d1e858e0169e6f70feb3f66c5e5449d23548b94501813bebb5"
       },
@@ -233,6 +239,16 @@
         "fetchedAt": "2026-09-10T12:59:26.537470Z",
         "notices": [],
         "postId": "2097974991371579734",
+        "reason": "no_event",
+        "versionHash": "8475ffd64a25d8d1e858e0169e6f70feb3f66c5e5449d23548b94501813bebb5"
+      },
+      "32f2767705a216a909a2de0477a68ea3a91b64981a20c4b38d0ef291c5bc09d7": {
+        "at": "2026-09-12T12:15:28.529952Z",
+        "bodyHash": "4ab6fbf290a00585c89251c8cfcc9d6b8bc90d896582a42fdbb9ad178c6d82dc",
+        "createdAt": "2026-09-12T09:18:08Z",
+        "fetchedAt": "2026-09-12T12:15:26.528522Z",
+        "notices": [],
+        "postId": "2098702693703586291",
         "reason": "no_event",
         "versionHash": "8475ffd64a25d8d1e858e0169e6f70feb3f66c5e5449d23548b94501813bebb5"
       },
@@ -1181,6 +1197,45 @@
       "shift": "昼",
       "storeId": "s2",
       "url": "https://x.com/akibazettai/status/2098613671585009971"
+    },
+    {
+      "authorId": "822429861218131969",
+      "authorScreenName": "akibazettai",
+      "createdAt": "2026-09-12T08:11:27Z",
+      "date": "2026-09-12",
+      "id": "2098685912058331462",
+      "names": [
+        "あめる",
+        "ちま",
+        "ちゆ",
+        "あるか",
+        "るるか",
+        "うる"
+      ],
+      "observedAt": "2026-09-12T12:15:28Z",
+      "shift": "夜",
+      "storeId": "s1",
+      "url": "https://x.com/akibazettai/status/2098685912058331462"
+    },
+    {
+      "authorId": "822429861218131969",
+      "authorScreenName": "akibazettai",
+      "createdAt": "2026-09-12T09:18:08Z",
+      "date": "2026-09-12",
+      "id": "2098702693703586291",
+      "names": [
+        "みえる",
+        "まひろ",
+        "みりあ",
+        "のあ",
+        "ぴあの",
+        "ららこ",
+        "みりん"
+      ],
+      "observedAt": "2026-09-12T12:15:26Z",
+      "shift": "夜",
+      "storeId": "s2",
+      "url": "https://x.com/akibazettai/status/2098702693703586291"
     }
   ],
   "resolved": [
