@@ -1851,6 +1851,31 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(self.remote_json(cloud.PERSONAL)[0], after)
         self.assertEqual(self.remote_json(cloud.AI_USAGE)[0], usage)
 
+    def test_native_link_review_uses_existing_owner_cas_and_public_projection(self):
+        helper = PersonalSavedTests(methodName='runTest')
+        helper.setUp()
+        private, usage, entry = helper.native_link_review()
+        self.seed_branch()
+        self.bare_commit({cloud.PERSONAL: private, cloud.AI_USAGE: usage})
+        manifest = self.saved_manifest()
+        manifest.update(usageImports=[], personalLinkReviews=[entry])
+        self.saved_mode(manifest)
+        with mock.patch.object(cloud, 'invoke_collector', side_effect=AssertionError('No source')), \
+                mock.patch.object(cloud, 'invoke_personal_collector', side_effect=AssertionError('No AI')):
+            result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                       collector=collector, personal=helper.personal)
+        self.assertEqual(result['collectionStatus'], 'applied-saved')
+        after = self.remote_json(cloud.PERSONAL)[0]
+        self.assertFalse(any(post['id'] == entry['id'] for post in after['posts']))
+        self.assertTrue(any(post['id'] == entry['id'] for post in after['azureAnalysis']['history']))
+        self.assertEqual(self.remote_json(cloud.AI_USAGE)[0], usage)
+        self.assertNotIn(cloud.LEASE, self.remote_names())
+        manifest['expectedStateSHA'] = result['stateCommit']
+        self.saved_mode(manifest)
+        cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                          collector=collector, personal=helper.personal)
+        self.assertEqual(self.remote_json(cloud.PERSONAL)[0], after)
+
     def test_manual_past_import_uses_real_dated_scope_and_existing_leased_apply(self):
         helper = PersonalSavedTests(methodName='runTest')
         helper.setUp()
@@ -2587,6 +2612,72 @@ class PersonalSavedTests(unittest.TestCase):
             self.state if state is None else state,
             self.entries if entries is None else entries,
             self.usage if usage is None else usage, self.personal)
+
+    def native_link_review(self):
+        state = copy.deepcopy(self.state)
+        post = self.saved.post_from_amendment(self.entries[0]['amendment'])
+        post.update(events=[], links=[{'scope': 'unspecified', 'status': 'work'}])
+        tid, at = post['id'], post['observedAt']
+        state['posts'].append(post)
+        state['pending'] = [item for item in state['pending'] if item['id'] != tid]
+        state['resolved'].append({field: post[field] for field in ('id', 'name', 'url', 'date')})
+        state['resolved'][-1].update(reason='links', resolvedAt=at)
+        state['identityBindings'][post['name']] = {
+            'authorId': post['authorId'], 'authorScreenName': post['authorScreenName'], 'verifiedAt': at}
+        state['azureAnalysis'] = self.personal.azure.empty_state()
+        key, body_hash = 'f' * 64, '1' * 64
+        state['azureAnalysis']['cache'][key] = {
+            'postId': tid, 'bodyHash': body_hash, 'versionHash': '2' * 64, 'at': at,
+            'reason': 'links', 'events': [], 'links': copy.deepcopy(post['links'])}
+        ledger = cloud.load_analysis_state()
+        usage = copy.deepcopy(self.usage)
+        usage['receipts'][ledger._receipt_id('personal', key)] = {
+            'requestHash': key, 'component': 'personal', 'runId': 'native-link-fixture',
+            'date': post['date'], 'reservedAt': at, 'issuedAt': at, 'completedAt': at,
+            'reason': 'links', 'httpStatus': None, 'retryAt': None,
+            'identity': {'provider': 'azure_openai', 'endpointHash': '3' * 64,
+                         'model': 'gpt-5.6-luna', 'deployment': 'gpt-5.6-luna', 'modelVersion': '2026-07-09'}}
+        usage['nextRequestAt'] = self.personal.stamp(
+            self.personal.official.timestamp(at) + dt.timedelta(seconds=60))
+        entry = {'id': tid, 'expectedSubjectHash': self.saved.subject_hash(state, tid),
+                 'bodyHash': body_hash, 'sourceHash': '4' * 64}
+        return state, usage, entry
+
+    def test_native_undated_link_review_preserves_history_accounting_and_is_idempotent(self):
+        state, usage, entry = self.native_link_review()
+        original = next(post for post in state['posts'] if post['id'] == entry['id'])
+        after = self.saved.apply_link_reviews(state, [entry], usage, self.personal)
+        self.assertNotIn(original, after['posts'])
+        self.assertIn(original, after['azureAnalysis']['history'])
+        self.assertEqual(after['azureAnalysis']['cache'], state['azureAnalysis']['cache'])
+        self.assertEqual(after['identityBindings'], state['identityBindings'])
+        self.assertEqual(after['budgets'], state['budgets'])
+        self.assertEqual(after, self.saved.apply_link_reviews(after, [entry], usage, self.personal))
+        self.personal.merge_seed(after, self.personal.public_state(state))
+        self.assertNotIn(original, after['posts'], 'a stale seed must not resurrect the reviewed false link')
+        self.assertFalse(any(link['status'] == 'withdrawn' for post in after['posts']
+                             for link in post.get('links', [])))
+
+    def test_link_review_refuses_other_facts_unmatched_body_and_unaccounted_analysis(self):
+        for change in ('cas', 'body', 'usage', 'events', 'scope'):
+            state, usage, entry = self.native_link_review()
+            if change == 'cas':
+                entry['expectedSubjectHash'] = '0' * 64
+            elif change == 'body':
+                entry['bodyHash'] = '0' * 64
+            elif change == 'usage':
+                usage['receipts'] = {}
+            else:
+                post = next(post for post in state['posts'] if post['id'] == entry['id'])
+                if change == 'events':
+                    post['events'] = [{'shift': '昼', 'kind': 'placement', 'storeId': 's1', 'excerpt': '1号店'}]
+                else:
+                    post['links'][0]['scope'] = '昼'
+                entry['expectedSubjectHash'] = self.saved.subject_hash(state, entry['id'])
+            unchanged = copy.deepcopy(state)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.saved.apply_link_reviews(state, [entry], usage, self.personal)
+            self.assertEqual(state, unchanged)
 
     def manual_import(self):
         state = copy.deepcopy(self.state)

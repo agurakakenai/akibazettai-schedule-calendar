@@ -420,6 +420,51 @@ test("roster post links prefer verified own day posts without weakening same-day
   assert.equal(JSON.stringify([effective, post]), before);
 });
 
+test("all eighteen announced people resolve nineteen shift-specific links or explicit gaps", () => {
+  const dateKey = "2026-09-13";
+  const people = Array.from({ length: 18 }, (_, index) => ({
+    name: `Person${index}`, handle: `person${index}`,
+    shifts: index === 0 ? ["昼", "夜"] : [index < 8 ? "昼" : "夜"]
+  }));
+  const memberInsights = { ...insights, maidTendency: Object.fromEntries(
+    people.map(person => [person.name, { x: person.handle }])) };
+  const manual = { [dateKey]: Object.fromEntries(["昼", "夜"].map(shift =>
+    [shift, people.filter(person => person.shifts.includes(shift)).map(({ name }) => ({ name }))])) };
+  const sources = people.filter((_, index) => index === 0 || (index >= 6 && index < 12)).map((person, index) => {
+    const id = (2096000000000000000n + BigInt(index)).toString();
+    return halfSource(person.name, { id, authorScreenName: person.handle,
+      url: `https://x.com/${person.handle}/status/${id}`, days: [{ date: dateKey, shifts: person.shifts }] });
+  });
+  const effective = api.buildEffectiveSchedule(manual, halfFeed(sources));
+  const posts = people.slice(0, 6).map((person, index) => {
+    const id = (2098800000000000000n + BigInt(index)).toString();
+    return { id, url: `https://x.com/${person.handle}/status/${id}`, name: person.name,
+      authorId: "123456789", authorScreenName: person.handle, date: dateKey,
+      createdAt: "2026-09-13T02:00:00Z", observedAt: "2026-09-13T03:00:00Z",
+      events: [], links: [{ scope: person.shifts[0], status: "work" }] };
+  });
+  let linked = 0, gaps = 0;
+  for (const [index, person] of people.entries()) {
+    for (const shift of person.shifts) {
+      const result = api.rosterPostLink({ schedule: effective, personal: { posts }, insights: memberInsights,
+        dateKey, shift, name: person.name });
+      if (index >= 12) {
+        assert.equal(result, null, `${person.name}/${shift}: no invented fallback`);
+        gaps += 1;
+      } else {
+        const direct = index < 6 && (index !== 0 || shift === "昼");
+        assert.equal(result.kind, direct ? "personal" : "half-month-schedule", `${person.name}/${shift}`);
+        assert.equal(result.post.url, direct ? posts[index].url
+          : sources.find(source => source.name === person.name).url);
+        linked += 1;
+      }
+    }
+  }
+  assert.equal(linked, 13);
+  assert.equal(gaps, 6);
+  assert.equal(linked + gaps, 19);
+});
+
 test("half-post fallback is person/date/shift-bound, never a profile, search or another author's post", () => {
   for (const name of ["いと", "あむ", ...schedule.kitchenStaff]) {
     const source = halfSource(name);

@@ -82,6 +82,7 @@ NULLABLE_LINK_CONTRACT = 'personal-line-ids-v6'
 LINK_CONTRACT = 'personal-line-ids-v7'
 TIMING_CONTRACT = 'personal-line-ids-v8'
 TIMING_CONTRACT_HASH = azure_contract.CONTRACT_HASH
+PREVIOUS_TIMING_CONTRACT_HASH = 'ec45c49aa773f90cd1d38a049af4904470692ecd824f5e0e20d3a685ad8e92c6'
 TIMING_OPERATION = 'work-timing-only'
 MANUAL_IMPORT_OPERATION = 'manual-saved-post'
 TIMING_UPDATE_FIELDS = ('operation', 'previous', 'expectedCoreHash', 'expectedTimingHash',
@@ -138,7 +139,8 @@ def _validate_entry(entry, personal):
         LEGACY_CONTRACT, PREVIOUS_LINK_CONTRACT, NULLABLE_LINK_CONTRACT, LINK_CONTRACT, TIMING_CONTRACT))
     if source['contractVersion'] == TIMING_CONTRACT:
         _require('links' in amendment and 'workTiming' in amendment)
-        _require(source['contractHash'] == TIMING_CONTRACT_HASH, 'saved_personal_contract_mismatch')
+        _require(source['contractHash'] in (TIMING_CONTRACT_HASH, PREVIOUS_TIMING_CONTRACT_HASH),
+                 'saved_personal_contract_mismatch')
     else:
         _require('workTiming' not in amendment and not is_timing)
         _require('links' not in amendment or isinstance(amendment['links'], list))
@@ -541,4 +543,54 @@ def apply_amendments(state, entries, usage, personal, *, registry=None, binding_
         result['identityBindings'] = proposed_bindings
         result['savedPersonalImports'] = receipts
     _assert_delta(state, result, entries)
+    return result
+
+
+def apply_link_reviews(state, entries, usage, personal):
+    """Review only a native, link-only undated-work false positive; retain its evidence."""
+    _require(isinstance(entries, list) and len(entries) <= 1, 'invalid_personal_link_review')
+    result = copy.deepcopy(state)
+    for entry in entries:
+        _keys(entry, ('id', 'expectedSubjectHash', 'bodyHash', 'sourceHash'))
+        _require(personal.official.post_id(entry['id']), 'invalid_personal_link_review')
+        for field in ('expectedSubjectHash', 'bodyHash', 'sourceHash'):
+            _hash(entry[field])
+        tid = entry['id']
+        resolved = [item for item in result['resolved'] if item['id'] == tid]
+        if len(resolved) == 1 and resolved[0].get('linkReview') == entry:
+            continue
+        _require(subject_hash(result, tid) == entry['expectedSubjectHash'],
+                 'saved_personal_subject_mismatch')
+        posts = [post for post in result['posts'] if post['id'] == tid]
+        _require(len(posts) == len(resolved) == 1 and resolved[0]['reason'] == 'links'
+                 and not any(item['id'] == tid for item in result['pending'])
+                 and not any(item['amendment']['id'] == tid
+                             for item in result.get('savedPersonalImports', {}).values()),
+                 'personal_link_review_requires_native_link')
+        post = posts[0]
+        _require(post['events'] == [] and not post.get('workTiming')
+                 and post.get('links') == [{'scope': 'unspecified', 'status': 'work'}],
+                 'personal_link_review_requires_native_link')
+        analysis = result.get('azureAnalysis', {})
+        cache_keys = {key for key, cached in analysis.get('cache', {}).items()
+                      if cached['postId'] == tid and cached['bodyHash'] == entry['bodyHash']
+                      and cached['reason'] == 'links' and cached['events'] == []
+                      and cached.get('links') == post['links'] and not cached.get('workTiming')}
+        _require(any(receipt['requestHash'] in cache_keys and receipt['component'] == 'personal'
+                     and receipt.get('issuedAt') and receipt.get('reason') == 'links'
+                     for receipt in (usage or {}).get('receipts', {}).values()),
+                 'personal_link_review_source_mismatch')
+        _require(_check_binding(post, result['identityBindings']) is not None,
+                 'missing_saved_personal_binding')
+        if post not in analysis['history']:
+            analysis['history'].append(copy.deepcopy(post))
+        result['posts'] = [item for item in result['posts'] if item['id'] != tid]
+        resolved[0].update(reason='reviewed_undated_work', linkReview=copy.deepcopy(entry),
+                           resolvedAt=personal.official.iso(personal.official.utc_now()))
+        row = result.get('coverage', {}).get(post['date'], {}).get(post['name'])
+        if row is not None:
+            row['postIds'] = [value for value in row['postIds'] if value != tid]
+            row['linkScopes'] = [value for value in row['linkScopes'] if value['id'] != tid]
+            if not row['postIds']:
+                row['reason'] = 'reviewed_undated_work'
     return result

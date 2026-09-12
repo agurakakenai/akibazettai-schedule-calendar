@@ -574,8 +574,124 @@ class StateTests(Offline):
         self.assertEqual((report['requests']['searches'], report['requests']['posts']), (14, 0))
         day = report['acquisition']['days'][0]
         self.assertEqual((day['targets'], day['searched'], day['unsearched'], day['dayOnly']), (14, 14, 0, 8))
-        self.assertEqual(code, 0)
+        self.assertEqual(len(day['withoutWorkLink']), 14)
+        self.assertEqual(code, 2)
         personal.read_state(self.snapshot)
+
+    def test_entire_announced_cohort_gets_first_valid_sources_before_supplement_and_extras(self):
+        people = [{'name': f'人{index:02}', 'handle': f'person{index}',
+                   'shifts': ['昼', '夜'] if index == 0 else ['昼'] if index < 8 else ['夜']}
+                  for index in range(18)]
+        extra = {'name': '補助', 'handle': 'supplement', 'shifts': []}
+        registry = registry_fixture(*people, extra)
+        schedule = {'schedule': {DATE.isoformat(): {
+            shift: [{'name': row['name']} for row in people if shift in row['shifts']]
+            for shift in ('昼', '夜')}}}
+        candidates, payloads = [], {}
+        for index, target in enumerate([*people, extra]):
+            uid = str(int(UID) + index)
+            for offset in (0, 1):
+                tid = str(int(TID) + index * 10 + offset)
+                candidates.append(candidate(tid=tid, target=target, uid=uid))
+                text = '\n'.join(f'本日1号店{shift}' for shift in target['shifts']) or '本日2号店夜'
+                if index == 8 and offset == 1:
+                    text = 'コーヒーを飲みました'
+                payloads[tid] = post(text, tid=tid, target=target, uid=uid)
+        self.state['pending'] = [{**item, 'reason': 'post_limit', 'firstSeenAt': CREATED,
+                                  'lastAttemptAt': None, 'attempts': 0} for item in candidates]
+        calls = []
+        for hour, cap in ((0, 14), (2, 6)):
+            now = NOW + dt.timedelta(hours=hour)
+            durable = self.durable(searches=0, posts=cap, now=now)
+            durable.catch_up = True
+            durable.caps['posts'] = cap
+            def client_factory(current):
+                client = self.fake_client(current, entries=[], payloads=payloads)
+                original = client.fetch_post.side_effect
+                def fetch(tid):
+                    calls.append(tid)
+                    return original(tid)
+                client.fetch_post.side_effect = fetch
+                return client
+            report, _ = personal.collect_recovery(
+                self.state, durable, schedule, None, None, registry, (),
+                client_factory, None, lambda: now)
+            day = report['acquisition']['days'][0]
+            self.assertEqual((day['targets'], day['personShifts']), (18, 19))
+            if hour == 0:
+                first_names = [next(item['name'] for item in candidates if item['id'] == tid) for tid in calls]
+                self.assertEqual(len(first_names), 14)
+                self.assertEqual(len(set(first_names)), 14)
+                self.assertNotIn(extra['name'], first_names)
+                self.assertIn(people[8]['name'], day['withoutWorkLink'], 'no_event is not a work source')
+            else:
+                self.assertEqual(day['withoutWorkLink'], [])
+                self.assertEqual(day['workLinkShifts'], 19)
+                self.assertEqual(report['acquisition']['supplemental']['bodyChecked'], 1)
+                self.assertEqual(calls[-1], str(int(TID) + 181))
+                self.assertEqual(sum(post['name'] == extra['name'] for post in self.state['posts']), 1)
+            personal.read_state(self.snapshot)
+
+    def test_catch_up_first_body_precedes_extra_day_only_candidates(self):
+        night = {**AMU, 'shifts': ['夜']}
+        self.targets = {AMU['name']: night, RARAKO['name']: RARAKO}
+        day_ids = [str(int(TID) + index) for index in (1, 2)]
+        candidates = [candidate(), *[candidate(tid=tid, target=RARAKO, uid='1234567890') for tid in day_ids]]
+        for previously_read, expected in (
+                (True, [TID]), (False, [day_ids[-1], TID])):
+            with self.subTest(previously_read=previously_read):
+                self.state = personal.empty_state()
+                self.state['pending'] = [{**item, 'reason': 'post_limit', 'firstSeenAt': CREATED,
+                                          'lastAttemptAt': None, 'attempts': 0} for item in candidates]
+                if previously_read:
+                    self.state['resolved'] = [{
+                        'id': str(int(TID) + 99), 'name': RARAKO['name'],
+                        'url': personal.public_url(RARAKO['handle'], str(int(TID) + 99)),
+                        'date': DATE.isoformat(), 'reason': 'no_event', 'resolvedAt': CREATED}]
+                durable = self.durable(searches=0, posts=len(expected))
+                durable.catch_up = True
+                payloads = {TID: post('本日2号店夜')}
+                payloads.update({tid: post('今日はコーヒー', tid=tid, target=RARAKO, uid='1234567890')
+                                 for tid in day_ids})
+                client = self.fake_client(durable, payloads=payloads)
+                self.collect(client, durable)
+                self.assertEqual([call.args[0] for call in client.fetch_post.call_args_list], expected)
+                self.assertEqual(self.state['posts'][0]['name'], AMU['name'])
+                personal.read_state(self.snapshot)
+
+    def test_announced_then_bounded_unannounced_today_then_past(self):
+        extra = {'name': 'あい', 'handle': 'extra_member'}
+        registry = registry_fixture(AMU, RARAKO, extra)
+        yesterday = DATE - dt.timedelta(days=1)
+        schedule = {'schedule': {
+            DATE.isoformat(): {'夜': [{'name': AMU['name']}]},
+            yesterday.isoformat(): {'昼': [{'name': RARAKO['name']}]}}}
+        durable = self.durable(searches=3, posts=0)
+        durable.catch_up = True
+        report, _ = personal.collect_recovery(
+            self.state, durable, schedule, None, None, registry, (),
+            lambda current: self.fake_client(current, entries=[]), None, lambda: NOW)
+        today = self.state['searchHistory'][DATE.isoformat()]
+        self.assertEqual(set(today), {AMU['name'], extra['name']})
+        self.assertEqual(set(self.state['searchHistory'][yesterday.isoformat()]), {RARAKO['name']})
+        self.assertEqual(self.state['coverage'][DATE.isoformat()][extra['name']]['shifts'], [])
+        self.assertEqual(report['acquisition']['supplemental']['searched'], 1)
+        self.assertEqual(report['acquisition']['days'][0]['targets'], 1)
+        self.assertEqual(report['acquisition']['days'][0]['unavailableTargets'], 0)
+        self.assertEqual(durable.used, {'searches': 3, 'posts': 0})
+        self.assertEqual(self.state['posts'], [])
+        personal.read_state(self.snapshot)
+
+    def test_unannounced_supplement_never_bypasses_today_or_legacy_shift_guards(self):
+        registry = registry_fixture(AMU)
+        targets = personal.select_targets(
+            {'schedule': {}}, None, [], DATE, self.state, registry=registry,
+            include_unannounced=True)
+        self.assertEqual(targets[AMU['name']]['shifts'], [])
+        self.assertTrue(personal.active_targets(targets, DATE, NOW, catch_up=True))
+        self.assertEqual(personal.active_targets(targets, DATE, NOW), {})
+        self.assertEqual(personal.active_targets(targets, DATE, NOW + dt.timedelta(days=1), catch_up=True), {})
+        self.assertEqual(self.state['originalTargets'][DATE.isoformat()], {})
 
     def test_catch_up_recovers_yesterday_with_its_original_shift_and_actual_day_budget(self):
         registry = registry_fixture(AMU)

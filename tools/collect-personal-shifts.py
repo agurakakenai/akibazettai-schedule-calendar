@@ -75,7 +75,7 @@ OPTIONAL_PRIVATE_FIELDS = {'azureAnalysis', 'coverage', 'searchHistory', 'savedP
 SCOPES = ('昼', '夜', 'unspecified')
 LINK_STATUSES = ('work', 'withdrawn', 'conflict')
 TARGET_ORIGINS = {'original', 'scheduled', 'official_names', 'official_notice', 'personal', 'curated',
-                  'registry'}
+                  'registry', 'supplemental'}
 DENIAL = re.compile(
     r'captcha|access denied|アクセス.{0,12}(?:拒否|制限)|ロボットではない|'
     r'unusual traffic|verify you are human|permission denied|forbidden|unauthorized|'
@@ -346,7 +346,19 @@ def read_state(path, private=True):
                             'searchCreatedAt', 'reason', 'firstSeenAt', 'lastAttemptAt', 'attempts'),
                             ('httpStatus', 'retryAt', 'metadataSource', 'sourceCreatedAt'))
                     else:
-                        require_keys(item, ('id', 'url', 'name', 'date', 'reason', 'resolvedAt'))
+                        require_keys(item, ('id', 'url', 'name', 'date', 'reason', 'resolvedAt'), ('linkReview',))
+                        if (item['reason'] == 'reviewed_undated_work') != ('linkReview' in item):
+                            raise ValueError
+                        if 'linkReview' in item:
+                            review = item['linkReview']
+                            require_keys(review, ('id', 'expectedSubjectHash', 'bodyHash', 'sourceHash'))
+                            if (review['id'] != item['id'] or any(
+                                    not isinstance(review[field], str)
+                                    or not re.fullmatch(r'[a-f0-9]{64}', review[field])
+                                    for field in ('expectedSubjectHash', 'bodyHash', 'sourceHash'))
+                                    or not any(post['id'] == item['id'] for post in
+                                               value.get('azureAnalysis', {}).get('history', []))):
+                                raise ValueError
                     if (not isinstance(item['id'], str) or not official.post_id(item['id'])
                             or item['id'] in seen
                             or not isinstance(item['name'], str) or not item['name']
@@ -428,7 +440,7 @@ def merge_seed(state, seed, *, registry=None):
     have = {post['id'] for post in state['posts']}
     resolved = {item['id'] for item in state['resolved']}
     removed_by_analysis = (
-        {item['id'] for item in state['resolved'] if item['reason'] == 'no_event'}
+        {item['id'] for item in state['resolved'] if item['reason'] in ('no_event', 'reviewed_undated_work')}
         & {post['id'] for post in state.get('azureAnalysis', {}).get('history', [])})
     for post in seed['posts']:
         if post['id'] in removed_by_analysis:
@@ -561,7 +573,7 @@ def name_aliases(insights):
 
 
 def select_targets(schedule, insights, accounts, date, state, observations=None, *,
-                   registry=None, binding_maps=()):
+                   registry=None, binding_maps=(), include_unannounced=False):
     insights = insights or {}
     aliases = name_aliases(insights) if registry is None else members.display_projection(registry)['aliases']
     if registry is not None:
@@ -621,6 +633,10 @@ def select_targets(schedule, insights, accounts, date, state, observations=None,
             for event in rule.get('events', []):
                 include(post['name'], event['shift'], 'personal')
 
+    if include_unannounced and registry is not None:
+        for name in eligible_by_name:
+            if name not in population:
+                include(name, None, 'supplemental')
     eligible, coverage = {}, {}
     for name in sorted(population):
         rows = by_name.get(name, [])
@@ -651,10 +667,12 @@ def select_targets(schedule, insights, accounts, date, state, observations=None,
                         handle, reason = candidate, 'not_searched'
         shifts = [shift for shift in ('昼', '夜') if shift in population[name]['shifts']]
         if registry is not None:
-            if name in eligible_by_name and shifts:
+            if name in eligible_by_name and (shifts or include_unannounced):
                 eligible[name] = {**eligible_by_name[name], 'shifts': shifts,
                                   'registeredAt': members.lookup(registry, name)['registeredAt'],
                                   'aliases': sorted(members.names_of(members.lookup(registry, name)))}
+                if not shifts:
+                    eligible[name]['discovery'] = True
             elif name in eligible_by_name:
                 reason = 'shift_unknown'
         elif handle and not shifts:
@@ -685,7 +703,8 @@ def active_targets(targets, date, now, *, scheduled=False, catch_up=False):
     if catch_up:
         if not 0 <= (calendar_day(now) - date).days < RECOVERY_DAYS:
             return {}
-        return {name: target for name, target in targets.items() if target['shifts']}
+        return {name: target for name, target in targets.items()
+                if target['shifts'] or target.get('discovery') and calendar_day(now) == date}
     if calendar_day(now) != date:
         return {}
     local = now.astimezone(JST).timetz().replace(tzinfo=None)
@@ -1407,6 +1426,42 @@ def saved_candidates(state, payloads, date):
     return candidates
 
 
+def target_posts(state, target, date):
+    return sorted((post for post in state['posts'] if post['date'] == date.isoformat()
+                   and post['name'] in target.get('aliases', [target['name']])
+                   and (not target['handle']
+                        or post['authorScreenName'].casefold() == target['handle'].casefold())),
+                  key=lambda post: (official.timestamp(post['createdAt']), int(post['id'])))
+
+
+def post_link_scopes(posts, shifts):
+    scopes = {}
+    for post in posts:
+        links = post.get('links')
+        if links is None:
+            links = legacy_links(post)
+        for link in links:
+            affected = shifts if link['scope'] == 'unspecified' else [link['scope']]
+            for scope in affected:
+                if scope not in shifts:
+                    continue
+                previous = scopes.get(scope)
+                # Unscoped work cannot establish a return from an explicit cancellation.
+                if link['scope'] == 'unspecified' and previous and previous['status'] != 'work':
+                    continue
+                scopes[scope] = {'id': post['id'], 'status': link['status']}
+        for event in post['events']:
+            if event['kind'] == 'absence':
+                scopes[event['shift']] = {'id': post['id'], 'status': 'withdrawn'}
+    return scopes
+
+
+def work_source_complete(state, target, date):
+    scopes = post_link_scopes(target_posts(state, target, date), target['shifts'])
+    return bool(target['shifts']) and all(
+        scopes.get(shift, {}).get('status') == 'work' for shift in target['shifts'])
+
+
 def update_coverage(state, targets, date, now, *, scheduled=False, search_limit=None, catch_up=False):
     day = date.isoformat()
     rows = state.get('coverage', {}).get(day, {})
@@ -1415,35 +1470,14 @@ def update_coverage(state, targets, date, now, *, scheduled=False, search_limit=
     for name, row in rows.items():
         target = targets.get(name, row)
         aliases = target.get('aliases', [name])
-        posts = sorted((post for post in state['posts'] if post['date'] == day
-                        and post['name'] in aliases
-                        and (not target['handle']
-                             or post['authorScreenName'].casefold() == target['handle'].casefold())),
-                       key=lambda post: (official.timestamp(post['createdAt']), int(post['id'])))
+        posts = target_posts(state, {**target, 'name': name}, date)
         row['postIds'] = [post['id'] for post in posts]
         if name not in targets:
             continue
         prior_search = history.get(name, {})
         row['searchedAt'] = (prior_search.get('attemptedAt')
                              if prior_search.get('handle', '').casefold() == target['handle'].casefold() else None)
-        scopes = {}
-        for post in posts:
-            links = post.get('links')
-            if links is None:
-                links = legacy_links(post)
-            for link in links:
-                affected = target['shifts'] if link['scope'] == 'unspecified' else [link['scope']]
-                for scope in affected:
-                    if scope not in target['shifts']:
-                        continue
-                    previous = scopes.get(scope)
-                    # Unscoped work cannot establish a return from an explicit cancellation.
-                    if link['scope'] == 'unspecified' and previous and previous['status'] != 'work':
-                        continue
-                    scopes[scope] = {'id': post['id'], 'status': link['status']}
-            for event in post['events']:
-                if event['kind'] == 'absence':
-                    scopes[event['shift']] = {'id': post['id'], 'status': 'withdrawn'}
+        scopes = post_link_scopes(posts, target['shifts'])
         row['linkScopes'] = [{'scope': scope, 'id': value['id']}
                              for scope, value in sorted(scopes.items()) if value['status'] == 'work']
         pending = [item for item in state['pending'] if item['name'] in aliases and item['date'] == day]
@@ -1496,7 +1530,8 @@ def update_coverage(state, targets, date, now, *, scheduled=False, search_limit=
 
 
 def collect(state, durable, client, targets, date, max_searches, max_posts,
-            clock=official.utc_now, roster=(), analyzer=None, saved_payloads=None):
+            clock=official.utc_now, roster=(), analyzer=None, saved_payloads=None,
+            *, first_sources_only=False):
     previous_checked = state['checkedAt']
     initial_requests = sum(durable.used.values())
     state['checkedAt'] = stamp(clock())
@@ -1517,7 +1552,8 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
     skipped = 0
     early_status = 'paused' if state['paused'] else 'outside-window' if not active else None
     search_targets = {name: target for name, target in targets.items()
-                      if target['handle'].casefold() not in durable.searched_handles}
+                      if target['handle'].casefold() not in durable.searched_handles
+                      and (not first_sources_only or not work_source_complete(state, target, date))}
     searches = (target_searches(search_targets, date, state, clock(), max_searches,
                                scheduled=durable.scheduled, catch_up=durable.catch_up)
                 if not early_status and saved_payloads is None else ())
@@ -1561,27 +1597,34 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
     attempted = deferred = 0
     grouped, positions, previous_attempt = {}, {}, {}
     for item in pending.values():
-        grouped.setdefault(item['name'], []).append(item)
+        if item['date'] == date.isoformat():
+            grouped.setdefault(item['name'], []).append(item)
     for name, items in grouped.items():
         for index, item in enumerate(sorted(items, key=lambda item: -int(item['id']))):
             positions[item['id']] = index
         previous_attempt[name] = max(
             [item['lastAttemptAt'] for item in items if item.get('lastAttemptAt')]
             + [item['resolvedAt'] for item in state['resolved']
-               if item['name'] == name] + [''])
+               if item['name'] == name and item['date'] == date.isoformat()] + [''])
+
+    body_checked = {item['name'] for field in ('posts', 'resolved') for item in state[field]
+                    if item['date'] == date.isoformat()}
 
     def priority(item):
         target = target_for_name(targets, item['name']) or {'shifts': []}
         deadline = target_deadline(target, scheduled=durable.scheduled)
+        if durable.catch_up:
+            return (item['name'] in body_checked, positions[item['id']], deadline,
+                    previous_attempt[item['name']], -int(item['id']))
         return deadline, positions[item['id']], previous_attempt[item['name']], -int(item['id'])
 
-    for item in sorted(pending.values(), key=priority):
-        if item['date'] != date.isoformat():
-            continue
+    for item in sorted((item for item in pending.values() if item['date'] == date.isoformat()), key=priority):
         if saved_payloads is not None and item['id'] not in saved_payloads:
             continue
         target = target_for_name(targets if saved_payloads is not None else durable.active(targets), item['name'])
         if target is None or target['handle'].casefold() != item['authorScreenName'].casefold():
+            continue
+        if first_sources_only and work_source_complete(state, target, date):
             continue
         try:
             durable.check_registry(item['name'])
@@ -1771,24 +1814,55 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
     def age(day):
         rows = state.get('searchHistory', {}).get(day.isoformat(), {})
         return min((rows.get(name, {}).get('attemptedAt', '') for name in by_day[day]), default=''), day
-    days = ([today] if today in by_day else []) + sorted((d for d in by_day if d != today), key=age)
+    days = [today] + sorted((d for d in by_day if d != today), key=age)
     reports, pending_before = [], len(state['pending'])
+    supplemental = None
     for day in days:
-        targets = by_day[day]
-        if not targets:
-            continue
-        durable.date, durable.targets = day, targets
-        search_left = max(0, durable.caps['searches'] - durable.used['searches'])
-        post_left = max(0, durable.caps['posts'] - durable.used['posts'])
-        if day == today and len(days) > 1:
-            search_left = max(1, search_left - min(3, search_left // 4)) if search_left else 0
-            post_left = max(1, post_left - min(3, post_left // 4)) if post_left else 0
-        client = client_factory(durable)
-        report, _ = collect(state, durable, client, targets, day, search_left, post_left,
-                            clock, members.display_projection(registry)['knownNames'], analyzer)
-        reports.append(report)
-        if state['paused'] or not durable.active():
+        targets = by_day.get(day, {})
+        if targets:
+            durable.date, durable.targets = day, targets
+            report, _ = collect(
+                state, durable, client_factory(durable), targets, day,
+                max(0, durable.caps['searches'] - durable.used['searches']),
+                max(0, durable.caps['posts'] - durable.used['posts']),
+                clock, members.display_projection(registry)['knownNames'], analyzer,
+                first_sources_only=day == today)
+            reports.append(report)
+        if (day == today and not state['paused']
+                and (durable.used['searches'] < durable.caps['searches']
+                     or durable.used['posts'] < durable.caps['posts'])):
+            discovery = select_targets(
+                schedule, insights, [], today, state, observations, registry=registry,
+                binding_maps=bindings, include_unannounced=True)
+            discovery = {name: target for name, target in discovery.items() if target.get('discovery')}
+            if discovery:
+                durable.date, durable.targets = today, discovery
+                searches_before = durable.used['searches']
+                report, _ = collect(
+                    state, durable, client_factory(durable), discovery, today,
+                    min(1, max(0, durable.caps['searches'] - durable.used['searches'])),
+                    min(1, max(0, durable.caps['posts'] - durable.used['posts'])),
+                    clock, members.display_projection(registry)['knownNames'], analyzer)
+                reports.append(report)
+                rows = report['coverage']
+                supplemental = {'targets': len(discovery), 'searched': durable.used['searches'] - searches_before,
+                                'bodyChecked': report['attemptedCount'], 'withSource': report['newPostCount'],
+                                'unsearched': sum(not rows[name]['searchedAt'] for name in discovery)}
+        if state['paused'] or (clock() - durable.started).total_seconds() >= RECOVERY_SECONDS:
             break
+    if (not state['paused'] and (clock() - durable.started).total_seconds() < RECOVERY_SECONDS
+            and (durable.used['searches'] < durable.caps['searches']
+                 or durable.used['posts'] < durable.caps['posts'])):
+        corrections = {name: target for name, target in by_day.get(today, {}).items()
+                       if work_source_complete(state, target, today)}
+        if corrections:
+            durable.date, durable.targets = today, corrections
+            report, _ = collect(
+                state, durable, client_factory(durable), corrections, today,
+                max(0, durable.caps['searches'] - durable.used['searches']),
+                max(0, durable.caps['posts'] - durable.used['posts']),
+                clock, members.display_projection(registry)['knownNames'], analyzer)
+            reports.append(report)
     summaries = []
     for day, targets in by_day.items():
         all_rows = update_coverage(state, targets, day, clock(), catch_up=True)
@@ -1801,9 +1875,14 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
         body_names = analyzed_names | {item['name'] for item in active_pending if item['id'] in analyzed_ids}
         summaries.append({
             'date': day.isoformat(), 'ageDays': (today - day).days, 'targets': len(targets),
-            'unavailableTargets': len(all_rows) - len(rows),
+            'unavailableTargets': sum(name not in targets and 'supplemental' not in row['origins']
+                                      for name, row in all_rows.items()),
             'searched': sum(bool(row['searchedAt']) for row in rows.values()),
             'withSource': sum(bool(row['postIds']) for row in rows.values()),
+            'personShifts': sum(len(target['shifts']) for target in targets.values()),
+            'workLinkShifts': sum(len(row['linkScopes']) for row in rows.values()),
+            'withoutWorkLink': [name for name, target in targets.items()
+                                if not work_source_complete(state, target, day)],
             'analyzed': len(analyzed_names), 'bodyChecked': len(body_names),
             'pending': len(active_pending),
             'unsearched': sum(not row['searchedAt'] for row in rows.values()),
@@ -1813,8 +1892,9 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
     failures = [failure for report in reports for failure in report['failures']]
     expired = sum((today - dt.date.fromisoformat(item['date'])).days >= RECOVERY_DAYS
                   for item in state['pending'])
-    incomplete = bool(expired) or any(row['unsearched'] or row['pending'] or row['unavailableTargets']
-                                      for row in summaries)
+    incomplete = bool(expired) or bool(supplemental and supplemental['unsearched']) or any(
+        row['unsearched'] or row['pending'] or row['unavailableTargets'] or row['withoutWorkLink']
+        for row in summaries)
     status = ('paused' if state['paused'] or any(report['status'] == 'paused' for report in reports)
               else 'partial' if incomplete or failures else 'ok' if reports else 'no-results')
     state['lastRun'] = {
@@ -1832,6 +1912,7 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
     return {'component': 'personal', **state['lastRun'], 'acquisition': {
         'lookbackDays': RECOVERY_DAYS, 'days': summaries, 'pendingBefore': pending_before,
         'expired': expired,
+        'supplemental': supplemental,
         'complete': not incomplete and not failures,
     }}, (3 if status == 'paused' else 2 if status == 'partial' else 0)
 
