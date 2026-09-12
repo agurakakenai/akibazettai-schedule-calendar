@@ -519,7 +519,7 @@ def validate_collection_coverage(state):
                     require_keys(row, ('handle', 'attemptedAt'))
                     if not re.fullmatch(r'[A-Za-z0-9_]{1,15}', row['handle']):
                         raise ValueError('invalid_personal_coverage')
-                    if calendar_day(official.timestamp(row['attemptedAt'])).isoformat() != day:
+                    if calendar_day(official.timestamp(row['attemptedAt'])).isoformat() < day:
                         raise ValueError('invalid_personal_coverage')
                     continue
                 require_keys(row, ('name', 'handle', 'shifts', 'origins', 'reason',
@@ -551,7 +551,7 @@ def validate_collection_coverage(state):
                         raise ValueError('invalid_personal_coverage')
                     seen.add(link['scope'])
                 if row['searchedAt'] is not None:
-                    if calendar_day(official.timestamp(row['searchedAt'])).isoformat() != day:
+                    if calendar_day(official.timestamp(row['searchedAt'])).isoformat() < day:
                         raise ValueError('invalid_personal_coverage')
 
 
@@ -676,7 +676,16 @@ def select_targets(schedule, insights, accounts, date, state, observations=None,
     return eligible
 
 
-def active_targets(targets, date, now, *, scheduled=False):
+RECOVERY_DAYS = 7
+RECOVERY_SECONDS = 1200
+MAX_RECOVERY_REQUESTS = 14
+
+
+def active_targets(targets, date, now, *, scheduled=False, catch_up=False):
+    if catch_up:
+        if not 0 <= (calendar_day(now) - date).days < RECOVERY_DAYS:
+            return {}
+        return {name: target for name, target in targets.items() if target['shifts']}
     if calendar_day(now) != date:
         return {}
     local = now.astimezone(JST).timetz().replace(tzinfo=None)
@@ -720,8 +729,8 @@ def valid_search_url(url):
         return False
 
 
-def target_searches(targets, date, state, now, maximum, *, scheduled=False):
-    active = active_targets(targets, date, now, scheduled=scheduled)
+def target_searches(targets, date, state, now, maximum, *, scheduled=False, catch_up=False):
+    active = active_targets(targets, date, now, scheduled=scheduled, catch_up=catch_up)
     history = {}
     for day, rows in state.get('searchHistory', {}).items():
         if day > date.isoformat():
@@ -734,8 +743,20 @@ def target_searches(targets, date, state, now, maximum, *, scheduled=False):
                 history[canonical] = max(history.get(canonical, ''), row['attemptedAt'])
 
     def priority(target):
-        return history.get(target['name'], ''), target.get('registeredAt', ''), target['name']
+        same_day = state.get('searchHistory', {}).get(date.isoformat(), {}).get(target['name'], {})
+        return (same_day.get('attemptedAt', '') if catch_up else history.get(target['name'], ''),
+                history.get(target['name'], ''), target.get('registeredAt', ''), target['name'])
 
+    if catch_up:
+        interval = dt.timedelta(hours=2 if calendar_day(now) == date else 24)
+        due = []
+        for target in active.values():
+            row = state.get('searchHistory', {}).get(date.isoformat(), {}).get(target['name'], {})
+            if (not row or row['handle'].casefold() != target['handle'].casefold()
+                    or now - official.timestamp(row['attemptedAt']) >= interval):
+                due.append(target)
+        return [(target['name'], account_search_url(target['handle']))
+                for target in sorted(due, key=priority)[:maximum]]
     if any('memberId' in target for target in active.values()):
         local = now.astimezone(JST)
         minutes = local.hour * 60 + local.minute
@@ -1082,10 +1103,8 @@ def validate_post(candidate, payload, target, now, binding=None, roster=(), anal
             raise Failure('timestamp_mismatch')
     except (ValueError, TypeError, OverflowError, OSError):
         raise Failure('invalid_created_at') from None
-    if any(payload.get(key) for key in (
-            'quoted_tweet', 'quoted_status', 'retweeted_status',
-            'in_reply_to_status_id_str', 'in_reply_to_status_id', 'in_reply_to_user_id_str',
-            'in_reply_to_screen_name')):
+    # Only the verified author's top-level text is passed below, never nested quotes.
+    if payload.get('retweeted_status') or payload.get('retweeted_tweet'):
         return None, 'quoted_or_reply'
     text = payload.get('text')
     if not isinstance(text, str):
@@ -1116,7 +1135,7 @@ def validate_post(candidate, payload, target, now, binding=None, roster=(), anal
 class DurableHttp:
     def __init__(self, state, snapshot, http_state, date, targets, max_searches, max_posts,
                  clock=official.utc_now, sleep=time.sleep, *, scheduled=False, shared_source=None,
-                 registry_guard=None, bindings=None):
+                 registry_guard=None, bindings=None, catch_up=False):
         self.state, self.snapshot, self.http_state = state, snapshot, http_state
         self.date, self.targets = date, targets
         self.clock, self.sleep = clock, sleep
@@ -1129,6 +1148,14 @@ class DurableHttp:
         self.shared_source = shared_source
         self.registry_guard = registry_guard
         self.bindings = bindings or (lambda: self.state['identityBindings'])
+        self.catch_up = catch_up
+        self.searched_handles = set()
+
+    def active(self, targets=None):
+        if self.catch_up and (self.clock() - self.started).total_seconds() >= RECOVERY_SECONDS:
+            return {}
+        return active_targets(self.targets if targets is None else targets, self.date, self.clock(),
+                              scheduled=self.scheduled, catch_up=self.catch_up)
 
     def save(self):
         official.atomic_json(self.snapshot, self.state)
@@ -1152,7 +1179,7 @@ class DurableHttp:
 
     def check_window(self, target_name=None):
         self.check_registry(target_name)
-        active = active_targets(self.targets, self.date, self.clock(), scheduled=self.scheduled)
+        active = self.active()
         if not active or (target_name is not None and target_for_name(active, target_name) is None):
             raise Failure('outside_window')
 
@@ -1165,7 +1192,7 @@ class DurableHttp:
 
     def analysis_allowed(self):
         self.check_registry(self.post_target)
-        active = active_targets(self.targets, self.date, self.clock(), scheduled=self.scheduled)
+        active = self.active()
         return bool(active) and (self.post_target is None or target_for_name(active, self.post_target) is not None)
 
     def reserve(self, host, kind, target_name=None, url=None):
@@ -1176,10 +1203,11 @@ class DurableHttp:
         self.cooldowns = official.load_transport(self.http_state)
         if host in self.cooldowns and official.timestamp(self.cooldowns[host]) > self.clock():
             raise Failure('shared_host_cooldown', retry_at=official.timestamp(self.cooldowns[host]))
+        accounting_day = calendar_day(self.clock()).isoformat()
         if self.shared_source is None:
-            budget = self.state['budgets'].setdefault(self.date.isoformat(), {'searches': 0, 'posts': 0})
+            budget = self.state['budgets'].setdefault(accounting_day, {'searches': 0, 'posts': 0})
         else:
-            budget = self.state['budgets'].get(self.date.isoformat(), {'searches': 0, 'posts': 0})
+            budget = self.state['budgets'].get(accounting_day, {'searches': 0, 'posts': 0})
         if self.used[kind] >= self.caps[kind] or budget[kind] >= DAILY_LIMITS[kind]:
             raise Failure('budget_exhausted')
         previous = official.timestamp(self.state['lastRequests'][host]) if host in self.state['lastRequests'] else self.started
@@ -1193,7 +1221,7 @@ class DurableHttp:
         if self.shared_source is not None:
             self.check_window(target_name)
             receipt = official.source_call(self.shared_source, 'reserve', kind, url)
-        budget = self.state['budgets'].setdefault(self.date.isoformat(), {'searches': 0, 'posts': 0})
+        budget = self.state['budgets'].setdefault(calendar_day(self.clock()).isoformat(), {'searches': 0, 'posts': 0})
         budget[kind] += 1
         self.used[kind] += 1
         self.state['lastRequests'][host] = stamp(self.clock())
@@ -1379,11 +1407,11 @@ def saved_candidates(state, payloads, date):
     return candidates
 
 
-def update_coverage(state, targets, date, now, *, scheduled=False, search_limit=None):
+def update_coverage(state, targets, date, now, *, scheduled=False, search_limit=None, catch_up=False):
     day = date.isoformat()
     rows = state.get('coverage', {}).get(day, {})
     history = state.get('searchHistory', {}).get(day, {})
-    active = active_targets(targets, date, now, scheduled=scheduled)
+    active = active_targets(targets, date, now, scheduled=scheduled, catch_up=catch_up)
     for name, row in rows.items():
         target = targets.get(name, row)
         aliases = target.get('aliases', [name])
@@ -1469,13 +1497,15 @@ def update_coverage(state, targets, date, now, *, scheduled=False, search_limit=
 
 def collect(state, durable, client, targets, date, max_searches, max_posts,
             clock=official.utc_now, roster=(), analyzer=None, saved_payloads=None):
+    previous_checked = state['checkedAt']
+    initial_requests = sum(durable.used.values())
     state['checkedAt'] = stamp(clock())
     sources, failures, new_posts = [], [], []
     resolved = {item['id'] for item in state['resolved']} | {post['id'] for post in state['posts']}
     pending = {item['id']: item for item in state['pending']
                if item['id'] not in resolved or item['reason'].startswith('azure_')
                or target_for_name(targets, item['name']) is None}
-    active = active_targets(targets, date, clock(), scheduled=durable.scheduled)
+    active = durable.active(targets)
     if saved_payloads is not None:
         active = targets
         for candidate in saved_candidates(state, saved_payloads, date):
@@ -1486,12 +1516,15 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                 'firstSeenAt': stamp(clock()), 'lastAttemptAt': None, 'attempts': 0})
     skipped = 0
     early_status = 'paused' if state['paused'] else 'outside-window' if not active else None
-    searches = (target_searches(targets, date, state, clock(), max_searches, scheduled=durable.scheduled)
+    search_targets = {name: target for name, target in targets.items()
+                      if target['handle'].casefold() not in durable.searched_handles}
+    searches = (target_searches(search_targets, date, state, clock(), max_searches,
+                               scheduled=durable.scheduled, catch_up=durable.catch_up)
                 if not early_status and saved_payloads is None else ())
     for name, url in searches:
         before = durable.used['searches']
         try:
-            active_now = active_targets(targets, date, clock(), scheduled=durable.scheduled)
+            active_now = durable.active(targets)
             if name not in active_now:
                 continue
             durable.check_registry(name)
@@ -1521,6 +1554,7 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                 break
         finally:
             if durable.used['searches'] > before:
+                durable.searched_handles.add(targets[name]['handle'].casefold())
                 state.setdefault('searchHistory', {}).setdefault(date.isoformat(), {})[name] = {
                     'handle': targets[name]['handle'], 'attemptedAt': state['lastRequests'][SEARCH_HOST]}
                 durable.save()
@@ -1546,8 +1580,7 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
             continue
         if saved_payloads is not None and item['id'] not in saved_payloads:
             continue
-        target = target_for_name(targets if saved_payloads is not None else active_targets(
-            targets, date, clock(), scheduled=durable.scheduled), item['name'])
+        target = target_for_name(targets if saved_payloads is not None else durable.active(targets), item['name'])
         if target is None or target['handle'].casefold() != item['authorScreenName'].casefold():
             continue
         try:
@@ -1560,8 +1593,19 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
             item['reason'] = 'author_mismatch'
             failures.append({'id': item['id'], 'reason': item['reason']})
             continue
-        if saved_payloads is None and item['reason'].startswith('azure_'):
+        old_quote_rejection = (durable.catch_up and item['reason'] == 'azure_ungrounded'
+                               and not any(entry['postId'] == item['id']
+                                           for entry in state.get('azureAnalysis', {}).get('cache', {}).values()))
+        if saved_payloads is None and item['reason'].startswith('azure_') and not old_quote_rejection:
             failures.append({'id': item['id'], 'reason': item['reason']})
+            deferred += 1
+            continue
+        if durable.catch_up and saved_payloads is None and item['attempts'] >= 3:
+            item['reason'] = 'source_retry_limit'
+            deferred += 1
+            continue
+        if (durable.catch_up and saved_payloads is None and item.get('lastAttemptAt')
+                and clock() - official.timestamp(item['lastAttemptAt']) < dt.timedelta(hours=1)):
             deferred += 1
             continue
         if attempted >= max_posts or state['paused']:
@@ -1692,7 +1736,7 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         status = 'no-new'
     else:
         status = 'no-results'
-    if status in ('ok', 'no-new', 'no-results'):
+    if status in ('ok', 'no-new', 'no-results') and (sources or attempted):
         state['lastSuccessAt'] = stamp(clock())
     state['posts'].sort(key=lambda post: (post['createdAt'], int(post['id'])))
     state['pending'] = list(pending.values())
@@ -1705,16 +1749,92 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         'skippedResolvedCount': skipped, 'pendingCount': len(pending), 'deferredCount': deferred,
         'failures': failures, 'finishedAt': stamp(clock()), 'complete': False}
     coverage = update_coverage(state, targets, date, clock(), scheduled=durable.scheduled,
-                               search_limit=max_searches)
+                               search_limit=max_searches, catch_up=durable.catch_up)
+    if sum(durable.used.values()) == initial_requests and not attempted:
+        state['checkedAt'] = previous_checked
     durable.save()
     return {'component': 'personal', **state['lastRun'], 'budgets': state['budgets'],
             'paused': state['paused'], 'coverage': coverage}, (3 if status in ('paused', 'unavailable')
                                       else 2 if status in ('partial', 'budget-exhausted') else 0)
 
 
+def collect_recovery(state, durable, schedule, insights, observations, registry, bindings,
+                     client_factory, analyzer, clock):
+    today = calendar_day(clock())
+    by_day = {}
+    for offset in range(RECOVERY_DAYS):
+        day = today - dt.timedelta(days=offset)
+        targets = select_targets(schedule, insights, [], day, state, observations,
+                                 registry=registry, binding_maps=bindings)
+        if targets:
+            by_day[day] = targets
+    def age(day):
+        rows = state.get('searchHistory', {}).get(day.isoformat(), {})
+        return min((rows.get(name, {}).get('attemptedAt', '') for name in by_day[day]), default=''), day
+    days = ([today] if today in by_day else []) + sorted((d for d in by_day if d != today), key=age)
+    reports, pending_before = [], len(state['pending'])
+    for day in days:
+        targets = by_day[day]
+        durable.date, durable.targets = day, targets
+        search_left = max(0, durable.caps['searches'] - durable.used['searches'])
+        post_left = max(0, durable.caps['posts'] - durable.used['posts'])
+        if day == today and len(days) > 1:
+            search_left = max(1, search_left - min(3, search_left // 4)) if search_left else 0
+            post_left = max(1, post_left - min(3, post_left // 4)) if post_left else 0
+        client = client_factory(durable)
+        report, _ = collect(state, durable, client, targets, day, search_left, post_left,
+                            clock, members.display_projection(registry)['knownNames'], analyzer)
+        reports.append(report)
+        if state['paused'] or not durable.active():
+            break
+    summaries = []
+    for day, targets in by_day.items():
+        rows = update_coverage(state, targets, day, clock(), catch_up=True)
+        active_pending = [item for item in state['pending'] if item['date'] == day.isoformat()]
+        analyzed_names = {item['name'] for field in ('resolved', 'posts') for item in state[field]
+                          if item['date'] == day.isoformat()}
+        analyzed_ids = {item['postId'] for item in state.get('azureAnalysis', {}).get('cache', {}).values()}
+        body_names = analyzed_names | {item['name'] for item in active_pending if item['id'] in analyzed_ids}
+        summaries.append({
+            'date': day.isoformat(), 'ageDays': (today - day).days, 'targets': len(targets),
+            'searched': sum(bool(row['searchedAt']) for row in rows.values()),
+            'withSource': sum(bool(row['postIds']) for row in rows.values()),
+            'analyzed': len(analyzed_names), 'bodyChecked': len(body_names),
+            'pending': len(active_pending),
+            'unsearched': sum(not row['searchedAt'] for row in rows.values()),
+            'dayOnly': sum(target['shifts'] == ['昼'] for target in targets.values()),
+            'analysisHeld': sum(item['reason'].startswith('azure_') for item in active_pending),
+        })
+    failures = [failure for report in reports for failure in report['failures']]
+    expired = sum((today - dt.date.fromisoformat(item['date'])).days >= RECOVERY_DAYS
+                  for item in state['pending'])
+    incomplete = bool(expired) or any(row['unsearched'] or row['pending'] for row in summaries)
+    status = ('paused' if state['paused'] or any(report['status'] == 'paused' for report in reports)
+              else 'partial' if incomplete or failures else 'ok' if reports else 'no-results')
+    state['lastRun'] = {
+        'status': status, 'date': today.isoformat(), 'dateBasis': 'JST calendar date, 00:00 boundary',
+        'sourceCount': sum(report['sourceCount'] for report in reports),
+        'sources': [source for report in reports for source in report['sources']],
+        'requests': dict(durable.used), 'targetCount': sum(row['targets'] for row in summaries),
+        'activeTargetCount': sum(row['targets'] for row in summaries),
+        'attemptedCount': sum(report['attemptedCount'] for report in reports),
+        'newPostCount': sum(report['newPostCount'] for report in reports),
+        'newEventCount': sum(report['newEventCount'] for report in reports),
+        'pendingCount': len(state['pending']), 'deferredCount': sum(row['pending'] for row in summaries),
+        'failures': failures, 'finishedAt': stamp(clock()), 'complete': False}
+    durable.save()
+    return {'component': 'personal', **state['lastRun'], 'acquisition': {
+        'lookbackDays': RECOVERY_DAYS, 'days': summaries, 'pendingBefore': pending_before,
+        'expired': expired,
+        'complete': not incomplete and not failures,
+    }}, (3 if status == 'paused' else 2 if status == 'partial' else 0)
+
+
 def argument_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--once', action='store_true', help='one bounded run (default)')
+    parser.add_argument('--catch-up', action='store_true',
+                        help='shared-budget recovery of dated work within seven JST days; real clock unchanged')
     parser.add_argument('--snapshot', type=Path, required=True, help='private durable canonical state')
     parser.add_argument('--http-state', type=Path, required=True, help='shared official HTTP sidecar')
     parser.add_argument('--publish', type=Path, help='optional public fact-only JSON mirror')
@@ -1751,6 +1871,8 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
     report_path = args.report.resolve() if args.report else None
     writes = [path for path in (snapshot, http_state, publish, report_path) if path]
     source_path = args.source_state.resolve() if args.source_state else None
+    if args.catch_up and (not source_path or not args.ai_state or args.analyze_saved):
+        raise ValueError('catch_up_requires_shared_live_ledgers')
     if bool(source_path) != bool(args.source_run_id):
         raise ValueError('invalid_source_configuration')
     if source_path:
@@ -1798,7 +1920,7 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
             try:
                 shared_source = locks.enter_context(source_usage.SharedSource(
                     source_path, run_id=args.source_run_id, component='personal',
-                    clock=clock, sleep=sleep, personal_path=snapshot))
+                    clock=clock, sleep=sleep, personal_path=snapshot, catch_up=args.catch_up))
             except source_usage.SourceFailure as exc:
                 raise InfrastructureFailure(exc.reason) from None
         date = dt.date.fromisoformat(args.date) if args.date else calendar_day(clock())
@@ -1834,13 +1956,14 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
         durable = DurableHttp(state, snapshot, http_state, date, targets,
                               args.max_searches, args.max_posts, clock, sleep, scheduled=args.scheduled,
                               shared_source=shared_source, registry_guard=guard,
+                              catch_up=args.catch_up,
                               bindings=lambda: identity_bindings(
                                   registry, current_half_bindings(), state['identityBindings']))
         durable.preflight()
         analyzer = None
         if args.analysis_backend == 'azure':
             options = {'registry_guard': guard,
-                       'review_names': {name for target in targets.values() for name in target['aliases']},
+                       'review_names': set(members.display_projection(registry)['aliases']),
                        'deadline': None if args.analyze_saved else durable.analysis_allowed}
             if args.ai_state:
                 spec = importlib.util.spec_from_file_location(
@@ -1851,6 +1974,7 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
                     options['usage'] = locks.enter_context(usage_module.SharedUsage(
                         args.ai_state, run_id=args.analysis_run_id, component='personal',
                         clock=clock, sleep=sleep, request_limit=args.analysis_limit,
+                        run_limit=usage_module.CATCHUP_RUN_LIMIT if args.catch_up else usage_module.RUN_LIMIT,
                         deadline=None if args.analyze_saved else durable.analysis_allowed))
                 except usage_module.UsageFailure as exc:
                     raise InfrastructureFailure(exc.reason) from None
@@ -1867,11 +1991,15 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
                     or any(not official.post_id(tid) or not isinstance(value, dict)
                            for tid, value in payloads.items())):
                 raise ValueError('invalid_saved_posts')
-        client = client_factory(durable) if payloads is None else None
-        report, code = collect(state, durable, client, targets, date,
-                               args.max_searches, args.max_posts, clock,
-                               members.display_projection(registry)['knownNames'],
-                               analyzer, payloads)
+        if args.catch_up:
+            report, code = collect_recovery(state, durable, schedule, insights, observations, registry,
+                                            (half_bindings,), client_factory, analyzer, clock)
+        else:
+            client = client_factory(durable) if payloads is None else None
+            report, code = collect(state, durable, client, targets, date,
+                                   args.max_searches, args.max_posts, clock,
+                                   members.display_projection(registry)['knownNames'],
+                                   analyzer, payloads)
         report.update(dryRun=args.dry_run, published=False, exitCode=code)
         if shared_source is not None:
             report['sourceUsage'] = shared_source.report()
@@ -1886,8 +2014,9 @@ def main(argv=None):
     parser = argument_parser()
     try:
         args = parser.parse_args(argv)
-        if (not 0 <= args.max_searches <= 3 or not 0 <= args.max_posts <= 3
-                or not 1 <= args.analysis_limit <= 3):
+        cap = MAX_RECOVERY_REQUESTS if args.catch_up else 3
+        if (not 0 <= args.max_searches <= cap or not 0 <= args.max_posts <= cap
+                or not 1 <= args.analysis_limit <= cap):
             parser.error('--max-searches/--max-posts must be 0..3; --analysis-limit must be 1..3')
     except SystemExit as exc:
         if exc.code != 2:

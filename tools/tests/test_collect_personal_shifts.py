@@ -400,13 +400,21 @@ class MetadataTests(Offline):
                                    {'authorId': '2065375500131028992',
                                     'authorScreenName': AMU['handle']})
 
-    def test_reply_quoted_and_retweeted_payloads_are_resolved_without_events(self):
-        for key in ('quoted_tweet', 'quoted_status', 'retweeted_status',
-                    'in_reply_to_status_id_str', 'in_reply_to_screen_name'):
+    def test_retweets_are_resolved_without_using_someone_elses_events(self):
+        for key in ('retweeted_tweet', 'retweeted_status'):
             value = post()
             value[key] = 'present'
             self.assertEqual(personal.validate_post(candidate(), value, AMU, NOW),
                              (None, 'quoted_or_reply'))
+
+    def test_own_reply_and_quote_text_is_read_without_nested_authors(self):
+        for key in ('quoted_tweet', 'quoted_status', 'in_reply_to_status_id_str', 'in_reply_to_screen_name'):
+            value = post('今日 昼1号店')
+            value[key] = {'text': '今日 夜4号店', 'user': {'screen_name': 'other'}}
+            parsed, _ = personal.validate_post(candidate(), value, AMU, NOW)
+            self.assertEqual([(event['shift'], event['storeId']) for event in parsed['events']], [('昼', 's1')])
+            value['text'] = 'かわいいね'
+            self.assertIsNone(personal.validate_post(candidate(), value, AMU, NOW)[0])
 
     def test_yahoo_only_top_level_timeline_entries(self):
         quoted = entry()
@@ -550,6 +558,56 @@ class StateTests(Offline):
         return personal.collect(state, durable, client, self.targets, DATE,
                                 durable.caps['searches'], durable.caps['posts'],
                                 clock=durable.clock, roster=self.schedule['roster'])
+
+    def test_catch_up_searches_all_fourteen_announced_people_even_after_day_cutoff(self):
+        people = [{'name': f'人{i}', 'handle': f'person{i}'} for i in range(14)]
+        registry = registry_fixture(*people)
+        schedule = {'schedule': {DATE.isoformat(): {
+            '昼': [{'name': row['name']} for row in people[:8]],
+            '夜': [{'name': row['name']} for row in people[8:]]}}}
+        late = NOW.replace(hour=13)  # 22:00 JST, later than both old cutoffs.
+        durable = self.durable(searches=14, posts=0, now=late)
+        durable.catch_up = True
+        report, code = personal.collect_recovery(
+            self.state, durable, schedule, None, None, registry, (),
+            lambda current: self.fake_client(current, entries=[]), None, lambda: late)
+        self.assertEqual((report['requests']['searches'], report['requests']['posts']), (14, 0))
+        day = report['acquisition']['days'][0]
+        self.assertEqual((day['targets'], day['searched'], day['unsearched'], day['dayOnly']), (14, 14, 0, 8))
+        self.assertEqual(code, 0)
+        personal.read_state(self.snapshot)
+
+    def test_catch_up_recovers_yesterday_with_its_original_shift_and_actual_day_budget(self):
+        registry = registry_fixture(AMU)
+        tomorrow = NOW + dt.timedelta(days=1)
+        self.state['pending'] = [{**candidate(), 'reason': 'post_limit', 'firstSeenAt': CREATED,
+                                  'lastAttemptAt': None, 'attempts': 0}]
+        durable = self.durable(searches=0, posts=1, now=tomorrow)
+        durable.catch_up = True
+        report, _ = personal.collect_recovery(
+            self.state, durable, self.schedule, None, None, registry, (),
+            lambda current: self.fake_client(current), None, lambda: tomorrow)
+        self.assertEqual(report['newPostCount'], 1)
+        self.assertEqual(self.state['posts'][0]['date'], DATE.isoformat())
+        self.assertEqual(self.state['budgets'][(DATE + dt.timedelta(days=1)).isoformat()]['posts'], 1)
+        self.assertNotIn(DATE.isoformat(), self.state['budgets'])
+        self.assertEqual(report['acquisition']['days'][0]['ageDays'], 1)
+        personal.read_state(self.snapshot)
+
+    def test_catch_up_preserves_expired_and_semantic_failures_without_refetch(self):
+        registry = registry_fixture(AMU)
+        old = candidate()
+        self.state['pending'] = [{**old, 'reason': 'azure_ungrounded', 'firstSeenAt': CREATED,
+                                  'lastAttemptAt': CREATED, 'attempts': 1}]
+        future = NOW + dt.timedelta(days=8)
+        durable = self.durable(searches=0, posts=1, now=future)
+        durable.catch_up = True
+        client = self.fake_client(durable)
+        report, _ = personal.collect_recovery(self.state, durable, self.schedule, None, None,
+                                              registry, (), lambda _: client, None, lambda: future)
+        client.fetch_post.assert_not_called()
+        self.assertEqual(report['acquisition']['expired'], 1)
+        self.assertEqual(self.state['pending'][0]['id'], old['id'])
 
     def test_selection_requires_current_roster_verified_account_and_exact_insights(self):
         targets = personal.select_targets(self.schedule, self.insights, self.accounts, DATE, self.state)

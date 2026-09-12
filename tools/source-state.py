@@ -294,11 +294,11 @@ def _validate_limits(state):
             daily[receipt['component']][receipt['kind']] += 1
     for run in runs.values():
         if (run['official']['searches'] > 2
-                or sum(row['searches'] for row in run.values()) > 5
-                or run['personal']['searches'] + run['schedule']['searches'] > 3
+                or sum(row['searches'] for row in run.values()) > 17
+                or run['personal']['searches'] + run['schedule']['searches'] > 15
                 or run['schedule']['searches'] > 1
                 or sum(row['posts'] + row['images'] for row in run.values()) > 20
-                or run['personal']['posts'] + run['personal']['images'] > 3
+                or run['personal']['posts'] > 14 or run['personal']['images'] > 0
                 or run['schedule']['posts'] > 1 or run['schedule']['images'] > 4):
             raise ValueError
     for day, daily in days.items():
@@ -489,7 +489,7 @@ def initialize(path, personal_state, **baseline_options):
     return state
 
 
-def usage_counts(state, run_id, now, component='schedule'):
+def usage_counts(state, run_id, now, component='schedule', *, catch_up=False):
     validate_state(state)
     usage._token(run_id)
     if component not in COMPONENTS:
@@ -511,16 +511,16 @@ def usage_counts(state, run_id, now, component='schedule'):
     day_searches = sum(daily[name]['searches'] for name in ('personal', 'schedule'))
     day_individual = historical + sum(daily[name]['posts'] + daily[name]['images']
                                       for name in ('personal', 'schedule'))
-    search_left = [5 - all_searches]
+    search_left = [(17 if catch_up else 5) - all_searches]
     individual_left = [20 - individual]
     if component == 'official':
         search_left.append(2 - run['official']['searches'])
     else:
-        search_left.extend((3 - shared_searches, 60 - day_searches))
+        search_left.extend(((15 if catch_up else 3) - shared_searches, 60 - day_searches))
         individual_left.append(30 - day_individual)
     posts_left, images_left = list(individual_left), list(individual_left)
     if component == 'personal':
-        posts_left.append(3 - run['personal']['posts'])
+        posts_left.append((14 if catch_up else 3) - run['personal']['posts'])
         images_left.append(0)
     elif component == 'schedule':
         search_left.append(1 - run['schedule']['searches'])
@@ -613,7 +613,8 @@ class _Lock:
 class SharedSource:
     failure_type = SourceFailure
 
-    def __init__(self, path, *, run_id, component, clock, sleep, personal_path=None, cache=None):
+    def __init__(self, path, *, run_id, component, clock, sleep, personal_path=None, cache=None,
+                 catch_up=False):
         usage._token(run_id)
         if component not in COMPONENTS:
             raise ValueError('invalid_source_configuration')
@@ -623,6 +624,9 @@ class SharedSource:
         self.clock, self.sleep = clock, sleep
         self.personal_path = Path(personal_path) if personal_path is not None else None
         self.cache = cache
+        if type(catch_up) is not bool:
+            raise ValueError('invalid_source_configuration')
+        self.catch_up = catch_up
         self.state, self._lock, self._poisoned = None, None, False
         self._owned = set()
 
@@ -669,7 +673,7 @@ class SharedSource:
 
     def report(self):
         self._require()
-        return usage_counts(self.state, self.run_id, self.clock(), self.component)
+        return usage_counts(self.state, self.run_id, self.clock(), self.component, catch_up=self.catch_up)
 
     counts = report
 

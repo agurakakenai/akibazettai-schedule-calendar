@@ -274,7 +274,7 @@ def check_caption_capacity(source, text, *, contract_version=VERSION):
     return None
 
 
-def build_request(source, text, images, *, contract_version=VERSION):
+def build_request(source, text, images, *, contract_version=VERSION, request_attempt=0):
     """Pure diagnostic construction, not inference admission; never opens a client."""
     prompt, schema, _ = contract_parts(contract_version)
     _validate_request_text(source, text)
@@ -282,6 +282,11 @@ def build_request(source, text, images, *, contract_version=VERSION):
     if len(metadata) != len(source['media']):
         raise ValueError('schedule_images_incomplete')
     context = _request_context(source, text, metadata)
+    if type(request_attempt) is not int or not 0 <= request_attempt <= 2:
+        raise ValueError('invalid_schedule_retry')
+    if request_attempt:
+        # A bounded later attempt has its own actual request hash and spent receipt.
+        context['requestAttempt'] = request_attempt
     content = [{'type': 'text', 'text': json.dumps(context, ensure_ascii=False)}]
     for image in images:
         encoded = base64.b64encode(image['bytes']).decode('ascii')
@@ -298,8 +303,9 @@ def build_request(source, text, images, *, contract_version=VERSION):
     return messages, proof
 
 
-def prepare_request(source, text, images, *, contract_version=VERSION):
-    messages, proof = build_request(source, text, images, contract_version=contract_version)
+def prepare_request(source, text, images, *, contract_version=VERSION, request_attempt=0):
+    messages, proof = build_request(source, text, images, contract_version=contract_version,
+                                     request_attempt=request_attempt)
     if contract_version == VERSION:
         prompt, schema, output = contract_parts(contract_version)
         capacity.half_month(messages[1]['content'][0]['text'], prompt, schema, output)
@@ -455,6 +461,7 @@ class AzureAnalyzer:
             raise ValueError('shared_analysis_state_required')
         self.usage, self.clock, self.used = usage, clock, 0
         self.registry_guard = registry_guard
+        self.request_attempt = 0
         self.client = client or transport.AzureOpenAI(environment or {}, on_http_failure=usage.http_failure)
 
     def check(self):
@@ -468,7 +475,7 @@ class AzureAnalyzer:
         def guard():
             check_registry(self.registry_guard, source['name'])
         guard()
-        messages, proof = prepare_request(source, text, images)
+        messages, proof = prepare_request(source, text, images, request_attempt=self.request_attempt)
         key = proof['requestHash']
         try:
             guard()

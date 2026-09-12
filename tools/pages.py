@@ -339,7 +339,7 @@ def personal_projection(state, *, collector=None):
         for field in counts:
             if field in run:
                 result['lastRun'][field] = _count(run[field])
-        if (result['lastRun'].get('sourceCount', 0) > 3
+        if (result['lastRun'].get('sourceCount', 0) > 14
                 or result['lastRun'].get('newPostCount', 0) > len(result['posts'])):
             raise ValueError
         return result

@@ -1136,7 +1136,7 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(result['personalCollectionStatus'], 'outside-window')
         self.assertEqual(result['personalCollectionCode'], 0)
         self.assertEqual(result['officialCollectionStatus'], 'ok')
-        self.assertEqual(result['collectionStatus'], 'ok')
+        self.assertEqual(result['collectionStatus'], 'partial')
         self.assertEqual(self.remote_json(cloud.PERSONAL)[0]['budgets']['2026-09-06'],
                          {'searches': 7, 'posts': 2})
 
@@ -1538,6 +1538,62 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(cloud.half_month_official_allocation(
             path, '12345-1', now, personal_active=True, scheduled=True), 0)
 
+    def test_recovery_allocation_prioritizes_personal_without_raising_daily_cap(self):
+        ledger = cloud.load_analysis_state()
+        state = ledger.empty_state()
+        path = self.root / 'allocation.json'
+        now = dt.datetime(2026, 9, 7, 22, 0, tzinfo=cloud.JST)
+        collector.atomic_json(path, state)
+        self.assertEqual(cloud.recovery_allocation(path, '12345-1', now),
+                         {'personal': 14, 'official': 1, 'schedule': 1})
+        ledger.apply_import(state, {
+            'receiptId': 'c' * 64, 'sourceHash': 'd' * 64, 'date': '2026-09-07',
+            'counts': {'requests': 29},
+            'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'text', 'count': 29}]})
+        collector.atomic_json(path, state)
+        self.assertEqual(sum(cloud.recovery_allocation(path, '12345-1', now).values()), 1)
+
+    def test_enabled_official_only_collect_assigns_legacy_limit_without_catchup(self):
+        module, seed = self.personal_seed()
+        private = module.empty_state()
+        module.merge_seed(private, seed)
+        self.seed_branch()
+        ledger = cloud.load_analysis_state()
+        usage = ledger.empty_state()
+        ledger.apply_import(usage, {
+            'receiptId': 'a' * 64, 'sourceHash': 'b' * 64, 'date': '2026-09-07',
+            'counts': {'requests': 1},
+            'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'text', 'count': 1}]})
+        self.bare_commit({cloud.PERSONAL: private, cloud.AI_USAGE: usage})
+        self.environment['DAILY_GUIDANCE_ENABLED'] = 'true'
+        self.args.mode = 'collect'
+        def invoke(root, state, report, environment):
+            self.assertNotIn('CLOUD_COLLECTION_CATCH_UP', environment)
+            self.assertEqual(environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'], '3')
+            snapshot, _ = cloud.validate_snapshot(state / cloud.SNAPSHOT, collector)
+            snapshot['lastRun'] = {**snapshot['lastRun'], 'status': 'no-new', 'sourceCount': 0,
+                                   'requests': {'searches': 0, 'posts': 0}}
+            collector.atomic_json(state / cloud.SNAPSHOT, snapshot)
+            collector.atomic_json(report, {'component': 'official', 'status': 'no-new', 'exitCode': 0,
+                                            'requests': {'searches': 0, 'posts': 0}})
+            return 0
+        with mock.patch.object(cloud, 'invoke_collector', side_effect=invoke) as called:
+            result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                       collector=collector, personal=module)
+        called.assert_called_once()
+        self.assertEqual(result['persistenceStatus'], 'saved')
+    def test_acquisition_summary_separates_published_status_from_missing_work_dates(self):
+        summary = self.root / 'summary.txt'
+        acquisition = {'complete': False, 'expired': 2, 'days': [{
+            'date': '2026-09-07', 'ageDays': 1, 'targets': 14, 'searched': 10, 'bodyChecked': 3,
+            'withSource': 2, 'analyzed': 3, 'pending': 5, 'unsearched': 4, 'dayOnly': 8,
+            'analysisHeld': 1}]}
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            cloud.emit({'collectionStatus': 'partial', 'persistenceStatus': 'saved',
+                        'acquisition': acquisition}, {'GITHUB_STEP_SUMMARY': str(summary)})
+        self.assertIn('2026-09-07 | 1 | 14 | 10', summary.read_text(encoding='utf-8'))
+        self.assertIn('publication success is separate', summary.read_text(encoding='utf-8'))
+        self.assertIn('::warning::', output.getvalue())
     def test_half_month_child_is_bounded_headless_and_never_receives_git_credentials(self):
         environment = {
             **self.environment, 'CLOUD_COLLECTION_SHARED': 'true',

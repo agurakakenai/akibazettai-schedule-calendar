@@ -84,6 +84,27 @@ class SourceTests(unittest.TestCase):
             ledger.finish(key)
         return key
 
+    def test_catchup_first_pass_fits_fourteen_searches_in_one_real_run(self):
+        with self.shared('personal', catch_up=True, personal_path=self.personal_path) as ledger:
+            for index in range(14):
+                self.reserve(ledger, 'searches', index)
+                self.reserve(ledger, 'posts', index)
+            self.assertEqual(ledger.report()['run']['personal']['searches'], 14)
+            self.assertEqual(ledger.report()['remaining']['posts'], 0)
+        with self.shared('schedule', catch_up=True) as ledger:
+            self.reserve(ledger, 'searches', 99)
+            self.reserve(ledger, 'posts', 99)
+            for index in range(4):
+                self.reserve(ledger, 'images', index)
+            self.assertEqual(ledger.report()['remaining']['searches'], 0)
+        with self.shared('personal', run_id='next', catch_up=True, personal_path=self.personal_path) as ledger:
+            for index in range(11):
+                self.reserve(ledger, 'posts', 100 + index)
+            with self.assertRaises(source.SourceFailure):
+                ledger.check('posts')
+            self.assertEqual(sum(ledger.report()['day'][name]['posts'] + ledger.report()['day'][name]['images']
+                                 for name in ('personal', 'schedule')), 30)
+
     def canonical_import_baseline(self, **kwargs):
         analysis = source.usage.empty_state()
         old = imported_source('baseline', day='2026-09-06', searches=11, posts=9)

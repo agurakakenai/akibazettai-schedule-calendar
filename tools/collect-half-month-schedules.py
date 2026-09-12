@@ -140,8 +140,7 @@ def discover(document, targets, now, bindings=None, *, registry=None, other_bind
                 or not re.fullmatch(r'\d{10}', str(epoch))):
             continue
         if any(entry.get(key) for key in (
-                'retweetedStatus', 'retweeted_status', 'quotedTweet', 'quoted_tweet',
-                'inReplyToStatusId', 'in_reply_to_status_id', 'isRetweet', 'isQuote', 'isReply')):
+                'retweetedStatus', 'retweeted_status', 'isRetweet')):
             continue
         try:
             when = dt.datetime.fromtimestamp(int(epoch), facts.UTC)
@@ -192,16 +191,12 @@ def validate_post(candidate, payload, target, now, binding=None, *, payload_hash
     if (created > now or abs((created - facts.timestamp(candidate['searchCreatedAt'])).total_seconds()) >= 1
             or abs((official.snowflake_time(tid) - created).total_seconds()) >= 2):
         raise ValueError('timestamp_mismatch')
-    if any(payload.get(key) for key in (
-            'quoted_tweet', 'quoted_status', 'quoted_status_id', 'quoted_status_id_str',
-            'is_quote_status', 'retweeted_status', 'retweeted_tweet', 'in_reply_to_status_id_str',
-            'in_reply_to_status_id', 'in_reply_to_user_id_str', 'in_reply_to_user_id',
-            'in_reply_to_screen_name')):
+    if payload.get('retweeted_status') or payload.get('retweeted_tweet'):
         raise ValueError('quoted_or_reply')
     text = payload.get('text')
     if not isinstance(text, str) or len(text.encode('utf-8')) > azure.MAX_INPUT_BYTES:
         raise ValueError('invalid_post_text')
-    if re.search(r'(^|\n)\s*(RT\s+@|引用|転載|>)', text):
+    if re.search(r'^\s*RT\s+@', text):
         raise ValueError('quoted_or_reply')
     edit_control = payload.get('edit_control', {})
     if not isinstance(edit_control, dict):
@@ -473,7 +468,29 @@ def refresh_coverage(state, reasons, now, manual, *, registry=None):
     return periods
 
 
-def enqueue(state, candidates, now):
+TRANSIENT_REASONS = {'azure_timeout', 'azure_network_error', 'azure_interrupted', 'azure_rate_limited'}
+
+
+def retry_reason(record, analyzer):
+    retry = record.get('retry', {})
+    if retry.get('attempts', 0) >= 3:
+        return None
+    reason = retry.get('lastReason')
+    usage = getattr(getattr(analyzer, 'usage', None), 'state', None)
+    receipt = next((item for item in (usage or {}).get('receipts', {}).values()
+                    if item['requestHash'] == record.get('requestHash')), None) if isinstance(usage, dict) else None
+    reason = reason or (receipt or {}).get('reason')
+    if reason == 'azure_http_error' and ((receipt or {}).get('httpStatus') or 0) >= 500:
+        return reason
+    return reason if reason in TRANSIENT_REASONS else None
+
+
+def terminal_source(record, analyzer):
+    return record['status'] in ('valid', 'negative', 'issued') or (
+        record['status'] == 'failed' and retry_reason(record, analyzer) is None)
+
+
+def enqueue(state, candidates, now, analyzer=None):
     known = {item['id'] for item in state['pending']}
     dropped = set()
     for candidate in sorted(candidates, key=lambda item: (item['priority'], -int(item['id']))):
@@ -481,7 +498,7 @@ def enqueue(state, candidates, now):
             continue
         if facts.candidate_key(candidate) in state['candidateHistory']:
             continue
-        if any(record['source']['id'] == candidate['id'] and record['status'] != 'pending'
+        if any(record['source']['id'] == candidate['id'] and terminal_source(record, analyzer)
                for record in state['sources'].values()):
             continue
         count = sum(item['name'] == candidate['name'] for item in state['pending'])
@@ -496,6 +513,28 @@ def enqueue(state, candidates, now):
                 people[name]['reason'] = 'queue_limit'
                 people[name]['nextCheckAt'] = facts.stamp(now + dt.timedelta(hours=6))
     return dropped
+
+
+def restore_transient_candidates(state, analyzer, now):
+    known = {item['id'] for item in state['pending']}
+    for record in state['sources'].values():
+        if record['status'] != 'failed' or retry_reason(record, analyzer) is None:
+            continue
+        source = record['source']
+        if source['id'] in known or len(state['pending']) >= 240:
+            continue
+        if sum(item['name'] == source['name'] for item in state['pending']) >= 6:
+            continue
+        due = record.get('retry', {}).get('notBefore') or facts.stamp(
+            facts.timestamp(record['checkedAt']) + dt.timedelta(hours=1))
+        state['pending'].append({
+            'id': source['id'], 'url': source['url'], 'name': source['name'],
+            'authorId': source['authorId'], 'authorScreenName': source['authorScreenName'],
+            'searchCreatedAt': source['createdAt'], 'discoveredAt': source['observedAt'],
+            'discoveryHash': source['discoveryHash'], 'priority': 0,
+            'lastAttemptAt': record['checkedAt'], 'nextAttemptAt': due,
+            'attempts': record.get('retry', {}).get('attempts', 1)})
+        known.add(source['id'])
 
 
 def _set_reason(state, name, periods, reason):
@@ -593,6 +632,7 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
             registry = registry_guard.registry
         client.registry_guard = analyzer.registry_guard = registry_guard
     now = clock()
+    prior_checked = state['checkedAt']
     update_check_time(state, now)
     targets, reasons, bindings = target_population(
         state, schedule, insights, accounts, existing_bindings, registry=registry)
@@ -614,6 +654,7 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
     try:
         guard()
         analyzer.check()
+        restore_transient_candidates(state, analyzer, now)
         # Expired metadata is accounted for in coverage, never in valid revisions.
         retained = []
         for item in state['pending']:
@@ -664,7 +705,7 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
             del document
             _set_reason(state, target['name'], periods, 'candidate_limit' if truncated
                         else 'post_unverified' if candidates else 'no_candidates')
-            enqueue(state, candidates, clock())
+            enqueue(state, candidates, clock(), analyzer)
             guard(target['name'])
             waiting = waiting_candidates(state, targets, clock())
             selected = waiting[0] if waiting else None
@@ -681,7 +722,15 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
             analyzer.check()
             source.check('posts')
             guard(target['name'])
+            if selected.get('attempts', 0) >= 3:
+                state['candidateHistory'][facts.candidate_key(selected)] = {
+                    'candidate': dict(selected), 'reason': 'retry_exhausted', 'checkedAt': facts.stamp(clock())}
+                state['pending'].remove(selected)
+                _set_reason(state, target['name'], periods, 'retry_exhausted')
+                selected = None
+                raise Failure('retry_exhausted')
             selected['lastAttemptAt'] = facts.stamp(clock())
+            selected['attempts'] = selected.get('attempts', 0) + 1
             save()
             counts['posts'] += 1
             payload, payload_hash = client.post(selected['id'])
@@ -693,16 +742,18 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
             del payload
             key = facts.source_key(verified)
             previous = state['sources'].get(key)
-            same_input = any(record['status'] != 'pending'
+            same_input = any(terminal_source(record, analyzer)
                              and record['source']['authorId'] == verified['authorId']
                              and record['source']['bodyHash'] == verified['bodyHash']
                              and record['source']['media'] == verified['media']
                              for record in state['sources'].values())
-            if previous and previous['status'] != 'pending' or same_input:
+            if previous and terminal_source(previous, analyzer) or same_input:
                 state['pending'].remove(selected)
                 _set_reason(state, target['name'], periods, 'known_source')
                 outcome = 'no-new'
             else:
+                analyzer.request_attempt = max(selected['attempts'] - 1,
+                                               (previous or {}).get('retry', {}).get('attempts', 0))
                 facts.bind_identity(state, verified)
                 facts.record_source(state, verified, 'pending', 'not_issued', clock())
                 save()
@@ -722,7 +773,7 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
                         images.append(image)
                         azure.image_facts(images)
                     image_hashes = [item['sha256'] for item in azure.image_facts(images)]
-                    identical = any(record['status'] != 'pending'
+                    identical = any(terminal_source(record, analyzer)
                                     and record['source']['authorId'] == verified['authorId']
                                     and record['source']['bodyHash'] == verified['bodyHash']
                                     and record['imageHashes'] == image_hashes
@@ -810,8 +861,24 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
             if record and record['status'] == 'issued':
                 facts.record_source(state, verified, 'failed', 'analysis_failed',
                                     clock(), record['requestHash'])
+                attempts = selected.get('attempts', 1) if selected else 1
+                transient = reason in TRANSIENT_REASONS or (
+                    reason == 'azure_http_error' and (getattr(exc, 'status', None) or 0) >= 500)
+                record = state['sources'][key]
+                previous_requests = list(record.get('retry', {}).get('previousRequests', []))
+                if record['requestHash'] and record['requestHash'] not in previous_requests:
+                    previous_requests.append(record['requestHash'])
+                record['retry'] = {
+                    'attempts': attempts, 'notBefore': facts.stamp(clock() + dt.timedelta(hours=1)),
+                    'lastReason': reason, 'previousRequests': previous_requests}
+                record['reason'] = 'transient_retry' if transient and attempts < 3 else (
+                    'retry_exhausted' if transient else 'permanent_failure')
+                _set_reason(state, target['name'], periods, record['reason'])
                 if selected in state['pending']:
-                    state['pending'].remove(selected)
+                    if transient and attempts < 3:
+                        selected['nextAttemptAt'] = record['retry']['notBefore']
+                    else:
+                        state['pending'].remove(selected)
             elif record and isinstance(exc, ValueError):
                 facts.record_source(state, verified, 'failed', 'source_failed', clock())
                 if selected in state['pending']:
@@ -827,11 +894,14 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
     refresh_coverage(state, reasons, clock(), manual, registry=registry)
     if registry_error is not None and target is not None:
         _set_reason(state, target['name'], periods, 'paused')
-    update_check_time(state, clock(), successful=outcome in ('ok', 'no-new', 'no-results'))
-    facts.validate_state(state)
-    save()
     if isinstance(getattr(client, 'requests', None), dict):
         counts.update(client.requests)
+    if any(counts.values()):
+        update_check_time(state, clock(), successful=outcome in ('ok', 'no-new', 'no-results'))
+    else:
+        state['checkedAt'] = prior_checked
+    facts.validate_state(state)
+    save()
     return completion_report(state, outcome, counts, clock(), registry=registry,
                              existing_bindings=existing_bindings, registry_error=registry_error)
 
@@ -903,6 +973,7 @@ def argument_parser():
     parser.add_argument('--ai-state', type=Path, required=True)
     parser.add_argument('--analysis-run-id', required=True)
     parser.add_argument('--analysis-limit', type=int, choices=(0, 1), default=1)
+    parser.add_argument('--catch-up', action='store_true', help='share the bounded recovery run budget')
     parser.add_argument('--max-searches', type=int, choices=(0, 1), default=1)
     parser.add_argument('--max-posts', type=int, choices=(0, 1), default=1)
     parser.add_argument('--max-images', type=int, choices=range(5), default=4)
@@ -937,7 +1008,6 @@ def run(args, *, clock=official.utc_now, sleep=time.sleep, environment=None):
             state, {}, {}, [], personal_state['identityBindings'], registry=registry)
         refresh_coverage(state, reasons, clock(), {}, registry=registry)
         state['lastRun'] = {'status': status}
-        update_check_time(state, clock())
         facts.validate_state(state)
         official.atomic_json(args.snapshot, state)
         report, code = completion_report(state, status, {
@@ -972,10 +1042,11 @@ def run(args, *, clock=official.utc_now, sleep=time.sleep, environment=None):
 
         source = stack.enter_context(source_module.SharedSource(
             args.source_state, run_id=args.analysis_run_id, component='schedule',
-            clock=clock, sleep=guarded_sleep, personal_path=args.personal_state))
+            clock=clock, sleep=guarded_sleep, personal_path=args.personal_state, catch_up=args.catch_up))
         usage = stack.enter_context(usage_module.SharedUsage(
             args.ai_state, run_id=args.analysis_run_id, component='schedule', clock=clock,
-            sleep=guarded_sleep, request_limit=1))
+            sleep=guarded_sleep, request_limit=1,
+            run_limit=usage_module.CATCHUP_RUN_LIMIT if args.catch_up else usage_module.RUN_LIMIT))
         if source.state['paused'] is not None:
             return defer(state, 'paused')
         try:

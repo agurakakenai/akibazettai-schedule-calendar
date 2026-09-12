@@ -30,6 +30,7 @@ REASONS = {
     'not_schedule', 'budget_wait', 'paused', 'valid_schedule', 'queue_limit',
     'candidate_limit', 'outside_period', 'source_failed', 'analysis_failed',
     'known_source', 'search_failed', 'not_due', 'stale_candidate', TIMING_STORAGE_LIMIT_REASON,
+    'transient_retry', 'retry_exhausted', 'permanent_failure',
     *CAPACITY_HOLD_REASONS,
 }
 PUBLIC_FIELDS = {'schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt', 'schedules', 'lastRun'}
@@ -212,7 +213,10 @@ def validate_schedule(value):
 def validate_candidate(value):
     require_keys(value, ('id', 'url', 'name', 'authorId', 'authorScreenName',
                          'searchCreatedAt', 'discoveredAt', 'discoveryHash', 'priority',
-                         'lastAttemptAt', 'nextAttemptAt'))
+                         'lastAttemptAt', 'nextAttemptAt',
+                         *(('attempts',) if isinstance(value, dict) and 'attempts' in value else ())))
+    if 'attempts' in value and (type(value['attempts']) is not int or not 0 <= value['attempts'] <= 3):
+        raise ValueError('invalid_schedule_candidate_attempts')
     identity(value['name'], value['authorScreenName'], value['authorId'])
     if value['url'] != public_url(value['authorScreenName'], value['id']):
         raise ValueError('invalid_schedule_candidate')
@@ -651,7 +655,20 @@ def validate_state(value, private=True):
         bound_ids.add(bound['authorId'])
         bound_handles.add(bound['authorScreenName'].casefold())
     for key, record in value['sources'].items():
-        require_keys(record, ('source', 'status', 'reason', 'checkedAt', 'requestHash', 'imageHashes'))
+        require_keys(record, ('source', 'status', 'reason', 'checkedAt', 'requestHash', 'imageHashes',
+                              *(('retry',) if 'retry' in record else ())))
+        if 'retry' in record:
+            retry = record['retry']
+            require_keys(retry, ('attempts', 'notBefore', 'lastReason', 'previousRequests'))
+            if type(retry['attempts']) is not int or not 1 <= retry['attempts'] <= 3:
+                raise ValueError('invalid_schedule_retry')
+            timestamp(retry['notBefore'])
+            if not isinstance(retry['lastReason'], str) or not re.fullmatch(r'[a-z_]+', retry['lastReason']):
+                raise ValueError('invalid_schedule_retry')
+            if not isinstance(retry['previousRequests'], list) or len(retry['previousRequests']) > 3:
+                raise ValueError('invalid_schedule_retry')
+            for request in retry['previousRequests']:
+                valid_hash(request)
         if key != source_key(record['source']) or record['status'] not in SOURCE_STATUSES:
             raise ValueError('invalid_schedule_source_record')
         if record['reason'] not in REASONS:
@@ -835,10 +852,13 @@ def record_source(state, source, status, reason, now, request_hash=None, image_h
     if image_hashes is None:
         image_hashes = state['sources'].get(key, {}).get('imageHashes', [])
     # Keep the original capture for legacy revisions that reference this index.
+    retry = state['sources'].get(key, {}).get('retry')
     state['sources'][key] = {'source': copy.deepcopy(previous_source if previous_source is not None else source),
                              'status': status, 'reason': reason,
                              'checkedAt': stamp(now), 'requestHash': request_hash,
                              'imageHashes': list(image_hashes)}
+    if retry is not None:
+        state['sources'][key]['retry'] = copy.deepcopy(retry)
     return key
 
 
