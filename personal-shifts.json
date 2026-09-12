@@ -6285,19 +6285,6 @@
       "reason": "post_limit",
       "searchCreatedAt": "2026-09-07T15:05:10Z",
       "url": "https://x.com/ruruka_zettai/status/2096978087330365670"
-    },
-    {
-      "attempts": 0,
-      "authorId": "2055533720107454464",
-      "authorScreenName": "chiyu_zettai",
-      "date": "2026-09-13",
-      "firstSeenAt": "2026-09-12T19:18:50.774688Z",
-      "id": "2098838757185298707",
-      "lastAttemptAt": null,
-      "name": "ちゆ",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-12T18:18:48Z",
-      "url": "https://x.com/chiyu_zettai/status/2098838757185298707"
     }
   ],
   "posts": [
@@ -7109,6 +7096,30 @@
       "name": "ねむり",
       "observedAt": "2026-09-12T19:46:33.636165Z",
       "url": "https://x.com/nemuri_zettai/status/2098806494968119735"
+    },
+    {
+      "authorId": "2055533720107454464",
+      "authorScreenName": "chiyu_zettai",
+      "createdAt": "2026-09-12T18:18:48Z",
+      "date": "2026-09-13",
+      "events": [
+        {
+          "excerpt": "1号店",
+          "kind": "placement",
+          "shift": "夜",
+          "storeId": "s1"
+        }
+      ],
+      "id": "2098838757185298707",
+      "links": [
+        {
+          "scope": "夜",
+          "status": "work"
+        }
+      ],
+      "name": "ちゆ",
+      "observedAt": "2026-09-12T19:46:21.459206Z",
+      "url": "https://x.com/chiyu_zettai/status/2098838757185298707"
     }
   ],
   "resolved": [
@@ -8100,6 +8111,52 @@
         "workTiming": null
       },
       "expectedSubjectHash": "9e3d345e367c0013ac72cb054b3a7a3f5a4a38072f90a6d2fc68bb2a1b60a140"
+    },
+    "883e6681933f812b18e1a7eafb9cfec6a8ac675aaea2b21aa2f0e06dfddfe252": {
+      "amendment": {
+        "events": [
+          {
+            "excerpt": "1号店",
+            "kind": "placement",
+            "shift": "夜",
+            "storeId": "s1"
+          }
+        ],
+        "id": "2098838757185298707",
+        "links": [
+          {
+            "scope": "夜",
+            "status": "work"
+          }
+        ],
+        "schemaVersion": 1,
+        "source": {
+          "analysisReceiptHash": "b7954423fc9ccda5a4ae188581b6258c95e128b24d5f03a7a18b66d839862484",
+          "analysisResultHash": "e425df015ebb154282f78f780fe4a72381d7df78635b23616d479720cb90547f",
+          "analyzedAt": "2026-09-12T19:47:22.952191Z",
+          "authorId": "2055533720107454464",
+          "authorScreenName": "chiyu_zettai",
+          "bodyHash": "729334aa737436e2dc526b3734579348e8b6c60a7789116ab7d2abd7ae777b96",
+          "contractHash": "9918be85208f5bac9dbe813178c9e6bcf0bb795cfa7c3a20078d6e32278b8c69",
+          "contractVersion": "personal-line-ids-v8",
+          "createdAt": "2026-09-12T18:18:48Z",
+          "date": "2026-09-13",
+          "deployment": "gpt-5.6-luna",
+          "fetchedAt": "2026-09-12T19:46:21.459206Z",
+          "model": "gpt-5.6-luna",
+          "modelVersion": "2026-07-09",
+          "name": "ちゆ",
+          "provenance": "search",
+          "searchCreatedAt": "2026-09-12T18:18:48Z",
+          "sourceHash": "809032c25dd2043f8fd23ab84438cbb2bf4ff9ea4376bde5ca0eeda56261cc05",
+          "sourceManifestHash": "ac7523a4974e71e4f4f8362344e124cf6cf12a75eb1fab99d89a46614b441e7b",
+          "url": "https://x.com/chiyu_zettai/status/2098838757185298707",
+          "usageReceiptId": "020e1981185e3b61b92cc22f17bf07b889c8cc0e4c8ddb1ff126ec6d29d62aca",
+          "usageSourceHash": "a47ec69cc5b20ade6bfb3a032ce98a7098ddc1189c0e31ace360757d414aa6e3"
+        },
+        "workTiming": null
+      },
+      "expectedSubjectHash": "caaa9013f3d64ee43f45914ce13ea3cca07f478fd0493391d21bf6a4a9002442"
     },
     "8be7c6b8bf81cbb6b536f9272ef9e31f710a4d153eb82bbfa9b1f5c191cd8013": {
       "amendment": {
