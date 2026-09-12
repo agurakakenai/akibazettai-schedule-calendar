@@ -126,6 +126,24 @@
       "receiptId": "51dffa66e9b556378b7bca16e5dafcd35b964e850460304ef4813c7dde3f6e5d",
       "sourceHash": "d410924886666f87d0cd4e2e9c884888e64a79159a2f2a234484108f8883c118"
     },
+    "6876a106186cca6d380000591ddb6233b8a2aa67ac1d122e4fc0e13ff866af07": {
+      "counts": {
+        "requests": 1
+      },
+      "date": "2026-09-13",
+      "modelBreakdown": [
+        {
+          "component": "personal",
+          "count": 1,
+          "deployment": "gpt-5.6-luna",
+          "kind": "text",
+          "model": "gpt-5.6-luna",
+          "modelVersion": "2026-07-09"
+        }
+      ],
+      "receiptId": "6876a106186cca6d380000591ddb6233b8a2aa67ac1d122e4fc0e13ff866af07",
+      "sourceHash": "f24d6893982f8afcb5605b6b150c7027f471da0877c603b99c801fe858a08d76"
+    },
     "7978eea819cb8adb5b6df1141bd774d716567b9649819e0d166a00f634ac5585": {
       "counts": {
         "requests": 1
@@ -1485,6 +1503,23 @@
         "receiptId": "1163baff731378f2fb469788501c8c650f56cb5ca43f5d1c1760f3e0bd55e8d5",
         "searches": 13,
         "sourceHash": "57391c5265c1bb6fc74159481660f26c6f0d5fb99bf6c69cd86e5bca12dead76"
+      }
+    },
+    "16c74170056e72f66c301db60bfc84e981b76ff58f5f287c2f0824d8b8e185d6": {
+      "budgetAfter": {
+        "posts": 36,
+        "searches": 55
+      },
+      "budgetBefore": {
+        "posts": 35,
+        "searches": 55
+      },
+      "receipt": {
+        "date": "2026-09-13",
+        "posts": 1,
+        "receiptId": "16c74170056e72f66c301db60bfc84e981b76ff58f5f287c2f0824d8b8e185d6",
+        "searches": 0,
+        "sourceHash": "ebcc45fc362223f5d363ffcda012990ede81a83eb4a555b4a3e7c9f7256b4261"
       }
     },
     "20480d97bf12e15f4575c35c2f5d72658f79ac4e7c68885c157e58725e125c94": {
