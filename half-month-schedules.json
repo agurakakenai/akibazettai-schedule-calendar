@@ -86,7 +86,7 @@
       "reason": "source_failed"
     }
   },
-  "checkedAt": "2026-09-12T17:52:47.859467Z",
+  "checkedAt": "2026-09-12T19:08:42.096017Z",
   "complete": false,
   "coverage": {
     "2026-09-01": {
@@ -247,13 +247,19 @@
         "to": "2026-09-15"
       },
       "かなた": {
-        "candidateIds": [],
+        "candidateIds": [
+          "2098592473073484041",
+          "2098431243222454712",
+          "2098423206625608036",
+          "2098339975729406398",
+          "2098328960065257690"
+        ],
         "confirmedIds": [],
         "handle": "kanata2_zettai",
-        "lastSearchedAt": null,
+        "lastSearchedAt": "2026-09-12T19:08:28.359344Z",
         "name": "かなた",
-        "nextCheckAt": null,
-        "reason": "source_failed",
+        "nextCheckAt": "2026-09-13T19:08:28.359344Z",
+        "reason": "not_schedule",
         "to": "2026-09-15"
       },
       "きらり": {
@@ -813,13 +819,19 @@
         "to": "2026-09-30"
       },
       "かなた": {
-        "candidateIds": [],
+        "candidateIds": [
+          "2098592473073484041",
+          "2098431243222454712",
+          "2098423206625608036",
+          "2098339975729406398",
+          "2098328960065257690"
+        ],
         "confirmedIds": [],
         "handle": "kanata2_zettai",
-        "lastSearchedAt": null,
+        "lastSearchedAt": "2026-09-12T19:08:28.359356Z",
         "name": "かなた",
-        "nextCheckAt": null,
-        "reason": "source_failed",
+        "nextCheckAt": "2026-09-13T01:08:28.359356Z",
+        "reason": "not_schedule",
         "to": "2026-09-30"
       },
       "きらり": {
@@ -1249,12 +1261,17 @@
       "authorId": "1823541746787332096",
       "authorScreenName": "eru_zettai",
       "verifiedAt": "2026-09-12T17:51:50.789074Z"
+    },
+    "かなた": {
+      "authorId": "1988584542077370368",
+      "authorScreenName": "kanata2_zettai",
+      "verifiedAt": "2026-09-12T19:08:38.934323Z"
     }
   },
   "lastRun": {
-    "status": "partial"
+    "status": "no-results"
   },
-  "lastSuccessAt": "2026-09-12T17:52:47.859467Z",
+  "lastSuccessAt": "2026-09-12T19:08:42.096017Z",
   "pending": [
     {
       "authorId": "1954467457902809088",
@@ -1840,6 +1857,71 @@
       "priority": 1,
       "searchCreatedAt": "2026-08-31T15:33:34Z",
       "url": "https://x.com/eru_zettai/status/2094448516823453749"
+    },
+    {
+      "authorId": "1988584542077370368",
+      "authorScreenName": "kanata2_zettai",
+      "discoveredAt": "2026-09-12T19:08:38.558298Z",
+      "discoveryHash": "076973954e6978bb41ad845567dbea4351ee64f800f6499b7eb106f598e9296c",
+      "id": "2098592473073484041",
+      "lastAttemptAt": null,
+      "name": "かなた",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-12T02:00:10Z",
+      "url": "https://x.com/kanata2_zettai/status/2098592473073484041"
+    },
+    {
+      "authorId": "1988584542077370368",
+      "authorScreenName": "kanata2_zettai",
+      "discoveredAt": "2026-09-12T19:08:38.558298Z",
+      "discoveryHash": "076973954e6978bb41ad845567dbea4351ee64f800f6499b7eb106f598e9296c",
+      "id": "2098431243222454712",
+      "lastAttemptAt": null,
+      "name": "かなた",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-11T15:19:30Z",
+      "url": "https://x.com/kanata2_zettai/status/2098431243222454712"
+    },
+    {
+      "authorId": "1988584542077370368",
+      "authorScreenName": "kanata2_zettai",
+      "discoveredAt": "2026-09-12T19:08:38.558298Z",
+      "discoveryHash": "076973954e6978bb41ad845567dbea4351ee64f800f6499b7eb106f598e9296c",
+      "id": "2098423206625608036",
+      "lastAttemptAt": null,
+      "name": "かなた",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-11T14:47:33Z",
+      "url": "https://x.com/kanata2_zettai/status/2098423206625608036"
+    },
+    {
+      "authorId": "1988584542077370368",
+      "authorScreenName": "kanata2_zettai",
+      "discoveredAt": "2026-09-12T19:08:38.558298Z",
+      "discoveryHash": "076973954e6978bb41ad845567dbea4351ee64f800f6499b7eb106f598e9296c",
+      "id": "2098339975729406398",
+      "lastAttemptAt": null,
+      "name": "かなた",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-11T09:16:50Z",
+      "url": "https://x.com/kanata2_zettai/status/2098339975729406398"
+    },
+    {
+      "authorId": "1988584542077370368",
+      "authorScreenName": "kanata2_zettai",
+      "discoveredAt": "2026-09-12T19:08:38.558298Z",
+      "discoveryHash": "076973954e6978bb41ad845567dbea4351ee64f800f6499b7eb106f598e9296c",
+      "id": "2098328960065257690",
+      "lastAttemptAt": null,
+      "name": "かなた",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-11T08:33:03Z",
+      "url": "https://x.com/kanata2_zettai/status/2098328960065257690"
     }
   ],
   "receipts": {
@@ -2349,6 +2431,29 @@
   ],
   "schemaVersion": 1,
   "sources": {
+    "4026fbfa8ed52651aceba3cf967e7e3a4cef69a6d495ad7fb3a68086fab7927b": {
+      "checkedAt": "2026-09-12T19:08:42.080112Z",
+      "imageHashes": [],
+      "reason": "not_schedule",
+      "requestHash": "946768578a9310704258bacba9f8e78ba789af13adb01454eb0f77f2519b6d6d",
+      "source": {
+        "authorId": "1988584542077370368",
+        "authorScreenName": "kanata2_zettai",
+        "bodyHash": "80d6458f82015bc09d53200feb0889e896d49edee52e65b8eb43ffa7817f1533",
+        "createdAt": "2026-09-12T12:36:57Z",
+        "discoveryHash": "076973954e6978bb41ad845567dbea4351ee64f800f6499b7eb106f598e9296c",
+        "editTweetIds": [
+          "2098752725966356969"
+        ],
+        "id": "2098752725966356969",
+        "media": [],
+        "name": "かなた",
+        "observedAt": "2026-09-12T19:08:38.934323Z",
+        "payloadHash": "c927741fa1e2580334f2038bd0082607f08335ec7cf729b5af983a33a32a1d70",
+        "url": "https://x.com/kanata2_zettai/status/2098752725966356969"
+      },
+      "status": "negative"
+    },
     "9dea89a72d151c1f6ac2b605ef982a106d41c0e7319e7a0b6b9b9187eae8620f": {
       "checkedAt": "2026-09-10T13:01:30.409025Z",
       "imageHashes": [],
