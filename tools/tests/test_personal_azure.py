@@ -71,7 +71,7 @@ def maximum_timing_response():
     source = [f'9月{6 + offset}日 昼1号店。12時から18時まで、ながめ昼。'
               if shift == '昼' else f'9月{6 + offset}日 夜2号店。16時から22時まで、早め夜。'
               for offset in range(4) for shift in ('昼', '夜')]
-    text = '\n'.join(['本文'] * 112 + source * 2)
+    text = '\n'.join(['文'] * 112 + source * 2)
     ids = list(range(113, 129))
     events = [dated(event(shift, 'placement', ids, store), day)
               for day in days[:2] for shift, store in (('昼', 's1'), ('夜', 's2'))]
@@ -135,6 +135,8 @@ class AzureTests(base.Offline):
         content = json.loads(request.data)
         payload = json.loads(content['messages'][1]['content'])
         self.assertEqual(payload['knownShiftsByDate'], {'2026-09-06': []})
+        self.assertEqual(payload['stores'], personal.official.STORE_IDS)
+        self.assertEqual(payload['stores']['2号店 A.D.1912'], 's2')
         self.assertEqual(target['shifts'], [])
         for text, value in (
                 ('今日 終日お休みです', result(event('昼', 'absence', [1]))),
@@ -1176,7 +1178,8 @@ class AzureTests(base.Offline):
             'postedDateJST': '2026-09-06', 'relativeDatesJST': {
                 'yesterday': '2026-09-05', 'today': '2026-09-06',
                 'tomorrow': '2026-09-07', 'dayAfterTomorrow': '2026-09-08'},
-            'author': 'あむ', 'knownShiftsByDate': {'2026-09-06': ['昼', '夜']}})
+            'author': 'あむ', 'knownShiftsByDate': {'2026-09-06': ['昼', '夜']},
+            'stores': personal.official.STORE_IDS})
         self.assertEqual(sent['reasoning_effort'], 'none')
         self.assertEqual(sent['model'], 'gpt-5.6-luna')
         self.assertEqual(sent['max_completion_tokens'], 2304)
@@ -1600,7 +1603,7 @@ class AzureTests(base.Offline):
                                       personal.official.timestamp(created), base.DATE, ['昼'], 'あむ')
                 context = json.loads(structured.call_args.args[0][1]['content'])
                 self.assertEqual(set(context), {'bodyLines', 'postedAtJST', 'postedDateJST',
-                                                'relativeDatesJST', 'author', 'knownShiftsByDate'})
+                                                'relativeDatesJST', 'author', 'knownShiftsByDate', 'stores'})
                 self.assertEqual(context['postedAtJST'], expected_stamp)
                 self.assertEqual(context['postedDateJST'], days[1])
                 self.assertEqual(context['relativeDatesJST'], dict(zip(
@@ -1758,6 +1761,97 @@ class AzureTests(base.Offline):
         self.assertEqual(ids['items']['enum'], [1, 2, 3, 4, 5])
         self.assertEqual(ids['maxItems'], 5)
         self.assertNotIn('enum', azure.SCHEMA['properties']['events']['items']['properties']['evidenceLineIds']['items'])
+
+    def test_keycap_store_and_hiragana_clock_keep_original_line_evidence(self):
+        for token in ('1️⃣号店', '１号店', '1⃣号店'):
+            with self.subTest(token=token):
+                text = f'今日ひるにゃんこ\n{token} 12:00〜17:00'
+                events, links, _, reason = azure.grounded_assessment_v8(
+                    result(event('昼', 'placement', [1, 2], 's1'),
+                           links=[link('昼', line_ids=[1, 2])]),
+                    text, base.DATE, ('昼',), personal.azure_context())
+                self.assertEqual(events[0]['storeId'], 's1')
+                self.assertEqual(events[0]['excerpt'], token)
+                self.assertEqual(links, [{'scope': '昼', 'status': 'work'}])
+                self.assertEqual(reason, 'events')
+        text = '今日１昼♡ながめ~18じ'
+        _, links, facts, _ = azure.grounded_assessment_v8(
+            result(links=[link('昼')], work_timing=[timing_fact(explicit_time='18:00')]),
+            text, base.DATE, ('昼',), personal.azure_context())
+        self.assertEqual(links, [{'scope': '昼', 'status': 'work'}])
+        self.assertEqual(facts[0]['explicitTime'], '18:00')
+        for text in ('51️⃣号店', '5️⃣1️⃣号店', '1️⃣\n号店'):
+            with self.subTest(text=text):
+                self.assertEqual(azure.numeric_references(text, azure.source_lines(text))[0], {})
+        for text in ('118じ', '25じ', '18\nじ'):
+            with self.subTest(text=text):
+                self.assertNotIn('18:00', azure.numeric_references(text, azure.source_lines(text))[1])
+
+    def test_wrong_store_keeps_independent_work_link_and_pending_event_channel(self):
+        text = '今日 アキバ絶対領域Ａ．Ｄ．１９１２ 夜にゃん\n待ってます'
+        value = result(event('夜', 'placement', [1], 's1'),
+                       links=[link('夜', line_ids=[1, 2])])
+        original = copy.deepcopy(value)
+        events, links, facts, channels, dates = azure._grounded_v8(
+            value, text, base.DATE, ('夜',), personal.azure_context())
+        self.assertEqual((events, facts), ([], []))
+        self.assertEqual(links, [{'scope': '夜', 'status': 'work'}])
+        self.assertEqual(channels, {'events': 'pending', 'links': 'confirmed', 'workTiming': 'none'})
+        self.assertEqual(dates['events'], [])
+        self.assertEqual(value, original)
+        valid = result(event('夜', 'placement', [1], 's2'))
+        events, _, _, _ = azure.grounded_assessment_v8(
+            valid, text, base.DATE, ('夜',), personal.azure_context())
+        self.assertEqual((events[0]['storeId'], events[0]['excerpt']), ('s2', 'a.d.1912'))
+        for bad in (
+                result(event('夜', 'placement', [1], 's1')),
+                result(event('夜', 'placement', [1], 's1'), links=[link('夜', 'absent')]),
+                result(event('夜', 'placement', [3], 's1'), links=[link('夜')]),
+                result(event('夜', 'placement', [1], 's1'), links=[link('夜', line_ids=[3])]),
+                result(event('夜', 'placement', [1], 's1'),
+                       event('昼', 'absence', [1]), links=[link('夜')]),
+                result(event('夜', 'placement', [1], 's1', time='invalid'), links=[link('夜')]),
+                result(event('夜', 'placement', [1], 's1'),
+                       links=[link('夜')], work_timing=[timing_fact(line_ids=(3,))])):
+            with self.subTest(value=bad), self.assertRaises(azure.AnalysisFailure):
+                azure.grounded_assessment_v8(bad, text, base.DATE, ('昼', '夜'), personal.azure_context())
+        for field in ('events', 'links'):
+            bad = copy.deepcopy(value)
+            bad[field][0]['serviceDate'] = '2026-02-30'
+            with self.subTest(field=field), self.assertRaises(azure.AnalysisFailure):
+                azure.grounded_assessment_v8(bad, text, base.DATE, ('夜',), personal.azure_context())
+        with self.assertRaises(azure.AnalysisFailure):
+            azure.grounded_assessment_v7(
+                {key: value[key] for key in ('events', 'links')},
+                text, base.DATE, ('夜',), personal.azure_context())
+
+    def test_grounding_revision_preserves_old_cache_during_explicit_reanalysis(self):
+        text = '今日 昼1号店'
+        with mock.patch.object(azure, 'GROUNDING_VERSION', 1):
+            previous = self.make_analyzer()
+            self.parse(text, result(), analyzer=previous)
+        original = copy.deepcopy(self.state['azureAnalysis']['cache'])
+        self.clock += dt.timedelta(seconds=60)
+        current = self.make_analyzer()
+        self.parse(text, result(links=[link('昼')]), analyzer=current)
+        self.assertNotEqual(previous.version, current.version)
+        self.assertEqual(len(self.state['azureAnalysis']['cache']), 2)
+        for key, value in original.items():
+            self.assertEqual(self.state['azureAnalysis']['cache'][key], value)
+
+    def test_shared_store_context_is_included_in_capacity_reservation(self):
+        _, _, payload = azure.request_components(
+            azure.source_lines('今日 夜2号店'), personal.official.timestamp(base.CREATED),
+            base.DATE, ('夜',), base.AMU['name'])
+        full = azure._admit(payload)['textReservationBound']
+        without_stores = {key: value for key, value in payload.items() if key != 'stores'}
+        smaller = azure._admit(without_stores)['textReservationBound']
+        metadata = {key: value for key, value in payload.items() if key != 'bodyLines'}
+        previous = {key: value for key, value in metadata.items() if key != 'stores'}
+        self.assertEqual(full - smaller,
+                         len(azure.capacity.canonical(metadata).encode('utf-8'))
+                         - len(azure.capacity.canonical(previous).encode('utf-8')))
+        self.assertGreater(full, smaller)
 
     def test_body_wording_reaches_model_without_a_semantic_prefilter(self):
         for text in ('明日 夜2号店', '今日「夜2号店」', '今日 ららこは夜2号店',
