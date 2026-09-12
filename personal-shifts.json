@@ -5134,19 +5134,6 @@
       "authorId": "1822822097141575680",
       "authorScreenName": "ameru_zettai",
       "date": "2026-09-13",
-      "firstSeenAt": "2026-09-12T18:08:09.465195Z",
-      "id": "2098788796066320533",
-      "lastAttemptAt": null,
-      "name": "あめる",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-12T15:00:17Z",
-      "url": "https://x.com/ameru_zettai/status/2098788796066320533"
-    },
-    {
-      "attempts": 0,
-      "authorId": "1822822097141575680",
-      "authorScreenName": "ameru_zettai",
-      "date": "2026-09-13",
       "firstSeenAt": "2026-09-12T18:08:09.465206Z",
       "id": "2098788729863483846",
       "lastAttemptAt": null,
@@ -7062,6 +7049,40 @@
       "name": "ららこ",
       "observedAt": "2026-09-12T17:45:47.679813Z",
       "url": "https://x.com/rarako_zettai/status/2098793928820728194"
+    },
+    {
+      "authorId": "1822822097141575680",
+      "authorScreenName": "ameru_zettai",
+      "createdAt": "2026-09-12T15:00:17Z",
+      "date": "2026-09-13",
+      "events": [
+        {
+          "excerpt": "2号店",
+          "kind": "placement",
+          "shift": "昼",
+          "storeId": "s2"
+        },
+        {
+          "excerpt": "1号店",
+          "kind": "placement",
+          "shift": "夜",
+          "storeId": "s1"
+        }
+      ],
+      "id": "2098788796066320533",
+      "links": [
+        {
+          "scope": "昼",
+          "status": "work"
+        },
+        {
+          "scope": "夜",
+          "status": "work"
+        }
+      ],
+      "name": "あめる",
+      "observedAt": "2026-09-12T19:22:32.579121Z",
+      "url": "https://x.com/ameru_zettai/status/2098788796066320533"
     }
   ],
   "resolved": [
@@ -7912,6 +7933,62 @@
         "workTiming": null
       },
       "expectedSubjectHash": "ed1c4fa7636810348902eb7d64c5925b71c333704c8f0103c6aad284a4ceefef"
+    },
+    "876f179795340e454141809a6daa56df3b8bc34ff8bdd4051446f4837c93da6a": {
+      "amendment": {
+        "events": [
+          {
+            "excerpt": "2号店",
+            "kind": "placement",
+            "shift": "昼",
+            "storeId": "s2"
+          },
+          {
+            "excerpt": "1号店",
+            "kind": "placement",
+            "shift": "夜",
+            "storeId": "s1"
+          }
+        ],
+        "id": "2098788796066320533",
+        "links": [
+          {
+            "scope": "昼",
+            "status": "work"
+          },
+          {
+            "scope": "夜",
+            "status": "work"
+          }
+        ],
+        "schemaVersion": 1,
+        "source": {
+          "analysisReceiptHash": "c37ec27ff27dd71368306ad052d93ee26a17e56d2e2eac3e7c8e7edc5d696769",
+          "analysisResultHash": "9fd2b9be8c5b84cbb3b215a23cf27952a492f6aca57e8acdd4ff0e3a46f417d1",
+          "analyzedAt": "2026-09-12T19:23:18.247995Z",
+          "authorId": "1822822097141575680",
+          "authorScreenName": "ameru_zettai",
+          "bodyHash": "cbf9a22fabbc82c1104c3212b388b2ec57e4bcb3fa485033b1bb9538b71b3790",
+          "contractHash": "9918be85208f5bac9dbe813178c9e6bcf0bb795cfa7c3a20078d6e32278b8c69",
+          "contractVersion": "personal-line-ids-v8",
+          "createdAt": "2026-09-12T15:00:17Z",
+          "date": "2026-09-13",
+          "deployment": "gpt-5.6-luna",
+          "fetchedAt": "2026-09-12T19:22:32.579121Z",
+          "model": "gpt-5.6-luna",
+          "modelVersion": "2026-07-09",
+          "name": "あめる",
+          "provenance": "search",
+          "searchCreatedAt": "2026-09-12T15:00:17Z",
+          "sourceHash": "2425c4f549c185b5895bc391389174a563391a8926c60261c10a081d9c2babf6",
+          "sourceManifestHash": "6f6899bb47a56b8f94f5dfe5120be1a7d9f9a8674593a8b2e569a04c0ad229be",
+          "url": "https://x.com/ameru_zettai/status/2098788796066320533",
+          "usageReceiptId": "95c30ba49e3d7bdb5cf7b4bc0f432b4bf0d45d42dc73e370c85acaec35c5ca32",
+          "usageSourceHash": "5d8aa4b63b8a87b9bb4f60db6477e9b156147be45143ed83cd22e868cda56714"
+        },
+        "workTiming": null
+      },
+      "expectedSubjectHash": "9e3d345e367c0013ac72cb054b3a7a3f5a4a38072f90a6d2fc68bb2a1b60a140"
     },
     "8be7c6b8bf81cbb6b536f9272ef9e31f710a4d153eb82bbfa9b1f5c191cd8013": {
       "amendment": {
