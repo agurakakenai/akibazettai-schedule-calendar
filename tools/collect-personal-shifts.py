@@ -62,7 +62,7 @@ class InfrastructureFailure(RuntimeError):
 
 SEARCH_HOST = 'search.yahoo.co.jp'
 POST_HOST = official.POST_HOST
-DAILY_LIMITS = {'searches': 60, 'posts': 30}
+DAILY_LIMITS = {'searches': 60, 'posts': 40}
 PILOT_BUDGETS = {'2026-09-06': {'searches': 7, 'posts': 2}}
 MAX_BODY = 4_000_000
 STATUSES = {'never', 'ok', 'partial', 'unavailable', 'no-new', 'no-results',

@@ -1421,7 +1421,7 @@ class StateTests(Offline):
         self.assertEqual(self.sleeps, [12])
 
     def test_daily_and_run_budgets_are_hard_caps(self):
-        self.state['budgets'][DATE.isoformat()] = {'searches': 60, 'posts': 30}
+        self.state['budgets'][DATE.isoformat()] = {'searches': 60, 'posts': 40}
         durable = self.durable()
         durable.preflight()
         for host, kind in ((personal.SEARCH_HOST, 'searches'), (personal.POST_HOST, 'posts')):

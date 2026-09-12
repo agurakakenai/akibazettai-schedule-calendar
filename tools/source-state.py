@@ -26,6 +26,7 @@ COMPONENTS = ('official', 'personal', 'schedule')
 HOSTS = ('search.yahoo.co.jp', 'cdn.syndication.twimg.com', 'pbs.twimg.com')
 HOST_KIND = dict(zip(HOSTS, KINDS))
 JST = usage.JST
+DAY_INDIVIDUAL_LIMIT = 40
 
 
 class SourceFailure(Exception):
@@ -310,7 +311,7 @@ def _validate_limits(state):
         searches = sum(row['searches'] for row in daily.values())
         individual = sum(row['posts'] + row['images'] for row in daily.values())
         if (searches and searches + baseline['searches'] > 60
-                or individual and individual + baseline['posts'] + images > 30
+                or individual and individual + baseline['posts'] + images > DAY_INDIVIDUAL_LIMIT
                 or daily['schedule']['images'] and daily['schedule']['images'] + images > 8):
             raise ValueError
 
@@ -517,7 +518,7 @@ def usage_counts(state, run_id, now, component='schedule', *, catch_up=False):
         search_left.append(2 - run['official']['searches'])
     else:
         search_left.extend(((15 if catch_up else 3) - shared_searches, 60 - day_searches))
-        individual_left.append(30 - day_individual)
+        individual_left.append(DAY_INDIVIDUAL_LIMIT - day_individual)
     posts_left, images_left = list(individual_left), list(individual_left)
     if component == 'personal':
         posts_left.append((14 if catch_up else 3) - run['personal']['posts'])

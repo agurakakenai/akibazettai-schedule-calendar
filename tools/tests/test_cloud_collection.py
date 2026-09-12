@@ -1531,8 +1531,8 @@ class CloudTests(unittest.TestCase):
             path, '12345-1', near, scheduled=True), 3)
         ledger.apply_import(state, {
             'receiptId': 'c' * 64, 'sourceHash': 'd' * 64,
-            'date': '2026-09-07', 'counts': {'requests': 30},
-            'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'image', 'count': 30}],
+            'date': '2026-09-07', 'counts': {'requests': 40},
+            'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'image', 'count': 40}],
         })
         collector.atomic_json(path, state)
         self.assertEqual(cloud.half_month_official_allocation(
@@ -1548,8 +1548,8 @@ class CloudTests(unittest.TestCase):
                          {'personal': 14, 'official': 1, 'schedule': 1})
         ledger.apply_import(state, {
             'receiptId': 'c' * 64, 'sourceHash': 'd' * 64, 'date': '2026-09-07',
-            'counts': {'requests': 29},
-            'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'text', 'count': 29}]})
+            'counts': {'requests': 39},
+            'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'text', 'count': 39}]})
         collector.atomic_json(path, state)
         self.assertEqual(sum(cloud.recovery_allocation(path, '12345-1', now).values()), 1)
 
@@ -1992,8 +1992,8 @@ class CloudTests(unittest.TestCase):
         ledger = cloud.load_analysis_state()
         imported = ledger.empty_state()
         ledger.apply_import(imported, {
-            'receiptId': 'a' * 64, 'date': '2026-09-07', 'counts': {'requests': 27},
-            'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'text', 'count': 27}],
+            'receiptId': 'a' * 64, 'date': '2026-09-07', 'counts': {'requests': 37},
+            'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'text', 'count': 37}],
             'sourceHash': 'b' * 64,
         })
         self.bare_commit({cloud.PERSONAL: private, cloud.AI_USAGE: imported})
@@ -2055,7 +2055,7 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(self.remote_json(cloud.PERSONAL)[0]['posts'], private['posts'])
         saved = self.remote_json(cloud.AI_USAGE)[0]
         self.assertEqual(ledger.remaining(saved, '12345-1', now[0]), 0)
-        self.assertEqual(ledger.usage_counts(saved, '12345-1', now[0])['day'], 30)
+        self.assertEqual(ledger.usage_counts(saved, '12345-1', now[0])['day'], 40)
         path = self.output.parent / cloud.AI_USAGE
         self.assertEqual(cloud.official_allocation(
             path, '12346-1', now[0] + dt.timedelta(days=1), True, True), 1)
@@ -2206,9 +2206,9 @@ class CloudTests(unittest.TestCase):
         ledger = cloud.load_analysis_state()
         path = self.root / cloud.AI_USAGE
         for used, hour, minute, personal_active, expected in (
-                (29, 13, 29, True, 0), (29, 14, 0, True, 1),
-                (28, 13, 29, True, 1), (30, 12, 30, True, 0),
-                (29, 13, 29, False, 1)):
+                (39, 13, 29, True, 0), (39, 14, 0, True, 1),
+                (38, 13, 29, True, 1), (40, 12, 30, True, 0),
+                (39, 13, 29, False, 1)):
             with self.subTest(used=used, hour=hour, minute=minute, personal_active=personal_active):
                 state = ledger.empty_state()
                 ledger.apply_import(state, {

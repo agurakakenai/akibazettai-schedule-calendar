@@ -98,12 +98,17 @@ class SourceTests(unittest.TestCase):
                 self.reserve(ledger, 'images', index)
             self.assertEqual(ledger.report()['remaining']['searches'], 0)
         with self.shared('personal', run_id='next', catch_up=True, personal_path=self.personal_path) as ledger:
-            for index in range(11):
+            for index in range(14):
                 self.reserve(ledger, 'posts', 100 + index)
             with self.assertRaises(source.SourceFailure):
                 ledger.check('posts')
+        with self.shared('personal', run_id='last', catch_up=True, personal_path=self.personal_path) as ledger:
+            for index in range(7):
+                self.reserve(ledger, 'posts', 200 + index)
+            with self.assertRaises(source.SourceFailure):
+                ledger.check('posts')
             self.assertEqual(sum(ledger.report()['day'][name]['posts'] + ledger.report()['day'][name]['images']
-                                 for name in ('personal', 'schedule')), 30)
+                                 for name in ('personal', 'schedule')), 40)
 
     def canonical_import_baseline(self, **kwargs):
         analysis = source.usage.empty_state()
@@ -297,7 +302,7 @@ class SourceTests(unittest.TestCase):
         with self.shared() as ledger:
             self.reserve(ledger, 'images')
         state = source.load_state(self.path)
-        receipt = imported_source('late-full-day', searches=60, posts=30)
+        receipt = imported_source('late-full-day', searches=60, posts=40)
         after_personal, after_analysis = prepare_imports(self.personal, analysis, [receipt])
         result = source.apply_source_imports(
             state, [receipt], personal_before=self.personal, personal_after=after_personal,
@@ -305,7 +310,7 @@ class SourceTests(unittest.TestCase):
         source.validate_state(result)
         self.assertEqual(result['receipts'], state['receipts'])
         self.assertEqual(source.usage_counts(result, 'run-1', NOW)['day']['personal'],
-                         {'searches': 60, 'posts': 31, 'images': 0})
+                         {'searches': 60, 'posts': 41, 'images': 0})
         source.atomic_json(self.path, result)
         self.personal = after_personal
         self.save_personal()
@@ -454,7 +459,7 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(len(source.load_state(self.path)['receipts']), 20)
 
     def test_personal_schedule_day_sixty_thirty_does_not_cap_official(self):
-        self.personal['budgets']['2026-09-07'] = {'searches': 59, 'posts': 28}
+        self.personal['budgets']['2026-09-07'] = {'searches': 59, 'posts': 38}
         self.initialize()
         with self.shared() as ledger:
             self.reserve(ledger, 'searches')
@@ -500,7 +505,7 @@ class SourceTests(unittest.TestCase):
             self.assertEqual(ledger.report()['date'], '2026-09-08')
 
     def test_spacing_rechecks_actual_day_after_sleep_and_uses_twelve_not_ai_sixty(self):
-        self.personal['budgets']['2026-09-08'] = {'searches': 60, 'posts': 30}
+        self.personal['budgets']['2026-09-08'] = {'searches': 60, 'posts': 40}
         self.initialize()
         self.clock = NOW.replace(hour=14, minute=59, second=59)
         with self.shared('official') as ledger:

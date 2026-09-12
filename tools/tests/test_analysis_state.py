@@ -65,7 +65,7 @@ class UsageTests(unittest.TestCase):
         ledger.finish(key, reason)
         return key
 
-    def test_catchup_same_run_has_sixteen_shared_slots_but_keeps_daily_thirty_and_spacing(self):
+    def test_catchup_same_run_has_sixteen_shared_slots_but_keeps_daily_forty_and_spacing(self):
         with self.shared('personal', request_limit=14, run_limit=16) as ledger:
             for index in range(14):
                 self.completed(ledger, f'personal-{index}')
@@ -81,10 +81,12 @@ class UsageTests(unittest.TestCase):
         with self.shared('personal', run_id='next-run', request_limit=14, run_limit=16) as ledger:
             for index in range(14):
                 self.completed(ledger, f'next-{index}')
-        with self.shared('schedule', run_id='third-run', request_limit=1, run_limit=16) as ledger:
+        with self.shared('personal', run_id='third-run', request_limit=14, run_limit=16) as ledger:
+            for index in range(10):
+                self.completed(ledger, f'last-{index}')
             with self.assertRaises(usage.UsageFailure):
                 ledger.check()
-            self.assertEqual(usage.usage_counts(ledger.state, 'third-run', self.clock, 16)['day'], 30)
+            self.assertEqual(usage.usage_counts(ledger.state, 'third-run', self.clock, 16)['day'], 40)
 
     def child(self, code):
         process = subprocess.run(
@@ -227,7 +229,7 @@ class UsageTests(unittest.TestCase):
                             self.completed(previous, str(index))
                 if case == 'day':
                     state = usage.load_state(self.path)
-                    usage.apply_import(state, historical(count=30))
+                    usage.apply_import(state, historical(count=40))
                     usage.atomic_json(self.path, state)
                 with self.shared(request_limit=0 if case == 'own' else 3,
                                  deadline=(lambda: False) if case == 'deadline' else None) as ledger:
@@ -280,10 +282,10 @@ class UsageTests(unittest.TestCase):
                          {'run': 3, 'day': 4, 'remaining': 0})
         self.assertEqual(self.sleeps, [60, 60, 60])
 
-    def test_schedule_success_requires_issued_and_shared_thirty_day_counts_imports(self):
+    def test_schedule_success_requires_issued_and_shared_forty_day_counts_imports(self):
         state = usage.load_state(self.path)
-        imported = historical(count=29, breakdown=[
-            {'model': 'gpt-5.6-luna', 'kind': 'image', 'component': 'schedule', 'count': 29}])
+        imported = historical(count=39, breakdown=[
+            {'model': 'gpt-5.6-luna', 'kind': 'image', 'component': 'schedule', 'count': 39}])
         usage.apply_import(state, imported)
         old = copy.deepcopy(state)
         usage.atomic_json(self.path, state)
@@ -303,7 +305,7 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(final['imports'], old['imports'])
         self.assertEqual(final['sourceImports'], old['sourceImports'])
 
-    def test_external_model_records_import_once_and_thirty_actual_day_cap(self):
+    def test_external_model_records_import_once_and_forty_actual_day_cap(self):
         previous = historical('2026-09-06', 24, 'old-models', [
             {'model': 'gpt-5.4-nano', 'kind': 'text', 'count': 18},
             {'model': 'gpt-5.4-mini', 'kind': 'text', 'count': 6,
@@ -317,18 +319,18 @@ class UsageTests(unittest.TestCase):
         for receipt in (previous, current, previous, current):
             self.assertIs(usage.apply_import(state, receipt), state)
         usage.atomic_json(self.path, state)
-        for index in range(26):
+        for index in range(36):
             with self.shared(run_id='run-' + str(index // 3)) as ledger:
                 self.completed(ledger, str(index))
         with self.shared(run_id='unused-run') as ledger:
             with self.assertRaisesRegex(usage.UsageFailure, 'azure_budget_exhausted'):
-                ledger.reserve(digest('31st'), IDENTITY)
+                ledger.reserve(digest('41st'), IDENTITY)
         state = usage.load_state(self.path)
         self.assertEqual(usage.usage_counts(state, 'unused-run', self.clock),
-                         {'run': 0, 'day': 30, 'remaining': 0})
+                         {'run': 0, 'day': 40, 'remaining': 0})
         self.assertEqual(state['imports'][previous['receiptId']], previous)
         self.assertEqual(state['imports'][current['receiptId']], current)
-        self.assertEqual(len(state['receipts']), 26)
+        self.assertEqual(len(state['receipts']), 36)
 
     def test_import_conflicts_duplicate_provenance_and_unknowns_do_not_change_state(self):
         state = usage.empty_state()
@@ -413,7 +415,7 @@ class UsageTests(unittest.TestCase):
             {**receipt, 'searches': -1}, {**receipt, 'posts': 0, 'searches': 0},
             {**receipt, 'posts': 100, 'searches': 1}, {**receipt, 'sourceHash': 'invalid'},
             {**receipt, 'date': '2026-9-6'}, {**receipt, 'posts': 1.5},
-            {**receipt, 'searches': 61}, {**receipt, 'posts': 31},
+            {**receipt, 'searches': 61}, {**receipt, 'posts': 41},
         ]
         for invalid in cases:
             state, personal_state = usage.empty_state(), {'budgets': {}}
@@ -547,7 +549,7 @@ class UsageTests(unittest.TestCase):
 
     def test_midnight_after_spacing_checks_the_actual_new_day(self):
         state = usage.load_state(self.path)
-        usage.apply_import(state, historical('2026-09-08', 30, 'tomorrow'))
+        usage.apply_import(state, historical('2026-09-08', 40, 'tomorrow'))
         usage.atomic_json(self.path, state)
         self.clock = dt.datetime(2026, 9, 7, 14, 59, 30, tzinfo=dt.timezone.utc)
         with self.shared() as ledger:
@@ -581,7 +583,7 @@ class UsageTests(unittest.TestCase):
 
     def test_issue_after_midnight_cannot_use_an_exhausted_new_day(self):
         state = usage.load_state(self.path)
-        usage.apply_import(state, historical('2026-09-08', 30, 'tomorrow'))
+        usage.apply_import(state, historical('2026-09-08', 40, 'tomorrow'))
         usage.atomic_json(self.path, state)
         self.clock = dt.datetime(2026, 9, 7, 14, 59, 59, tzinfo=dt.timezone.utc)
         with self.shared() as ledger:
