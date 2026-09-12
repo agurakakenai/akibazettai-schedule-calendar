@@ -1,23 +1,23 @@
 {
-  "checkedAt": "2026-09-12T12:15:22Z",
+  "checkedAt": "2026-09-12T17:40:28Z",
   "complete": false,
   "cooldowns": {},
   "lastRun": {
-    "attemptedCount": 2,
+    "attemptedCount": 0,
     "complete": false,
     "dateBasis": "JST service day, 05:00 boundary",
     "dateFrom": "2026-09-11",
     "dateTo": "2026-09-12",
     "deferredCount": 0,
-    "discoveredCount": 41,
-    "eligibleCount": 2,
+    "discoveredCount": 37,
+    "eligibleCount": 0,
     "failures": [],
-    "fetchedCount": 2,
-    "finishedAt": "2026-09-12T12:16:30Z",
+    "fetchedCount": 0,
+    "finishedAt": "2026-09-12T17:40:32Z",
     "lastSuccessMeaning": "Both searches and every selected post handled without failure or deferral",
     "maxPosts": 20,
-    "newNameCount": 13,
-    "newPostCount": 2,
+    "newNameCount": 0,
+    "newPostCount": 0,
     "pendingCount": 1,
     "pendingOutsideRangeCount": 1,
     "rejected": [
@@ -67,14 +67,6 @@
       },
       {
         "id": "2097503054086148275",
-        "reason": "outside_date_range"
-      },
-      {
-        "id": "2097255479928090920",
-        "reason": "outside_date_range"
-      },
-      {
-        "id": "2097254844621115499",
         "reason": "outside_date_range"
       },
       {
@@ -136,33 +128,25 @@
       {
         "id": "2095348203860513193",
         "reason": "outside_date_range"
-      },
-      {
-        "id": "2095346563048767527",
-        "reason": "outside_date_range"
-      },
-      {
-        "id": "2095345641237131724",
-        "reason": "outside_date_range"
       }
     ],
     "requests": {
-      "posts": 2,
+      "posts": 0,
       "searches": 2
     },
     "skippedCuratedCount": 0,
-    "skippedObservedCount": 6,
+    "skippedObservedCount": 8,
     "skippedResolvedCount": 2,
     "sourceCount": 2,
     "sourcePageLimit": 2,
     "sources": [
       {
-        "candidateCount": 24,
+        "candidateCount": 22,
         "status": "ok",
         "url": "https://search.yahoo.co.jp/realtime/search?p=%E3%82%A2%E3%82%AD%E3%83%90%E7%B5%B6%E5%AF%BE%E9%A0%98%E5%9F%9F&ei=UTF-8"
       },
       {
-        "candidateCount": 26,
+        "candidateCount": 24,
         "status": "ok",
         "url": "https://search.yahoo.co.jp/realtime/search?p=%E3%81%B2%E3%82%8B%E3%81%AB%E3%82%83%E3%82%93%E3%81%93&ei=UTF-8"
       }
