@@ -4923,19 +4923,6 @@
     },
     {
       "attempts": 0,
-      "authorId": "1954467457902809088",
-      "authorScreenName": "akubi_zettai",
-      "date": "2026-09-13",
-      "firstSeenAt": "2026-09-12T17:40:44.499530Z",
-      "id": "2098804745473540512",
-      "lastAttemptAt": null,
-      "name": "あくび",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-12T16:03:39Z",
-      "url": "https://x.com/akubi_zettai/status/2098804745473540512"
-    },
-    {
-      "attempts": 0,
       "authorId": "2025115850811080707",
       "authorScreenName": "kon1_zettai",
       "date": "2026-09-13",
@@ -5105,19 +5092,6 @@
     },
     {
       "attempts": 0,
-      "authorId": "2070008239794909184",
-      "authorScreenName": "chima_zettai",
-      "date": "2026-09-13",
-      "firstSeenAt": "2026-09-12T18:08:57.560400Z",
-      "id": "2098790535444185336",
-      "lastAttemptAt": null,
-      "name": "ちま",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-12T15:07:11Z",
-      "url": "https://x.com/chima_zettai/status/2098790535444185336"
-    },
-    {
-      "attempts": 0,
       "authorId": "1959230080657563648",
       "authorScreenName": "una_zettai",
       "date": "2026-09-13",
@@ -5271,19 +5245,6 @@
       "reason": "post_limit",
       "searchCreatedAt": "2026-09-12T15:08:02Z",
       "url": "https://x.com/una_zettai/status/2098790747734708285"
-    },
-    {
-      "attempts": 0,
-      "authorId": "1959230080657563648",
-      "authorScreenName": "una_zettai",
-      "date": "2026-09-13",
-      "firstSeenAt": "2026-09-12T18:09:09.852735Z",
-      "id": "2098789229547733477",
-      "lastAttemptAt": null,
-      "name": "うな",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-12T15:02:00Z",
-      "url": "https://x.com/una_zettai/status/2098789229547733477"
     },
     {
       "attempts": 0,
@@ -7120,6 +7081,86 @@
       "name": "ちゆ",
       "observedAt": "2026-09-12T19:46:21.459206Z",
       "url": "https://x.com/chiyu_zettai/status/2098838757185298707"
+    },
+    {
+      "authorId": "1954467457902809088",
+      "authorScreenName": "akubi_zettai",
+      "createdAt": "2026-09-12T16:03:39Z",
+      "date": "2026-09-13",
+      "events": [],
+      "id": "2098804745473540512",
+      "links": [
+        {
+          "scope": "夜",
+          "status": "work"
+        }
+      ],
+      "name": "あくび",
+      "observedAt": "2026-09-12T19:45:21.350499Z",
+      "url": "https://x.com/akubi_zettai/status/2098804745473540512"
+    },
+    {
+      "authorId": "1959230080657563648",
+      "authorScreenName": "una_zettai",
+      "createdAt": "2026-09-12T15:02:00Z",
+      "date": "2026-09-13",
+      "events": [
+        {
+          "excerpt": "1️⃣号店",
+          "kind": "placement",
+          "shift": "昼",
+          "storeId": "s1"
+        }
+      ],
+      "id": "2098789229547733477",
+      "links": [
+        {
+          "scope": "昼",
+          "status": "work"
+        }
+      ],
+      "name": "うな",
+      "observedAt": "2026-09-12T19:45:33.335000Z",
+      "url": "https://x.com/una_zettai/status/2098789229547733477"
+    },
+    {
+      "authorId": "2070008239794909184",
+      "authorScreenName": "chima_zettai",
+      "createdAt": "2026-09-12T15:07:11Z",
+      "date": "2026-09-13",
+      "events": [],
+      "id": "2098790535444185336",
+      "links": [
+        {
+          "scope": "昼",
+          "status": "work"
+        }
+      ],
+      "name": "ちま",
+      "observedAt": "2026-09-12T19:46:09.558386Z",
+      "url": "https://x.com/chima_zettai/status/2098790535444185336",
+      "workTiming": {
+        "facts": [
+          {
+            "boundary": "end",
+            "explicitTime": "18:00",
+            "qualifier": null,
+            "serviceDate": "2026-09-13",
+            "shift": "昼",
+            "source": {
+              "authorId": "2070008239794909184",
+              "authorScreenName": "chima_zettai",
+              "createdAt": "2026-09-12T15:07:11Z",
+              "id": "2098790535444185336",
+              "name": "ちま",
+              "sourceKind": "personal-work-post",
+              "url": "https://x.com/chima_zettai/status/2098790535444185336"
+            },
+            "status": "set"
+          }
+        ],
+        "schemaVersion": 1
+      }
     }
   ],
   "resolved": [
@@ -7639,6 +7680,112 @@
         "workTiming": null
       },
       "expectedSubjectHash": "ed1c4fa7636810348902eb7d64c5925b71c333704c8f0103c6aad284a4ceefef"
+    },
+    "13b2f25ae9dd69af15f7df0f0f0ab4f8507cedabf30ba6f6825be15584ef15f1": {
+      "amendment": {
+        "events": [
+          {
+            "excerpt": "1️⃣号店",
+            "kind": "placement",
+            "shift": "昼",
+            "storeId": "s1"
+          }
+        ],
+        "id": "2098789229547733477",
+        "links": [
+          {
+            "scope": "昼",
+            "status": "work"
+          }
+        ],
+        "schemaVersion": 1,
+        "source": {
+          "analysisReceiptHash": "74eed3aa436b951c9a64d0b88ecb69865d8e59ca895ad7f02b1a2f3a6f983bc7",
+          "analysisResultHash": "972e7f5230812849455b2bddbd78cab00bffa7f475d150f17c04a973a288886f",
+          "analyzedAt": "2026-09-12T20:06:41.288165Z",
+          "authorId": "1959230080657563648",
+          "authorScreenName": "una_zettai",
+          "bodyHash": "7e5c2f66f8edbf12bd25759f26e9b7870e9d8ca4452814ef1512b2e26edc0415",
+          "contractHash": "9918be85208f5bac9dbe813178c9e6bcf0bb795cfa7c3a20078d6e32278b8c69",
+          "contractVersion": "personal-line-ids-v8",
+          "createdAt": "2026-09-12T15:02:00Z",
+          "date": "2026-09-13",
+          "deployment": "gpt-5.6-luna",
+          "fetchedAt": "2026-09-12T19:45:33.335000Z",
+          "model": "gpt-5.6-luna",
+          "modelVersion": "2026-07-09",
+          "name": "うな",
+          "provenance": "search",
+          "searchCreatedAt": "2026-09-12T15:02:00Z",
+          "sourceHash": "5e5771e0086cfd8ffe78a9b99423c82e6c27db45c8ccf938a4c3d181d13722ef",
+          "sourceManifestHash": "5200f9b22cff8e787908b6550f128e4e74db97cf7f5079dcc0e6f635c8e26929",
+          "url": "https://x.com/una_zettai/status/2098789229547733477",
+          "usageReceiptId": "96ef15d31f2363c0cda076a10a8ee20a951ce934cefd9fe0b8a03e6ca5ccf535",
+          "usageSourceHash": "6d394f42ee72fa371f31d2b1de40a8553c510c9c54ad628d7e3e91732be70247"
+        },
+        "workTiming": null
+      },
+      "expectedSubjectHash": "d26025e77715909de9dd7162d1e52343bd06927f5556f76d2dc497bc01fd7f3f"
+    },
+    "33d29e714bcc0499fd57f285ff7556349ca0dc66b138bc5843a238e6d62c50fa": {
+      "amendment": {
+        "events": [],
+        "id": "2098790535444185336",
+        "links": [
+          {
+            "scope": "昼",
+            "status": "work"
+          }
+        ],
+        "schemaVersion": 1,
+        "source": {
+          "analysisReceiptHash": "a556e0f793edf9e3fa4c9cb19a85d4bfe8a1603efba9bb9898231968b1535e93",
+          "analysisResultHash": "a562fdcc53862c8dcb7cfff72ec6ce0044ddc8f12ad66eb80a7bd13becbb904d",
+          "analyzedAt": "2026-09-12T20:04:41.616872Z",
+          "authorId": "2070008239794909184",
+          "authorScreenName": "chima_zettai",
+          "bodyHash": "4e0d9ce59a54cb915a1aaf603b2150cb760c4604d58c847f314d49067bf9f365",
+          "contractHash": "9918be85208f5bac9dbe813178c9e6bcf0bb795cfa7c3a20078d6e32278b8c69",
+          "contractVersion": "personal-line-ids-v8",
+          "createdAt": "2026-09-12T15:07:11Z",
+          "date": "2026-09-13",
+          "deployment": "gpt-5.6-luna",
+          "fetchedAt": "2026-09-12T19:46:09.558386Z",
+          "model": "gpt-5.6-luna",
+          "modelVersion": "2026-07-09",
+          "name": "ちま",
+          "provenance": "search",
+          "searchCreatedAt": "2026-09-12T15:07:11Z",
+          "sourceHash": "75261a56cfaa7a754b49a6d3267a440d6e195690592e6fab1154fd60d033cb16",
+          "sourceManifestHash": "3f5f005721e52ce1d9b3cc227dcb1906e14059957e191916f2f5473d15ffe77f",
+          "url": "https://x.com/chima_zettai/status/2098790535444185336",
+          "usageReceiptId": "96ef15d31f2363c0cda076a10a8ee20a951ce934cefd9fe0b8a03e6ca5ccf535",
+          "usageSourceHash": "6d394f42ee72fa371f31d2b1de40a8553c510c9c54ad628d7e3e91732be70247"
+        },
+        "workTiming": {
+          "facts": [
+            {
+              "boundary": "end",
+              "explicitTime": "18:00",
+              "qualifier": null,
+              "serviceDate": "2026-09-13",
+              "shift": "昼",
+              "source": {
+                "authorId": "2070008239794909184",
+                "authorScreenName": "chima_zettai",
+                "createdAt": "2026-09-12T15:07:11Z",
+                "id": "2098790535444185336",
+                "name": "ちま",
+                "sourceKind": "personal-work-post",
+                "url": "https://x.com/chima_zettai/status/2098790535444185336"
+              },
+              "status": "set"
+            }
+          ],
+          "schemaVersion": 1
+        }
+      },
+      "expectedSubjectHash": "c0cfbc05c29b48e17e506ea8035dae9b1972c766bcebf80bdcd8793e75463b74"
     },
     "3a6551bca49b589baed3336ff8871630ca0c286c09dcfde4d122fd4723dc70a2": {
       "amendment": {
@@ -8515,6 +8662,45 @@
         "workTiming": null
       },
       "expectedSubjectHash": "ed1c4fa7636810348902eb7d64c5925b71c333704c8f0103c6aad284a4ceefef"
+    },
+    "f977004f1b103c9eadb92ece0b13ce6f06559c5adae46400dd611bd6c9b139fa": {
+      "amendment": {
+        "events": [],
+        "id": "2098804745473540512",
+        "links": [
+          {
+            "scope": "夜",
+            "status": "work"
+          }
+        ],
+        "schemaVersion": 1,
+        "source": {
+          "analysisReceiptHash": "31f66583191d5b1d1b1d3f7e67f2daf16bdc2046d693385fdd2596bb7d9cc1e4",
+          "analysisResultHash": "3d6a8525bedf6e6a569b37dc8ea0abe03d8daae719c9afa64186fc07648f2aed",
+          "analyzedAt": "2026-09-12T20:05:41.660568Z",
+          "authorId": "1954467457902809088",
+          "authorScreenName": "akubi_zettai",
+          "bodyHash": "aa010a4e082c59aeee0dc7c0e58ef1d7d436d25c78ffc1768b0a23832ddd1ca1",
+          "contractHash": "9918be85208f5bac9dbe813178c9e6bcf0bb795cfa7c3a20078d6e32278b8c69",
+          "contractVersion": "personal-line-ids-v8",
+          "createdAt": "2026-09-12T16:03:39Z",
+          "date": "2026-09-13",
+          "deployment": "gpt-5.6-luna",
+          "fetchedAt": "2026-09-12T19:45:21.350499Z",
+          "model": "gpt-5.6-luna",
+          "modelVersion": "2026-07-09",
+          "name": "あくび",
+          "provenance": "search",
+          "searchCreatedAt": "2026-09-12T16:03:39Z",
+          "sourceHash": "92ec0d2f7281baee341f545a87930a702411452c384c0268b820e65af2a0ce4c",
+          "sourceManifestHash": "c9a25e01832a9ce4579dfc357133d92d1f26f22e1bccaee18afabcd7e1071f7f",
+          "url": "https://x.com/akubi_zettai/status/2098804745473540512",
+          "usageReceiptId": "96ef15d31f2363c0cda076a10a8ee20a951ce934cefd9fe0b8a03e6ca5ccf535",
+          "usageSourceHash": "6d394f42ee72fa371f31d2b1de40a8553c510c9c54ad628d7e3e91732be70247"
+        },
+        "workTiming": null
+      },
+      "expectedSubjectHash": "0f3a91ca907a60ebe2526c5a6d56b78a30e707827ccf7fc7e04d5886e11fce49"
     }
   },
   "schemaVersion": 1,
