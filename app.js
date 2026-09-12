@@ -3000,12 +3000,11 @@
   try {
     registry = createMemberRegistryAdapter(window.MEMBER_REGISTRY);
   } catch {
-    const note = document.querySelector("#schedule-pending-note");
-    note.hidden = false;
+    const note = document.createElement("p");
     note.textContent = "メンバー名簿を読み込めません。再読み込みして確認してください。古い名簿への切替は行いません。";
     note.setAttribute("role", "alert");
     document.querySelector("#maid-checkboxes").replaceChildren();
-    document.querySelector("#calendar").replaceChildren();
+    document.querySelector("#calendar").replaceChildren(note);
     document.querySelector("#result-summary").textContent = "名簿を確認できないため表示を停止しています。";
     return;
   }
@@ -3055,24 +3054,21 @@
 
   const insights = { ...window.STORE_INSIGHTS, memberRegistry: registry };
   let observations = validateObservations(window.OBSERVED_SHIFTS ?? EMPTY_OBSERVATIONS);
-  let observationLoadError = null;
   let observationLoading = false;
   let personalShifts = EMPTY_PERSONAL_SHIFTS;
-  let personalLoadError = null;
   let personalLoading = false;
   try {
     personalShifts = validatePersonalShifts(window.PERSONAL_SHIFTS ?? EMPTY_PERSONAL_SHIFTS);
   } catch (error) {
-    personalLoadError = error.message;
+    console.error("Personal snapshot load failed", error);
   }
   let halfMonthSchedules = EMPTY_HALF_MONTH_SCHEDULES;
-  let halfMonthLoadError = null;
   let halfMonthLoading = false;
   try {
     halfMonthSchedules = validateHalfMonthSchedules(window.HALF_MONTH_SCHEDULES ?? EMPTY_HALF_MONTH_SCHEDULES,
       { registry, insights, personal: personalShifts });
   } catch (error) {
-    halfMonthLoadError = error.message;
+    console.error("Half-month snapshot load failed", error);
   }
   let effectiveSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules, { registry });
   // Retain provenance for independently evidenced rows, even when plan-only projection is excluded.
@@ -3285,8 +3281,6 @@
     monthYear: document.querySelector("#month-year"),
     resultSummary: document.querySelector("#result-summary"),
     lastUpdated: document.querySelector("#last-updated"),
-    scheduleSystemNote: document.querySelector("#schedule-system-note"),
-    schedulePendingNote: document.querySelector("#schedule-pending-note"),
     modeHelp: document.querySelector("#mode-help"),
     modeInputs: [...document.querySelectorAll('input[name="view-mode"]')],
     maidCheckboxes: document.querySelector("#maid-checkboxes"),
@@ -3302,12 +3296,6 @@
     dialogEvents: document.querySelector("#day-dialog-events"),
     dialogContent: document.querySelector("#day-dialog-content"),
     closeDialog: document.querySelector("#close-day-dialog"),
-    observationStatus: document.querySelector("#observation-status"),
-    refreshObservations: document.querySelector("#refresh-observations"),
-    personalStatus: document.querySelector("#personal-status"),
-    refreshPersonal: document.querySelector("#refresh-personal"),
-    halfMonthStatus: document.querySelector("#half-month-status"),
-    refreshHalfMonth: document.querySelector("#refresh-half-month"),
     selectAll: document.querySelector("#select-all"),
     clearAll: document.querySelector("#clear-all"),
     hideKitchen: document.querySelector("#hide-kitchen"),
@@ -3684,48 +3672,20 @@
     section.append(empty);
   }
 
-  function renderObservationStatus() {
-    const status = elements.observationStatus;
-    status.dataset.loaded = observationLoading ? "false" : "true";
-    if (observationLoadError) {
-      status.textContent = `自動収集結果の読込に失敗しました：${observationLoadError}。保存済みの表示は維持します。`;
-      return;
-    }
-    if (!observations.checkedAt) {
-      status.textContent = observationLoading ? "自動収集結果を読み込み中…" : "自動収集は未実行です。未確認は投稿なしを意味しません。";
-      return;
-    }
-    const labels = {
-      ok: "更新", partial: "一部失敗あり", unavailable: "取得不能",
-      "no-new": "新規追加なし", "no-results": "検索候補なし", never: "未実行"
-    };
-    const old = Date.now() - Date.parse(observations.checkedAt) > 2 * 3600000;
-    const range = observations.lastRun.dateFrom && observations.lastRun.dateTo
-      ? `・対象 ${observations.lastRun.dateFrom}〜${observations.lastRun.dateTo}` : "";
-    status.textContent = `自動収集：${labels[observations.lastRun.status]}・試行 ${observationTime(observations.checkedAt)}${range}` +
-      `${old ? "（結果が古い可能性があります）" : ""}。検索は全投稿を保証しません。0件でも休業・投稿なしとは断定しません。`;
-  }
-
   async function refreshObservedData() {
     if (observationLoading) return;
     observationLoading = true;
-    elements.refreshObservations.disabled = true;
-    renderObservationStatus();
     try {
       const response = await window.fetch("data/observed-shifts.json", { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const next = validateObservations(await response.json());
       const changed = JSON.stringify(next) !== JSON.stringify(observations);
       observations = next;
-      observationLoadError = null;
       if (changed) rerenderSourceUpdate();
     } catch (error) {
-      observationLoadError = error instanceof Error ? error.message : "読込エラー";
       console.error("Observation snapshot load failed", error);
     } finally {
       observationLoading = false;
-      elements.refreshObservations.disabled = false;
-      renderObservationStatus();
     }
   }
 
@@ -3767,7 +3727,6 @@
     if (lastSourcePresentation === presentation) return;
     lastSourcePresentation = presentation;
     syncMaidFilterNames();
-    renderSchedulePendingNote();
     if (elements.dayDialog.open) {
       observationsChangedInDialog = true;
       openDayDialog(state.selectedDate, dialogOrigin, true);
@@ -3787,102 +3746,40 @@
     }
   }
 
-  function renderPersonalStatus() {
-    const status = elements.personalStatus;
-    status.dataset.loaded = personalLoading ? "false" : "true";
-    status.dataset.error = personalLoadError ? "true" : "false";
-    if (personalLoadError) {
-      status.textContent = `追加予定の読込に失敗しました：${personalLoadError}。保存済みの表示は維持します。`;
-      return;
-    }
-    if (personalLoading) {
-      status.textContent = "追加予定を読み込み中…";
-      return;
-    }
-    const labels = { never: "未実行", ok: "更新", partial: "一部失敗あり", unavailable: "取得不能",
-      "no-new": "新規追加なし", "no-results": "候補なし", paused: "一時停止",
-      "budget-exhausted": "取得予算待ち", "outside-window": "対象時間外" };
-    status.textContent = `追加予定：${labels[personalShifts.lastRun.status]}` +
-      `${personalShifts.checkedAt ? `・確認 ${observationTime(personalShifts.checkedAt)}` : ""}。未取得・保留は欠勤を意味しません。`;
-  }
-
   async function refreshPersonalData() {
     if (personalLoading) return;
     personalLoading = true;
-    elements.refreshPersonal.disabled = true;
-    renderPersonalStatus();
     try {
       const response = await window.fetch("data/personal-shifts.json", { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const next = validatePersonalShifts(await response.json());
       const changed = JSON.stringify(next) !== JSON.stringify(personalShifts);
       personalShifts = next;
-      personalLoadError = null;
       if (changed) rerenderSourceUpdate();
     } catch (error) {
-      personalLoadError = error instanceof Error ? error.message : "読込エラー";
       console.error("Personal snapshot load failed", error);
     } finally {
       personalLoading = false;
-      elements.refreshPersonal.disabled = false;
-      renderPersonalStatus();
     }
-  }
-
-  function renderHalfMonthStatus() {
-    const status = elements.halfMonthStatus;
-    status.dataset.loaded = halfMonthLoading ? "false" : "true";
-    status.dataset.error = halfMonthLoadError ? "true" : "false";
-    if (halfMonthLoadError) {
-      status.textContent = `半月予定の読込に失敗しました：${halfMonthLoadError}。保存済みの表示は維持します。再読込で確認できます。`;
-      return;
-    }
-    if (halfMonthLoading) {
-      status.textContent = "半月予定を読み込み中…";
-      return;
-    }
-    const labels = { never: "未実行", ok: "更新", partial: "一部失敗あり", unavailable: "取得不能",
-      "no-new": "新規追加なし", "no-results": "候補なし", paused: "一時停止",
-      "budget-exhausted": "取得予算待ち", "outside-window": "対象時間外" };
-    status.textContent = `半月予定：${labels[halfMonthSchedules.lastRun.status]}` +
-      `${halfMonthSchedules.checkedAt ? `・確認 ${observationTime(halfMonthSchedules.checkedAt)}` : ""}。未確認は未投稿・欠勤を意味しません。`;
   }
 
   async function refreshHalfMonthData() {
     if (halfMonthLoading) return;
     halfMonthLoading = true;
-    elements.refreshHalfMonth.disabled = true;
-    renderHalfMonthStatus();
     try {
       const response = await window.fetch("data/half-month-schedules.json", { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const next = validateHalfMonthSchedules(await response.json(),
         { registry, insights, previous: halfMonthSchedules, personal: personalShifts });
       halfMonthSchedules = next;
-      halfMonthLoadError = null;
       effectiveSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules, { registry });
       sourceSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules, { registry, includeInactivePlans: true });
       rerenderSourceUpdate();
     } catch (error) {
-      halfMonthLoadError = error instanceof Error ? error.message : "読込エラー";
       console.error("Half-month snapshot load failed", error);
     } finally {
       halfMonthLoading = false;
-      elements.refreshHalfMonth.disabled = false;
-      renderHalfMonthStatus();
     }
-  }
-
-  function renderSchedulePendingNote() {
-    const year = state.visibleMonth.getFullYear();
-    const month = state.visibleMonth.getMonth();
-    const dates = getVisibleMonthDates(year, month, state.dateFrom, state.dateTo).map(dateKey);
-    const note = dates.length ? schedulePendingNote(insights, halfMonthSchedules,
-      { dateFrom: dates[0], dateTo: dates.at(-1), registry, manual: data.schedule }) : null;
-    elements.schedulePendingNote.hidden = !note;
-    elements.schedulePendingNote.textContent = note?.short ?? "";
-    elements.schedulePendingNote.title = displayText(note?.long ?? "");
-    elements.schedulePendingNote.setAttribute("aria-label", displayText(note?.long ?? ""));
   }
 
   function createShiftSection(key, date, shift, showForecast = state.viewMode === "forecast", confirmedOnly = false) {
@@ -4484,7 +4381,6 @@
     effectiveSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules, { registry });
     sourceSchedule = buildEffectiveSchedule(data.schedule, halfMonthSchedules, { registry, includeInactivePlans: true });
     syncMaidFilterNames();
-    renderSchedulePendingNote();
     closeDayDialog();
     const year = state.visibleMonth.getFullYear();
     const monthIndex = state.visibleMonth.getMonth();
@@ -5057,9 +4953,6 @@
     renderCalendar();
   });
   elements.closeDialog.addEventListener("click", closeDayDialog);
-  elements.refreshObservations.addEventListener("click", refreshObservedData);
-  elements.refreshPersonal.addEventListener("click", refreshPersonalData);
-  elements.refreshHalfMonth.addEventListener("click", refreshHalfMonthData);
   elements.dayDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
     closeDayDialog();
@@ -5095,19 +4988,11 @@
   elements.dateFrom.value = state.dateFrom;
   elements.dateTo.value = state.dateTo;
   elements.lastUpdated.textContent = `最終更新：${data.lastUpdated.replace(/\s*JST\b/g, "")}`;
-  const systemNote = scheduleSystemNote(insights, tokyoToday());
-  if (systemNote && elements.scheduleSystemNote) {
-    elements.scheduleSystemNote.textContent = systemNote;
-    elements.scheduleSystemNote.hidden = false;
-  }
   elements.maidFilterDetails.open =
     !window.matchMedia("(max-width: 45rem)").matches;
   syncViewMode();
   renderMaidFilters();
   renderCalendar();
-  renderObservationStatus();
-  renderPersonalStatus();
-  renderHalfMonthStatus();
   if (!window.OBSERVED_SHIFTS) {
     refreshObservedData();
     window.setInterval(() => {

@@ -93,6 +93,13 @@ async function main() {
       return;
     }
     res.setHeader("Content-Type", mime[path.extname(file)] || "application/octet-stream");
+    if (pathname === "/app.js") {
+      // Local refresh races exercise the same closures, without obsolete page buttons.
+      res.end(fs.readFileSync(file, "utf8").replace(/\}\)\(\);\s*$/, `window.testRefresh = {
+        observations: refreshObservedData, personal: refreshPersonalData, halfMonth: refreshHalfMonthData
+      }; })();`));
+      return;
+    }
     res.end(fs.readFileSync(file));
   });
   if (!publicOrigin) await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -197,7 +204,16 @@ async function main() {
       }
       assert.fail(`Browser condition timed out: ${expression}; exceptions=${JSON.stringify(exceptions)}; focus=${await evaluate('document.activeElement.outerHTML.slice(0, 400)')}`);
     };
-    const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    const click = (selector) => {
+      const refresh = {
+        "#refresh-observations": "observations", "#refresh-personal": "personal", "#refresh-half-month": "halfMonth"
+      }[selector];
+      if (refresh) {
+        assert.ok(!publicOrigin, "public smoke must not expose private refresh closures");
+        return evaluate(`window.testRefresh.${refresh}(); void 0;`);
+      }
+      return evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    };
     const scrollShift = (shift) => evaluate(`(() => {
       const section = document.querySelector("#dialog-" + ${JSON.stringify(shift)});
       const content = document.querySelector("#day-dialog-content");
@@ -245,7 +261,8 @@ async function main() {
       const originalManual = await evaluate('JSON.stringify(window.SCHEDULE_DATA)');
       const originalInsights = await evaluate('JSON.stringify(window.STORE_INSIGHTS)');
       const data = JSON.parse(originalManual);
-      const insights = JSON.parse(originalInsights);
+      const registry = api.createMemberRegistryAdapter(await evaluate("window.MEMBER_REGISTRY"));
+      const insights = { ...JSON.parse(originalInsights), memberRegistry: registry };
       const hash = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
       halfMonthReport = {
         status: "running", mode: halfMonthMock ? "explicit-local-mock" : publicOrigin ? "public-unmocked" : "local-unmocked",
@@ -266,7 +283,7 @@ async function main() {
           const label = row.querySelector(maid ? ".maid-plan-when" : ".maid-name");
           rows.push({ name, date, shift, evidence: row.dataset.evidence,
             store: maid ? row.querySelector(".maid-plan-where").dataset.store : row.dataset.store ?? "",
-            nameHref: label?.getAttribute("href") ?? null,
+            nameHref: label?.getAttribute("href") ?? null, nameTag: label?.tagName,
             updates: [...row.querySelectorAll(".entry-update")].map(item => item.textContent),
             extraSourceCount: row.querySelectorAll(".half-month-source").length,
             sources: (label?.dataset.sourceKind === "half-month-schedule" ? [label] : []).map(link => ({
@@ -316,11 +333,11 @@ async function main() {
       };
       const refreshHalf = async () => {
         await click("#refresh-half-month");
-        await wait('document.querySelector("#half-month-status").dataset.loaded === "true"');
+        await wait('window.__feeds.halfMonth.loaded');
       };
       const refreshPersonal = async () => {
         await click("#refresh-personal");
-        await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+        await wait('window.__feeds.personal.loaded');
       };
       const previous = {};
       for (const mode of ["calendar", "roster", "forecast", "maid"]) previous[mode] = await collect(mode);
@@ -340,14 +357,14 @@ async function main() {
         await refreshHalf();
       }
       api.validateHalfMonthSchedules(feed, { roster: data.roster, insights, personal: savedPersonal });
-      assert.equal(await evaluate('document.querySelector("#half-month-status").dataset.error'), "false");
+      assert.equal(await evaluate('window.__feeds.halfMonth.error'), null);
       const ito = feed.schedules.find(source => source.name === "いと" && source.period.from === "2026-09-01");
       if (halfMonthMock || process.env.REQUIRE_HALF_MONTH_SCHEDULES === "1") {
         assert.ok(ito, "a confirmed Ito first-half source is required");
         assert.deepEqual(ito.days.flatMap(day => day.shifts.map(shift => [day.date, shift])).sort(), [...core].sort(),
           "only the source's six date/shift contributions, not the whole resolved roster, are the core gold");
       }
-      const effective = api.buildEffectiveSchedule(data.schedule, feed);
+      const effective = api.buildEffectiveSchedule(data.schedule, feed, { registry, includeInactivePlans: true });
       const linkOptions = { insights, observations: savedOfficial, personal: savedPersonal,
         schedule: effective, nameCorrections: data.observationNameCorrections,
         personalEventAdditions: data.personalEventAdditions };
@@ -357,7 +374,7 @@ async function main() {
           return source?.kind === "half-month-schedule"
             ? [`${dateKey}|${shift}|${entry.name}|${source.post.url}`] : [];
         }))).sort();
-      const noSource = ({ sources, nameHref, ...row }) => row;
+      const noSource = ({ sources, nameHref, nameTag, ...row }) => row;
       for (const width of [1280, 320]) {
         await call("Emulation.setDeviceMetricsOverride", {
           width, height: width === 1280 ? 960 : 844, deviceScaleFactor: 1, mobile: width !== 1280
@@ -365,6 +382,13 @@ async function main() {
         const faces = [];
         for (const mode of ["calendar", "roster", "forecast", "maid"]) {
           const rows = await collect(mode);
+          for (const row of rows) {
+            const source = api.rosterPostLink({ ...linkOptions,
+              dateKey: row.date, shift: row.shift, name: row.name });
+            assert.equal(row.nameHref, source?.post.url ?? null,
+              `${width}/${mode}/${row.date}/${row.shift}/${row.name}: real DOM uses only verified post provenance`);
+            assert.equal(row.nameTag, source ? "A" : "SPAN");
+          }
           assert.ok(rows.every(row => row.extraSourceCount === 0), "no independent source labels in any view");
           const sources = rows.flatMap(row => row.sources);
           assert.deepEqual([...new Set(sources.map(link => `${link.date}|${link.shift}|${link.name}|${link.url}`))].sort(),
@@ -407,6 +431,18 @@ async function main() {
         halfMonthReport.widths.push(width);
       }
       halfMonthReport.checks.push("four-mode-scoped-name-links", "curated-observed-preserved", "same-day-links-preferred", "no-overflow-1280-320");
+      if (publicOrigin) {
+        const rows = halfMonthReport.dom.find(item => item.width === 1280 && item.mode === "calendar").rows
+          .filter(row => row.date === "2026-09-12");
+        for (const [name, shift] of [["いと", "昼"], ["ちま", "夜"]]) {
+          const row = rows.find(row => row.name === name && row.shift === shift);
+          assert.ok(row?.nameHref && row.nameTag === "A", `${name}/${shift} retains its published post link`);
+        }
+        console.log("Published 2026-09-12 popup:", JSON.stringify({
+          links: rows.filter(row => row.nameHref).map(({ name, shift, nameHref }) => ({ name, shift, href: nameHref })),
+          withoutPost: rows.filter(row => !row.nameHref).map(({ name, shift }) => ({ name, shift }))
+        }));
+      }
       if (halfMonthMock) {
         const personalId = "2097000000000000099";
         const sameDay = { id: personalId, url: `https://x.com/${ito.authorScreenName}/status/${personalId}`,
@@ -423,7 +459,7 @@ async function main() {
         }
         await click("#reset-filters");
         await evaluate('document.querySelector("#date-to").value = "2026-09-15"; document.querySelector("#date-to").dispatchEvent(new Event("change"))');
-        assert.ok(!(await evaluate('document.querySelector("#schedule-pending-note").title')).includes("いと"));
+        assert.equal(await evaluate('document.querySelector("#schedule-pending-note")'), null);
         await click('.day-button[data-date="2026-09-05"]');
         await wait('document.querySelector("#day-dialog").open');
         await evaluate(`window.__halfSource = document.querySelector('#dialog-day .maid-name[data-source-kind="half-month-schedule"]');
@@ -445,7 +481,7 @@ async function main() {
           halfMonthFailure = failure === "http";
           if (failure === "schema") halfMonthResponse.schedules[0].days[0].shifts = ["不明"];
           await refreshHalf();
-          assert.equal(await evaluate('document.querySelector("#half-month-status").dataset.error'), "true");
+          assert.ok(await evaluate('window.__feeds.halfMonth.error'));
           assert.ok(await evaluate('document.querySelector("#dialog-day") === window.__halfSection && document.activeElement === window.__halfSource'));
           assert.deepEqual(await evaluate(`({focus: document.activeElement.dataset.focusKey,
             scroll: document.querySelector("#day-dialog-content").scrollTop,
@@ -457,14 +493,14 @@ async function main() {
         halfMonthResponse.schedules[0].id = newerId;
         halfMonthResponse.schedules[0].url = `https://x.com/${ito.authorScreenName}/status/${newerId}`;
         await refreshHalf();
-        assert.equal(await evaluate('document.querySelector("#half-month-status").dataset.error'), "false");
+        assert.equal(await evaluate('window.__feeds.halfMonth.error'), null);
         assert.equal(await evaluate('document.activeElement.dataset.focusKey'), interaction.focus,
           "new source revisions retain focus at the same date/shift link");
         assert.equal(await evaluate('document.activeElement.href'), halfMonthResponse.schedules[0].url);
         assert.equal(await evaluate('document.querySelector("#day-dialog-content").scrollTop'), interaction.scroll);
         await click("#close-day-dialog");
         await click("#reset-filters");
-        assert.match(await evaluate('document.querySelector("#schedule-pending-note").textContent'), /一部の半月を確認済み/);
+        assert.equal(await evaluate('document.querySelector("#schedule-pending-note")'), null);
         halfMonthReport.checks.push("same-day-positive-link-in-four-modes", "partial-pending-period", "metadata-no-redraw",
           "invalid-fetch-retains-last-good", "source-revision-focus-and-scroll");
         personalResponse = originalPersonal;
@@ -495,6 +531,36 @@ async function main() {
     await call("Emulation.setFocusEmulationEnabled", { enabled: true });
     await call("Emulation.setTimezoneOverride", { timezoneId: "America/Los_Angeles" });
     await call("Page.addScriptToEvaluateOnNewDocument", { source: `
+      window.__feeds = {};
+      const feedKeys = { "observed-shifts": "observations", "personal-shifts": "personal",
+        "half-month-schedules": "halfMonth" };
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (...args) => {
+        const key = feedKeys[String(args[0]).match(/(?:^|\\/)data\\/([^/?]+)\\.json/)?.[1]];
+        if (!key) return originalFetch(...args);
+        const state = window.__feeds[key] = { loaded: false, error: null, value: null };
+        try {
+          const response = await originalFetch(...args);
+          if (!response.ok) {
+            state.loaded = true;
+            state.error = "HTTP " + response.status;
+          }
+          const originalJson = response.json.bind(response);
+          response.json = async () => {
+            try { return state.value = await originalJson(); }
+            catch (error) { state.error = error.message; throw error; }
+            finally { state.loaded = true; }
+          };
+          return response;
+        } catch (error) { state.loaded = true; state.error = error.message; throw error; }
+      };
+      const originalError = console.error.bind(console);
+      console.error = (...args) => {
+        const key = { Observation: "observations", Personal: "personal", "Half-month": "halfMonth" }
+          [String(args[0]).split(" ")[0]];
+        if (key && window.__feeds[key]) window.__feeds[key].error = args[1]?.message ?? String(args[1]);
+        originalError(...args);
+      };
       const OriginalDate = Date;
       window.Date = class extends OriginalDate {
         constructor(...args) { super(...(args.length ? args : ["2026-09-05T15:30:00Z"])); }
@@ -505,9 +571,13 @@ async function main() {
     await preference("light");
     await call("Page.navigate", { url: `${origin}/${publicOrigin ? "?smoke=" + Date.now() : ""}` });
     await wait('document.querySelectorAll(".day-button").length === 30');
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
-    await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
-    await wait('document.querySelector("#half-month-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations?.loaded && window.__feeds.personal?.loaded && window.__feeds.halfMonth?.loaded');
+    assert.equal(await evaluate(`document.querySelectorAll(${JSON.stringify(
+      "#schedule-system-note, #schedule-pending-note, .observation-status, #refresh-observations, " +
+      "#refresh-personal, #refresh-half-month, #observation-status, #personal-status, #half-month-status"
+    )}).length`), 0);
+    assert.equal(await evaluate('document.querySelector("#last-updated").textContent'),
+      await evaluate('`最終更新：${window.SCHEDULE_DATA.lastUpdated.replace(/\\s*JST\\b/g, "")}`'));
     if (halfMonthMock || halfMonthOnly || process.env.REQUIRE_HALF_MONTH_SCHEDULES === "1") {
       await runHalfMonthChecks();
       if (halfMonthOnly) return;
@@ -523,7 +593,7 @@ async function main() {
     await preference("dark");
     await call("Page.navigate", { url: `${origin}/?scoutTheme=dark${publicOrigin ? "&smoke=" + Date.now() : ""}` });
     await wait('document.querySelectorAll(".day-button").length === 30');
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations?.loaded');
     await wait('[...document.querySelectorAll(".event-image")].every(img => img.complete && img.naturalWidth > 0)');
     assert.ok(await evaluate('matchMedia("(prefers-color-scheme: dark)").matches'));
     assert.deepEqual(await palette(lightSelectors), lightPalette, "dark OS preference and legacy URL cannot change the palette");
@@ -751,7 +821,7 @@ async function main() {
     observationResponse = JSON.parse(fs.readFileSync(path.join(root, "data", "observed-shifts.json"), "utf8"));
     holdObservation = true;
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "false"');
+    await wait('window.__feeds.observations.loaded === false');
     await click('[data-date="2026-09-03"]');
     assert.equal(await evaluate('document.querySelectorAll("#day-dialog .observation-details").length'), 0);
     await evaluate('document.querySelector("#dialog-day .maid-name").focus({preventScroll:true})');
@@ -763,7 +833,7 @@ async function main() {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(observationResponse));
     }
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations.loaded');
     assert.deepEqual(await evaluate('({focus:document.activeElement.dataset.focusKey,scroll:document.querySelector("#day-dialog-content").scrollTop})'),
       curatedDetailsBefore, "curated name focus survives async observation refresh");
     await click("#close-day-dialog");
@@ -863,7 +933,7 @@ async function main() {
     };
     await click("#reset-filters");
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true" && document.querySelector("#observation-status").textContent.includes("一部失敗")');
+    await wait('window.__feeds.observations.loaded && window.__feeds.observations.value.lastRun.status === "partial"');
     await click('[data-date="2026-09-05"]');
     assert.equal(await evaluate('document.querySelectorAll("#day-dialog .shift-day [data-evidence=observed]").length'), 2);
     assert.equal(await evaluate('document.querySelectorAll("#day-dialog .shift-day .maid-group-label").length'), 1);
@@ -933,7 +1003,7 @@ async function main() {
     observationResponse.posts[0].shift = "夜";
     observationResponse.posts[0].names = ["あむ"];
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations.loaded');
     await click('[data-date="2026-09-05"]');
     await assertDailyUnknown([[], ["あむ"]]);
     await captureDailyFrame("popup-daily-night-only");
@@ -941,7 +1011,7 @@ async function main() {
     await wait('!document.querySelector("#day-dialog").open');
     observationResponse = dayOnly;
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations.loaded');
     await click("#clear-all");
     await evaluate(`(() => { const selected = [...document.querySelectorAll("#maid-checkboxes input")]
       .find(input => input.value === "かなた"); selected.checked = true; selected.dispatchEvent(new Event("change")); })()`);
@@ -960,7 +1030,7 @@ async function main() {
     await click("#reset-filters");
     holdObservation = true;
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "false"');
+    await wait('window.__feeds.observations.loaded === false');
     await click('[data-date="2026-09-05"]');
     await scrollShift("night");
     await evaluate('document.querySelector("#dialog-night .maid-name").focus({preventScroll:true})');
@@ -972,7 +1042,7 @@ async function main() {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(observationResponse));
     }
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations.loaded');
     assert.deepEqual(await evaluate('({focus:document.activeElement.dataset.focusKey,scroll:document.querySelector("#day-dialog-content").scrollTop,title:document.querySelector("#day-dialog-title").textContent})'),
       activeBeforeRefresh, "async snapshot arrival must preserve selected date, scroll and focused person");
     assert.ok(await evaluate('document.querySelector("#day-dialog").open'));
@@ -983,7 +1053,7 @@ async function main() {
     assert.equal(await evaluate('document.body.style.overflow'), "");
     holdObservation = true;
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "false"');
+    await wait('window.__feeds.observations.loaded === false');
     await click('[data-date="2026-09-05"]');
     await click("#dialog-day .observation-details summary");
     await evaluate('document.querySelector("#dialog-day .observation-details summary").focus({preventScroll:true}); document.querySelector("#day-dialog-content").scrollTop=80');
@@ -994,7 +1064,7 @@ async function main() {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(observationResponse));
     }
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations.loaded');
     assert.deepEqual(await evaluate('({open:document.querySelector("#dialog-day .observation-details").open,focus:document.activeElement.dataset.focusKey,scroll:document.querySelector("#day-dialog-content").scrollTop})'),
       detailsBefore, "expanded update information and its focused summary must survive metadata-only refresh");
     assert.equal(await evaluate('document.activeElement.tagName'), "SUMMARY");
@@ -1006,17 +1076,17 @@ async function main() {
     assert.ok(await evaluate('document.querySelectorAll(".maid-plan-stop[data-date=\\"2026-09-05\\"][data-evidence=scheduled]").length > 0'));
     observationFailure = true;
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").textContent.includes("HTTP 503")');
+    await wait('window.__feeds.observations.error?.includes("HTTP 503")');
     assert.equal(await evaluate('document.querySelectorAll(".maid-plan-stop[data-date=\\"2026-09-05\\"][data-evidence=observed]").length'), 2,
       "failed loading must retain the previous observation snapshot");
     observationFailure = false;
     observationResponse.lastRun.status = "no-new";
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").textContent.includes("新規追加なし")');
+    await wait('window.__feeds.observations.loaded && window.__feeds.observations.value.lastRun.status === "no-new"');
     assert.equal(await evaluate('document.querySelectorAll(".maid-plan-stop[data-date=\\"2026-09-05\\"][data-evidence=observed]").length'), 2);
     observationResponse.posts[0].date = "2026-09-01";
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations.loaded');
     assert.equal(await evaluate('document.querySelectorAll(".maid-plan-stop[data-date=\\"2026-09-01\\"][data-evidence=observed]").length'), 0,
       "a curated roster must take precedence");
 
@@ -1049,9 +1119,9 @@ async function main() {
     await click("#reset-filters");
     await setMode("calendar");
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations.loaded');
     await click("#refresh-personal");
-    await wait('document.querySelector("#personal-status").dataset.loaded === "true" && document.querySelector("#personal-status").dataset.error === "false"');
+    await wait('window.__feeds.personal.loaded && !window.__feeds.personal.error');
     const sourceBaseline = await evaluate('JSON.stringify([window.SCHEDULE_DATA.schedule,window.STORE_INSIGHTS.actual,window.STORE_INSIGHTS.actualRoster])');
     await click('[data-date="2026-09-06"]');
     const todayNames = await evaluate(`["#dialog-day","#dialog-night"].map(selector => {
@@ -1089,8 +1159,8 @@ async function main() {
     holdPersonal = true;
     await click("#close-day-dialog");
     await click("#refresh-personal");
-    await wait('document.querySelector("#personal-status").dataset.loaded === "false"');
-    assert.equal(await evaluate('document.querySelector("#observation-status").dataset.loaded'), "true",
+    await wait('window.__feeds.personal.loaded === false');
+    assert.equal(await evaluate('window.__feeds.observations.loaded'), true,
       "personal loading must not reset official readiness");
     await click('[data-date="2026-09-06"]');
     await scrollShift("night");
@@ -1103,7 +1173,7 @@ async function main() {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(personalResponse));
     }
-    await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+    await wait('window.__feeds.personal.loaded');
     assert.deepEqual(await evaluate('({key:document.activeElement.dataset.focusKey,scroll:document.querySelector("#day-dialog-content").scrollTop})'),
       interactionBefore, "personal refresh must preserve focused person and scroll");
     const originalOfficial = observationResponse;
@@ -1118,7 +1188,7 @@ async function main() {
       collectionPost("夜", "s4", ["あむ"], "2096550000000000002")
     ] };
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations.loaded');
     assert.equal(await evaluate('document.querySelectorAll("#dialog-day [data-evidence=observed]").length'), 2);
     assert.equal(await evaluate('document.querySelectorAll("#dialog-day [data-evidence=personal]").length'), 0,
       "matching personal and collection sources share one person row");
@@ -1131,13 +1201,13 @@ async function main() {
       "official refresh also preserves the focused person");
     observationResponse = originalOfficial;
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations.loaded');
     assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=personal]").length'), 2);
     await click("#close-day-dialog");
     for (const code of [404, 503]) {
       personalFailure = code;
       await click("#refresh-personal");
-      await wait(`document.querySelector("#personal-status").textContent.includes("HTTP ${code}")`);
+      await wait(`window.__feeds.personal.error?.includes("HTTP ${code}")`);
       await click('[data-date="2026-09-06"]');
       assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=personal]").length'), 2);
       assert.deepEqual(await evaluate('[...document.querySelectorAll("#dialog-day [data-evidence=observed] .maid-name")].map(row=>row.dataset.name).sort()'),
@@ -1147,14 +1217,14 @@ async function main() {
     personalFailure = 0;
     personalResponse = { ...personalSeed, complete: true };
     await click("#refresh-personal");
-    await wait('document.querySelector("#personal-status").dataset.error === "true" && !document.querySelector("#personal-status").textContent.includes("HTTP")');
+    await wait('window.__feeds.personal.error && !window.__feeds.personal.error.includes("HTTP")');
     await click('[data-date="2026-09-06"]');
     assert.equal(await evaluate('document.querySelectorAll("#dialog-night [data-evidence=personal]").length'), 2);
     await click("#close-day-dialog");
     personalResponse = JSON.parse(JSON.stringify(personalSeed));
     personalResponse.lastRun.status = "budget-exhausted";
     await click("#refresh-personal");
-    await wait('document.querySelector("#personal-status").textContent.includes("取得予算待ち")');
+    await wait('window.__feeds.personal.loaded && window.__feeds.personal.value.lastRun.status === "budget-exhausted"');
     await setMode("maid");
     const personalStops = await evaluate('[...document.querySelectorAll(".maid-plan-stop[data-date=\\"2026-09-06\\"][data-evidence=personal]")].map(row => ({text:row.textContent,title:row.title,rate:row.querySelector(".maid-plan-rate")?.textContent}))');
     assert.ok(personalStops.some(row => row.text.includes("2号店") && row.text.includes("お給仕予定")));
@@ -1174,7 +1244,7 @@ async function main() {
     });
     personalResponse.posts.push(personalChange("absence", 1));
     await click("#refresh-personal");
-    await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+    await wait('window.__feeds.personal.loaded');
     await click('[data-date="2026-09-06"]');
     assert.equal(await evaluate('[...document.querySelectorAll("#dialog-night .maid-name")].some(row => row.textContent === "あむ")'), false);
     assert.ok(await evaluate('[...document.querySelectorAll("#dialog-night .shift-change")].some(node => node.textContent.includes("あむ：取消"))'));
@@ -1182,14 +1252,14 @@ async function main() {
     await click("#close-day-dialog");
     personalResponse.posts.push(personalChange("return", 2));
     await click("#refresh-personal");
-    await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+    await wait('window.__feeds.personal.loaded');
     await click('[data-date="2026-09-06"]');
     assert.ok(await evaluate('[...document.querySelectorAll("#dialog-night .unmatched-roster .maid-name")].some(row => row.textContent === "あむ")'));
     assert.equal(await evaluate('document.querySelectorAll("#dialog-night .maid-entry[data-name=\\"あむ\\"][data-evidence=personal]").length'), 0);
     await click("#close-day-dialog");
     personalResponse.posts.push(personalChange("return", 3, "s4"));
     await click("#refresh-personal");
-    await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+    await wait('window.__feeds.personal.loaded');
     await click('[data-date="2026-09-06"]');
     assert.equal(await evaluate('document.querySelector("#dialog-night .maid-entry[data-name=\\"あむ\\"][data-evidence=personal]").dataset.store'), "s4");
     assert.equal(await evaluate('document.querySelector("#dialog-night .maid-name[data-name=\\"あむ\\"]").getAttribute("href")'),
@@ -1207,9 +1277,9 @@ async function main() {
       events: [{ shift: "夜", kind: "placement", storeId: "s4", excerpt: "夜は4号店" }]
     });
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations.loaded');
     await click("#refresh-personal");
-    await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+    await wait('window.__feeds.personal.loaded');
     await click('[data-date="2026-09-06"]');
     for (const [name, store] of [["あむ", "s2"], ["ららこ", "s2"], ["あめる", "s4"]]) {
       assert.deepEqual(await evaluate(`(() => {
@@ -1234,9 +1304,9 @@ async function main() {
     ] };
     personalResponse = JSON.parse(JSON.stringify(personalSeed));
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations.loaded');
     await click("#refresh-personal");
-    await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+    await wait('window.__feeds.personal.loaded');
     await click('[data-date="2026-09-06"]');
     assert.ok(await evaluate(`(() => {
       const row = document.querySelector('#dialog-day .maid-entry[data-name="みりあ"]');
@@ -1333,7 +1403,7 @@ async function main() {
     officialLate.revisions.push({ ...officialLate.revisions[0], observedAt: "2026-09-06T04:20:00Z" });
     observationResponse.checkedAt = "2026-09-06T04:30:00Z";
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations.loaded');
     assert.ok(await evaluate(`document.querySelector("#dialog-day") === window.__retainedSection &&
       document.querySelector("#dialog-day iframe") === window.__retainedFrame &&
       window.__retainedFrame.contentWindow === window.__retainedFrameWindow &&
@@ -1359,7 +1429,7 @@ async function main() {
       window.__legacyWindow = window.__legacyFrame.contentWindow; true;`);
     observationResponse.checkedAt = "2026-09-06T04:31:00Z";
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations.loaded');
     assert.ok(await evaluate('document.querySelector("#calendar .official-post iframe") === window.__legacyFrame && window.__legacyFrame.contentWindow === window.__legacyWindow'),
       "metadata refresh also preserves embedded browsing contexts in the store view");
     await setMode("calendar");
@@ -1393,21 +1463,21 @@ async function main() {
     };
     observationResponse.posts = [...originalOfficial.posts.filter(post => post.date !== "2026-09-06"), oldVersion];
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations.loaded');
     await click('[data-date="2026-09-06"]');
     await evaluate('document.querySelector("#dialog-day .observation-details").open = true');
     await wait('document.querySelector("#dialog-day .official-post").dataset.embedState === "ready"');
     assert.equal(await evaluate('document.querySelector("#dialog-day iframe").dataset.postId'), oldVersion.id);
     observationResponse.posts.push(middleVersion);
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations.loaded');
     await wait('document.querySelector("#dialog-day .official-post").dataset.embedState === "ready"');
     assert.deepEqual(await evaluate('[...document.querySelectorAll("#dialog-day .official-post")].map(node => node.dataset.postId)'), [middleVersion.id]);
     assert.deepEqual(await evaluate('[...document.querySelectorAll("#dialog-day iframe")].map(node => node.dataset.postId)'), [middleVersion.id]);
     const versionSnapshot = { ...observationResponse, posts: [...observationResponse.posts, latestVersion] };
     observationResponse = versionSnapshot;
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations.loaded');
     await wait('document.querySelector("#dialog-day .official-post").dataset.embedState === "ready"');
     assert.deepEqual(await evaluate('[...document.querySelectorAll("#dialog-day .official-post")].map(node => node.dataset.postId)'), [latestVersion.id]);
     assert.deepEqual(await evaluate('[...document.querySelectorAll("#dialog-day iframe")].map(node => node.dataset.postId)'), [latestVersion.id],
@@ -1421,18 +1491,18 @@ async function main() {
       [oldVersion.id, middleVersion.id, latestVersion.id], "the published raw history still contains all three versions");
     observationResponse = { ...versionSnapshot, posts: [{ ...oldVersion, editTweetIds: latestVersion.editTweetIds }] };
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").textContent.includes("読込に失敗")');
+    await wait('window.__feeds.observations.loaded && window.__feeds.observations.error');
     assert.equal(await evaluate('document.querySelector("#dialog-day .observation-source").href'), latestVersion.url,
       "a stale current-ID chain cannot overwrite the last validated presentation");
     observationResponse = versionSnapshot;
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true" && !document.querySelector("#observation-status").textContent.includes("読込に失敗")');
+    await wait('window.__feeds.observations.loaded && !window.__feeds.observations.error');
     await click("#close-day-dialog");
     const unavailablePost = { ...officialLate, id: "2096436633973526893",
       url: "https://x.com/akibazettai/status/2096436633973526893" };
     observationResponse.posts = [...originalOfficial.posts.filter(post => post.date !== "2026-09-06"), unavailablePost];
     await click("#refresh-observations");
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations.loaded');
     await evaluate('window.twttr.widgets.createTweet = async () => { throw new Error("mock factory unavailable"); }');
     await click('[data-date="2026-09-06"]');
     await click("#dialog-day .observation-details summary");
@@ -1444,8 +1514,7 @@ async function main() {
     const requestsBeforeBlocked = widgetRequests;
     widgetBlocked = true;
     await call("Page.navigate", { url: `${origin}/` });
-    await wait('document.querySelector("#observation-status").dataset.loaded === "true"');
-    await wait('document.querySelector("#personal-status").dataset.loaded === "true"');
+    await wait('window.__feeds.observations?.loaded && window.__feeds.personal?.loaded');
     await click('[data-date="2026-09-06"]');
     assert.equal(widgetRequests, requestsBeforeBlocked, "a fresh document still loads widgets lazily");
     await click("#dialog-day .observation-details summary");

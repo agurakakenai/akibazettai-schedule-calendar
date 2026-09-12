@@ -203,7 +203,14 @@ vm.createContext(sandbox);
 
 function run(relativePath) {
   const file = path.join(repo, relativePath);
-  vm.runInContext(fs.readFileSync(file, "utf8"), sandbox, { filename: relativePath });
+  let source = fs.readFileSync(file, "utf8");
+  if (relativePath === "app.js") {
+    // Exercise in-flight snapshot updates without reintroducing removed UI controls.
+    source = source.replace(/\}\)\(\);\s*$/, `window.testRefresh = {
+      observations: refreshObservedData, personal: refreshPersonalData, halfMonth: refreshHalfMonthData
+    }; })();`);
+  }
+  vm.runInContext(source, sandbox, { filename: relativePath });
 }
 
 run("data/schedule.js");
@@ -215,6 +222,14 @@ const insights = sandbox.window.STORE_INSIGHTS;
 const schedule = sandbox.window.SCHEDULE_DATA;
 
 function dispatch(id, type) {
+  const refresh = {
+    "refresh-observations": "observations", "refresh-personal": "personal", "refresh-half-month": "halfMonth"
+  }[id];
+  if (refresh) {
+    assert.equal(type, "click");
+    assert.ok(!declaredIds.has(id), "refresh controls must not exist in the page");
+    return windowShim.testRefresh[refresh]();
+  }
   const target = elementById(id);
   const matched = listeners.filter((entry) => entry.element === target && entry.type === type);
   assert.ok(matched.length > 0, `#${id} has no "${type}" listener`);
@@ -1590,25 +1605,13 @@ assert.equal(
   // この期間には主役のキッチンにゃんこがいないので、ここでは件数を求めない。
 }
 
-// 未提出の注意書きは、カレンダーの下に1行だけ出す。シフトごとに繰り返さない。
 {
-  const line = elementById("schedule-pending-note");
-  const pending = windowShim.MEMBER_REGISTRY.members.filter(member => member.membership === "active")
-    .map(member => member.canonicalName);
-  if (pending.length > 0) {
-    assert.equal(line.hidden, false, "with names outstanding the line must be shown");
-    assert.ok(line.textContent.includes(`${pending.length}名`), "the line must count them");
-    assert.ok(line.title, "the line must carry the detail in a tooltip");
-    assert.ok(
-      (line.getAttribute("aria-label") ?? "").includes("実際より少なめ"),
-      "screen readers must get the same warning as the tooltip"
-    );
-    for (const name of pending) {
-      assert.ok(line.title.includes(schedule.displayNames?.[name] ?? name), `${name} must be named in the detail`);
-    }
-  } else {
-    assert.equal(line.hidden, true, "with nobody outstanding the line must stay hidden");
+  for (const id of ["schedule-system-note", "schedule-pending-note", "observation-status", "personal-status",
+    "half-month-status", "refresh-observations", "refresh-personal", "refresh-half-month"]) {
+    assert.ok(!declaredIds.has(id), `${id} is removed, not CSS-hidden`);
   }
+  assert.equal(elementById("last-updated").textContent,
+    `最終更新：${schedule.lastUpdated.replace(/\s*JST\b/g, "")}`);
 }
 
 // 判定していない日には印を付けない。「全員が昇格済み」ではなく「分からない」ため。
@@ -2173,7 +2176,6 @@ test("link-only refresh updates scoped popup links and preserves filters, focus,
       createdAt: `${key}T13:30:00+09:00`, observedAt: `${key}T14:00:00+09:00`,
       links: [{ scope: "夜", status: "work" }] });
     await dispatch("refresh-personal", "click");
-    assert.equal(elementById("personal-status").dataset.error, "false");
     assert.equal(sections()[0], firstDay, "night-only addition does not replace the day section");
     assert.equal(names(0)[0].href, undefined);
     assert.equal(names(1)[0].href, payload.posts[0].url);
@@ -2348,9 +2350,7 @@ test(`half-month plans reach all four views with exact source scope and retained
     }
     halfPayload = snapshot;
     await dispatch("refresh-half-month", "click");
-    assert.equal(elementById("half-month-status").dataset.error, "false");
     assertSources(calendar);
-    assert.match(elementById("schedule-pending-note").textContent, /一部の半月を確認済み/);
     for (const [key, previous] of priorEvidence) {
       const [date, shift] = key.split("|");
       assert.deepEqual(entriesFor(date, shift).filter(row =>
@@ -2449,7 +2449,6 @@ test(`half-month plans reach all four views with exact source scope and retained
     elementById("date-from").value = "2026-09-01";
     elementById("date-to").value = "2026-09-15";
     await dispatch("date-to", "change");
-    assert.ok(!elementById("schedule-pending-note").title.includes("いと"));
     await dispatch("clear-all", "click");
     const selected = walk(elementById("maid-checkboxes")).find(node => node.tagName === "INPUT" && node.value === "いと");
     selected.checked = true;
@@ -2517,13 +2516,13 @@ test(`half-month plans reach all four views with exact source scope and retained
     assert.equal(content.scrollTop, 77);
     assert.equal(filters(), beforeFilters);
     const retained = withClass(content, "shift-section")[0];
-    sandbox.console.error = () => {};
+    const errors = [];
+    sandbox.console.error = (...args) => errors.push(args);
     for (const failure of ["http", "json", "schema"]) {
       errorMode = failure;
       if (failure === "schema") halfPayload.schedules[0].days[0].shifts = ["不明"];
       await dispatch("refresh-half-month", "click");
-      assert.equal(elementById("half-month-status").dataset.error, "true");
-      assert.match(elementById("half-month-status").textContent, /半月予定の読込に失敗.*保存済みの表示は維持/);
+      assert.equal(errors.at(-1)[0], "Half-month snapshot load failed");
       assert.equal(withClass(content, "shift-section")[0], retained, "invalid fetch preserves last valid facts and DOM");
       assert.equal(documentShim.activeElement, nameLink);
       assert.equal(content.scrollTop, 77);
@@ -2533,7 +2532,7 @@ test(`half-month plans reach all four views with exact source scope and retained
     errorMode = null;
     halfPayload = copy(snapshot);
     await dispatch("refresh-half-month", "click");
-    assert.equal(elementById("half-month-status").dataset.error, "false");
+    assert.equal(errors.length, 3, "failed feeds are reported without discarding saved facts");
     assert.equal(dialog.open, true);
     const replacementId = (BigInt(id) + 20n).toString();
     halfPayload.schedules[0].id = replacementId;
@@ -2672,37 +2671,32 @@ test("half-month initial loading shares the snapshot lifecycle without unsolicit
       setInterval: (callback, milliseconds) => { timers.push({ callback, milliseconds }); }
     };
     if (bootstrap) window.HALF_MONTH_SCHEDULES = bootstrap;
-    const context = { ...sandbox, window, document, console };
+    const errors = [];
+    const context = { ...sandbox, window, document, console: { ...console, error: (...args) => errors.push(args) } };
     context.globalThis = context;
     vm.createContext(context);
     vm.runInContext(fs.readFileSync(path.join(repo, "app.js"), "utf8"), context);
-    return { nodes, document, requests, timers, release: () => release(), setPayload: value => { payload = value; } };
+    return { nodes, document, requests, timers, errors, release: () => release(), setPayload: value => { payload = value; } };
   };
   const bad = initialize({ ...empty, complete: true });
-  assert.equal(bad.nodes.get("half-month-status").dataset.error, "true");
-  assert.match(bad.nodes.get("half-month-status").textContent, /半月予定の読込に失敗/);
+  assert.equal(bad.errors[0][0], "Half-month snapshot load failed");
   assert.equal(bad.requests.length, 0, "invalid injected source does not trigger external requests");
   const loaded = initialize();
   assert.deepEqual(loaded.requests, [["data/half-month-schedules.json", "no-store"]]);
-  assert.equal(loaded.nodes.get("half-month-status").dataset.loaded, "false");
-  assert.equal(loaded.nodes.get("refresh-half-month").disabled, true);
   assert.equal(loaded.timers.length, 1);
   assert.equal(loaded.timers[0].milliseconds, 60000, "same existing snapshot cadence");
-  const button = loaded.nodes.get("refresh-half-month");
-  await listeners.find(entry => entry.element === button && entry.type === "click").fn();
+  loaded.timers[0].callback();
   assert.equal(loaded.requests.length, 1, "a pending initial request cannot be duplicated");
   loaded.release();
   await flush();
-  assert.equal(loaded.nodes.get("half-month-status").dataset.loaded, "true");
-  assert.equal(button.disabled, false);
-  assert.equal(loaded.nodes.get("half-month-status").dataset.error, "false");
+  assert.equal(loaded.errors.length, 0);
   const tree = loaded.nodes.get("calendar").children[0];
   loaded.setPayload({ ...empty, checkedAt: "2026-09-07T00:00:00Z", lastRun: { status: "no-results" } });
   loaded.timers[0].callback();
   loaded.release();
   await flush();
   assert.equal(loaded.nodes.get("calendar").children[0], tree, "metadata-only timer ticks do not redraw");
-  assert.match(loaded.nodes.get("half-month-status").textContent, /候補なし/);
+  assert.equal(loaded.errors.length, 0);
   assert.deepEqual(loaded.requests, [
     ["data/half-month-schedules.json", "no-store"], ["data/half-month-schedules.json", "no-store"]
   ]);
@@ -2790,10 +2784,7 @@ test("registry-only members have a selectable profile without inventing a shift 
   assert.equal(profile.getAttribute("aria-label"), "新表示のXを開く");
   assert.equal(profile.rel, "noopener noreferrer");
   assert.equal(profile.target, "_blank");
-  const warning = app.nodes.get("schedule-pending-note");
-  assert.equal(warning.hidden, false);
-  assert.match(warning.title, /新表示/);
-  assert.match(warning.textContent, /在籍1名のうち1名/);
+  assert.ok(!app.nodes.has("schedule-pending-note"));
   for (const mode of ["calendar", "roster", "forecast", "maid"]) {
     app.selectMode(mode);
     assert.equal(withClass(app.nodes.get("calendar"), "maid-entry").length, 0);
@@ -2809,11 +2800,11 @@ test("missing or malformed registry stops UI without a stale roster or source fe
   for (const value of [undefined, null, {}, { schemaVersion: 2, members: [], unresolvedNames: [] },
     { schemaVersion: 1, members: [registryUiMember({ xProfileUrl: "https://x.com/home" })], unresolvedNames: [] }]) {
     const app = initializeRegistryApp(value);
-    assert.equal(app.nodes.get("calendar").children.length, 0);
+    const warning = app.nodes.get("calendar").children[0];
+    assert.equal(app.nodes.get("calendar").children.length, 1);
     assert.equal(app.nodes.get("maid-checkboxes").children.length, 0);
-    assert.equal(app.nodes.get("schedule-pending-note").hidden, false);
-    assert.equal(app.nodes.get("schedule-pending-note").getAttribute("role"), "alert");
-    assert.match(app.nodes.get("schedule-pending-note").textContent, /古い名簿への切替は行いません/);
+    assert.equal(warning.getAttribute("role"), "alert");
+    assert.match(warning.textContent, /古い名簿への切替は行いません/);
     assert.match(app.nodes.get("result-summary").textContent, /表示を停止/);
   }
 });
