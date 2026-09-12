@@ -1245,6 +1245,8 @@ HTTPの前にleaseをremoteへ保存します。収集後、成功・部分失�
 
 #### 承認済み保存根拠の適用
 
+`personalLinkReviews`（最大1件）は出典を人が確認した明示訂正です。既存の誤リンク撤回に加え、`operation="confirm-work-link"`では、本人・投稿日・本文hash・既存no_eventと計上済みreceipt・対象日の予定・subject CASを照合して昼または夜のリンクだけを追加できます。入力は`id/expectedSubjectHash/bodyHash/sourceHash/source/scope/reviewedAt`で、`source`は本人metadataと`fetchedAt`だけです。元のno_event、cache、費用は書き換えず、私的resolvedの`linkReview`へ別の確認記録を残します。店舗・時刻・勤務予定を作らず、Luna抽出成功とも扱いません。通常収集から自動で呼ぶ操作ではなく、全文やモデル応答は保存適用入力へ含めません。
+
 `mode=apply-saved`はtrusted mainの明示`workflow_dispatch`専用です。`saved_manifest`入力を環境変数で渡し、cloudが32KiB以下のdata-only JSONを検査します。トップレベルは`schemaVersion:1`、`expectedMainSHA`、`expectedStateSHA`、`officialAmendments`（最大3件）、`usageImports`、`sourceReceipts`（各最大10件）と、optionalな`personalAmendments`（最大3件）です。公式差分は既知投稿のmetadata・期待facts hash・短いnotices・分析根拠のhashに限定し、任意stateコピー、全文/元行/cache/秘密/コード/URL取得指示は拒否します。
 
 手動の過去日処理は、取得済みのprivate原文を`--analyze-saved --date <対象日>`で解析し、実時計・共有AI台帳は実行日のまま使います。定時取得の当日限定・締切は解除しません。未登録の過去postを適用する場合に限り、`personalAmendments[].amendment.operation="manual-saved-post"`を明示できます。v8のsearch由来metadata、解析日より前の対象日、空subjectのCAS、登録名簿・両author binding・対象日の勤務根拠、**先に精算された実使用receipt**が必要です。既知postの通常経路は変えず、最大3件・owner/lease・idempotencyの既存適用経路を使います。本文やmodel応答はmanifestへ入れず、有効な抽出結果と出典hashだけを渡します。

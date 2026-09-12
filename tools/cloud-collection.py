@@ -359,6 +359,10 @@ def validate_half_month_links(half_month, source_usage, usage, personal):
 
 
 def validate_usage_links(usage, personal, personal_collector=None):
+    if personal and any(item.get('linkReview', {}).get('operation') == 'confirm-work-link'
+                        for item in personal.get('resolved', [])):
+        load_personal_saved().validate_work_link_reviews(
+            personal, usage, personal_collector or load_personal_collector())
     if personal and personal.get('savedPersonalImports'):
         load_personal_saved().validate_accounting(
             personal['savedPersonalImports'], usage, personal_collector or load_personal_collector())
@@ -1190,7 +1194,8 @@ def prepare_saved(manifest, canonical, personal_state, usage, collector, persona
         personal_result, manifest.get('personalAmendments', []), usage, personal,
         registry=registry, binding_maps=binding_maps, daily_targets=daily_targets)
     personal_result = load_personal_saved().apply_link_reviews(
-        personal_result, manifest.get('personalLinkReviews', []), usage, personal)
+        personal_result, manifest.get('personalLinkReviews', []), usage, personal,
+        registry=registry, binding_maps=binding_maps, daily_targets=daily_targets)
     ids = set()
     for entry in manifest['officialAmendments']:
         amendment = entry['amendment']
@@ -1436,10 +1441,12 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
             try:
                 manual_personal = any(entry.get('amendment', {}).get('operation')
                                       == 'manual-saved-post' for entry in manifest.get('personalAmendments', []))
+                work_reviews = [entry for entry in manifest.get('personalLinkReviews', [])
+                                if entry.get('operation') == 'confirm-work-link']
                 registry = (load_member_registry().load_registry(root / 'data' / 'members.json')
-                            if manual_personal else None)
+                            if manual_personal or work_reviews else None)
                 daily_targets = None
-                if manual_personal:
+                if manual_personal or work_reviews:
                     schedule = personal.read_js(root / 'data' / 'schedule.js', 'SCHEDULE_DATA')
                     if half_month_state is not None:
                         schedule = {**schedule, 'schedule': load_half_month_state().effective_schedule(
@@ -1449,6 +1456,7 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                     dates = {entry['amendment']['source']['date']
                              for entry in manifest.get('personalAmendments', [])
                              if entry['amendment'].get('operation') == 'manual-saved-post'}
+                    dates.update(entry['source']['date'] for entry in work_reviews)
                     daily_targets = {day: personal.select_targets(
                         schedule, insights, [], dt.date.fromisoformat(day), copy.deepcopy(personal_state),
                         canonical, registry=registry,

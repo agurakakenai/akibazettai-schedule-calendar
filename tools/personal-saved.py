@@ -546,11 +546,87 @@ def apply_amendments(state, entries, usage, personal, *, registry=None, binding_
     return result
 
 
-def apply_link_reviews(state, entries, usage, personal):
-    """Review only a native, link-only undated-work false positive; retain its evidence."""
+def source_review_post(entry, personal):
+    _keys(entry, ('operation', 'id', 'expectedSubjectHash', 'bodyHash', 'sourceHash',
+                  'source', 'scope', 'reviewedAt'))
+    _require(entry['operation'] == 'confirm-work-link', 'invalid_personal_link_review')
+    for field in ('expectedSubjectHash', 'bodyHash', 'sourceHash'):
+        _hash(entry[field])
+    _keys(entry['source'], (*METADATA, 'fetchedAt'))
+    _require(entry['scope'] in ('昼', '夜'), 'invalid_personal_link_review')
+    source = entry['source']
+    post = {'id': entry['id'], **{field: source[field] for field in METADATA},
+            'observedAt': entry['reviewedAt'], 'events': [],
+            'links': [{'scope': entry['scope'], 'status': 'work'}]}
+    personal.valid_post(post)
+    _require(personal.official.timestamp(source['createdAt'])
+             <= personal.official.timestamp(source['fetchedAt'])
+             <= personal.official.timestamp(entry['reviewedAt']),
+             'invalid_personal_link_review')
+    return post
+
+
+def _work_review_basis(state, entry, usage, personal):
+    post = source_review_post(entry, personal)
+    cache_keys = {key for key, cached in state.get('azureAnalysis', {}).get('cache', {}).items()
+                  if cached['postId'] == entry['id'] and cached['bodyHash'] == entry['bodyHash']
+                  and cached['reason'] == 'no_event' and not cached['events']
+                  and not cached.get('links') and not cached.get('workTiming')}
+    _require(any(receipt['requestHash'] in cache_keys and receipt['component'] == 'personal'
+                 and receipt.get('issuedAt') and receipt.get('reason') == 'no_event'
+                 for receipt in (usage or {}).get('receipts', {}).values()),
+             'personal_link_review_source_mismatch')
+    _require(_check_binding(post, state['identityBindings']) is not None,
+             'missing_saved_personal_binding')
+    return post
+
+
+def validate_work_link_reviews(state, usage, personal):
+    for item in state.get('resolved', []):
+        entry = item.get('linkReview', {})
+        if entry.get('operation') == 'confirm-work-link':
+            _work_review_basis(state, entry, usage, personal)
+
+
+def apply_link_reviews(state, entries, usage, personal, *,
+                       registry=None, binding_maps=(), daily_targets=None):
+    """Apply explicit source reviews without changing the original model assessment."""
     _require(isinstance(entries, list) and len(entries) <= 1, 'invalid_personal_link_review')
     result = copy.deepcopy(state)
     for entry in entries:
+        if isinstance(entry, dict) and entry.get('operation') == 'confirm-work-link':
+            post = _work_review_basis(result, entry, usage, personal)
+            tid = post['id']
+            resolved = [item for item in result['resolved'] if item['id'] == tid]
+            if len(resolved) == 1 and resolved[0].get('linkReview') == entry:
+                _require(post in result['posts'], 'personal_link_review_source_mismatch')
+                continue
+            _require(subject_hash(result, tid) == entry['expectedSubjectHash'],
+                     'saved_personal_subject_mismatch')
+            _require(len(resolved) == 1 and resolved[0]['reason'] == 'no_event'
+                     and 'linkReview' not in resolved[0]
+                     and all(resolved[0][field] == post[field] for field in ('url', 'name', 'date'))
+                     and not any(item['id'] == tid for field in ('posts', 'pending') for item in result[field])
+                     and not any(item['amendment']['id'] == tid
+                                 for item in result.get('savedPersonalImports', {}).values()),
+                     'personal_link_review_requires_native_negative')
+            _require(registry is not None and daily_targets is not None,
+                     'personal_link_review_requires_dated_target')
+            population, _ = personal.members.collection_population(
+                registry, result['identityBindings'], *binding_maps)
+            target = personal.target_for_name(daily_targets.get(post['date'], {}), post['name'])
+            _require(any(item['name'] == post['name'] for item in population.values())
+                     and target is not None and entry['scope'] in target['shifts']
+                     and target['handle'].casefold() == post['authorScreenName'].casefold(),
+                     'personal_link_review_requires_dated_target')
+            for bindings in binding_maps:
+                _check_binding(post, bindings)
+            _require(personal.official.timestamp(entry['reviewedAt']) <= personal.official.utc_now(),
+                     'invalid_personal_link_review')
+            result['posts'].append(post)
+            # Keep reason/resolvedAt and every original no_event cache entry intact.
+            resolved[0]['linkReview'] = copy.deepcopy(entry)
+            continue
         _keys(entry, ('id', 'expectedSubjectHash', 'bodyHash', 'sourceHash'))
         _require(personal.official.post_id(entry['id']), 'invalid_personal_link_review')
         for field in ('expectedSubjectHash', 'bodyHash', 'sourceHash'):

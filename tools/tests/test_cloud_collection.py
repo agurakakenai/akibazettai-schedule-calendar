@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 import uuid
@@ -1876,6 +1877,40 @@ class CloudTests(unittest.TestCase):
                           collector=collector, personal=helper.personal)
         self.assertEqual(self.remote_json(cloud.PERSONAL)[0], after)
 
+    def test_source_confirmed_link_review_uses_normal_dispatch_and_preserves_negative(self):
+        helper = PersonalSavedTests(methodName='runTest')
+        helper.setUp()
+        private, usage, entry, registry, _ = helper.native_negative_review()
+        source = entry['source']
+        self.seed_branch()
+        self.bare_commit({cloud.PERSONAL: private, cloud.AI_USAGE: usage})
+        (self.root / 'data' / 'members.json').write_bytes(helper.personal.members.json_bytes(registry))
+        (self.root / 'data' / 'schedule.js').write_text('window.SCHEDULE_DATA=' + json.dumps({
+            'roster': [source['name']], 'schedule': {source['date']: {'昼': [{'name': source['name']}]}}
+        }) + ';', encoding='utf-8')
+        manifest = self.saved_manifest()
+        manifest.update(usageImports=[], personalLinkReviews=[entry])
+        self.saved_mode(manifest)
+        with mock.patch.object(cloud, 'invoke_collector', side_effect=AssertionError('No source')), \
+                mock.patch.object(cloud, 'invoke_personal_collector', side_effect=AssertionError('No AI')):
+            result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                       collector=collector, personal=helper.personal)
+        self.assertEqual(result['collectionStatus'], 'applied-saved')
+        after = self.remote_json(cloud.PERSONAL)[0]
+        post = next(post for post in after['posts'] if post['id'] == entry['id'])
+        self.assertEqual(post['links'], [{'scope': '昼', 'status': 'work'}])
+        self.assertEqual(post['events'], [])
+        self.assertEqual(after['azureAnalysis'], private['azureAnalysis'])
+        self.assertEqual(next(item for item in after['resolved'] if item['id'] == entry['id'])['reason'],
+                         'no_event')
+        self.assertEqual(self.remote_json(cloud.AI_USAGE)[0], usage)
+        self.assertNotIn(cloud.LEASE, self.remote_names())
+        manifest['expectedStateSHA'] = result['stateCommit']
+        self.saved_mode(manifest)
+        cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                          collector=collector, personal=helper.personal)
+        self.assertEqual(self.remote_json(cloud.PERSONAL)[0], after)
+
     def test_manual_past_import_uses_real_dated_scope_and_existing_leased_apply(self):
         helper = PersonalSavedTests(methodName='runTest')
         helper.setUp()
@@ -2678,6 +2713,98 @@ class PersonalSavedTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 self.saved.apply_link_reviews(state, [entry], usage, self.personal)
             self.assertEqual(state, unchanged)
+
+    def native_negative_review(self):
+        state, usage, entry = self.native_link_review()
+        post = next(post for post in state['posts'] if post['id'] == entry['id'])
+        state['posts'].remove(post)
+        resolved = next(item for item in state['resolved'] if item['id'] == entry['id'])
+        resolved['reason'] = 'no_event'
+        for cached in state['azureAnalysis']['cache'].values():
+            cached.update(reason='no_event', links=[])
+        for receipt in usage['receipts'].values():
+            receipt['reason'] = 'no_event'
+        entry.update(operation='confirm-work-link', scope='昼', reviewedAt=post['observedAt'],
+                     source={**{field: post[field] for field in self.saved.METADATA},
+                             'fetchedAt': post['observedAt']})
+        entry['expectedSubjectHash'] = self.saved.subject_hash(state, entry['id'])
+        registry = self.personal.members.empty_registry()
+        registry['members'] = [self.personal.members.new_member(
+            post['name'], 'https://x.com/' + post['authorScreenName'],
+            self.personal.official.timestamp(post['observedAt']))]
+        targets = {post['date']: {post['name']: {
+            'name': post['name'], 'handle': post['authorScreenName'], 'shifts': ['昼']}}}
+        return state, usage, entry, registry, targets
+
+    def test_source_confirmed_link_keeps_native_negative_and_has_separate_review(self):
+        state, usage, entry, registry, targets = self.native_negative_review()
+        original = copy.deepcopy(state)
+        self.assertEqual(self.saved.apply_link_reviews(state, [], usage, self.personal), state)
+        after = self.saved.apply_link_reviews(
+            state, [entry], usage, self.personal, registry=registry, daily_targets=targets)
+        post = next(post for post in after['posts'] if post['id'] == entry['id'])
+        self.assertEqual(post['events'], [])
+        self.assertNotIn('workTiming', post)
+        self.assertEqual(post['links'], [{'scope': '昼', 'status': 'work'}])
+        resolved = next(item for item in after['resolved'] if item['id'] == entry['id'])
+        self.assertEqual(resolved['reason'], 'no_event')
+        self.assertEqual(resolved['linkReview'], entry)
+        before_resolved = next(item for item in original['resolved'] if item['id'] == entry['id'])
+        self.assertEqual({key: value for key, value in resolved.items() if key != 'linkReview'},
+                         before_resolved)
+        self.assertEqual(after['azureAnalysis'], original['azureAnalysis'])
+        self.assertEqual(after['budgets'], original['budgets'])
+        self.assertEqual(state, original)
+        self.assertEqual(after, self.saved.apply_link_reviews(after, [entry], usage, self.personal))
+        self.saved.validate_work_link_reviews(after, usage, self.personal)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'personal-shifts.json'
+            path.write_text(json.dumps(after), encoding='utf-8')
+            self.assertEqual(self.personal.read_state(path), after)
+            cloud.validate_personal(path, self.personal)
+            cloud.validate_usage_links(usage, after, self.personal)
+
+    def test_source_review_rejects_wrong_basis_identity_date_and_unannounced_scope(self):
+        for change in ('cas', 'body', 'usage', 'author', 'date', 'scope', 'target',
+                       'registry', 'paused', 'other_binding', 'raw', 'existing_post'):
+            state, usage, entry, registry, targets = self.native_negative_review()
+            bindings = ()
+            if change == 'cas':
+                entry['expectedSubjectHash'] = '0' * 64
+            elif change == 'body':
+                entry['bodyHash'] = '0' * 64
+            elif change == 'usage':
+                usage['receipts'] = {}
+            elif change == 'author':
+                entry['source']['authorId'] = '123456789012345678'
+            elif change == 'date':
+                entry['source']['date'] = '2026-09-07'
+            elif change == 'scope':
+                entry['scope'] = '夜'
+            elif change == 'target':
+                targets = {}
+            elif change == 'registry':
+                registry = None
+            elif change == 'paused':
+                registry = self.personal.members.update_member(
+                    registry, entry['source']['name'], collection='paused',
+                    now=self.personal.official.timestamp(entry['reviewedAt']))
+            elif change == 'other_binding':
+                bindings = ({entry['source']['name']: {
+                    'authorId': '123456789012345678',
+                    'authorScreenName': entry['source']['authorScreenName'],
+                    'verifiedAt': entry['reviewedAt']}},)
+            elif change == 'raw':
+                entry['source']['body'] = 'PRIVATE_SENTINEL'
+            else:
+                state['posts'].append(self.saved.source_review_post(entry, self.personal))
+                entry['expectedSubjectHash'] = self.saved.subject_hash(state, entry['id'])
+            original = copy.deepcopy(state)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.saved.apply_link_reviews(state, [entry], usage, self.personal,
+                                              registry=registry, binding_maps=bindings,
+                                              daily_targets=targets)
+            self.assertEqual(state, original)
 
     def manual_import(self):
         state = copy.deepcopy(self.state)
