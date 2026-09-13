@@ -675,8 +675,13 @@ class SharedUsage:
         receipt = self.state['receipts'][self._active]
         try:
             charge = costs.settle(receipt['money'], envelope)
-        except (ValueError, KeyError, TypeError):
-            # Unknown usage keeps the entire pre-HTTP reservation.
+        except costs.UsageMissing:
+            receipt['money']['usageStatus'] = 'usage_missing'
+            self._save()
+            return
+        except costs.UsageInconsistent:
+            receipt['money']['usageStatus'] = 'usage_inconsistent'
+            self._save()
             raise UsageFailure('azure_invalid_output') from None
         receipt['money'] = charge
         self._save()
