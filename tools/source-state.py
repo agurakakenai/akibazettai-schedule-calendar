@@ -496,7 +496,8 @@ def usage_counts(state, run_id, now, component='schedule', *, catch_up=False):
     usage._token(run_id)
     if component not in COMPONENTS:
         raise ValueError('invalid_source_configuration')
-    day = usage._now(now).astimezone(JST).date().isoformat()
+    local_now = usage._now(now).astimezone(JST)
+    day = local_now.date().isoformat()
     run = {name: _zero() for name in COMPONENTS}
     daily = {name: _zero() for name in COMPONENTS}
     daily['personal'].update(_imported_budgets(state).get(day, {}))
@@ -520,6 +521,9 @@ def usage_counts(state, run_id, now, component='schedule', *, catch_up=False):
     else:
         search_left.extend(((15 if catch_up else 3) - shared_searches, DAY_SEARCH_LIMIT - day_searches))
         individual_left.append(DAY_INDIVIDUAL_LIMIT - day_individual)
+        if (local_now.hour, local_now.minute) < (12, 30):
+            search_left.append(DAY_SEARCH_LIMIT // 2 - day_searches)
+            individual_left.append(DAY_INDIVIDUAL_LIMIT // 2 - day_individual)
     posts_left, images_left = list(individual_left), list(individual_left)
     if component == 'personal':
         posts_left.append((14 if catch_up else 3) - run['personal']['posts'])
