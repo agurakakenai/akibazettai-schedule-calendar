@@ -17,7 +17,7 @@ import urllib.request
 
 LIMIT = 1_000_000_000  # micro-JPY; 1,000 JPY
 JST = dt.timezone(dt.timedelta(hours=9))
-PRICE_VERSION = 'azure-retail-jpy-2026-09-13'
+PRICE_VERSION = 'azure-retail-jpy-2026-09-13-write4'
 PRICE_SOURCE = 'https://prices.azure.com/api/retail/prices'
 MODEL_SOURCE = 'https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure'
 # JPY / million tokens: uncached input, cached read, additional cache write, output.
@@ -29,6 +29,7 @@ PRICES = {
 }
 INPUT_MAX = 922_000
 OUTPUT_MAX = 128_000
+MAX_CACHE_WRITES = 4
 RESOURCE_ID = ('/subscriptions/eb1d1a6f-a4b6-4c6f-885d-5ef15ed3bb64'
                '/resourceGroups/rg-akibazettai-ai/providers/Microsoft.CognitiveServices'
                '/accounts/aoai-akibazettai-nano')
@@ -68,7 +69,7 @@ def empty():
 def cost(model, version, prompt, cached, written, output):
     for value in (prompt, cached, written, output):
         integer(value)
-    require(cached + written <= prompt and (model, version) in PRICES)
+    require(cached <= prompt and written <= MAX_CACHE_WRITES * prompt and (model, version) in PRICES)
     rates = [int(Decimal(value) * 1_000_000) for value in PRICES[model, version]]
     numerator = ((prompt - cached) * rates[0] + cached * rates[1]
                  + written * rates[2] + output * rates[3])
@@ -79,7 +80,7 @@ def cost(model, version, prompt, cached, written, output):
 def ceiling(model, version, input_tokens, output_tokens):
     integer(input_tokens, 1)
     integer(output_tokens, 1)
-    return cost(model, version, input_tokens, 0, input_tokens, output_tokens)
+    return cost(model, version, input_tokens, 0, input_tokens * MAX_CACHE_WRITES, output_tokens)
 
 
 def validate_request(value):

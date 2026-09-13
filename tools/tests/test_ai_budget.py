@@ -181,6 +181,17 @@ class BudgetTests(unittest.TestCase):
         with self.assertRaises(azure.AzureFailure):
             azure.request_budget([{'role': 'user', 'content': [{'type': 'input_audio'}]}], {}, **self.arguments)
 
+    def test_up_to_four_cache_write_prefixes_are_reserved_without_assuming_disjoint_tokens(self):
+        charge = money.reservation(base.IDENTITY, self.request)
+        self.assertEqual(charge['reservedMicroJPY'], money.cost(
+            charge['model'], charge['modelVersion'], charge['inputCeiling'], 0,
+            charge['inputCeiling'] * 4, charge['outputCeiling']))
+        settled = money.settle(charge, self.envelope(prompt=200, cached=80, written=800))
+        self.assertEqual(settled['usage']['cachedWrite'], 800)
+        self.assertLessEqual(settled['chargedMicroJPY'], settled['reservedMicroJPY'])
+        with self.assertRaises(ValueError):
+            money.settle(charge, self.envelope(prompt=200, cached=80, written=801))
+
     def test_legacy_unknown_does_not_become_zero_and_import_stays_idempotent(self):
         state = ledger.load_state(self.path)
         old = base.historical(date='2026-09-13', count=40)
