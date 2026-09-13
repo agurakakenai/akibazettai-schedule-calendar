@@ -157,6 +157,7 @@ def safe_environment(environment, *, credentials=False, azure=False):
         and not key.upper().startswith('AZURE_OPENAI_')
         and key.upper() not in ('PERSONAL_ANALYSIS_BACKEND', 'APPLY_SAVED_MANIFEST')
         and not key.upper().startswith('CLOUD_COLLECTION_')
+        and not key.upper().startswith(('AZURE_COST_', 'ACTIONS_ID_TOKEN_'))
     }
     if not credentials:
         result.pop('GH_TOKEN', None)
@@ -595,7 +596,7 @@ def require_manual_personal(mode, environment):
         except (KeyError, TypeError, ValueError, OSError):
             raise CloudError('untrusted_event') from None
         return
-    if mode not in ('personal', 'both', 'apply-saved'):
+    if mode not in ('personal', 'both', 'apply-saved', 'cost-sync'):
         return
     require(environment.get('GITHUB_EVENT_NAME') == 'workflow_dispatch',
             'personal_requires_manual_run')
@@ -1317,7 +1318,7 @@ def validate_personal_completion(path, status, code):
 
 def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=None):
     environment = dict(os.environ if environment is None else environment)
-    require(args.mode in ('restore', 'collect', 'personal', 'both', 'daily-guidance', 'apply-saved'),
+    require(args.mode in ('restore', 'collect', 'personal', 'both', 'daily-guidance', 'apply-saved', 'cost-sync'),
             'invalid_collection_mode')
     environment = {key: value for key, value in environment.items()
                    if not key.startswith('CLOUD_COLLECTION_')}
@@ -1435,6 +1436,8 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
             if personal_state is not None and not has_personal:
                 atomic_bytes(personal_seed, personal_raw)
             return result
+        if args.mode == 'cost-sync':
+            require(has_ai and 'money' in usage_state, 'monthly_accounting_required')
 
         if applying:
             require(has_personal, 'missing_personal_state')
@@ -1481,14 +1484,14 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                     now=collector.utc_now(), accounting_usage=prepared[2])
             except (ValueError, TypeError, KeyError, OverflowError):
                 raise CloudError('saved_manifest_rejected') from None
-        if repo.head and output.exists() and not applying:
+        if repo.head and output.exists() and not applying and args.mode != 'cost-sync':
             mirror, _ = validate_snapshot(output, collector)
             canonical = collector.merge_snapshots(canonical, mirror)
         # Keep the longest recorded host cooldown, even if the canonical facts
         # predate an HTTP-only save. The collector consumes the same sidecar.
         limits, _ = validate_transport(state_dir / HTTP_STATE, collector)
         local_sidecar = output.with_suffix('.http-state.json')
-        if local_sidecar.exists() and not applying:
+        if local_sidecar.exists() and not applying and args.mode != 'cost-sync':
             local, _ = validate_transport(local_sidecar, collector)
             for host, until in local['cooldowns'].items():
                 previous = limits['cooldowns'].get(host)
@@ -1498,7 +1501,8 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
             previous = limits['cooldowns'].get(host)
             if previous is None or collector.timestamp(until) > collector.timestamp(previous):
                 limits['cooldowns'][host] = until
-        canonical['cooldowns'] = dict(limits['cooldowns'])
+        if args.mode != 'cost-sync':
+            canonical['cooldowns'] = dict(limits['cooldowns'])
         collector.atomic_json(state_dir / SNAPSHOT, canonical)
         collector.atomic_json(state_dir / HTTP_STATE, limits)
         lease = {
@@ -1520,6 +1524,13 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
         buffered = None
         initial_official = initial_requests = None
         try:
+            if not applying and has_ai and 'money' in usage_state:
+                ledger = load_analysis_state()
+                with ledger.SharedUsage(
+                        collected / AI_USAGE, component='official', request_limit=0,
+                        run_id=environment['GITHUB_RUN_ID'] + '-' + environment['GITHUB_RUN_ATTEMPT'],
+                        clock=collector.utc_now, sleep=lambda seconds: None) as shared:
+                    result['azureCostSyncAttempted'] = ledger.costs.sync(shared, environment)
             if applying:
                 canonical, personal_state, usage = prepared
                 collector.atomic_json(collected / SNAPSHOT, canonical)
@@ -1725,7 +1736,11 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 save_recovery(collected, recovery, collector, **bundle)
             finally:
                 (work / ANALYSIS_BUFFER).unlink(missing_ok=True)
-        if args.mode in ('both', 'daily-guidance'):
+        if args.mode == 'cost-sync':
+            saved_usage, _ = validate_ai_usage(collected / AI_USAGE)
+            unavailable = saved_usage['money']['billing']['failure'] is not None
+            status, code = ('cost-unavailable', 2) if unavailable else ('cost-synced', 0)
+        elif args.mode in ('both', 'daily-guidance'):
             status = combined_status(
                 result['officialCollectionStatus'], result['personalCollectionStatus'])
             if collect_half_month:
@@ -1738,6 +1753,9 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
         else:
             status, code = result['officialCollectionStatus'], result['officialCollectionCode']
         copy_pair(collected, state_dir, collector, **bundle)
+        if has_ai:
+            current_usage, _ = validate_ai_usage(state_dir / AI_USAGE)
+            result['aiBudget'] = load_analysis_state().costs.balance(current_usage, collector.utc_now())
         (state_dir / LEASE).unlink()
         result['stateCommit'] = repo.persist(collector, leased=False, personal=personal)
         copy_pair(state_dir, output.parent, collector, **bundle)
@@ -1750,6 +1768,30 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
 
 
 def emit(result, environment):
+    budget = result.get('aiBudget')
+    if budget and environment.get('GITHUB_STEP_SUMMARY'):
+        amount = lambda value: 'unknown' if value is None else f'{value / 1_000_000:.6f}'
+        lines = ['## AI application budget (JPY, pre-tax; not an invoice guarantee)\n',
+                 f"Month (JST): {budget['month']}; limit: 1000 JPY; "
+                 f"spendable: {amount(budget['availableMicroJPY'])} JPY; reason: {budget['reason']}.\n",
+                 f"Provisional opening: {amount(budget['openingProvisionalMicroJPY'])}; "
+                 f"token-priced: {amount(budget['tokenPricedMicroJPY'])}; "
+                 f"reconciled without double counting: {amount(budget['reconciledMicroJPY'])}; "
+                 f"unallocated UTC month-boundary hold: {amount(budget['utcBoundaryHoldMicroJPY'])}; "
+                 f"reserved: {amount(budget['reservedMicroJPY'])}; "
+                 f"unpriced records: {budget['unknownRecords']}.\n",
+                 f"Azure resource ActualCost (delayed, UTC daily; includes other deployments): "
+                 f"{amount(budget['azurePreTaxMicroJPY'])} JPY; "
+                 f"resource budget remainder: {amount(budget['azureRemainingMicroJPY'])} JPY.\n",
+                 f"Actual queried UTC coverage: {budget['azureFrom']} to {budget['azureTo']}; "
+                 f"last returned UTC usage day: {budget['azureLastUsageDate']}. "
+                 "This does not certify exact JST-day invoice completeness.\n",
+                 f"Last successful sync: {budget['azureLastSuccessAt'] or 'never'}; "
+                 f"age seconds: {budget['azureAgeSeconds']}; failure: {budget['azureFailure'] or 'none'}.\n"]
+        with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
+            target.writelines(lines)
+    if budget and (budget['reason'] != 'ok' or budget['azureFailure']):
+        print('::warning::AI budget or Azure cost reconciliation needs attention; see job summary.')
     acquisition = result.get('acquisition')
     half = result.get('halfMonthAcquisition')
     if environment.get('GITHUB_STEP_SUMMARY') and (acquisition or half):
@@ -1804,7 +1846,7 @@ def emit(result, environment):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=(
-        'restore', 'collect', 'personal', 'both', 'daily-guidance', 'apply-saved'), required=True)
+        'restore', 'collect', 'personal', 'both', 'daily-guidance', 'apply-saved', 'cost-sync'), required=True)
     parser.add_argument('--output', type=Path, default=Path('data') / SNAPSHOT)
     parser.add_argument('--recovery-dir', type=Path, default=Path('.cloud-collection-recovery'))
     args = parser.parse_args(argv)

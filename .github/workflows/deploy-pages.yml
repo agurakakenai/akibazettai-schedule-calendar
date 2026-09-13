@@ -18,6 +18,7 @@ on:
           - personal
           - both
           - apply-saved
+          - cost-sync
           - probe
         default: deploy
       saved_manifest:
@@ -64,10 +65,11 @@ jobs:
       (github.event_name == 'schedule' ||
        (github.event_name == 'workflow_dispatch' &&
         (inputs.mode == 'collect' || inputs.mode == 'personal' || inputs.mode == 'both' ||
-         inputs.mode == 'apply-saved')))
+         inputs.mode == 'apply-saved' || inputs.mode == 'cost-sync')))
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
     steps:
       # A queued collector must use current code, not the old triggering commit.
       - name: Check out current production code
@@ -83,10 +85,23 @@ jobs:
           EVENT_SCHEDULE: ${{ github.event.schedule }}
           DAILY_GUIDANCE_ENABLED: ${{ vars.DAILY_GUIDANCE_ENABLED || 'false' }}
         run: python tools/collection-routing.py
+      - name: Authenticate read-only Azure cost access
+        id: azure-cost-login
+        if: >-
+          steps.route.outputs.collectionMode != 'apply-saved' &&
+          vars.AZURE_COST_CLIENT_ID != '' && vars.AZURE_COST_TENANT_ID != '' &&
+          vars.AZURE_COST_SUBSCRIPTION_ID != ''
+        continue-on-error: true
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_COST_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_COST_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_COST_SUBSCRIPTION_ID }}
       - name: Collect with durable state
         id: collection
         env:
           GH_TOKEN: ${{ github.token }}
+          AZURE_COST_AUTHENTICATED: ${{ steps.azure-cost-login.outcome == 'success' && 'true' || 'false' }}
           GH_PROMPT_DISABLED: "1"
           GIT_TERMINAL_PROMPT: "0"
           COLLECTION_MODE: ${{ steps.route.outputs.collectionMode }}

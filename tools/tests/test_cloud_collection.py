@@ -365,6 +365,43 @@ class CloudTests(unittest.TestCase):
         event['inputs'] = {'mode': mode}
         self.event_path.write_text(json.dumps(event), encoding='utf-8')
 
+    def test_cost_sync_only_uses_existing_lease_and_cached_day_without_collectors(self):
+        self.seed_branch()
+        analysis = cloud.load_analysis_state()
+        usage = analysis.empty_state()
+        usage['money'] = analysis.costs.empty()
+        self.bare_commit({cloud.AI_USAGE: usage})
+        self.personal_mode('cost-sync')
+        before, _ = self.remote_json(cloud.SNAPSHOT)
+        now = dt.datetime(2026, 9, 13, 2, tzinfo=dt.timezone.utc)
+        observation = {
+            'fetchedAt': '2026-09-13T02:00:00Z', 'from': '2026-09-01T00:00:00Z',
+            'to': '2026-09-12T23:59:59Z', 'resourceId': analysis.costs.RESOURCE_ID,
+            'currency': 'JPY', 'preTaxMicroJPY': 0, 'lastUsageDate': '2026-09-12',
+            'month': '2026-09', 'calendarBasis': 'UTC-daily', 'dailyMicroJPY': {'2026-09-12': 0}}
+        query = mock.Mock(return_value=observation)
+        original_sync = analysis.costs.sync
+        with mock.patch.object(cloud, 'load_analysis_state', return_value=analysis), \
+                mock.patch.object(collector, 'utc_now', return_value=now), \
+                mock.patch.object(analysis.costs, 'sync',
+                                  side_effect=lambda shared, env: original_sync(shared, env, query=query)), \
+                mock.patch.object(cloud, 'invoke_collector') as official_call, \
+                mock.patch.object(cloud, 'invoke_personal_collector') as personal_call, \
+                mock.patch.object(cloud, 'invoke_half_month_collector') as half_call:
+            first = cloud.orchestrate(self.args, root=self.root, environment=self.environment, collector=collector)
+            saved, _ = self.remote_json(cloud.AI_USAGE)
+            second = cloud.orchestrate(self.args, root=self.root, environment=self.environment, collector=collector)
+            self.assertTrue(first['azureCostSyncAttempted'])
+            self.assertFalse(second['azureCostSyncAttempted'])
+            self.assertEqual(first['collectionStatus'], 'cost-synced')
+            query.assert_called_once()
+            official_call.assert_not_called()
+            personal_call.assert_not_called()
+            half_call.assert_not_called()
+        self.assertEqual(self.remote_json(cloud.AI_USAGE)[0], saved)
+        self.assertEqual(self.remote_json(cloud.SNAPSHOT)[0], before)
+        self.assertNotIn(cloud.LEASE, self.remote_names())
+
     def saved_mode(self, manifest):
         self.personal_mode('apply-saved')
         text = json.dumps(manifest, ensure_ascii=False)
@@ -2419,9 +2456,11 @@ class CloudTests(unittest.TestCase):
                 return Response()
 
         def analyzer(state, context, environment, shared, **kwargs):
-            return real_analyzer(
+            result = real_analyzer(
                 state, context, self.environment, shared, **kwargs,
                 names=('あむ', 'こい', 'みりあ'), opener=Opener())
+            result.client.usage = mock.Mock()
+            return result
 
         def child(argv, **kwargs):
             if len(argv) < 4 or argv[0] != sys.executable:

@@ -3,6 +3,7 @@
 Callers own task-specific prompts/schemas, provenance, budgets and durable state.
 """
 import http.client
+import hashlib
 import json
 import re
 import urllib.error
@@ -14,6 +15,7 @@ MODEL_VERSION = '2026-07-09'
 DEPLOYMENT = 'gpt-5.6-luna'
 TIMEOUT = 30
 MAX_RESPONSE_BYTES = 24000
+MAX_INPUT_TOKENS = 922000
 
 
 class AzureFailure(Exception):
@@ -50,8 +52,40 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise AzureFailure('azure_http_error')
 
 
+def request_payload(messages, schema, *, name, max_completion_tokens):
+    return {'model': DEPLOYMENT, 'reasoning_effort': 'none',
+            'max_completion_tokens': max_completion_tokens, 'messages': messages,
+            'response_format': {'type': 'json_schema', 'json_schema': {
+                'name': name, 'strict': True, 'schema': schema}}}
+
+
+def request_budget(messages, schema, *, name, max_completion_tokens):
+    if type(max_completion_tokens) is not int or not 1 <= max_completion_tokens <= 128000:
+        raise AzureFailure('azure_input_limit')
+    images = False
+    if not isinstance(messages, list):
+        raise AzureFailure('azure_input_limit')
+    for message in messages:
+        if not isinstance(message, dict) or not isinstance(message.get('content'), (str, list)):
+            raise AzureFailure('azure_input_limit')
+        if isinstance(message['content'], list):
+            for part in message['content']:
+                if not isinstance(part, dict) or part.get('type') not in ('text', 'image_url'):
+                    raise AzureFailure('azure_input_limit')
+                images = images or part['type'] == 'image_url'
+    raw = json.dumps(request_payload(messages, schema, name=name,
+                                     max_completion_tokens=max_completion_tokens)).encode('utf-8')
+    # Escaped full wire text bounds byte-tokenization, including the schema and
+    # metadata, plus the existing conservative 512-token framing reserve.
+    bound = MAX_INPUT_TOKENS if images else len(raw) + 512
+    if bound > MAX_INPUT_TOKENS:
+        raise AzureFailure('azure_input_limit')
+    return {'payloadHash': hashlib.sha256(raw).hexdigest(), 'inputCeiling': bound,
+            'outputCeiling': max_completion_tokens, 'imageInput': images}
+
+
 class AzureOpenAI:
-    def __init__(self, environment, *, on_http_failure, opener=None):
+    def __init__(self, environment, *, on_http_failure, opener=None, usage=None):
         endpoint = environment.get('AZURE_OPENAI_ENDPOINT', '').rstrip('/')
         deployment = environment.get('AZURE_OPENAI_DEPLOYMENT', DEPLOYMENT)
         key = environment.get('AZURE_OPENAI_API_KEY', '')
@@ -63,6 +97,7 @@ class AzureOpenAI:
         self.identity = {'provider': 'azure_openai', 'endpoint': endpoint,
                          'deployment': deployment, 'model': MODEL_NAME, 'modelVersion': MODEL_VERSION}
         self.on_http_failure = on_http_failure
+        self.usage = usage
         self.opener = opener or urllib.request.build_opener(NoRedirect())
 
     def fail_http(self, status, retry_after):
@@ -70,15 +105,14 @@ class AzureOpenAI:
         raise AzureFailure('azure_http_error', status)
 
     def structured(self, messages, schema, *, name, max_completion_tokens):
-        payload = {
-            'model': self.deployment, 'reasoning_effort': 'none',
-            'max_completion_tokens': max_completion_tokens, 'messages': messages,
-            'response_format': {'type': 'json_schema', 'json_schema': {
-                'name': name, 'strict': True, 'schema': schema}},
-        }
+        payload = request_payload(messages, schema, name=name, max_completion_tokens=max_completion_tokens)
+        budget = request_budget(messages, schema, name=name, max_completion_tokens=max_completion_tokens)
         request = urllib.request.Request(
             self.url, data=json.dumps(payload).encode('utf-8'),
             headers={'Content-Type': 'application/json', 'api-key': self._key})
+        if self.usage is None:
+            raise AzureFailure('azure_budget_exhausted')
+        self.money_call('authorize_http', self.identity, budget)
         try:
             with self.opener.open(request, timeout=TIMEOUT) as response:
                 if response.getcode() != 200:
@@ -102,6 +136,7 @@ class AzureOpenAI:
             model, version = self.identity['model'], self.identity['modelVersion']
             if envelope.get('model') not in (model, model + '-' + version):
                 raise AzureFailure('azure_model_mismatch')
+            self.money_call('record_usage', envelope)
             choice = choices[0]
             message = choice['message']
             if not isinstance(message, dict):
@@ -114,3 +149,9 @@ class AzureOpenAI:
             return strict_json(message['content'])
         except (KeyError, TypeError, ValueError, UnicodeError, RecursionError):
             raise AzureFailure('azure_invalid_output') from None
+
+    def money_call(self, method, *args):
+        try:
+            return getattr(self.usage, method)(*args)
+        except self.usage.failure_type as exc:
+            raise AzureFailure(exc.reason, exc.status, exc.retry_at) from None

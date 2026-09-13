@@ -340,7 +340,7 @@ class AzureAnalyzer:
         self.official, self.usage, self.clock = official, usage, clock
         self.save = save or (lambda state: None)
         self.names = tuple(load_names(official.ROOT) if names is None else name_choices({'roster': list(names)}))
-        self.client = transport.AzureOpenAI(environment, on_http_failure=self.http_failure, opener=opener)
+        self.client = transport.AzureOpenAI(environment, on_http_failure=self.http_failure, opener=opener, usage=usage)
         self.version = digest(canonical_json([VERSION, PROMPT, SCHEMA, LIMITS,
                                               self.names, self.client.identity]))
         self.bind(state)
@@ -472,6 +472,14 @@ class AzureAnalyzer:
             if not supported:
                 raise AnalysisFailure('azure_edit_metadata')
             lines = source_lines(text)
+            messages = [{'role': 'system', 'content': PROMPT},
+                        {'role': 'user', 'content': canonical_json({
+                            'postedAt': post['createdAt'], 'date': post['date'],
+                            'shift': post['shift'], 'storeId': post['storeId'],
+                            'allowedNames': list(self.names), 'bodyLines': lines})}]
+            schema = response_schema(lines, self.names)
+            budget = transport.request_budget(messages, schema, name='official_late_notices',
+                                               max_completion_tokens=MAX_OUTPUT_TOKENS)
             if not allow_request:
                 recorded = next((receipt for receipt in self.usage.state['receipts'].values()
                                  if receipt['component'] == 'official' and receipt['requestHash'] == key), None)
@@ -492,7 +500,7 @@ class AzureAnalyzer:
                     'bodyHash': body_hash, 'reason': reason}
                 raise AnalysisFailure(reason)
             try:
-                self.usage.reserve(key, self.client.identity)
+                self.usage.reserve(key, self.client.identity, request=budget)
             except self.usage.failure_type as exc:
                 failure = self.usage_failure(exc)
                 reason = failure.reason
@@ -508,12 +516,7 @@ class AzureAnalyzer:
             self.save(self.snapshot)
             self.usage_call(self.usage.issued, key)
             result = self.client.structured(
-                [{'role': 'system', 'content': PROMPT},
-                 {'role': 'user', 'content': canonical_json({
-                     'postedAt': post['createdAt'], 'date': post['date'],
-                     'shift': post['shift'], 'storeId': post['storeId'],
-                     'allowedNames': list(self.names), 'bodyLines': lines})}],
-                response_schema(lines, self.names), name='official_late_notices',
+                messages, schema, name='official_late_notices',
                 max_completion_tokens=MAX_OUTPUT_TOKENS)
             notices, reason = grounded_notices(
                 result, lines, post, self.names, fetched_at, self.official)

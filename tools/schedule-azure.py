@@ -462,7 +462,7 @@ class AzureAnalyzer:
         self.usage, self.clock, self.used = usage, clock, 0
         self.registry_guard = registry_guard
         self.request_attempt = 0
-        self.client = client or transport.AzureOpenAI(environment or {}, on_http_failure=usage.http_failure)
+        self.client = client or transport.AzureOpenAI(environment or {}, on_http_failure=usage.http_failure, usage=usage)
 
     def check(self):
         check_registry(self.registry_guard)
@@ -477,9 +477,11 @@ class AzureAnalyzer:
         guard()
         messages, proof = prepare_request(source, text, images, request_attempt=self.request_attempt)
         key = proof['requestHash']
+        budget = transport.request_budget(messages, SCHEMA, name='half_month_schedule',
+                                           max_completion_tokens=MAX_OUTPUT_TOKENS)
         try:
             guard()
-            self.usage.reserve(key, self.client.identity)
+            self.usage.reserve(key, self.client.identity, request=budget)
         except BaseException:
             messages.clear()
             raise

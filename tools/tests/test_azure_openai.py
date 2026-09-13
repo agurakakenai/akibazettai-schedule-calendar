@@ -21,7 +21,13 @@ class TransportTests(unittest.TestCase):
         self.addCleanup(patch.stop)
         self.opener = mock.Mock()
         self.failures = mock.Mock()
-        self.client = azure.AzureOpenAI(ENV, on_http_failure=self.failures, opener=self.opener)
+        self.client = azure.AzureOpenAI(ENV, on_http_failure=self.failures, opener=self.opener, usage=mock.Mock())
+
+    def test_no_unaccounted_transport_can_issue(self):
+        self.client.usage = None
+        with self.assertRaisesRegex(azure.AzureFailure, 'azure_budget_exhausted'):
+            self.client.structured([], {}, name='task', max_completion_tokens=1)
+        self.opener.open.assert_not_called()
 
     def reply(self, model='gpt-5.6-luna-2026-07-09', **extra):
         response = mock.MagicMock()

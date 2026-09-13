@@ -141,7 +141,7 @@ class ProductionWorkflowTests(unittest.TestCase):
         self.assertEqual(enabled, [routing.LEGACY_SCHEDULE])
         options = re.search(r'        options:\n(.*?)        default:', WORKFLOW, re.S).group(1)
         self.assertEqual(re.findall(r'          - (\S+)', options),
-                         ['deploy', 'collect', 'personal', 'both', 'apply-saved', 'probe'])
+                         ['deploy', 'collect', 'personal', 'both', 'apply-saved', 'cost-sync', 'probe'])
         collect = job_block('collect')
         self.assertIn('EVENT_SCHEDULE: ${{ github.event.schedule }}', collect)
         self.assertIn('run: python tools/collection-routing.py', collect)
@@ -149,11 +149,16 @@ class ProductionWorkflowTests(unittest.TestCase):
         self.assertIn("DAILY_GUIDANCE_ENABLED: ${{ vars.DAILY_GUIDANCE_ENABLED || 'false' }}", collect)
         self.assertIn('APPLY_SAVED_MANIFEST: ${{ inputs.saved_manifest }}', collect)
         self.assertNotRegex(WORKFLOW, r'run:.*\$\{\{ inputs\.saved_manifest')
-        self.assertNotIn('continue-on-error', collect)
+        self.assertEqual(collect.count('continue-on-error'), 1)
+        login, collection = collect.split('      - name: Collect with durable state', 1)
+        self.assertIn('id: azure-cost-login', login)
+        self.assertIn('continue-on-error: true', login)
+        self.assertNotIn('continue-on-error', collection)
+        self.assertIn('AZURE_COST_AUTHENTICATED:', collection)
 
     def test_collection_guard_runs_only_explicit_main_or_scheduled_work(self):
         expression = job_condition('collect')
-        for mode in ('collect', 'personal', 'both', 'apply-saved'):
+        for mode in ('collect', 'personal', 'both', 'apply-saved', 'cost-sync'):
             self.assertTrue(evaluate(expression, mode=mode))
         self.assertTrue(evaluate(expression, event='schedule', mode=''))
         for overrides in (

@@ -8,6 +8,7 @@ import copy
 import datetime as dt
 import email.utils
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -28,6 +29,9 @@ REASONS = {
     'azure_model_mismatch', 'azure_deadline', 'azure_budget_exhausted', 'azure_backoff',
 }
 SUCCESS_REASONS = {'events', 'links', 'work_timing', 'no_event', 'schedule', 'not_schedule'}
+_cost_spec = importlib.util.spec_from_file_location('shared_ai_cost', Path(__file__).with_name('ai-budget.py'))
+costs = importlib.util.module_from_spec(_cost_spec)
+_cost_spec.loader.exec_module(costs)
 
 
 class UsageFailure(Exception):
@@ -183,6 +187,8 @@ def validate_state(value):
     """Validate a data-only private ledger; reject unknown fields at every level."""
     try:
         fields = set(empty_state())
+        if isinstance(value, dict) and 'money' in value:
+            fields.add('money')
         if isinstance(value, dict) and 'sourceImports' not in value:
             fields.remove('sourceImports')
         _keys(value, fields)
@@ -206,6 +212,7 @@ def validate_state(value):
             _keys(receipt, ('runId', 'component', 'requestHash', 'identity', 'date',
                             'reservedAt', 'issuedAt', 'completedAt', 'reason',
                             'httpStatus', 'retryAt',
+                            *(('money',) if 'money' in receipt else ()),
                             *(('resultAttestation',) if 'resultAttestation' in receipt else ())))
             _token(receipt['runId'])
             if receipt['component'] not in ('official', 'personal', 'schedule'):
@@ -214,6 +221,15 @@ def validate_state(value):
             if key != _receipt_id(receipt['component'], receipt['requestHash']):
                 raise ValueError
             _identity(receipt['identity'])
+            if 'money' in receipt:
+                if 'money' not in value:
+                    raise ValueError
+                costs.validate_charge(receipt['money'])
+                if any(receipt['money'][field] != receipt['identity'][field]
+                       for field in ('model', 'modelVersion')):
+                    raise ValueError
+                if receipt['money']['usage'] is not None and receipt['issuedAt'] is None:
+                    raise ValueError
             _day(receipt['date'])
             reserved = _time(receipt['reservedAt'])
             issued = _time(receipt['issuedAt']) if receipt['issuedAt'] is not None else None
@@ -267,6 +283,8 @@ def validate_state(value):
                 if request in attested_requests or _receipt_id('schedule', request) in value['receipts']:
                     raise ValueError
                 attested_requests.add(request)
+        if 'money' in value:
+            costs.validate(value)
         source_imports = value.get('sourceImports', {})
         if not isinstance(source_imports, dict):
             raise ValueError
@@ -344,7 +362,10 @@ def _counts(state, run_id, now, run_limit=RUN_LIMIT):
     daily = (sum(item['date'] == day for item in state['receipts'].values())
              + sum(item['counts']['requests'] for item in state['imports'].values()
                    if item['date'] == day))
-    return {'run': run, 'day': daily, 'remaining': max(0, min(run_limit - run, DAY_LIMIT - daily))}
+    # Keep old count-only snapshots readable, but their transport cannot issue
+    # without the monetary migration. Migrated ledgers have no daily AI cap.
+    available = (run_limit if costs.balance(state, now)['reason'] == 'ok' else 0) if 'money' in state else DAY_LIMIT - daily
+    return {'run': run, 'day': daily, 'remaining': max(0, min(run_limit - run, available))}
 
 
 def usage_counts(state, run_id, now, run_limit=RUN_LIMIT):
@@ -453,6 +474,7 @@ class SharedUsage:
         self.state, self._lock = None, None
         self._owned, self._active = set(), None
         self._http = (None, None)
+        self._http_authorized = False
 
     def __enter__(self):
         if self._lock is not None:
@@ -535,7 +557,7 @@ class SharedUsage:
         if retry is not None and _time(retry) > now:
             raise UsageFailure('azure_backoff', retry_at=retry)
 
-    def reserve(self, key, identity):
+    def reserve(self, key, identity, *, request=None):
         self._require_open()
         _hash(key)
         private_identity = _private_identity(identity)
@@ -568,16 +590,27 @@ class SharedUsage:
         now = _now(self.clock())
         if self.used >= self.request_limit or not _counts(self.state, self.run_id, now, self.run_limit)['remaining']:
             raise UsageFailure('azure_budget_exhausted')
+        charge = None
+        if 'money' in self.state:
+            try:
+                charge = costs.reservation(private_identity, request)
+            except (ValueError, KeyError, TypeError):
+                raise UsageFailure('azure_input_limit') from None
+            available = costs.balance(self.state, now)
+            if available['reason'] != 'ok' or charge['reservedMicroJPY'] > available['availableMicroJPY']:
+                raise UsageFailure('azure_budget_exhausted')
         self.state['receipts'][receipt_id] = {
             'runId': self.run_id, 'component': self.component, 'requestHash': key,
             'identity': private_identity, 'date': now.astimezone(JST).date().isoformat(),
             'reservedAt': _stamp(now), 'issuedAt': None, 'completedAt': None,
             'reason': 'azure_interrupted', 'httpStatus': None, 'retryAt': None,
+            **({'money': charge} if charge is not None else {}),
         }
         self.state['nextRequestAt'] = _stamp(now + dt.timedelta(seconds=SPACING_SECONDS))
         self._save()
         self._owned.add(receipt_id)
         self._active, self._http = receipt_id, (None, None)
+        self._http_authorized = False
 
     def issued(self, key):
         self._require_open()
@@ -595,8 +628,11 @@ class SharedUsage:
         if now < _time(receipt['reservedAt']):
             raise UsageFailure('azure_backoff', retry_at=receipt['reservedAt'])
         day = now.astimezone(JST).date().isoformat()
-        if day != receipt['date'] and _counts(self.state, self.run_id, now)['day'] >= DAY_LIMIT:
+        if ('money' not in self.state and day != receipt['date']
+                and _counts(self.state, self.run_id, now)['day'] >= DAY_LIMIT):
             raise UsageFailure('azure_budget_exhausted')
+        if 'money' in self.state:
+            self._money_allowed(receipt_id, now)
         receipt['date'], receipt['issuedAt'] = day, _stamp(now)
         self.state['nextRequestAt'] = _stamp(now + dt.timedelta(seconds=SPACING_SECONDS))
         self._save()
@@ -604,6 +640,46 @@ class SharedUsage:
         after_save = _now(self.clock())
         if after_save < now or after_save.astimezone(JST).date().isoformat() != day:
             raise UsageFailure('azure_interrupted')
+
+    def _money_allowed(self, receipt_id, now):
+        receipt = self.state['receipts'][receipt_id]
+        if 'money' not in receipt or 'money' not in self.state:
+            raise UsageFailure('azure_budget_exhausted')
+        available = costs.balance(self.state, now, exclude=receipt_id)
+        if (available['reason'] != 'ok'
+                or receipt['money']['reservedMicroJPY'] > available['availableMicroJPY']):
+            raise UsageFailure('azure_budget_exhausted')
+
+    def authorize_http(self, identity, request):
+        """Final one-shot gate on the exact bytes, after durable reservation."""
+        self._require_open()
+        self._allowed()
+        if self._active is None or self._active not in self._owned or self._http_authorized:
+            raise UsageFailure('azure_interrupted')
+        receipt = self.state['receipts'][self._active]
+        now = _now(self.clock())
+        self._money_allowed(self._active, now)
+        if (receipt['identity'] != _private_identity(identity)
+                or receipt['issuedAt'] is None or receipt['completedAt'] is not None
+                or receipt['date'] != now.astimezone(JST).date().isoformat()
+                or now < _time(receipt['issuedAt'])
+                or any(receipt['money'][key] != value for key, value in request.items())):
+            raise UsageFailure('azure_interrupted')
+        costs.validate_request(request)
+        self._http_authorized = True
+
+    def record_usage(self, envelope):
+        self._require_open()
+        if self._active is None or not self._http_authorized:
+            raise UsageFailure('azure_interrupted')
+        receipt = self.state['receipts'][self._active]
+        try:
+            charge = costs.settle(receipt['money'], envelope)
+        except (ValueError, KeyError, TypeError):
+            # Unknown usage keeps the entire pre-HTTP reservation.
+            raise UsageFailure('azure_invalid_output') from None
+        receipt['money'] = charge
+        self._save()
 
     def finish(self, key, reason, *, result_attestation=None):
         self._require_open()

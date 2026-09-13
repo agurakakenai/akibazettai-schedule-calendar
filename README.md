@@ -1126,7 +1126,17 @@ Actionsでは手動`personal` / `both`と、有効化された当日案内の公
 
 公式補足と本人本文v8は共通Luna transportを使い、用途別prompt/schemaを分けます。下記の半月予定表は独立した画像用途で、本人v8の本文契約へ画像を混ぜません。10時からの巡回や新cronは追加しません。取得・本人確認・型・出典・原投稿順の履歴はコードの責務です。公式の未発行補足だけは別のbounded queueへ残し、次枠のAI容量がある場合に既知IDをsource上限内で確認できます。全既知投稿の編集巡回ではなく、拒否・失敗済みの再推論や結果合わせの再取得はしません。
 
-**全用途AIの実JST日上限は40回**です。告知の存在を確認した人物の取りこぼしを減らすため、従来の30回から明示的に見直しました。既存消費を引き継ぐ恒久上限であり、日付限定の例外や別台帳ではありません。cloudの回収runは同一run IDのまま最大16回（通常枠は本人最大14・半月1・公式補足1）、従来の単日CLIは3回/runです。公式の実績取得を先行し、公式補足の推論は本人の未処理・半月の後へ回します。残日予算が少ないときは過去の用途別実行時刻も使って配分し、公式no_eventだけで先に使い切りません。予算がなくても未検索の勤務対象を検索してmetadataを保存できますが、本文は解析容量を確認してから取得します。発行前予約はdata-onlyの`ai-usage.json`へ保存し、失敗・中断・既精算importも消費に含めます。実AI間隔60秒以上、HTTPの即時retry0、429の`Retry-After`と永続pauseは維持。成功済み原文／解析結果は再取得・再推論しません。半月の一時障害だけは下記の少数回再試行を行います。
+**AIはJST暦月1,000円の暫定アプリ予算（税抜）で発行前に停止**します。移行済み共有台帳では日40回の停止を月予算へ置き換えます。cloudの回収runは同一run IDのまま最大16回（通常枠は本人最大14・半月1・公式補足1）、単日CLIは3回/run、半月は1回/runです。公式の実績取得を先行し、公式補足の推論は本人の未処理・半月の後へ回します。予算がなくても未検索の勤務対象を検索してmetadataを保存できますが、本文は解析容量を確認してから取得します。実AI間隔60秒以上、HTTPの即時retry0、429の`Retry-After`と永続pause、sourceの検索・本文・画像上限は維持します。成功済み原文／解析結果は再取得・再推論しません。
+
+金額は既存`ai-usage.json`の同じlock・cloud lease/CASに保存し、micro-JPY整数で切り上げます。公式・本人・半月・保存画像の時刻補足はすべて同じ予約を通り、HTTP直前にidentity・送信payload hash・実日・残額を再照合します。本文はschema/metadataを含むescaped送信bytesと既存512-token framing reserve、画像は確認済みモデル入力最大922,000 tokens、出力は実際の`max_completion_tokens`から予約します。完了時は入力・cache read/write・出力のusageで予約を精算し、タイムアウト・欠損・不正usageでは最大予約額を保持します。旧台帳は読めますが、月会計なしの実HTTPは許可しません。未知のmodel/version・入力種別・未会計を0円扱いしません。
+
+価格基準は`tools/ai-budget.py`の2026-09-13 Azure Retail Japan East GlobalStandard **JPY参考価格**です。Lunaは高いLongCo側とcache write加算側で保守計算します。USD固定換算や1回の平均単価ではありません。ただしRetailの非USD価格は参考値で、契約請求・税・反映遅延まで含む**実請求1,000円の完全保証ではありません**。対象はこのアプリのAzure AI従量利用料で、Actions・他サービス・別deploymentを手動利用した費用の上限を設定するものではありません。
+
+初期額は承認済みの前日までのAzure実費を暫定基準にでき、対象receiptのhashとカバー日・観測時刻を`money.opening`へ保持します。旧native/import・negative/cacheは改変せず、当日未反映分を「確定0円」とは記録しません。以後の新規発行は必ず予約し、日次実費とUTC利用日ごとに高い方を照合することで同じ費用の二重加算を避けます。未精算予約は請求観測で消さず、低下した請求値でもhigh-water記録を下げません。上限到達後は次のJST月に新しい月枠を使い、旧月の費用・未完了記録は保持します（認証pause等は別途解除が必要）。
+
+Azure実費は既存定期処理の最初の機会にJST日1回、**前日まで**の利用日を対象に`ActualCost`を取得します。未実行日は次回起動時に補い、当日再実行は保存値を使います。resource group内の`aoai-akibazettai-nano`だけに絞りますが、resource単位の費用には比較用等の別deploymentも含まれるため、カレンダー単独の実費とは表示しません。job summaryには通貨・実際のUTC照会範囲・最終返却利用日・暫定残予算・最終正常同期時刻・古さ・失敗を表示します。UTC日バケットをJST前日ぴったりの確定額とは呼びません。月初の9時間を含む前月末UTCバケットも照会し、両月の既計上分を除いた説明不能な差額だけを境界保留として確保します。請求取得失敗を0円扱いせず、429は永続`Retry-After`で停止します。月初で閉じた利用日がまだない場合も、その旨を保持します。
+
+認証はmain限定OIDCの専用identityとresource groupのCost Management読み取り権限を使い、repo variablesは`AZURE_COST_CLIENT_ID`・`AZURE_COST_TENANT_ID`・`AZURE_COST_SUBSCRIPTION_ID`です。client secretは不要で、Azure API keyを請求APIに流用しません。`mode=cost-sync`はtrusted mainの明示実行専用で、source/AI clientを作らず同じ日次同期とstate保存だけを行います。通常PR/CIでコードを配信し、承認済み初期額をfresh canonicalへCAS移行してから、このモードで認証・同日cacheを確認します。
 
 本人・半月後に配分枠が残れば、初回の公式childが保持した**同runの未発行raw最大3件**をtransient bufferから再開します。回収runの公式補足は最大1件で、追加のsource GETは行いません。初回の検索・個別取得件数、名簿追加件数、source失敗は集約時に消しません。bufferはrun ID・入力/状態hash・取得metadataを検証し、終了時に削除してcanonical state・recovery・Pagesには含めません。
 

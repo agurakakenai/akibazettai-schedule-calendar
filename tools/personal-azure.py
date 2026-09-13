@@ -709,7 +709,7 @@ def _assessment_result(events, links, pending, work_timing=()):
 class AzureAnalyzer:
     def __init__(self, state, save, personal, environment, *, clock, sleep=time.sleep, opener=None,
                  usage=None, registry_guard=None, review_names=None, deadline=None):
-        self.client = transport.AzureOpenAI(environment, on_http_failure=self.http_failure, opener=opener)
+        self.client = transport.AzureOpenAI(environment, on_http_failure=self.http_failure, opener=opener, usage=usage)
         self.state = state.setdefault('azureAnalysis', empty_state())
         self.save, self.personal, self.clock, self.sleep = save, personal, clock, sleep
         self.usage = usage
@@ -750,14 +750,16 @@ class AzureAnalyzer:
                  'links': [], 'workTiming': []}
         try:
             lines = source_lines(text)
-            _, _, payload = request_components(lines, created, date, shifts, name)
+            messages, schema, payload = request_components(lines, created, date, shifts, name)
             _admit(payload)
+            budget = transport.request_budget(messages, schema, name='personal_announcements',
+                                               max_completion_tokens=MAX_OUTPUT_TOKENS)
         except AnalysisFailure as exc:
             entry.update(exc.facts())
             self.state['cache'][key] = entry
             self.save()
             raise
-        self.reserve(key, entry, name=name)
+        self.reserve(key, entry, name=name, budget=budget)
         try:
             self.check_registry(name)
             if self.usage is not None:
@@ -796,9 +798,9 @@ class AzureAnalyzer:
         if self.deadline is not None and not self.deadline():
             raise AnalysisFailure('azure_deadline')
 
-    def usage_call(self, method, *args):
+    def usage_call(self, method, *args, **kwargs):
         try:
-            return getattr(self.usage, method)(*args)
+            return getattr(self.usage, method)(*args, **kwargs)
         except self.usage.failure_type as exc:
             reason = exc.reason
             if (not isinstance(reason, str)
@@ -838,7 +840,7 @@ class AzureAnalyzer:
         if self.used >= RUN_LIMIT or self.state['budgets'].get(day, 0) >= DAY_LIMIT:
             raise AnalysisFailure('azure_budget_exhausted')
 
-    def reserve(self, key, entry, *, name=None):
+    def reserve(self, key, entry, *, name=None, budget=None):
         self.check_registry(name)
         self.check_deadline()
         if self.state['paused']:
@@ -850,7 +852,7 @@ class AzureAnalyzer:
             until = self.state['nextRequestAt']
             if until and self.personal.official.timestamp(until) > now:
                 raise AnalysisFailure('azure_backoff', retry_at=until)
-            self.usage_call('reserve', key, self.client.identity)
+            self.usage_call('reserve', key, self.client.identity, request=budget)
             self.used = self.usage.used
             self.state['cache'][key] = entry
             self.save()

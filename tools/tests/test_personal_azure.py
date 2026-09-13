@@ -91,6 +91,8 @@ def capacity_stress_text():
 def response(value=None, *, content=None, refusal=None, finish='stop'):
     envelope = {'model': 'gpt-5.6-luna-2026-07-09', 'choices': [{'finish_reason': finish, 'message': {
         'content': json.dumps(value) if content is None else content, 'refusal': refusal}}]}
+    envelope['usage'] = {'prompt_tokens': 200, 'completion_tokens': 20, 'total_tokens': 220,
+                         'prompt_tokens_details': {'cached_tokens': 0, 'cache_write_tokens': 0}}
     reply = mock.MagicMock()
     reply.getcode.return_value = 200
     reply.read.return_value = json.dumps(envelope).encode()
@@ -121,9 +123,13 @@ class AzureTests(base.Offline):
         self.clock += dt.timedelta(seconds=seconds)
 
     def make_analyzer(self, environment=None, usage=None):
-        return azure.AzureAnalyzer(self.state, self.save, personal.azure_context(),
-                                   ENV if environment is None else environment,
-                                   clock=lambda: self.clock, sleep=self.sleep, opener=self.opener, usage=usage)
+        analyzer = azure.AzureAnalyzer(self.state, self.save, personal.azure_context(),
+                                       ENV if environment is None else environment,
+                                       clock=lambda: self.clock, sleep=self.sleep, opener=self.opener, usage=usage)
+        # Task/legacy-count fixtures isolate the new monetary boundary; the
+        # production shared-ledger HTTP boundary is covered in test_ai_budget.
+        analyzer.client.usage = mock.Mock()
+        return analyzer
 
     def test_discovery_keeps_empty_known_shifts_and_admits_grounded_explicit_event(self):
         target = {**base.AMU, 'shifts': []}
@@ -2199,12 +2205,17 @@ class AzureTests(base.Offline):
         registry = self.folder / 'members.json'
         personal.official.atomic_json(registry, base.registry_fixture(base.AMU))
         personal.official.atomic_json(saved, {base.TID: base.post('今日 昼1号店')})
+        ai_path = self.folder / 'shared-ai.json'
+        ai_state = usage.empty_state()
+        ai_state['money'] = usage.costs.empty()
+        usage.atomic_json(ai_path, ai_state)
         self.opener.open.return_value = response(result(event('昼', 'placement', [1], 's1')))
         args = personal.argument_parser().parse_args([
             '--snapshot', str(self.snapshot), '--http-state', str(self.http),
             '--seed', str(seed), '--schedule', str(schedule), '--insights', str(insights),
             '--accounts', str(accounts), '--members', str(registry),
-            '--analysis-backend', 'azure', '--analyze-saved', str(saved)])
+            '--analysis-backend', 'azure', '--analyze-saved', str(saved),
+            '--ai-state', str(ai_path), '--analysis-run-id', 'saved-cli'])
         with contextlib.redirect_stdout(io.StringIO()):
             code = personal.run(args, clock=lambda: self.clock, sleep=self.sleep, environment=ENV,
                                 analyzer_factory=lambda *a, **k: azure.AzureAnalyzer(*a, **k, opener=self.opener),
