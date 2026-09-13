@@ -962,6 +962,23 @@
           ],
           "schemaVersion": 1
         }
+      },
+      {
+        "authorId": "2075784010819928064",
+        "authorScreenName": "cheru2_zettai",
+        "createdAt": "2026-09-12T15:01:28.000Z",
+        "date": "2026-09-13",
+        "events": [],
+        "id": "2098789094012956870",
+        "links": [
+          {
+            "scope": "昼",
+            "status": "work"
+          }
+        ],
+        "name": "ちぇる",
+        "observedAt": "2026-09-12T20:38:56.410433Z",
+        "url": "https://x.com/cheru2_zettai/status/2098789094012956870"
       }
     ],
     "nextRequestAt": null,
@@ -7382,7 +7399,14 @@
       "authorScreenName": "cheru2_zettai",
       "createdAt": "2026-09-12T15:01:28.000Z",
       "date": "2026-09-13",
-      "events": [],
+      "events": [
+        {
+          "excerpt": "4号店 A.D.2045",
+          "kind": "placement",
+          "shift": "昼",
+          "storeId": "s4"
+        }
+      ],
       "id": "2098789094012956870",
       "links": [
         {
@@ -7688,6 +7712,25 @@
         "sourceHash": "d3432bc5f4ab8335c86d0ad4a14be7055433269bfc9c6fbeafd3cbfd4cc4ef23"
       },
       "name": "ちぇる",
+      "placementReview": {
+        "bodyHash": "10a592eb23cd4b4cea8eddb5468d72826c0b209ebd6c8563120cc8c21745b68f",
+        "expectedSubjectHash": "4d4129322fcdb9405b4446548e1d57f9a001bc0279a088566975f008d96955d3",
+        "id": "2098789094012956870",
+        "operation": "confirm-placement",
+        "reviewedAt": "2026-09-13T01:47:48.523680Z",
+        "scope": "昼",
+        "source": {
+          "authorId": "2075784010819928064",
+          "authorScreenName": "cheru2_zettai",
+          "createdAt": "2026-09-12T15:01:28.000Z",
+          "date": "2026-09-13",
+          "fetchedAt": "2026-09-12T20:22:29.835646Z",
+          "name": "ちぇる",
+          "url": "https://x.com/cheru2_zettai/status/2098789094012956870"
+        },
+        "sourceHash": "d3432bc5f4ab8335c86d0ad4a14be7055433269bfc9c6fbeafd3cbfd4cc4ef23",
+        "storeId": "s4"
+      },
       "reason": "no_event",
       "resolvedAt": "2026-09-12T18:12:24.153395Z",
       "url": "https://x.com/cheru2_zettai/status/2098789094012956870"
