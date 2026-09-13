@@ -586,6 +586,79 @@ def validate_work_link_reviews(state, usage, personal):
         entry = item.get('linkReview', {})
         if entry.get('operation') == 'confirm-work-link':
             _work_review_basis(state, entry, usage, personal)
+        if 'placementReview' in item:
+            validate_placement_review(state, item, personal)
+
+
+def placement_review_post(entry, previous, personal):
+    _keys(entry, ('operation', 'id', 'expectedSubjectHash', 'bodyHash', 'sourceHash',
+                  'source', 'scope', 'storeId', 'reviewedAt'))
+    _require(entry['operation'] == 'confirm-placement', 'invalid_personal_placement_review')
+    link_entry = {key: value for key, value in entry.items() if key != 'storeId'}
+    link_entry['operation'] = 'confirm-work-link'
+    source_review_post(link_entry, personal)
+    stores = {store_id: name for name, store_id in personal.official.STORE_IDS.items()}
+    _require(isinstance(entry['storeId'], str) and entry['storeId'] in stores,
+             'invalid_personal_placement_review')
+    _require(previous['id'] == entry['id'] and previous['events'] == []
+             and all(previous[field] == entry['source'][field] for field in METADATA)
+             and {'scope': entry['scope'], 'status': 'work'} in previous.get('links', []),
+             'personal_placement_review_requires_link_only_post')
+    _require(all(link['status'] == 'work' for link in previous.get('links', [])),
+             'personal_placement_review_requires_link_only_post')
+    post = copy.deepcopy(previous)
+    post['events'] = [{'shift': entry['scope'], 'kind': 'placement',
+                       'storeId': entry['storeId'], 'excerpt': stores[entry['storeId']]}]
+    personal.valid_post(post)
+    return post
+
+
+def _placement_source_basis(state, entry, personal):
+    sources = [item['amendment']['source']
+               for item in state.get('savedPersonalImports', {}).values()
+               if item['amendment']['id'] == entry['id']]
+    sources.extend({**item['linkReview']['source'],
+                    **{field: item['linkReview'][field] for field in ('bodyHash', 'sourceHash')}}
+                   for item in state['resolved'] if item['id'] == entry['id']
+                   and item.get('linkReview', {}).get('operation') == 'confirm-work-link')
+    _require(any(all(source[field] == entry[field] for field in ('bodyHash', 'sourceHash'))
+                 and all(source[field] == entry['source'][field] for field in METADATA)
+                 and personal.official.timestamp(source['fetchedAt'])
+                 == personal.official.timestamp(entry['source']['fetchedAt'])
+                 for source in sources), 'personal_placement_review_source_mismatch')
+    _require(_check_binding(entry['source'], state['identityBindings']) is not None,
+             'missing_saved_personal_binding')
+
+
+def validate_placement_review(state, item, personal):
+    entry = item['placementReview']
+    _require(isinstance(entry, dict) and entry.get('id') == item['id'],
+             'invalid_personal_placement_review')
+    history = state.get('azureAnalysis', {}).get('history', [])
+    previous = [post for post in history if post['id'] == item['id'] and post['events'] == []]
+    _require(len(previous) == 1, 'personal_placement_review_history_mismatch')
+    post = placement_review_post(entry, previous[0], personal)
+    _require(all(item[field] == post[field] for field in ('url', 'name', 'date'))
+             and (post in state['posts'] or post in history),
+             'personal_placement_review_history_mismatch')
+    _placement_source_basis(state, entry, personal)
+
+
+def _review_target(state, entry, registry, binding_maps, daily_targets, personal):
+    _require(registry is not None and daily_targets is not None,
+             'personal_link_review_requires_dated_target')
+    source = entry['source']
+    population, _ = personal.members.collection_population(
+        registry, state['identityBindings'], *binding_maps)
+    target = personal.target_for_name(daily_targets.get(source['date'], {}), source['name'])
+    _require(any(item['name'] == source['name'] for item in population.values())
+             and target is not None and entry['scope'] in target['shifts']
+             and target['handle'].casefold() == source['authorScreenName'].casefold(),
+             'personal_link_review_requires_dated_target')
+    for bindings in binding_maps:
+        _check_binding(source, bindings)
+    _require(personal.official.timestamp(entry['reviewedAt']) <= personal.official.utc_now(),
+             'invalid_personal_link_review')
 
 
 def apply_link_reviews(state, entries, usage, personal, *,
@@ -594,12 +667,46 @@ def apply_link_reviews(state, entries, usage, personal, *,
     _require(isinstance(entries, list) and len(entries) <= 1, 'invalid_personal_link_review')
     result = copy.deepcopy(state)
     for entry in entries:
+        if isinstance(entry, dict) and entry.get('operation') == 'confirm-placement':
+            tid = entry.get('id')
+            resolved = [item for item in result['resolved'] if item['id'] == tid]
+            if len(resolved) == 1 and resolved[0].get('placementReview') == entry:
+                validate_placement_review(result, resolved[0], personal)
+                continue
+            _require(subject_hash(result, tid) == entry.get('expectedSubjectHash'),
+                     'saved_personal_subject_mismatch')
+            posts = [post for post in result['posts'] if post['id'] == tid]
+            _require(len(posts) == 1 and len(resolved) <= 1
+                     and not any('placementReview' in item for item in resolved)
+                     and not any(item['id'] == tid for item in result['pending']),
+                     'personal_placement_review_requires_link_only_post')
+            previous = posts[0]
+            post = placement_review_post(entry, previous, personal)
+            _placement_source_basis(result, entry, personal)
+            validate_accounting(result.get('savedPersonalImports', {}), usage, personal)
+            validate_work_link_reviews(result, usage, personal)
+            _review_target(result, entry, registry, binding_maps, daily_targets, personal)
+            history = result.setdefault('azureAnalysis', azure_contract.empty_state())['history']
+            if previous not in history:
+                history.append(copy.deepcopy(previous))
+            result['posts'][result['posts'].index(previous)] = post
+            if not resolved:
+                item = {field: post[field] for field in ('id', 'url', 'name', 'date')}
+                item.update(reason='source_confirmed_placement', resolvedAt=entry['reviewedAt'])
+                result['resolved'].append(item)
+            else:
+                item = resolved[0]
+            item['placementReview'] = copy.deepcopy(entry)
+            validate_placement_review(result, item, personal)
+            continue
         if isinstance(entry, dict) and entry.get('operation') == 'confirm-work-link':
             post = _work_review_basis(result, entry, usage, personal)
             tid = post['id']
             resolved = [item for item in result['resolved'] if item['id'] == tid]
             if len(resolved) == 1 and resolved[0].get('linkReview') == entry:
-                _require(post in result['posts'], 'personal_link_review_source_mismatch')
+                _require(post in result['posts']
+                         or post in result.get('azureAnalysis', {}).get('history', []),
+                         'personal_link_review_source_mismatch')
                 continue
             _require(subject_hash(result, tid) == entry['expectedSubjectHash'],
                      'saved_personal_subject_mismatch')
@@ -610,19 +717,7 @@ def apply_link_reviews(state, entries, usage, personal, *,
                      and not any(item['amendment']['id'] == tid
                                  for item in result.get('savedPersonalImports', {}).values()),
                      'personal_link_review_requires_native_negative')
-            _require(registry is not None and daily_targets is not None,
-                     'personal_link_review_requires_dated_target')
-            population, _ = personal.members.collection_population(
-                registry, result['identityBindings'], *binding_maps)
-            target = personal.target_for_name(daily_targets.get(post['date'], {}), post['name'])
-            _require(any(item['name'] == post['name'] for item in population.values())
-                     and target is not None and entry['scope'] in target['shifts']
-                     and target['handle'].casefold() == post['authorScreenName'].casefold(),
-                     'personal_link_review_requires_dated_target')
-            for bindings in binding_maps:
-                _check_binding(post, bindings)
-            _require(personal.official.timestamp(entry['reviewedAt']) <= personal.official.utc_now(),
-                     'invalid_personal_link_review')
+            _review_target(result, entry, registry, binding_maps, daily_targets, personal)
             result['posts'].append(post)
             # Keep reason/resolvedAt and every original no_event cache entry intact.
             resolved[0]['linkReview'] = copy.deepcopy(entry)

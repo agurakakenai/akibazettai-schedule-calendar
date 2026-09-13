@@ -360,6 +360,7 @@ def validate_half_month_links(half_month, source_usage, usage, personal):
 
 def validate_usage_links(usage, personal, personal_collector=None):
     if personal and any(item.get('linkReview', {}).get('operation') == 'confirm-work-link'
+                        or 'placementReview' in item
                         for item in personal.get('resolved', [])):
         load_personal_saved().validate_work_link_reviews(
             personal, usage, personal_collector or load_personal_collector())
@@ -497,7 +498,7 @@ def validate_personal(path, personal=None, *, private=True):
             validate_failure(item, official)
         for item in state['resolved']:
             fields = ('id', 'url', 'name', 'date', 'reason', 'resolvedAt')
-            keys(item, (*fields, 'linkReview'), fields)
+            keys(item, (*fields, 'linkReview', 'placementReview'), fields)
             name(item['name'])
             require(re.fullmatch(r'https://x\.com/[A-Za-z0-9_]{1,15}/status/' + item['id'],
                                  item['url']))
@@ -1442,7 +1443,7 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 manual_personal = any(entry.get('amendment', {}).get('operation')
                                       == 'manual-saved-post' for entry in manifest.get('personalAmendments', []))
                 work_reviews = [entry for entry in manifest.get('personalLinkReviews', [])
-                                if entry.get('operation') == 'confirm-work-link']
+                                if entry.get('operation') in ('confirm-work-link', 'confirm-placement')]
                 registry = (load_member_registry().load_registry(root / 'data' / 'members.json')
                             if manual_personal or work_reviews else None)
                 daily_targets = None
