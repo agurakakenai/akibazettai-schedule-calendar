@@ -85,6 +85,7 @@ class SourceTests(unittest.TestCase):
         return key
 
     def test_catchup_first_pass_fits_fourteen_searches_in_one_real_run(self):
+        self.clock = NOW + dt.timedelta(hours=4)
         with self.shared('personal', catch_up=True, personal_path=self.personal_path) as ledger:
             for index in range(14):
                 self.reserve(ledger, 'searches', index)
@@ -117,6 +118,7 @@ class SourceTests(unittest.TestCase):
                              for name in ('personal', 'schedule')), source.DAY_INDIVIDUAL_LIMIT)
 
     def test_old_sixty_forty_consumption_is_retained_under_explicit_new_daily_capacity(self):
+        self.clock = NOW + dt.timedelta(hours=4)
         self.personal['budgets']['2026-09-07'] = {'searches': 60, 'posts': 40}
         self.initialize()
         baseline = copy.deepcopy(source.load_state(self.path)['baseline'])
@@ -125,6 +127,39 @@ class SourceTests(unittest.TestCase):
             self.reserve(ledger, 'searches')
             self.reserve(ledger, 'posts')
             self.assertEqual(ledger.report()['day']['personal'], {'searches': 61, 'posts': 41, 'images': 0})
+        self.assertEqual(source.load_state(self.path)['baseline'], baseline)
+
+    def test_half_month_and_personal_share_the_pre_noon_reservation(self):
+        self.personal['budgets']['2026-09-07'] = {'searches': 59, 'posts': 37}
+        self.initialize()
+        baseline = copy.deepcopy(source.load_state(self.path)['baseline'])
+        with self.shared('schedule') as ledger:
+            self.reserve(ledger, 'searches')
+            self.reserve(ledger, 'posts')
+            with self.assertRaisesRegex(source.SourceFailure, 'source_budget_exhausted'):
+                ledger.check('images', 3)
+            self.reserve(ledger, 'images', 1)
+            self.reserve(ledger, 'images', 2)
+            receipts = copy.deepcopy(ledger.state['receipts'])
+            for kind in source.KINDS:
+                with self.assertRaisesRegex(source.SourceFailure, 'source_budget_exhausted'):
+                    ledger.check(kind)
+            self.assertEqual(ledger.state['receipts'], receipts)
+        with self.shared('personal', run_id='next', catch_up=True,
+                         personal_path=self.personal_path) as ledger:
+            self.assertEqual(ledger.report()['remaining'], {'searches': 0, 'posts': 0, 'images': 0})
+        with self.shared('official', run_id='official') as ledger:
+            ledger.check('searches')
+            ledger.check('posts')
+        self.clock = NOW + dt.timedelta(hours=3, minutes=30)
+        with self.shared('personal', run_id='daytime', catch_up=True,
+                         personal_path=self.personal_path) as ledger:
+            self.reserve(ledger, 'searches')
+            self.reserve(ledger, 'posts')
+            report = ledger.report()
+        self.assertEqual(sum(report['day'][name]['searches'] for name in ('personal', 'schedule')), 61)
+        self.assertEqual(sum(report['day'][name]['posts'] + report['day'][name]['images']
+                             for name in ('personal', 'schedule')), 41)
         self.assertEqual(source.load_state(self.path)['baseline'], baseline)
 
     def canonical_import_baseline(self, **kwargs):
@@ -477,6 +512,7 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(len(source.load_state(self.path)['receipts']), 20)
 
     def test_personal_schedule_daily_cap_does_not_cap_official(self):
+        self.clock = NOW + dt.timedelta(hours=4)
         self.personal['budgets']['2026-09-07'] = {
             'searches': source.DAY_SEARCH_LIMIT - 1, 'posts': source.DAY_INDIVIDUAL_LIMIT - 2}
         self.initialize()
