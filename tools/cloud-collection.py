@@ -1780,6 +1780,10 @@ def emit(result, environment):
                  f"unallocated UTC month-boundary hold: {amount(budget['utcBoundaryHoldMicroJPY'])}; "
                  f"reserved: {amount(budget['reservedMicroJPY'])}; "
                  f"unpriced records: {budget['unknownRecords']}.\n",
+                 f"Provisional historical requests: {budget['provisionalRequests']}; "
+                 f"opening coverage through {budget['openingThrough']} observed {budget['openingObservedAt']}; "
+                 f"unsettled usage records: {budget['unsettledUsageRecords']}; "
+                 f"inconsistent usage records: {budget['inconsistentUsageRecords']}.\n",
                  f"Azure resource ActualCost (delayed, UTC daily; includes other deployments): "
                  f"{amount(budget['azurePreTaxMicroJPY'])} JPY; "
                  f"resource budget remainder: {amount(budget['azureRemainingMicroJPY'])} JPY.\n",
@@ -1790,7 +1794,7 @@ def emit(result, environment):
                  f"age seconds: {budget['azureAgeSeconds']}; failure: {budget['azureFailure'] or 'none'}.\n"]
         with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
             target.writelines(lines)
-    if budget and (budget['reason'] != 'ok' or budget['azureFailure']):
+    if budget and (budget['reason'] != 'ok' or budget['azureFailure'] or budget['unsettledUsageRecords']):
         print('::warning::AI budget or Azure cost reconciliation needs attention; see job summary.')
     acquisition = result.get('acquisition')
     half = result.get('halfMonthAcquisition')

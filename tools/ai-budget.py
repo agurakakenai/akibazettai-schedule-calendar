@@ -17,7 +17,7 @@ import urllib.request
 
 LIMIT = 1_000_000_000  # micro-JPY; 1,000 JPY
 JST = dt.timezone(dt.timedelta(hours=9))
-PRICE_VERSION = 'azure-retail-jpy-2026-09-13'
+PRICE_VERSION = 'azure-retail-jpy-2026-09-13-write4'
 PRICE_SOURCE = 'https://prices.azure.com/api/retail/prices'
 MODEL_SOURCE = 'https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure'
 # JPY / million tokens: uncached input, cached read, additional cache write, output.
@@ -29,6 +29,7 @@ PRICES = {
 }
 INPUT_MAX = 922_000
 OUTPUT_MAX = 128_000
+MAX_CACHE_WRITES = 4
 RESOURCE_ID = ('/subscriptions/eb1d1a6f-a4b6-4c6f-885d-5ef15ed3bb64'
                '/resourceGroups/rg-akibazettai-ai/providers/Microsoft.CognitiveServices'
                '/accounts/aoai-akibazettai-nano')
@@ -68,7 +69,7 @@ def empty():
 def cost(model, version, prompt, cached, written, output):
     for value in (prompt, cached, written, output):
         integer(value)
-    require(cached + written <= prompt and (model, version) in PRICES)
+    require(cached <= prompt and written <= MAX_CACHE_WRITES * prompt and (model, version) in PRICES)
     rates = [int(Decimal(value) * 1_000_000) for value in PRICES[model, version]]
     numerator = ((prompt - cached) * rates[0] + cached * rates[1]
                  + written * rates[2] + output * rates[3])
@@ -79,7 +80,7 @@ def cost(model, version, prompt, cached, written, output):
 def ceiling(model, version, input_tokens, output_tokens):
     integer(input_tokens, 1)
     integer(output_tokens, 1)
-    return cost(model, version, input_tokens, 0, input_tokens, output_tokens)
+    return cost(model, version, input_tokens, 0, input_tokens * MAX_CACHE_WRITES, output_tokens)
 
 
 def validate_request(value):
@@ -97,12 +98,12 @@ def reservation(identity, request):
     model, version = identity['model'], identity['modelVersion']
     return {**request, 'priceVersion': PRICE_VERSION, 'model': model, 'modelVersion': version,
             'reservedMicroJPY': ceiling(model, version, request['inputCeiling'], request['outputCeiling']),
-            'usage': None, 'chargedMicroJPY': None}
+            'usage': None, 'chargedMicroJPY': None, 'usageStatus': 'reserved'}
 
 
 def validate_charge(value):
     keys(value, ('payloadHash', 'inputCeiling', 'outputCeiling', 'imageInput', 'priceVersion',
-                 'model', 'modelVersion', 'reservedMicroJPY', 'usage', 'chargedMicroJPY'))
+                 'model', 'modelVersion', 'reservedMicroJPY', 'usage', 'chargedMicroJPY', 'usageStatus'))
     validate_request({key: value[key] for key in
                       ('payloadHash', 'inputCeiling', 'outputCeiling', 'imageInput')})
     require(value['priceVersion'] == PRICE_VERSION)
@@ -110,8 +111,10 @@ def validate_charge(value):
         value['model'], value['modelVersion'], value['inputCeiling'], value['outputCeiling']))
     integer(value['reservedMicroJPY'], 1)
     if value['usage'] is None:
-        require(value['chargedMicroJPY'] is None)
+        require(value['chargedMicroJPY'] is None
+                and value['usageStatus'] in ('reserved', 'usage_missing', 'usage_inconsistent'))
     else:
+        require(value['usageStatus'] == 'settled')
         tokens = value['usage']
         keys(tokens, ('input', 'cachedRead', 'cachedWrite', 'output'))
         for count in tokens.values():
@@ -123,20 +126,50 @@ def validate_charge(value):
         require(value['chargedMicroJPY'] == expected <= value['reservedMicroJPY'])
 
 
+class UsageMissing(Exception):
+    pass
+
+
+class UsageInconsistent(Exception):
+    pass
+
+
 def settle(charge, envelope):
-    require(envelope.get('model') in (charge['model'], charge['model'] + '-' + charge['modelVersion']))
+    if not isinstance(envelope, dict) or envelope.get('model') not in (
+            charge['model'], charge['model'] + '-' + charge['modelVersion']):
+        raise UsageInconsistent()
     usage = envelope.get('usage')
-    require(isinstance(usage, dict) and isinstance(usage.get('prompt_tokens_details'), dict))
-    details = usage['prompt_tokens_details']
+    if usage is None:
+        raise UsageMissing()
+    if not isinstance(usage, dict):
+        raise UsageInconsistent()
+    details = usage.get('prompt_tokens_details')
+    if details is not None and not isinstance(details, dict):
+        raise UsageInconsistent()
+    details = details or {}
     tokens = {'input': usage.get('prompt_tokens'), 'output': usage.get('completion_tokens'),
               'cachedRead': details.get('cached_tokens'), 'cachedWrite': details.get('cache_write_tokens')}
     for count in tokens.values():
-        integer(count)
-    require(type(usage.get('total_tokens')) is int
-            and usage['total_tokens'] == tokens['input'] + tokens['output'])
+        if count is not None and (type(count) is not int or count < 0):
+            raise UsageInconsistent()
+    for key, bound in (('input', charge['inputCeiling']), ('output', charge['outputCeiling'])):
+        if tokens[key] is not None and tokens[key] > bound:
+            raise UsageInconsistent()
+    if tokens['input'] is not None:
+        if (tokens['cachedRead'] is not None and tokens['cachedRead'] > tokens['input']
+                or tokens['cachedWrite'] is not None and tokens['cachedWrite'] > MAX_CACHE_WRITES * tokens['input']):
+            raise UsageInconsistent()
+    total = usage.get('total_tokens')
+    if total is not None and (type(total) is not int or total < 0):
+        raise UsageInconsistent()
+    if total is not None and tokens['input'] is not None and tokens['output'] is not None:
+        if total != tokens['input'] + tokens['output']:
+            raise UsageInconsistent()
+    if total is None or any(value is None for value in tokens.values()):
+        raise UsageMissing()
     result = {**charge, 'usage': tokens, 'chargedMicroJPY': cost(
         charge['model'], charge['modelVersion'], tokens['input'],
-        tokens['cachedRead'], tokens['cachedWrite'], tokens['output'])}
+        tokens['cachedRead'], tokens['cachedWrite'], tokens['output']), 'usageStatus': 'settled'}
     validate_charge(result)
     return result
 
@@ -219,6 +252,8 @@ def balance(state, now, exclude=None):
               'openingProvisionalMicroJPY': 0, 'tokenPricedMicroJPY': 0, 'reservedMicroJPY': 0,
               'reconciledMicroJPY': 0,
               'utcBoundaryHoldMicroJPY': 0,
+              'provisionalRequests': 0, 'unsettledUsageRecords': 0, 'inconsistentUsageRecords': 0,
+              'openingThrough': None, 'openingObservedAt': None,
               'unknownRecords': 0, 'availableMicroJPY': 0, 'reason': 'monthly_accounting_required',
               'azurePreTaxMicroJPY': None, 'azureRemainingMicroJPY': None,
               'azureLastSuccessAt': None, 'azureAgeSeconds': None, 'azureFailure': None,
@@ -229,6 +264,12 @@ def balance(state, now, exclude=None):
     opening = state['money']['opening'].get(period, {})
     result['openingProvisionalMicroJPY'] = opening.get('amountMicroJPY', 0)
     covered = opening.get('records', {})
+    result['inconsistentUsageRecords'] = sum(
+        receipt.get('money', {}).get('usageStatus') == 'usage_inconsistent'
+        for receipt in state['receipts'].values())
+    result.update(openingThrough=opening.get('throughDate'), openingObservedAt=opening.get('observedAt'))
+    result['provisionalRequests'] = sum(
+        1 if key.startswith('native:') else record(state, key)['counts']['requests'] for key in covered)
     local_days = {}
     for kind, receipts in (('native', state['receipts']), ('import', state['imports'])):
         for key, receipt in receipts.items():
@@ -241,6 +282,7 @@ def balance(state, now, exclude=None):
                 result['unknownRecords'] += 1
             elif charge['chargedMicroJPY'] is None:
                 result['reservedMicroJPY'] += charge['reservedMicroJPY']
+                result['unsettledUsageRecords'] += 1
             else:
                 result['tokenPricedMicroJPY'] += charge['chargedMicroJPY']
                 day = timestamp(receipt['issuedAt']).date().isoformat()
@@ -270,7 +312,8 @@ def balance(state, now, exclude=None):
     result['reconciledMicroJPY'] += result['utcBoundaryHoldMicroJPY']
     spent = result['reconciledMicroJPY']
     result['availableMicroJPY'] = max(0, LIMIT - spent - result['reservedMicroJPY'])
-    result['reason'] = ('monthly_cost_unknown' if result['unknownRecords'] else
+    result['reason'] = ('monthly_usage_inconsistent' if result['inconsistentUsageRecords'] else
+                        'monthly_cost_unknown' if result['unknownRecords'] else
                         'monthly_budget_exhausted' if not result['availableMicroJPY'] else 'ok')
     result['azureFailure'] = billing['failure']
     last = billing['lastSuccess']

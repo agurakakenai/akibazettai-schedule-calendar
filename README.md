@@ -1130,7 +1130,9 @@ Actionsでは手動`personal` / `both`と、有効化された当日案内の公
 
 金額は既存`ai-usage.json`の同じlock・cloud lease/CASに保存し、micro-JPY整数で切り上げます。公式・本人・半月・保存画像の時刻補足はすべて同じ予約を通り、HTTP直前にidentity・送信payload hash・実日・残額を再照合します。本文はschema/metadataを含むescaped送信bytesと既存512-token framing reserve、画像は確認済みモデル入力最大922,000 tokens、出力は実際の`max_completion_tokens`から予約します。完了時は入力・cache read/write・出力のusageで予約を精算し、タイムアウト・欠損・不正usageでは最大予約額を保持します。旧台帳は読めますが、月会計なしの実HTTPは許可しません。未知のmodel/version・入力種別・未会計を0円扱いしません。
 
-価格基準は`tools/ai-budget.py`の2026-09-13 Azure Retail Japan East GlobalStandard **JPY参考価格**です。Lunaは高いLongCo側とcache write加算側で保守計算します。USD固定換算や1回の平均単価ではありません。ただしRetailの非USD価格は参考値で、契約請求・税・反映遅延まで含む**実請求1,000円の完全保証ではありません**。対象はこのアプリのAzure AI従量利用料で、Actions・他サービス・別deploymentを手動利用した費用の上限を設定するものではありません。
+`cache_write_tokens`等のusage項目欠落は`usage_missing`として金額未確定を記録し、最大予約を保持したまま正常な本文・根拠の検証を続けます。会計値の欠落だけで勤務告知を捨てません。tokenが予約上限を超える等の重大な不整合は`usage_inconsistent`として本文採用と後続発行を停止し、運用summaryへ明示します。これらはモデルno_eventや本文grounding失敗とは別の状態です。
+
+価格基準は`tools/ai-budget.py`の2026-09-13 Azure Retail Japan East GlobalStandard **JPY参考価格**です。Lunaは高いLongCo側とcache write加算側で保守計算し、[公式の最大4回のcache writes](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/prompt-caching#breakpoint-limits)を入力全体の4回分として予約します。read/write対象が互いに重複しないとは仮定しません。USD固定換算や1回の平均単価ではありません。ただしRetailの非USD価格は参考値で、契約請求・税・反映遅延まで含む**実請求1,000円の完全保証ではありません**。対象はこのアプリのAzure AI従量利用料で、Actions・他サービス・別deploymentを手動利用した費用の上限を設定するものではありません。
 
 初期額は承認済みの前日までのAzure実費を暫定基準にでき、対象receiptのhashとカバー日・観測時刻を`money.opening`へ保持します。旧native/import・negative/cacheは改変せず、当日未反映分を「確定0円」とは記録しません。以後の新規発行は必ず予約し、日次実費とUTC利用日ごとに高い方を照合することで同じ費用の二重加算を避けます。未精算予約は請求観測で消さず、低下した請求値でもhigh-water記録を下げません。上限到達後は次のJST月に新しい月枠を使い、旧月の費用・未完了記録は保持します（認証pause等は別途解除が必要）。
 

@@ -148,15 +148,22 @@ class BudgetTests(unittest.TestCase):
                     else:
                         envelope['choices'][0]['message']['refusal'] = 'refused'
                     self.reply(envelope)
-                    with self.assertRaises(azure.AzureFailure) as caught:
-                        self.client(usage).structured(self.messages, {}, **self.arguments)
-                    usage.finish(key, caught.exception.reason)
+                    if case == 'usage-missing':
+                        self.assertEqual(self.client(usage).structured(self.messages, {}, **self.arguments), {'ok': True})
+                        usage.finish(key, 'no_event')
+                    else:
+                        with self.assertRaises(azure.AzureFailure) as caught:
+                            self.client(usage).structured(self.messages, {}, **self.arguments)
+                        usage.finish(key, caught.exception.reason)
                     value = next(iter(usage.state['receipts'].values()))['money']
                     if case == 'refusal':
                         self.assertIsNotNone(value['chargedMicroJPY'])
                     else:
                         self.assertIsNone(value['chargedMicroJPY'])
                         self.assertEqual(value['reservedMicroJPY'], original)
+                        if case == 'usage-missing':
+                            self.assertEqual(value['usageStatus'], 'usage_missing')
+                            self.assertEqual(money.balance(usage.state, self.now)['unsettledUsageRecords'], 1)
                 self.assertEqual(len(ledger.load_state(self.path)['receipts']), 1)
 
     def setUp_ledger(self):
@@ -180,6 +187,30 @@ class BudgetTests(unittest.TestCase):
             self.assertGreater(actual['reservedMicroJPY'], 100_000_000)
         with self.assertRaises(azure.AzureFailure):
             azure.request_budget([{'role': 'user', 'content': [{'type': 'input_audio'}]}], {}, **self.arguments)
+
+    def test_up_to_four_cache_write_prefixes_are_reserved_without_assuming_disjoint_tokens(self):
+        charge = money.reservation(base.IDENTITY, self.request)
+        self.assertEqual(charge['reservedMicroJPY'], money.cost(
+            charge['model'], charge['modelVersion'], charge['inputCeiling'], 0,
+            charge['inputCeiling'] * 4, charge['outputCeiling']))
+        settled = money.settle(charge, self.envelope(prompt=200, cached=80, written=800))
+        self.assertEqual(settled['usage']['cachedWrite'], 800)
+        self.assertLessEqual(settled['chargedMicroJPY'], settled['reservedMicroJPY'])
+        with self.assertRaises(money.UsageInconsistent):
+            money.settle(charge, self.envelope(prompt=200, cached=80, written=801))
+
+    def test_usage_above_reservation_stops_further_issuance_even_if_optional_usage_is_missing(self):
+        with self.shared() as usage:
+            key = self.issue(usage)
+            response = self.envelope(prompt=self.request['inputCeiling'] + 1)
+            del response['usage']['prompt_tokens_details']['cache_write_tokens']
+            self.reply(response)
+            with self.assertRaisesRegex(azure.AzureFailure, 'azure_invalid_output'):
+                self.client(usage).structured(self.messages, {}, **self.arguments)
+            usage.finish(key, 'azure_invalid_output')
+            self.assertEqual(money.balance(usage.state, self.now)['reason'], 'monthly_usage_inconsistent')
+            with self.assertRaisesRegex(ledger.UsageFailure, 'azure_budget_exhausted'):
+                usage.check()
 
     def test_legacy_unknown_does_not_become_zero_and_import_stays_idempotent(self):
         state = ledger.load_state(self.path)
