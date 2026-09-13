@@ -923,6 +923,45 @@
         "name": "あくび",
         "observedAt": "2026-09-12T19:45:21.350499Z",
         "url": "https://x.com/akubi_zettai/status/2098804745473540512"
+      },
+      {
+        "authorId": "2070008239794909184",
+        "authorScreenName": "chima_zettai",
+        "createdAt": "2026-09-12T15:07:11Z",
+        "date": "2026-09-13",
+        "events": [],
+        "id": "2098790535444185336",
+        "links": [
+          {
+            "scope": "昼",
+            "status": "work"
+          }
+        ],
+        "name": "ちま",
+        "observedAt": "2026-09-12T19:46:09.558386Z",
+        "url": "https://x.com/chima_zettai/status/2098790535444185336",
+        "workTiming": {
+          "facts": [
+            {
+              "boundary": "end",
+              "explicitTime": "18:00",
+              "qualifier": null,
+              "serviceDate": "2026-09-13",
+              "shift": "昼",
+              "source": {
+                "authorId": "2070008239794909184",
+                "authorScreenName": "chima_zettai",
+                "createdAt": "2026-09-12T15:07:11Z",
+                "id": "2098790535444185336",
+                "name": "ちま",
+                "sourceKind": "personal-work-post",
+                "url": "https://x.com/chima_zettai/status/2098790535444185336"
+              },
+              "status": "set"
+            }
+          ],
+          "schemaVersion": 1
+        }
       }
     ],
     "nextRequestAt": null,
@@ -7297,7 +7336,14 @@
       "authorScreenName": "chima_zettai",
       "createdAt": "2026-09-12T15:07:11Z",
       "date": "2026-09-13",
-      "events": [],
+      "events": [
+        {
+          "excerpt": "1号店 アキバ絶対領域",
+          "kind": "placement",
+          "shift": "昼",
+          "storeId": "s1"
+        }
+      ],
       "id": "2098790535444185336",
       "links": [
         {
@@ -7795,6 +7841,33 @@
       "reason": "source_confirmed_placement",
       "resolvedAt": "2026-09-13T01:47:48.513661Z",
       "url": "https://x.com/akubi_zettai/status/2098804745473540512"
+    },
+    {
+      "date": "2026-09-13",
+      "id": "2098790535444185336",
+      "name": "ちま",
+      "placementReview": {
+        "bodyHash": "4e0d9ce59a54cb915a1aaf603b2150cb760c4604d58c847f314d49067bf9f365",
+        "expectedSubjectHash": "545daf1a18182d8e5bfe45500786f2128dc152acfd41095fe26995948b925024",
+        "id": "2098790535444185336",
+        "operation": "confirm-placement",
+        "reviewedAt": "2026-09-13T01:47:48.518170Z",
+        "scope": "昼",
+        "source": {
+          "authorId": "2070008239794909184",
+          "authorScreenName": "chima_zettai",
+          "createdAt": "2026-09-12T15:07:11Z",
+          "date": "2026-09-13",
+          "fetchedAt": "2026-09-12T19:46:09.558386Z",
+          "name": "ちま",
+          "url": "https://x.com/chima_zettai/status/2098790535444185336"
+        },
+        "sourceHash": "75261a56cfaa7a754b49a6d3267a440d6e195690592e6fab1154fd60d033cb16",
+        "storeId": "s1"
+      },
+      "reason": "source_confirmed_placement",
+      "resolvedAt": "2026-09-13T01:47:48.518170Z",
+      "url": "https://x.com/chima_zettai/status/2098790535444185336"
     }
   ],
   "savedPersonalImports": {
