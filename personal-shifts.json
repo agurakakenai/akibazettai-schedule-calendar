@@ -906,6 +906,23 @@
         "name": "ねむり",
         "observedAt": "2026-09-12T19:46:33.636165Z",
         "url": "https://x.com/nemuri_zettai/status/2098806494968119735"
+      },
+      {
+        "authorId": "1954467457902809088",
+        "authorScreenName": "akubi_zettai",
+        "createdAt": "2026-09-12T16:03:39Z",
+        "date": "2026-09-13",
+        "events": [],
+        "id": "2098804745473540512",
+        "links": [
+          {
+            "scope": "夜",
+            "status": "work"
+          }
+        ],
+        "name": "あくび",
+        "observedAt": "2026-09-12T19:45:21.350499Z",
+        "url": "https://x.com/akubi_zettai/status/2098804745473540512"
       }
     ],
     "nextRequestAt": null,
@@ -7232,7 +7249,14 @@
       "authorScreenName": "akubi_zettai",
       "createdAt": "2026-09-12T16:03:39Z",
       "date": "2026-09-13",
-      "events": [],
+      "events": [
+        {
+          "excerpt": "2号店 A.D.1912",
+          "kind": "placement",
+          "shift": "夜",
+          "storeId": "s2"
+        }
+      ],
       "id": "2098804745473540512",
       "links": [
         {
@@ -7744,6 +7768,33 @@
       "reason": "source_confirmed_placement",
       "resolvedAt": "2026-09-13T01:47:48.508152Z",
       "url": "https://x.com/nemuri_zettai/status/2098806494968119735"
+    },
+    {
+      "date": "2026-09-13",
+      "id": "2098804745473540512",
+      "name": "あくび",
+      "placementReview": {
+        "bodyHash": "aa010a4e082c59aeee0dc7c0e58ef1d7d436d25c78ffc1768b0a23832ddd1ca1",
+        "expectedSubjectHash": "a3e47518ef8bb236c08214e3424e0022fc8c5b7cb6ea17a38135f056eb9b7e7f",
+        "id": "2098804745473540512",
+        "operation": "confirm-placement",
+        "reviewedAt": "2026-09-13T01:47:48.513661Z",
+        "scope": "夜",
+        "source": {
+          "authorId": "1954467457902809088",
+          "authorScreenName": "akubi_zettai",
+          "createdAt": "2026-09-12T16:03:39Z",
+          "date": "2026-09-13",
+          "fetchedAt": "2026-09-12T19:45:21.350499Z",
+          "name": "あくび",
+          "url": "https://x.com/akubi_zettai/status/2098804745473540512"
+        },
+        "sourceHash": "92ec0d2f7281baee341f545a87930a702411452c384c0268b820e65af2a0ce4c",
+        "storeId": "s2"
+      },
+      "reason": "source_confirmed_placement",
+      "resolvedAt": "2026-09-13T01:47:48.513661Z",
+      "url": "https://x.com/akubi_zettai/status/2098804745473540512"
     }
   ],
   "savedPersonalImports": {
