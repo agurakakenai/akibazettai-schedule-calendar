@@ -154,7 +154,9 @@ class ProductionWorkflowTests(unittest.TestCase):
         self.assertIn('id: azure-cost-login', login)
         self.assertIn('continue-on-error: true', login)
         self.assertNotIn('continue-on-error', collection)
-        self.assertIn('AZURE_COST_AUTHENTICATED:', collection)
+        for variable in ('CLIENT_ID', 'TENANT_ID', 'SUBSCRIPTION_ID'):
+            self.assertIn('AZURE_COST_' + variable + ': ${{ vars.AZURE_COST_' + variable + ' }}', collection)
+        self.assertNotIn('steps.azure-cost-login.outcome', collection)
 
     def test_collection_guard_runs_only_explicit_main_or_scheduled_work(self):
         expression = job_condition('collect')

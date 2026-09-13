@@ -277,6 +277,64 @@ class BudgetTests(unittest.TestCase):
             self.assertEqual(money.balance(usage.state, self.now)['azureFailure'], 'query_failed')
             self.assertEqual(money.balance(usage.state, self.now)['reconciledMicroJPY'], 9_931_426)
 
+    def test_cost_query_checks_cli_principal_tenant_subscription_before_http(self):
+        client = '11111111-1111-4111-8111-111111111111'
+        tenant = '22222222-2222-4222-8222-222222222222'
+        subscription = money.RESOURCE_ID.split('/')[2]
+        environment = {'AZURE_COST_CLIENT_ID': client, 'AZURE_COST_TENANT_ID': tenant,
+                       'AZURE_COST_SUBSCRIPTION_ID': subscription,
+                       'GH_TOKEN': 'not-forwarded', 'AZURE_OPENAI_API_KEY': 'not-forwarded',
+                       'ACTIONS_ID_TOKEN_REQUEST_TOKEN': 'not-forwarded'}
+        account = {'id': subscription, 'tenantId': tenant,
+                   'user': {'name': client, 'type': 'servicePrincipal'}}
+        credential = {'subscription': subscription, 'tenant': tenant, 'accessToken': 'offline-credential'}
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.getcode.return_value = 200
+        response.read.return_value = b'{}'
+        body = money.query_body(NOW)
+        for changed in ('none', 'configuration', 'scope', 'id', 'tenantId', 'name', 'type',
+                        'token-subscription', 'token-tenant', 'malformed'):
+            with self.subTest(changed=changed):
+                env, info, token = copy.deepcopy((environment, account, credential))
+                if changed == 'configuration':
+                    env.pop('AZURE_COST_CLIENT_ID')
+                elif changed == 'scope':
+                    env['AZURE_COST_SUBSCRIPTION_ID'] = client
+                elif changed in ('id', 'tenantId'):
+                    info[changed] = client
+                elif changed in ('name', 'type'):
+                    info['user'][changed] = 'other'
+                elif changed.startswith('token-'):
+                    token[changed[6:]] = client
+                elif changed == 'malformed':
+                    info['user']['name'] = None
+                results = [mock.Mock(returncode=0, stdout=json.dumps(item)) for item in (info, token)]
+                with mock.patch.object(money.subprocess, 'run', side_effect=results) as cli, \
+                        mock.patch.object(money.urllib.request, 'build_opener') as opener, \
+                        mock.patch.object(money, 'query_body', return_value=body), \
+                        mock.patch.object(money, 'parse_billing', return_value={'checked': True}):
+                    now = dt.datetime.now(dt.timezone.utc)
+                    opener.return_value.open.return_value = response
+                    if changed == 'none':
+                        self.assertEqual(money.query_azure(env, now), {'checked': True})
+                        self.assertEqual(cli.call_count, 2)
+                        self.assertEqual(cli.call_args_list[0].args[0][1:3], ['account', 'show'])
+                        opener.return_value.open.assert_called_once()
+                        self.assertIn(money.RESOURCE_ID.split('/providers/')[0],
+                                      opener.return_value.open.call_args.args[0].full_url)
+                    else:
+                        reason = {'configuration': 'auth_not_configured', 'scope': 'scope_mismatch'}.get(
+                            changed, 'auth_failed')
+                        with self.assertRaisesRegex(money.BillingFailure, reason):
+                            money.query_azure(env, now)
+                        opener.assert_not_called()
+                        self.assertEqual(cli.call_count, 0 if changed in ('configuration', 'scope')
+                                         else 2 if changed.startswith('token-') else 1)
+                    for call in cli.call_args_list:
+                        self.assertTrue(set(call.kwargs['env']).isdisjoint(
+                            {'GH_TOKEN', 'AZURE_OPENAI_API_KEY', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN'}))
+
     def test_billing_refuses_scope_currency_future_and_preserves_retry_after(self):
         body = money.query_body(NOW)
         self.assertTrue(body['timePeriod']['to'].startswith('2026-09-12'))

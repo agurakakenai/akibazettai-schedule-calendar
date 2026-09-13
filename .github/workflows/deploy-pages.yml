@@ -101,7 +101,9 @@ jobs:
         id: collection
         env:
           GH_TOKEN: ${{ github.token }}
-          AZURE_COST_AUTHENTICATED: ${{ steps.azure-cost-login.outcome == 'success' && 'true' || 'false' }}
+          AZURE_COST_CLIENT_ID: ${{ vars.AZURE_COST_CLIENT_ID }}
+          AZURE_COST_TENANT_ID: ${{ vars.AZURE_COST_TENANT_ID }}
+          AZURE_COST_SUBSCRIPTION_ID: ${{ vars.AZURE_COST_SUBSCRIPTION_ID }}
           GH_PROMPT_DISABLED: "1"
           GIT_TERMINAL_PROMPT: "0"
           COLLECTION_MODE: ${{ steps.route.outputs.collectionMode }}
