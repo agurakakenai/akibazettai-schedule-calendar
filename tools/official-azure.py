@@ -387,10 +387,10 @@ class AzureAnalyzer:
                     'reason': entry['reason'], 'firstSeenAt': entry['at'],
                     'lastAttemptAt': entry['at'], 'attempts': 1})
         for tid, entry in self.state['queue'].items():
-            pending[tid] = {
+            pending.setdefault(tid, {
                 'id': tid, 'url': 'https://x.com/akibazettai/status/' + tid,
                 'reason': entry['reason'], 'firstSeenAt': entry['fetchedAt'],
-                'lastAttemptAt': None, 'attempts': 0}
+                'lastAttemptAt': None, 'attempts': 0})
         state['pending'] = list(pending.values())
 
     def can_fetch(self, tid):

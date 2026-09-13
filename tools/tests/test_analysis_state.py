@@ -415,7 +415,8 @@ class UsageTests(unittest.TestCase):
             {**receipt, 'searches': -1}, {**receipt, 'posts': 0, 'searches': 0},
             {**receipt, 'posts': 100, 'searches': 1}, {**receipt, 'sourceHash': 'invalid'},
             {**receipt, 'date': '2026-9-6'}, {**receipt, 'posts': 1.5},
-            {**receipt, 'searches': 61}, {**receipt, 'posts': 41},
+            {**receipt, 'searches': usage.SOURCE_DAY_SEARCH_LIMIT + 1},
+            {**receipt, 'posts': usage.SOURCE_DAY_INDIVIDUAL_LIMIT + 1},
         ]
         for invalid in cases:
             state, personal_state = usage.empty_state(), {'budgets': {}}

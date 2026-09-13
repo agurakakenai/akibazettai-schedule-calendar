@@ -726,6 +726,82 @@ class OfficialAzureTests(unittest.TestCase):
             self.assertNotIn('"payload"', json.dumps(value))
             self.assertNotIn('あとから来るにゃんね', json.dumps(value, ensure_ascii=False))
 
+    def test_bind_preserves_existing_pending_and_reconstructs_only_missing_queue_entries(self):
+        sources = self.source_posts(2)
+        state = self.queued_state(sources)
+        tid, missing = sources
+        existing = {'id': tid, 'url': official.canonical(tid), 'reason': 'azure_budget_exhausted',
+                    'firstSeenAt': official.iso(self.now - dt.timedelta(hours=1)),
+                    'lastAttemptAt': official.iso(self.now - dt.timedelta(minutes=10)), 'attempts': 4}
+        state['pending'] = [copy.deepcopy(existing)]
+        with self.usage(limit=0) as usage:
+            analyzer, opener = self.analyzer(state, usage)
+            analyzer.bind(state)
+        pending = {item['id']: item for item in state['pending']}
+        self.assertEqual(pending[tid], existing)
+        self.assertEqual(pending[missing]['attempts'], 0)
+        self.assertIsNone(pending[missing]['lastAttemptAt'])
+        self.assertEqual(pending[missing]['firstSeenAt'], state['officialAnalysis']['queue'][missing]['fetchedAt'])
+        self.assertFalse(opener.requests)
+
+    def test_partial_buffer_replay_preserves_other_pending_in_checkpoints_and_aggregation(self):
+        work = official.ROOT / ('.cc-work-' + uuid.uuid4().hex[:16])
+        work.mkdir()
+        self.addCleanup(shutil.rmtree, work)
+        snapshot, buffer_path = self.directory / 'partial.json', work / 'partial-buffer.json'
+        curated = self.directory / 'curated.csv'
+        curated.write_text('tweet_id,maid\n', encoding='utf-8')
+        sources = self.source_posts(3)
+        official.atomic_json(snapshot, official.empty_snapshot())
+        common = ['--analysis-backend', 'azure', '--ai-state', str(self.path),
+                  '--analysis-run-id', 'partial-buffer', '--date-from', str(DAY), '--date-to', str(DAY),
+                  '--snapshot', str(snapshot)]
+        opener, source = Opener(decision(kind='no_event')), Source(sources)
+        with mock.patch.dict(os.environ, ENV), \
+                mock.patch.object(azure, 'load_names', return_value=list(NAMES)), \
+                mock.patch.object(azure.transport.urllib.request, 'build_opener', return_value=opener), \
+                mock.patch.object(official, 'write_report'):
+            args = official.argument_parser().parse_args(
+                common + ['--analysis-limit', '0', '--analysis-buffer', str(buffer_path)])
+            self.assertEqual(official.run(args, curated=curated, client=source,
+                                          clock=self.clock, sleep=self.sleep), 2)
+            initial = official.load_snapshot(snapshot)
+            buffered = official.load_analysis_buffer(buffer_path, initial, 'partial-buffer', self.clock())
+            buffered = official.make_analysis_buffer(
+                initial, buffered['runId'], buffered['versionHash'], buffered['items'][:1], self.clock())
+            official.atomic_json(buffer_path, buffered)
+            resumed_ids = {item['id'] for item in buffered['items']}
+            untouched = [item for item in initial['pending'] if item['id'] not in resumed_ids]
+            self.assertEqual(len(untouched), 2)
+            self.assertTrue(all(item['attempts'] == 1 and item['lastAttemptAt'] for item in untouched))
+            writes = []
+            atomic = official.atomic_json
+
+            def capture(path, value):
+                if path == snapshot:
+                    writes.append(copy.deepcopy(value))
+                return atomic(path, value)
+
+            args = official.argument_parser().parse_args(
+                common + ['--analysis-limit', '1', '--replay-buffer', str(buffer_path)])
+            with mock.patch.object(official, 'atomic_json', side_effect=capture), \
+                    mock.patch.object(official, 'PublicClient', side_effect=AssertionError('source replay forbidden')):
+                self.assertEqual(official.run(args, curated=curated, clock=self.clock, sleep=self.sleep), 2)
+        result = official.load_snapshot(snapshot)
+        for checkpoint in [*writes, result]:
+            self.assertEqual([item for item in checkpoint['pending'] if item['id'] not in resumed_ids], untouched)
+        self.assertEqual(len(opener.requests), 1)
+        self.assertEqual(len(source.calls), 3)
+        from test_cloud_collection import cloud
+        combined = cloud.aggregate_official_resume(
+            initial, result, resumed_ids, initial['lastRun']['requests'], official)
+        self.assertEqual(combined['pending'], untouched)
+        self.assertEqual(combined['lastRun']['status'], 'partial')
+        tampered = copy.deepcopy(result)
+        tampered['pending'][0]['attempts'] = 0
+        with self.assertRaisesRegex(cloud.CloudError, 'official_resume_changed_pending'):
+            cloud.aggregate_official_resume(initial, tampered, resumed_ids, initial['lastRun']['requests'], official)
+
     def test_known_queue_prefetch_returns_unused_slot_or_discards_raw_after_personal_use(self):
         work = official.ROOT / ('.cc-work-' + uuid.uuid4().hex[:16])
         work.mkdir()

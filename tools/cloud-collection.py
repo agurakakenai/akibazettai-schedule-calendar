@@ -1155,8 +1155,8 @@ def read_saved_manifest(environment):
                     and 1 <= len(receipt['modelBreakdown']) <= 8)
         for receipt in value['sourceReceipts']:
             require(isinstance(receipt, dict))
-            integer(receipt.get('searches'), 0, 60)
-            integer(receipt.get('posts'), 0, 40)
+            integer(receipt.get('searches'), 0, load_analysis_state().SOURCE_DAY_SEARCH_LIMIT)
+            integer(receipt.get('posts'), 0, load_analysis_state().SOURCE_DAY_INDIVIDUAL_LIMIT)
     except (OSError, ValueError, TypeError, KeyError, RecursionError):
         raise CloudError('invalid_saved_manifest') from None
     return value
