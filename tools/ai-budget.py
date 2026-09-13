@@ -398,12 +398,18 @@ def parse_billing(response, body, now):
 
 def query_azure(environment, now):
     body = query_body(now)
-    if environment.get('AZURE_COST_AUTHENTICATED') != 'true':
+    client, tenant, subscription = (
+        environment.get('AZURE_COST_' + name) for name in ('CLIENT_ID', 'TENANT_ID', 'SUBSCRIPTION_ID'))
+    if not all(isinstance(value, str) and re.fullmatch(
+            r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', value)
+            for value in (client, tenant, subscription)):
         raise BillingFailure('auth_not_configured')
-    try:
+    if subscription.lower() != RESOURCE_ID.split('/')[2].lower():
+        raise BillingFailure('scope_mismatch')
+
+    def account_json(*arguments):
         result = subprocess.run(
-            ['az', 'account', 'get-access-token', '--resource', 'https://management.azure.com/',
-             '--subscription', RESOURCE_ID.split('/')[2], '--output', 'json'],
+            ['az', 'account', *arguments, '--subscription', subscription, '--output', 'json'],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding='utf-8', timeout=30, check=False,
             env={key: value for key, value in environment.items()
@@ -412,9 +418,23 @@ def query_azure(environment, now):
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         if result.returncode:
             raise BillingFailure('auth_failed')
-        token = json.loads(result.stdout)['accessToken']
+        value = json.loads(result.stdout)
+        require(isinstance(value, dict))
+        return value
+
+    try:
+        account = account_json('show')
+        require(account['id'].lower() == subscription.lower()
+               and account['tenantId'].lower() == tenant.lower()
+               and isinstance(account['user'], dict)
+               and account['user']['type'] == 'servicePrincipal'
+               and account['user']['name'].lower() == client.lower())
+        credential = account_json('get-access-token', '--resource', 'https://management.azure.com/')
+        require(credential['subscription'].lower() == subscription.lower()
+               and credential['tenant'].lower() == tenant.lower())
+        token = credential['accessToken']
         require(isinstance(token, str) and token and '\r' not in token and '\n' not in token)
-    except (OSError, subprocess.TimeoutExpired, KeyError, TypeError, ValueError):
+    except (OSError, subprocess.TimeoutExpired, KeyError, TypeError, ValueError, AttributeError):
         raise BillingFailure('auth_failed') from None
     scope = RESOURCE_ID.split('/providers/')[0]
     request = urllib.request.Request(
