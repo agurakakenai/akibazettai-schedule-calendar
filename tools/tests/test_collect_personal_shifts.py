@@ -632,9 +632,9 @@ class StateTests(Offline):
             else:
                 self.assertEqual(day['withoutWorkLink'], [])
                 self.assertEqual(day['workLinkShifts'], 19)
-                self.assertEqual(report['acquisition']['supplemental']['bodyChecked'], 1)
-                self.assertEqual(calls[-1], str(int(TID) + 181))
-                self.assertEqual(sum(post['name'] == extra['name'] for post in self.state['posts']), 1)
+                self.assertIsNone(report['acquisition']['supplemental'])
+                self.assertNotIn(str(int(TID) + 181), calls)
+                self.assertEqual(sum(post['name'] == extra['name'] for post in self.state['posts']), 0)
             personal.read_state(self.snapshot)
 
     def test_catch_up_first_body_precedes_extra_day_only_candidates(self):
@@ -686,6 +686,74 @@ class StateTests(Offline):
         self.assertEqual(durable.used, {'searches': 3, 'posts': 0})
         self.assertEqual(self.state['posts'], [])
         personal.read_state(self.snapshot)
+
+    def test_current_missing_then_corrections_then_supplement_then_past(self):
+        self.state['pending'] = [{**candidate(), 'reason': 'discovered', 'firstSeenAt': CREATED,
+                                  'lastAttemptAt': None, 'attempts': 0}]
+        first = self.durable(searches=0)
+        self.collect(self.fake_client(first), first)
+        self.assertEqual(len(self.state['posts']), 1)
+        past = {'name': '過去', 'handle': 'past_member'}
+        extra = {'name': '補助', 'handle': 'extra_member'}
+        registry = registry_fixture(AMU, RARAKO, past, extra)
+        yesterday = DATE - dt.timedelta(days=1)
+        schedule = {'schedule': {
+            DATE.isoformat(): {'昼': [{'name': RARAKO['name']}], '夜': [{'name': AMU['name']}]},
+            yesterday.isoformat(): {'夜': [{'name': past['name']}]}}}
+        durable = self.durable(searches=4, posts=0)
+        durable.catch_up = True
+        calls = []
+
+        def clients(current):
+            client = self.fake_client(current, entries=[])
+            search = client.search.side_effect
+            def capture(url, *args):
+                calls.append((current.date, url))
+                return search(url, *args)
+            client.search.side_effect = capture
+            return client
+
+        personal.collect_recovery(self.state, durable, schedule, None, None, registry, (),
+                                  clients, None, lambda: NOW)
+        self.assertEqual(calls, [
+            (DATE, personal.account_search_url(RARAKO['handle'])),
+            (DATE, personal.account_search_url(AMU['handle'])),
+            (DATE, personal.account_search_url(extra['handle'])),
+            (yesterday, personal.account_search_url(past['handle']))])
+
+    def test_night_and_past_work_leave_half_of_real_day_source_capacity_for_today(self):
+        early = NOW.astimezone(personal.JST).replace(hour=3, minute=0).astimezone(personal.UTC)
+        later = NOW.astimezone(personal.JST).replace(hour=13, minute=0).astimezone(personal.UTC)
+        self.state['budgets'][DATE.isoformat()] = {'searches': 60, 'posts': 40}
+        for now, day in ((early, DATE), (later, DATE - dt.timedelta(days=1))):
+            durable = self.durable(now=now)
+            durable.catch_up, durable.date = True, day
+            durable.preflight()
+            for host, kind in ((personal.SEARCH_HOST, 'searches'), (personal.POST_HOST, 'posts')):
+                with self.assertRaisesRegex(personal.Failure, 'current_day_reserved'):
+                    durable.reserve(host, kind)
+            self.assertEqual(durable.used, {'searches': 0, 'posts': 0})
+        durable = self.durable(now=later)
+        durable.catch_up = True
+        report, _ = self.collect(self.fake_client(durable), durable)
+        self.assertEqual(report['newPostCount'], 1)
+        self.assertEqual(self.state['budgets'][DATE.isoformat()], {'searches': 62, 'posts': 41})
+        personal.read_state(self.snapshot)
+
+    def test_reserved_day_capacity_counts_half_month_and_images(self):
+        early = NOW.astimezone(personal.JST).replace(hour=3, minute=0).astimezone(personal.UTC)
+        self.state['budgets'][DATE.isoformat()] = {'searches': 58, 'posts': 38}
+        durable = self.durable(now=early)
+        durable.catch_up = True
+        durable.preflight()
+        durable.shared_source = mock.Mock()
+        durable.shared_source.counts.return_value = {
+            'day': {'personal': {'searches': 58, 'posts': 38, 'images': 0},
+                    'schedule': {'searches': 2, 'posts': 1, 'images': 1}}, 'historicalImages': 0}
+        for host, kind in ((personal.SEARCH_HOST, 'searches'), (personal.POST_HOST, 'posts')):
+            with self.assertRaisesRegex(personal.Failure, 'current_day_reserved'):
+                durable.reserve(host, kind)
+        durable.shared_source.reserve.assert_not_called()
 
     def test_unannounced_supplement_never_bypasses_today_or_legacy_shift_guards(self):
         registry = registry_fixture(AMU)
@@ -1421,7 +1489,7 @@ class StateTests(Offline):
         self.assertEqual(self.sleeps, [12])
 
     def test_daily_and_run_budgets_are_hard_caps(self):
-        self.state['budgets'][DATE.isoformat()] = {'searches': 60, 'posts': 40}
+        self.state['budgets'][DATE.isoformat()] = dict(personal.DAILY_LIMITS)
         durable = self.durable()
         durable.preflight()
         for host, kind in ((personal.SEARCH_HOST, 'searches'), (personal.POST_HOST, 'posts')):

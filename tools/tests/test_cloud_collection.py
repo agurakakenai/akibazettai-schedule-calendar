@@ -1154,7 +1154,7 @@ class CloudTests(unittest.TestCase):
         module, seed = self.personal_seed()
         state = module.empty_state()
         module.merge_seed(state, seed)
-        state['budgets']['2026-09-06'] = {'searches': 60, 'posts': 30}
+        state['budgets']['2026-09-06'] = dict(module.DAILY_LIMITS)
         self.seed_branch()
         self.bare_commit({cloud.PERSONAL: state})
         self.personal_mode('both')

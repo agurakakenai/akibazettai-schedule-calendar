@@ -1361,13 +1361,13 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
                                 latest[entry['postId']] = entry
                         for tid, entry in latest.items():
                             if entry['reason'] not in ('notices', 'no_event'):
-                                pending_by_id[tid] = {
+                                pending_by_id.setdefault(tid, {
                                     'id': tid, 'url': canonical(tid), 'reason': entry['reason'],
-                                    'firstSeenAt': entry['at'], 'lastAttemptAt': entry['at'], 'attempts': 1}
+                                    'firstSeenAt': entry['at'], 'lastAttemptAt': entry['at'], 'attempts': 1})
                         for tid, entry in partial['officialAnalysis']['queue'].items():
-                            pending_by_id[tid] = {
+                            pending_by_id.setdefault(tid, {
                                 'id': tid, 'url': canonical(tid), 'reason': entry['reason'],
-                                'firstSeenAt': entry['fetchedAt'], 'lastAttemptAt': None, 'attempts': 0}
+                                'firstSeenAt': entry['fetchedAt'], 'lastAttemptAt': None, 'attempts': 0})
                         checkpoint['pending'] = list(pending_by_id.values())
                         atomic_json(snapshot, checkpoint)
                     analyzer = analysis.AzureAnalyzer(state, analysis_context(), os.environ, usage,

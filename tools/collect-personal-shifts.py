@@ -62,7 +62,9 @@ class InfrastructureFailure(RuntimeError):
 
 SEARCH_HOST = 'search.yahoo.co.jp'
 POST_HOST = official.POST_HOST
-DAILY_LIMITS = {'searches': 60, 'posts': 40}
+SOURCE_LIMITS = official.source_module()
+DAILY_LIMITS = {'searches': SOURCE_LIMITS.DAY_SEARCH_LIMIT,
+                'posts': SOURCE_LIMITS.DAY_INDIVIDUAL_LIMIT}
 PILOT_BUDGETS = {'2026-09-06': {'searches': 7, 'posts': 2}}
 MAX_BODY = 4_000_000
 STATUSES = {'never', 'ok', 'partial', 'unavailable', 'no-new', 'no-results',
@@ -780,7 +782,9 @@ def target_searches(targets, date, state, now, maximum, *, scheduled=False, catc
 
     def priority(target):
         same_day = state.get('searchHistory', {}).get(date.isoformat(), {}).get(target['name'], {})
-        return (same_day.get('attemptedAt', '') if catch_up else history.get(target['name'], ''),
+        origins = state.get('coverage', {}).get(date.isoformat(), {}).get(target['name'], {}).get('origins', [])
+        return (bool(catch_up and calendar_day(now) == date and 'scheduled' not in origins),
+                same_day.get('attemptedAt', '') if catch_up else history.get(target['name'], ''),
                 history.get(target['name'], ''), target.get('registeredAt', ''), target['name'])
 
     if catch_up:
@@ -1246,6 +1250,18 @@ class DurableHttp:
             budget = self.state['budgets'].get(accounting_day, {'searches': 0, 'posts': 0})
         if self.used[kind] >= self.caps[kind] or budget[kind] >= DAILY_LIMITS[kind]:
             raise Failure('budget_exhausted')
+        local = self.clock().astimezone(JST)
+        if self.catch_up and (self.date < local.date() or local.time() < dt.time(12, 30)):
+            spent = budget[kind]
+            if self.shared_source is not None:
+                counts = self.shared_source.counts()
+                kinds = ('searches',) if kind == 'searches' else ('posts', 'images')
+                spent = sum(counts['day'][component][item]
+                            for component in ('personal', 'schedule') for item in kinds)
+                if kind == 'posts':
+                    spent += counts['historicalImages']
+            if spent >= DAILY_LIMITS[kind] // 2:
+                raise Failure('current_day_reserved')
         previous = official.timestamp(self.state['lastRequests'][host]) if host in self.state['lastRequests'] else self.started
         self.sleep(max(0, 12 - (self.clock() - previous).total_seconds()))
         self.check_window(target_name)
@@ -1602,7 +1618,7 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         except Failure as exc:
             sources.append({'url': url, 'status': 'failed', **exc.facts()})
             failures.append(exc.facts())
-            if isinstance(exc, RegistryFailure) or exc.reason in ('budget_exhausted', 'outside_window', 'shared_host_cooldown',
+            if isinstance(exc, RegistryFailure) or exc.reason in ('budget_exhausted', 'current_day_reserved', 'outside_window', 'shared_host_cooldown',
                               'source_budget_exhausted', 'source_paused', 'source_host_cooldown') or state['paused']:
                 break
         finally:
@@ -1770,7 +1786,7 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
             else:
                 item.update(facts)
             failures.append({'id': item['id'], **facts})
-            if exc.reason in ('budget_exhausted', 'shared_host_cooldown', 'outside_window'):
+            if exc.reason in ('budget_exhausted', 'current_day_reserved', 'shared_host_cooldown', 'outside_window'):
                 deferred += 1
         finally:
             durable.post_target = None
@@ -1781,7 +1797,7 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         status = 'paused'
     elif early_status:
         status = early_status
-    elif codes & {'budget_exhausted', 'azure_budget_exhausted', 'source_budget_exhausted'}:
+    elif codes & {'budget_exhausted', 'current_day_reserved', 'azure_budget_exhausted', 'source_budget_exhausted'}:
         status = 'budget-exhausted'
     elif codes and codes <= {'azure_work_timing_storage_limit', 'azure_capacity_hold',
                             'azure_capacity_profile_stale'}:
@@ -1846,6 +1862,20 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
                 first_sources_only=day == today)
             reports.append(report)
         if (day == today and not state['paused']
+                and (clock() - durable.started).total_seconds() < RECOVERY_SECONDS
+                and (durable.used['searches'] < durable.caps['searches']
+                     or durable.used['posts'] < durable.caps['posts'])):
+            corrections = {name: target for name, target in by_day.get(today, {}).items()
+                           if work_source_complete(state, target, today)}
+            if corrections:
+                durable.date, durable.targets = today, corrections
+                report, _ = collect(
+                    state, durable, client_factory(durable), corrections, today,
+                    max(0, durable.caps['searches'] - durable.used['searches']),
+                    max(0, durable.caps['posts'] - durable.used['posts']),
+                    clock, members.display_projection(registry)['knownNames'], analyzer)
+                reports.append(report)
+        if (day == today and not state['paused']
                 and (durable.used['searches'] < durable.caps['searches']
                      or durable.used['posts'] < durable.caps['posts'])):
             discovery = select_targets(
@@ -1867,19 +1897,6 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
                                 'unsearched': sum(not rows[name]['searchedAt'] for name in discovery)}
         if state['paused'] or (clock() - durable.started).total_seconds() >= RECOVERY_SECONDS:
             break
-    if (not state['paused'] and (clock() - durable.started).total_seconds() < RECOVERY_SECONDS
-            and (durable.used['searches'] < durable.caps['searches']
-                 or durable.used['posts'] < durable.caps['posts'])):
-        corrections = {name: target for name, target in by_day.get(today, {}).items()
-                       if work_source_complete(state, target, today)}
-        if corrections:
-            durable.date, durable.targets = today, corrections
-            report, _ = collect(
-                state, durable, client_factory(durable), corrections, today,
-                max(0, durable.caps['searches'] - durable.used['searches']),
-                max(0, durable.caps['posts'] - durable.used['posts']),
-                clock, members.display_projection(registry)['knownNames'], analyzer)
-            reports.append(report)
     summaries = []
     for day, targets in by_day.items():
         all_rows = update_coverage(state, targets, day, clock(), catch_up=True)
