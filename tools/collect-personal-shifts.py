@@ -351,14 +351,19 @@ def read_state(path, private=True):
                             'searchCreatedAt', 'reason', 'firstSeenAt', 'lastAttemptAt', 'attempts'),
                             ('httpStatus', 'retryAt', 'metadataSource', 'sourceCreatedAt'))
                     else:
-                        require_keys(item, ('id', 'url', 'name', 'date', 'reason', 'resolvedAt'), ('linkReview',))
+                        require_keys(item, ('id', 'url', 'name', 'date', 'reason', 'resolvedAt'),
+                                     ('linkReview', 'placementReview'))
+                        if 'placementReview' in item:
+                            saved_validator().validate_placement_review(value, item, azure_context())
                         if item['reason'] == 'reviewed_undated_work' and 'linkReview' not in item:
                             raise ValueError
                         if 'linkReview' in item:
                             review = item['linkReview']
                             if isinstance(review, dict) and review.get('operation') == 'confirm-work-link':
                                 reviewed = saved_validator().source_review_post(review, azure_context())
-                                if (item['reason'] != 'no_event' or reviewed not in value['posts']
+                                if (item['reason'] != 'no_event'
+                                        or reviewed not in value['posts'] and reviewed not in
+                                        value.get('azureAnalysis', {}).get('history', [])
                                         or any(reviewed[field] != item[field]
                                                for field in ('id', 'url', 'name', 'date'))):
                                     raise ValueError

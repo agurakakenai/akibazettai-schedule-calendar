@@ -1911,6 +1911,47 @@ class CloudTests(unittest.TestCase):
                           collector=collector, personal=helper.personal)
         self.assertEqual(self.remote_json(cloud.PERSONAL)[0], after)
 
+    def test_source_placement_review_uses_dispatch_restore_and_private_history(self):
+        helper = PersonalSavedTests(methodName='runTest')
+        helper.setUp()
+        private, usage, entry, registry, _ = helper.placement_review(manual_link=True)
+        source = entry['source']
+        self.seed_branch()
+        self.bare_commit({cloud.PERSONAL: private, cloud.AI_USAGE: usage})
+        (self.root / 'data' / 'members.json').write_bytes(helper.personal.members.json_bytes(registry))
+        (self.root / 'data' / 'schedule.js').write_text('window.SCHEDULE_DATA=' + json.dumps({
+            'roster': [source['name']], 'schedule': {source['date']: {'昼': [{'name': source['name']}]}}
+        }) + ';', encoding='utf-8')
+        manifest = self.saved_manifest()
+        manifest.update(usageImports=[], personalLinkReviews=[entry])
+        self.saved_mode(manifest)
+        with mock.patch.object(cloud, 'invoke_collector', side_effect=AssertionError('No source')), \
+                mock.patch.object(cloud, 'invoke_personal_collector', side_effect=AssertionError('No AI')):
+            result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                       collector=collector, personal=helper.personal)
+        self.assertEqual(result['collectionStatus'], 'applied-saved')
+        after = self.remote_json(cloud.PERSONAL)[0]
+        post = next(post for post in after['posts'] if post['id'] == entry['id'])
+        self.assertEqual(post['events'][0]['storeId'], 's2')
+        self.assertEqual(post['links'], [{'scope': '昼', 'status': 'work'}])
+        self.assertEqual(after['azureAnalysis']['cache'], private['azureAnalysis']['cache'])
+        self.assertEqual(self.remote_json(cloud.AI_USAGE)[0], usage)
+        pages_spec = importlib.util.spec_from_file_location(
+            'placement_review_pages', ROOT / 'tools' / 'pages.py')
+        pages = importlib.util.module_from_spec(pages_spec)
+        pages_spec.loader.exec_module(pages)
+        public = pages.load_public_personal_snapshot(self.output.parent / cloud.PERSONAL)
+        self.assertEqual(next(item for item in public['posts'] if item['id'] == entry['id'])['events'],
+                         post['events'])
+        for field in ('placementReview', 'linkReview', 'bodyHash', 'sourceHash'):
+            self.assertNotIn(field, json.dumps(public))
+        manifest['expectedStateSHA'] = result['stateCommit']
+        self.saved_mode(manifest)
+        cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                          collector=collector, personal=helper.personal)
+        self.assertEqual(self.remote_json(cloud.PERSONAL)[0], after)
+        self.assertNotIn(cloud.LEASE, self.remote_names())
+
     def test_manual_past_import_uses_real_dated_scope_and_existing_leased_apply(self):
         helper = PersonalSavedTests(methodName='runTest')
         helper.setUp()
@@ -2805,6 +2846,105 @@ class PersonalSavedTests(unittest.TestCase):
                                               registry=registry, binding_maps=bindings,
                                               daily_targets=targets)
             self.assertEqual(state, original)
+
+    def placement_review(self, manual_link=False):
+        state, usage, link_entry, registry, targets = self.native_negative_review()
+        if manual_link:
+            state = self.saved.apply_link_reviews(
+                state, [link_entry], usage, self.personal, registry=registry, daily_targets=targets)
+            post = state['posts'][-1]
+        else:
+            entry = copy.deepcopy(self.entries[0])
+            entry['amendment'].update(events=[], links=[{'scope': '昼', 'status': 'work'}])
+            entry['amendment']['source'].update(
+                contractVersion=self.saved.TIMING_CONTRACT, contractHash=self.saved.TIMING_CONTRACT_HASH)
+            entry['amendment']['workTiming'] = None
+            original_post = self.saved.post_from_amendment(entry['amendment'])
+            fact = {'serviceDate': original_post['date'], 'shift': '昼', 'boundary': 'end',
+                    'status': 'set', 'qualifier': None, 'explicitTime': '18:00'}
+            entry['amendment']['workTiming'] = self.saved.timing.bind(
+                [fact], original_post, 'personal-work-post')
+            state = self.apply(entries=[entry])
+            post = state['posts'][-1]
+            usage = copy.deepcopy(self.usage)
+            source = entry['amendment']['source']
+            link_entry.update(bodyHash=source['bodyHash'], sourceHash=source['sourceHash'],
+                              source={key: source[key] for key in (*self.saved.METADATA, 'fetchedAt')})
+        review = {**link_entry, 'operation': 'confirm-placement', 'storeId': 's2',
+                  'expectedSubjectHash': self.saved.subject_hash(state, post['id'])}
+        return state, usage, review, registry, targets
+
+    def test_source_placement_review_preserves_links_timing_negative_and_import_proofs(self):
+        for manual_link in (False, True):
+            state, usage, entry, registry, targets = self.placement_review(manual_link)
+            previous = copy.deepcopy(state)
+            post = next(post for post in state['posts'] if post['id'] == entry['id'])
+            after = self.saved.apply_link_reviews(
+                state, [entry], usage, self.personal, registry=registry, daily_targets=targets)
+            current = next(post for post in after['posts'] if post['id'] == entry['id'])
+            self.assertEqual(current['events'], [{
+                'shift': '昼', 'kind': 'placement', 'storeId': 's2', 'excerpt': '2号店 A.D.1912'}])
+            self.assertEqual({key: value for key, value in current.items() if key != 'events'},
+                             {key: value for key, value in post.items() if key != 'events'})
+            self.assertIn(post, after['azureAnalysis']['history'])
+            self.assertEqual(after.get('savedPersonalImports'), previous.get('savedPersonalImports'))
+            self.assertEqual(after['azureAnalysis']['cache'], previous.get('azureAnalysis', {}).get('cache', {}))
+            self.assertEqual(state, previous)
+            self.assertEqual(after, self.saved.apply_link_reviews(after, [entry], usage, self.personal))
+            if manual_link:
+                before_resolved = next(item for item in previous['resolved'] if item['id'] == entry['id'])
+                resolved = next(item for item in after['resolved'] if item['id'] == entry['id'])
+                self.assertEqual(resolved['reason'], 'no_event')
+                self.assertEqual(resolved['linkReview'], before_resolved['linkReview'])
+                self.assertEqual(after, self.saved.apply_link_reviews(
+                    after, [before_resolved['linkReview']], usage, self.personal))
+            with tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / 'personal-shifts.json'
+                path.write_text(json.dumps(after), encoding='utf-8')
+                self.assertEqual(self.personal.read_state(path), after)
+                cloud.validate_personal(path, self.personal)
+                cloud.validate_usage_links(usage, after, self.personal)
+            for field, value in (('storeId', 's3'), ('scope', '夜')):
+                changed = {**entry, field: value,
+                           'expectedSubjectHash': self.saved.subject_hash(after, entry['id'])}
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    self.saved.apply_link_reviews(after, [changed], usage, self.personal,
+                                                  registry=registry, daily_targets=targets)
+
+    def test_placement_review_refuses_unverified_source_or_changed_core(self):
+        for change in ('body', 'source', 'author', 'date', 'fetched', 'scope',
+                       'store', 'unknown', 'events', 'withdrawn', 'cas', 'usage', 'target'):
+            state, usage, entry, registry, targets = self.placement_review()
+            if change in ('body', 'source'):
+                entry[change + 'Hash'] = '0' * 64
+            elif change == 'author':
+                entry['source']['authorId'] = '123456789012345678'
+            elif change == 'date':
+                entry['source']['date'] = '2026-09-07'
+            elif change == 'fetched':
+                entry['source']['fetchedAt'] = '2026-09-06T00:00:00Z'
+            elif change == 'scope':
+                entry['scope'] = '夜'
+            elif change == 'store':
+                entry['storeId'] = 's9'
+            elif change == 'unknown':
+                state['savedPersonalImports'] = {}
+            elif change == 'events':
+                state['posts'][-1]['events'] = [
+                    {'shift': '昼', 'kind': 'absence', 'excerpt': 'お休み'}]
+            elif change == 'withdrawn':
+                state['posts'][-1]['links'][0]['status'] = 'withdrawn'
+            elif change == 'cas':
+                entry['expectedSubjectHash'] = '0' * 64
+            elif change == 'usage':
+                usage = cloud.load_analysis_state().empty_state()
+            else:
+                targets = {}
+            if change in ('unknown', 'events', 'withdrawn'):
+                entry['expectedSubjectHash'] = self.saved.subject_hash(state, entry['id'])
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.saved.apply_link_reviews(state, [entry], usage, self.personal,
+                                              registry=registry, daily_targets=targets)
 
     def manual_import(self):
         state = copy.deepcopy(self.state)
