@@ -889,6 +889,23 @@
         "name": "すくい",
         "observedAt": "2026-09-12T17:47:48.058914Z",
         "url": "https://x.com/sukui_zettai/status/2098819499420160409"
+      },
+      {
+        "authorId": "1709489909621571584",
+        "authorScreenName": "nemuri_zettai",
+        "createdAt": "2026-09-12T16:10:36Z",
+        "date": "2026-09-13",
+        "events": [],
+        "id": "2098806494968119735",
+        "links": [
+          {
+            "scope": "夜",
+            "status": "work"
+          }
+        ],
+        "name": "ねむり",
+        "observedAt": "2026-09-12T19:46:33.636165Z",
+        "url": "https://x.com/nemuri_zettai/status/2098806494968119735"
       }
     ],
     "nextRequestAt": null,
@@ -7167,7 +7184,14 @@
       "authorScreenName": "nemuri_zettai",
       "createdAt": "2026-09-12T16:10:36Z",
       "date": "2026-09-13",
-      "events": [],
+      "events": [
+        {
+          "excerpt": "2号店 A.D.1912",
+          "kind": "placement",
+          "shift": "夜",
+          "storeId": "s2"
+        }
+      ],
       "id": "2098806494968119735",
       "links": [
         {
@@ -7693,6 +7717,33 @@
       "reason": "no_event",
       "resolvedAt": "2026-09-12T19:05:47.369404Z",
       "url": "https://x.com/nemuri_zettai/status/2098810007328538942"
+    },
+    {
+      "date": "2026-09-13",
+      "id": "2098806494968119735",
+      "name": "ねむり",
+      "placementReview": {
+        "bodyHash": "1a0654aa9e5d7ad4cf9483c10ad784e87949c993d2d4a389708521223e37f8a3",
+        "expectedSubjectHash": "2219f4ee9910df2eef5e8490f302cc6212c45e65df58e32036a5d61418e90124",
+        "id": "2098806494968119735",
+        "operation": "confirm-placement",
+        "reviewedAt": "2026-09-13T01:47:48.508152Z",
+        "scope": "夜",
+        "source": {
+          "authorId": "1709489909621571584",
+          "authorScreenName": "nemuri_zettai",
+          "createdAt": "2026-09-12T16:10:36Z",
+          "date": "2026-09-13",
+          "fetchedAt": "2026-09-12T19:46:33.636165Z",
+          "name": "ねむり",
+          "url": "https://x.com/nemuri_zettai/status/2098806494968119735"
+        },
+        "sourceHash": "abf9e75f1aa16cd863a9203fa531396667ec88cbf0fee50f41686fed368c2d93",
+        "storeId": "s2"
+      },
+      "reason": "source_confirmed_placement",
+      "resolvedAt": "2026-09-13T01:47:48.508152Z",
+      "url": "https://x.com/nemuri_zettai/status/2098806494968119735"
     }
   ],
   "savedPersonalImports": {
