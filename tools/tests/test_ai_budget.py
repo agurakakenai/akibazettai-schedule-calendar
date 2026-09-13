@@ -2,6 +2,7 @@
 import copy
 import datetime as dt
 from decimal import Decimal
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -294,7 +295,7 @@ class BudgetTests(unittest.TestCase):
         response.read.return_value = b'{}'
         body = money.query_body(NOW)
         for changed in ('none', 'configuration', 'scope', 'id', 'tenantId', 'name', 'type',
-                        'token-subscription', 'token-tenant', 'malformed'):
+                        'token-subscription', 'token-tenant', 'malformed', 'rate-limited'):
             with self.subTest(changed=changed):
                 env, info, token = copy.deepcopy((environment, account, credential))
                 if changed == 'configuration':
@@ -313,11 +314,28 @@ class BudgetTests(unittest.TestCase):
                 with mock.patch.object(money.subprocess, 'run', side_effect=results) as cli, \
                         mock.patch.object(money.urllib.request, 'build_opener') as opener, \
                         mock.patch.object(money, 'query_body', return_value=body), \
-                        mock.patch.object(money, 'parse_billing', return_value={'checked': True}):
+                        mock.patch.object(money, 'parse_billing', return_value={'checked': True}), \
+                        mock.patch.object(money.sys, 'stderr', new_callable=io.StringIO) as errors:
                     now = dt.datetime.now(dt.timezone.utc)
                     opener.return_value.open.return_value = response
-                    if changed == 'none':
-                        self.assertEqual(money.query_azure(env, now), {'checked': True})
+                    if changed in ('none', 'rate-limited'):
+                        if changed == 'none':
+                            self.assertEqual(money.query_azure(env, now), {'checked': True})
+                        else:
+                            headers = {'Retry-After': '30',
+                                       'x-ms-ratelimit-microsoft.costmanagement-tenant-retry-after': '720',
+                                       'x-ms-ratelimit-microsoft.costmanagement-clienttype-retry-after': '60',
+                                       'Authorization': 'never-log-this'}
+                            opener.return_value.open.side_effect = money.urllib.error.HTTPError(
+                                'https://management.azure.com/', 429, 'limited', headers, io.BytesIO(b'private'))
+                            with self.assertRaises(money.BillingFailure) as failure:
+                                money.query_azure(env, now)
+                            self.assertEqual(failure.exception.reason, 'rate_limited')
+                            self.assertEqual(failure.exception.retry_at, money.stamp(now + dt.timedelta(seconds=720)))
+                            self.assertIn('tenant-retry-after', errors.getvalue())
+                            self.assertIn('clienttype-retry-after', errors.getvalue())
+                            self.assertNotIn('never-log-this', errors.getvalue())
+                            self.assertNotIn('private', errors.getvalue())
                         self.assertEqual(cli.call_count, 2)
                         self.assertEqual(cli.call_args_list[0].args[0][1:3], ['account', 'show'])
                         opener.return_value.open.assert_called_once()
