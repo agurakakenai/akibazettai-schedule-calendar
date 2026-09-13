@@ -1138,6 +1138,8 @@ Actionsでは手動`personal` / `both`と、有効化された当日案内の公
 
 Azure実費は既存定期処理の最初の機会にJST日1回、**前日まで**の利用日を対象に`ActualCost`を取得します。未実行日は次回起動時に補い、当日再実行は保存値を使います。resource group内の`aoai-akibazettai-nano`だけに絞りますが、resource単位の費用には比較用等の別deploymentも含まれるため、カレンダー単独の実費とは表示しません。job summaryには通貨・実際のUTC照会範囲・最終返却利用日・暫定残予算・最終正常同期時刻・古さ・失敗を表示します。UTC日バケットをJST前日ぴったりの確定額とは呼びません。月初の9時間を含む前月末UTCバケットも照会し、両月の既計上分を除いた説明不能な差額だけを境界保留として確保します。請求取得失敗を0円扱いせず、429は永続`Retry-After`で停止します。月初で閉じた利用日がまだない場合も、その旨を保持します。
 
+請求APIの429では、汎用`Retry-After`とCost ManagementのQPU・entity・tenant・clienttype・subscriptionの待機ヘッダだけを運用ログへ記録し、最長の待機時間を永続化します。認証情報や返却本文は記録せず、自動retryは追加しません。
+
 認証はmain限定OIDCの専用identityとresource groupのCost Management読み取り権限を使い、repo variablesは`AZURE_COST_CLIENT_ID`・`AZURE_COST_TENANT_ID`・`AZURE_COST_SUBSCRIPTION_ID`です。stepの成功フラグではなく、Azure CLIの実ログイン状態でsubscription・tenant・service principalを設定値と照合してから請求APIへ進みます。client secretは不要で、Azure API keyを請求APIに流用しません。`mode=cost-sync`はtrusted mainの明示実行専用で、source/AI clientを作らず同じ日次同期とstate保存だけを行います。通常PR/CIでコードを配信し、承認済み初期額をfresh canonicalへCAS移行してから、このモードで認証・同日cacheを確認します。
 
 本人・半月後に配分枠が残れば、初回の公式childが保持した**同runの未発行raw最大3件**をtransient bufferから再開します。回収runの公式補足は最大1件で、追加のsource GETは行いません。初回の検索・個別取得件数、名簿追加件数、source失敗は集約時に消しません。bufferはrun ID・入力/状態hash・取得metadataを検証し、終了時に削除してcanonical state・recovery・Pagesには含めません。

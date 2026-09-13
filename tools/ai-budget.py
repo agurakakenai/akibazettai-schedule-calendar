@@ -11,6 +11,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import urllib.error
 import urllib.request
 
@@ -34,6 +35,10 @@ RESOURCE_ID = ('/subscriptions/eb1d1a6f-a4b6-4c6f-885d-5ef15ed3bb64'
                '/resourceGroups/rg-akibazettai-ai/providers/Microsoft.CognitiveServices'
                '/accounts/aoai-akibazettai-nano')
 HASH = re.compile(r'[0-9a-f]{64}\Z')
+BILLING_RETRY_HEADERS = {'retry-after'} | {
+    'x-ms-ratelimit-microsoft.costmanagement-' + scope + '-retry-after'
+    for scope in ('qpu', 'entity', 'tenant', 'clienttype', 'subscription')
+}
 
 
 def require(condition):
@@ -453,15 +458,17 @@ def query_azure(environment, now):
         return parse_billing(json.loads(raw, parse_float=Decimal), body, finished)
     except urllib.error.HTTPError as exc:
         if exc.code == 429:
-            value = exc.headers.get('Retry-After')
+            headers = {key.lower(): value for key, value in exc.headers.items()
+                       if key.lower() in BILLING_RETRY_HEADERS}
+            print('azure_cost_rate_limited ' + json.dumps(headers, sort_keys=True), file=sys.stderr)
             until = now + dt.timedelta(minutes=5)
-            if value:
+            for value in headers.values():
                 try:
                     until = max(until, now + dt.timedelta(seconds=int(value)))
-                except ValueError:
+                except (ValueError, OverflowError):
                     try:
                         until = max(until, email.utils.parsedate_to_datetime(value))
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, OverflowError):
                         pass
             exc.close()
             raise BillingFailure('rate_limited', stamp(until)) from None
