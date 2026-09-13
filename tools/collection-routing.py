@@ -6,7 +6,7 @@ import sys
 
 
 LEGACY_SCHEDULE = '30 3-6,8-11 * * *'
-MANUAL_MODES = frozenset(('collect', 'personal', 'both', 'apply-saved'))
+MANUAL_MODES = frozenset(('collect', 'personal', 'both', 'apply-saved', 'cost-sync'))
 
 
 def collection_mode(event_name, requested_mode='', schedule='', enabled=False):

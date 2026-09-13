@@ -574,14 +574,18 @@ class AzureAnalyzer:
         _require(self.used < 1, 'azure_budget_exhausted')
         self.usage.check()
         if self.client is None:
-            self.client = azure.transport.AzureOpenAI(self.environment, on_http_failure=self.usage.http_failure)
+            self.client = azure.transport.AzureOpenAI(
+                self.environment, on_http_failure=self.usage.http_failure, usage=self.usage)
         _require(all(self.client.identity[key] == value for key, value in (
             ('model', facts.MODEL), ('modelVersion', facts.MODEL_VERSION), ('deployment', facts.MODEL))),
             'azure_model_mismatch')
         key = prepared['analysis']['requestHash']
+        budget = azure.transport.request_budget(
+            prepared['messages'], prepared['schema'], name='half_month_timing',
+            max_completion_tokens=MAX_OUTPUT_TOKENS)
         try:
             guard()
-            self.usage.reserve(key, self.client.identity)
+            self.usage.reserve(key, self.client.identity, request=budget)
         except BaseException:
             prepared['messages'].clear()
             raise

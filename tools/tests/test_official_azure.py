@@ -101,6 +101,9 @@ class OfficialAzureTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.directory)
         self.path = self.directory / 'usage.json'
         azure.ledger.atomic_json(self.path, azure.ledger.empty_state())
+        monetary = mock.patch.object(azure.transport.AzureOpenAI, 'money_call')
+        monetary.start()
+        self.addCleanup(monetary.stop)
         self.now = NOW
 
     def clock(self):
@@ -117,6 +120,7 @@ class OfficialAzureTests(unittest.TestCase):
         opener = Opener(decision() if result is None else result)
         analyzer = azure.AzureAnalyzer(state, official.analysis_context(), ENV, usage,
                                        clock=self.clock, names=NAMES, opener=opener, **kwargs)
+        analyzer.client.usage = mock.Mock()
         return analyzer, opener
 
     def collect(self, state, analyzer, source=None, **kwargs):

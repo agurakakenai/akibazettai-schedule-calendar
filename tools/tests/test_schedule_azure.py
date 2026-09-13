@@ -512,7 +512,7 @@ class CapacityTests(base.Offline):
                     client = azure.transport.AzureOpenAI(
                         {'AZURE_OPENAI_ENDPOINT': 'https://offline.openai.azure.com',
                          'AZURE_OPENAI_API_KEY': 'SYNTHETIC_ONLY'},
-                        on_http_failure=mock.Mock(), opener=opener)
+                        on_http_failure=mock.Mock(), opener=opener, usage=mock.Mock())
                     returned = client.structured(
                         messages, azure.SCHEMA, name='half_month_schedule',
                         max_completion_tokens=azure.MAX_OUTPUT_TOKENS)
@@ -575,7 +575,7 @@ class TransportTests(base.Offline):
                 path = self.registry_file()
                 guard = base.collector.members.RegistryGuard(path, bindings=({},))
                 usage, client, issued = mock.Mock(), mock.Mock(), mock.Mock()
-                def change(*unused):
+                def change(*unused, **unused_keywords):
                     registry = base.collector.members.load_registry(path)
                     registry['members'][0]['collection'] = 'paused'
                     path.write_bytes(base.collector.members.json_bytes(registry))
@@ -665,7 +665,8 @@ class TransportTests(base.Offline):
             opener.open.return_value = response
             client = azure.transport.AzureOpenAI(
                 {'AZURE_OPENAI_ENDPOINT': 'https://offline.openai.azure.com',
-                 'AZURE_OPENAI_API_KEY': 'SYNTHETIC_ONLY'}, on_http_failure=mock.Mock(), opener=opener)
+                 'AZURE_OPENAI_API_KEY': 'SYNTHETIC_ONLY'}, on_http_failure=mock.Mock(), opener=opener,
+                usage=mock.Mock())
             verified, text, _ = base.source()
             messages, proof = azure.prepare_request(verified, text, [{'bytes': base.png(), 'mime': 'image/png'}])
             with self.subTest(model=output_model, refusal=refusal, finish=finish):

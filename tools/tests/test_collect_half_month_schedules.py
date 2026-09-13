@@ -1148,7 +1148,7 @@ class ProducerTests(base.Offline):
             return source_type(shared, opener=source_opener, **kwargs)
         def analyzer_factory(shared, environment, **kwargs):
             transport = azure.transport.AzureOpenAI(environment, on_http_failure=shared.http_failure,
-                                                     opener=model_opener)
+                                                     opener=model_opener, usage=mock.Mock())
             return analyzer_type(shared, client=transport, **kwargs)
         argv = [value for key, path in paths.items() for value in ('--' + key, str(path))]
         argv.extend(['--analysis-run-id', 'advancing-native', '--source-run-id', 'advancing-native'])

@@ -45,7 +45,7 @@ class TimingOnlyTests(base.Offline):
                 client, issued = mock.Mock(identity=IDENTITY), mock.Mock()
                 analyzer = timing.AzureAnalyzer(
                     usage, clock=lambda: NOW, client=client, registry_guard=guard)
-                def change(*unused):
+                def change(*unused, **unused_keywords):
                     registry = base.collector.members.load_registry(path)
                     registry['members'][0]['collection'] = 'paused'
                     path.write_bytes(base.collector.members.json_bytes(registry))
@@ -1557,7 +1557,7 @@ class TimingOnlyTests(base.Offline):
                 sleep=lambda _: self.fail('no waiting permitted in offline test')) as usage:
             client = azure.transport.AzureOpenAI({
                 'AZURE_OPENAI_ENDPOINT': IDENTITY['endpoint'], 'AZURE_OPENAI_API_KEY': 'offline-test-key'},
-                on_http_failure=usage.http_failure, opener=opener)
+                on_http_failure=usage.http_failure, opener=opener, usage=mock.Mock())
             analyzer = timing.AzureAnalyzer(usage, clock=lambda: NOW, client=client)
             issued = mock.Mock()
             packet = analyzer.analyze(self.state, self.approval, self.source, self.text, self.images, issued)
