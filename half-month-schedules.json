@@ -86,7 +86,7 @@
       "reason": "source_failed"
     }
   },
-  "checkedAt": "2026-09-14T16:13:38.043971Z",
+  "checkedAt": "2026-09-15T09:06:35.318949Z",
   "complete": false,
   "coverage": {
     "2026-09-01": {
@@ -289,13 +289,19 @@
         "to": "2026-09-15"
       },
       "こい": {
-        "candidateIds": [],
+        "candidateIds": [
+          "2099181451136925940",
+          "2099181406262116684",
+          "2098860681491804253",
+          "2098860615892971879",
+          "2098792777735877084"
+        ],
         "confirmedIds": [],
         "handle": "koi_zettai",
-        "lastSearchedAt": null,
+        "lastSearchedAt": "2026-09-15T09:05:40.366226Z",
         "name": "こい",
-        "nextCheckAt": null,
-        "reason": "not_searched",
+        "nextCheckAt": "2026-09-16T09:05:40.366226Z",
+        "reason": "not_schedule",
         "to": "2026-09-15"
       },
       "こえび": {
@@ -867,13 +873,19 @@
         "to": "2026-09-30"
       },
       "こい": {
-        "candidateIds": [],
+        "candidateIds": [
+          "2099181451136925940",
+          "2099181406262116684",
+          "2098860681491804253",
+          "2098860615892971879",
+          "2098792777735877084"
+        ],
         "confirmedIds": [],
         "handle": "koi_zettai",
-        "lastSearchedAt": null,
+        "lastSearchedAt": "2026-09-15T09:05:40.366243Z",
         "name": "こい",
-        "nextCheckAt": null,
-        "reason": "not_searched",
+        "nextCheckAt": "2026-09-15T15:05:40.366243Z",
+        "reason": "not_schedule",
         "to": "2026-09-30"
       },
       "こえび": {
@@ -1286,6 +1298,11 @@
       "authorScreenName": "kirari_zettai",
       "verifiedAt": "2026-09-14T16:12:41.741674Z"
     },
+    "こい": {
+      "authorId": "1832320712545333248",
+      "authorScreenName": "koi_zettai",
+      "verifiedAt": "2026-09-15T09:05:43.079470Z"
+    },
     "ちぇる": {
       "authorId": "2075784010819928064",
       "authorScreenName": "cheru2_zettai",
@@ -1293,9 +1310,9 @@
     }
   },
   "lastRun": {
-    "status": "partial"
+    "status": "no-results"
   },
-  "lastSuccessAt": "2026-09-13T13:38:21.442120Z",
+  "lastSuccessAt": "2026-09-15T09:06:35.318949Z",
   "pending": [
     {
       "authorId": "1954467457902809088",
@@ -2011,6 +2028,71 @@
       "priority": 1,
       "searchCreatedAt": "2026-09-12T06:25:51Z",
       "url": "https://x.com/kirari_zettai/status/2098659335178199122"
+    },
+    {
+      "authorId": "1832320712545333248",
+      "authorScreenName": "koi_zettai",
+      "discoveredAt": "2026-09-15T09:05:42.460795Z",
+      "discoveryHash": "969fb737c4159d5d9e99fc67603e00b84f634c1d16323cc11d61110f1c641b2f",
+      "id": "2099181451136925940",
+      "lastAttemptAt": null,
+      "name": "こい",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-13T17:00:33Z",
+      "url": "https://x.com/koi_zettai/status/2099181451136925940"
+    },
+    {
+      "authorId": "1832320712545333248",
+      "authorScreenName": "koi_zettai",
+      "discoveredAt": "2026-09-15T09:05:42.460795Z",
+      "discoveryHash": "969fb737c4159d5d9e99fc67603e00b84f634c1d16323cc11d61110f1c641b2f",
+      "id": "2099181406262116684",
+      "lastAttemptAt": null,
+      "name": "こい",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-13T17:00:22Z",
+      "url": "https://x.com/koi_zettai/status/2099181406262116684"
+    },
+    {
+      "authorId": "1832320712545333248",
+      "authorScreenName": "koi_zettai",
+      "discoveredAt": "2026-09-15T09:05:42.460795Z",
+      "discoveryHash": "969fb737c4159d5d9e99fc67603e00b84f634c1d16323cc11d61110f1c641b2f",
+      "id": "2098860681491804253",
+      "lastAttemptAt": null,
+      "name": "こい",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-12T19:45:56Z",
+      "url": "https://x.com/koi_zettai/status/2098860681491804253"
+    },
+    {
+      "authorId": "1832320712545333248",
+      "authorScreenName": "koi_zettai",
+      "discoveredAt": "2026-09-15T09:05:42.460795Z",
+      "discoveryHash": "969fb737c4159d5d9e99fc67603e00b84f634c1d16323cc11d61110f1c641b2f",
+      "id": "2098860615892971879",
+      "lastAttemptAt": null,
+      "name": "こい",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-12T19:45:40Z",
+      "url": "https://x.com/koi_zettai/status/2098860615892971879"
+    },
+    {
+      "authorId": "1832320712545333248",
+      "authorScreenName": "koi_zettai",
+      "discoveredAt": "2026-09-15T09:05:42.460795Z",
+      "discoveryHash": "969fb737c4159d5d9e99fc67603e00b84f634c1d16323cc11d61110f1c641b2f",
+      "id": "2098792777735877084",
+      "lastAttemptAt": null,
+      "name": "こい",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-12T15:16:06Z",
+      "url": "https://x.com/koi_zettai/status/2098792777735877084"
     }
   ],
   "receipts": {
@@ -2765,6 +2847,29 @@
         "url": "https://x.com/kirari_zettai/status/2099048867291693441"
       },
       "status": "failed"
+    },
+    "9af7c20dc1065edf24966ad855d04fedf7b2cec9d1a87136352c51945bd00f03": {
+      "checkedAt": "2026-09-15T09:06:35.297061Z",
+      "imageHashes": [],
+      "reason": "not_schedule",
+      "requestHash": "c4e5ff53d456313e0dbc05d6a5c84cfce526a01ca5c0289982f6a8fd45ea952f",
+      "source": {
+        "authorId": "1832320712545333248",
+        "authorScreenName": "koi_zettai",
+        "bodyHash": "ef155b06e9a16fb21737a219bd049fd7d89301be7e53c030fcc7cb253ed879f8",
+        "createdAt": "2026-09-14T02:19:27Z",
+        "discoveryHash": "969fb737c4159d5d9e99fc67603e00b84f634c1d16323cc11d61110f1c641b2f",
+        "editTweetIds": [
+          "2099322101283074052"
+        ],
+        "id": "2099322101283074052",
+        "media": [],
+        "name": "こい",
+        "observedAt": "2026-09-15T09:05:43.079470Z",
+        "payloadHash": "475a1b517a76d63889c68c197dc5e2278a21bd8cdb71ce0b1de5070cba2f76d3",
+        "url": "https://x.com/koi_zettai/status/2099322101283074052"
+      },
+      "status": "negative"
     },
     "9dea89a72d151c1f6ac2b605ef982a106d41c0e7319e7a0b6b9b9187eae8620f": {
       "checkedAt": "2026-09-10T13:01:30.409025Z",
