@@ -336,8 +336,10 @@ class FetchTests(base.Offline):
                     with module.SharedSource(path, run_id='next', component=component,
                                               clock=lambda: later, sleep=lambda _: None) as usage:
                         with self.assertRaises(module.SourceFailure) as caught:
-                            usage.check('posts')
+                            usage.check('images')
                         self.assertEqual(caught.exception.reason, 'source_paused')
+                        usage.check('searches')
+                        usage.check('posts')
                 with module.SharedSource(path, run_id='official-next', component='official',
                                           clock=lambda: later, sleep=lambda _: None) as usage:
                     usage.check('posts')
@@ -349,6 +351,7 @@ class ProducerTests(base.Offline):
         super().setUp()
         self.state = facts.empty_state()
         self.source = mock.Mock()
+        self.source.state = {'paused': None}
         self.client = mock.Mock()
         self.client.search.return_value = base.document(best=base.entry())
         self.client.post.return_value = base.payload(), facts.digest(b'synthetic source payload')
@@ -529,6 +532,48 @@ class ProducerTests(base.Offline):
         self.model.structured.assert_not_called()
         self.assertEqual(next(iter(self.state['sources'].values()))['status'], 'pending')
         self.assertEqual(len(self.state['pending']), 1)
+
+    def test_old_image_stop_holds_known_media_without_rewalking_it_but_accepts_text(self):
+        now = [base.NOW]
+        pause = {'host': collector.PHOTO_HOST, 'reason': 'access_denied', 'httpStatus': 403,
+                 'at': facts.stamp(base.NOW - dt.timedelta(days=3)),
+                 'retryAt': facts.stamp(base.NOW - dt.timedelta(days=3, hours=-1))}
+        self.source.state = {'paused': pause}
+        def check(kind, count=1):
+            if collector.source_safety.paused_for(self.source.state, kind):
+                raise collector.Failure('source_paused')
+        self.source.check.side_effect = check
+        def run():
+            return collector.collect(
+                self.state, base.SCHEDULE, {}, base.ACCOUNTS, self.client, self.source, self.analyzer,
+                clock=lambda: now[0], save=self.save)
+        report, _ = run()
+        self.assertEqual(report['status'], 'partial')
+        self.client.image.assert_not_called()
+        self.model.structured.assert_not_called()
+        old = copy.deepcopy(self.state['pending'][0])
+        self.assertEqual(self.state['coverage'][facts.target_periods(now[0])[0][0]]['あむ']['reason'],
+                         'image_host_paused')
+        self.assertIsNone(self.state['lastSuccessAt'])
+        for day in (1, 2):
+            now[0] = base.NOW + dt.timedelta(days=day)
+            self.client.reset_mock()
+            self.client.search.return_value = base.document()
+            report, _ = run()
+            self.client.search.assert_called_once()
+            self.client.post.assert_not_called()
+            self.client.image.assert_not_called()
+            self.assertEqual(self.state['pending'][0], old)
+            self.assertIsNone(self.state['lastSuccessAt'])
+        now[0] += dt.timedelta(days=1)
+        self.client.search.return_value = base.document(best=base.entry(suffix=2))
+        self.client.post.return_value = base.payload(suffix=2, photos=0), facts.digest(b'text only')
+        self.model.structured.return_value = {'periods': []}
+        report, _ = run()
+        self.assertEqual(report['analysisRequests'], 1)
+        self.client.image.assert_not_called()
+        self.assertEqual(self.state['pending'][0], old)
+        self.assertEqual(self.source.state['paused'], pause)
 
     def test_ai_preflight_before_post(self):
         self.usage.check.side_effect = azure.AnalysisFailure('azure_budget_exhausted')

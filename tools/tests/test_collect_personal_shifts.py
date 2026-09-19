@@ -747,6 +747,7 @@ class StateTests(Offline):
         durable.catch_up = True
         durable.preflight()
         durable.shared_source = mock.Mock()
+        durable.shared_source.state = {'paused': None}
         durable.shared_source.counts.return_value = {
             'day': {'personal': {'searches': 58, 'posts': 38, 'images': 0},
                     'schedule': {'searches': 2, 'posts': 1, 'images': 1}}, 'historicalImages': 0}
@@ -754,6 +755,31 @@ class StateTests(Offline):
             with self.assertRaisesRegex(personal.Failure, 'current_day_reserved'):
                 durable.reserve(host, kind)
         durable.shared_source.reserve.assert_not_called()
+
+    def test_image_stop_does_not_block_personal_and_midnight_keeps_work_date(self):
+        self.state['paused'] = {
+            'host': 'pbs.twimg.com', 'reason': 'access_denied', 'httpStatus': 403,
+            'at': personal.stamp(NOW - dt.timedelta(days=3)),
+            'retryAt': personal.stamp(NOW - dt.timedelta(days=3, hours=-1))}
+        old_pause = copy.deepcopy(self.state['paused'])
+        clock = [NOW.replace(hour=14, minute=59)]
+        durable = self.durable(now=clock[0])
+        durable.catch_up = True
+        durable.clock = lambda: clock[0]
+        client = self.fake_client(durable)
+        fetch = client.fetch_post.side_effect
+        def after_midnight(tid):
+            clock[0] = NOW.replace(hour=15, minute=0)
+            return fetch(tid)
+        client.fetch_post.side_effect = after_midnight
+        report, _ = self.collect(client, durable)
+        self.assertEqual(report['newPostCount'], 1)
+        self.assertEqual(self.state['posts'][0]['date'], DATE.isoformat())
+        self.assertEqual(self.state['budgets'][DATE.isoformat()]['searches'], 2)
+        self.assertEqual(self.state['budgets'][(DATE + dt.timedelta(days=1)).isoformat()]['posts'], 1)
+        self.assertEqual(self.state['paused'], old_pause)
+        self.assertNotEqual(report['status'], 'paused')
+        personal.read_state(self.snapshot)
 
     def test_unannounced_supplement_never_bypasses_today_or_legacy_shift_guards(self):
         registry = registry_fixture(AMU)
@@ -1904,7 +1930,7 @@ class TransportTests(StateTests):
                     with self.assertRaises(personal.Failure):
                         client.search(personal.search_urls(DATE)[0], self.targets, DATE, NOW, {})
                     with self.assertRaisesRegex(personal.Failure, 'paused'):
-                        client.fetch_post(TID)
+                        client.search(personal.search_urls(DATE)[0], self.targets, DATE, NOW, {})
                 self.assertEqual(opener.call_count, 1)
                 self.assertEqual(personal.read_state(self.snapshot)['paused']['httpStatus'], status)
 

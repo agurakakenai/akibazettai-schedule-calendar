@@ -165,6 +165,31 @@ def _imports(value):
     usage.validate_state(state)
 
 
+def host_pauses(state):
+    """Read legacy host-tagged stops without clearing their durable evidence."""
+    result = {}
+    for pause in (state.get('baseline', {}).get('paused'), state.get('paused'),
+                  *state.get('hostStops', {}).values()):
+        if pause is not None:
+            result.setdefault(pause['host'], dict(pause))
+    for item in state.get('receipts', {}).values():
+        if item['status'] == 'failed' and (item['httpStatus'] in (401, 403, 429)
+                or item['httpStatus'] is not None and 300 <= item['httpStatus'] < 400):
+            host = item['host']
+            result.setdefault(host, {
+                'host': host, 'at': item['completedAt'],
+                'reason': 'rate_limited' if item['httpStatus'] == 429 else 'access_denied',
+                'httpStatus': item['httpStatus'],
+                'retryAt': state['cooldowns'].get(host, item['completedAt'])})
+    return result
+
+
+def paused_for(state, kind):
+    if kind not in KINDS:
+        raise ValueError('invalid_source_request')
+    return host_pauses(state).get(HOSTS[KINDS.index(kind)])
+
+
 def _images(value):
     if not isinstance(value, list):
         raise ValueError
@@ -187,6 +212,7 @@ def validate_state(state):
     try:
         usage._keys(state, ('schemaVersion', 'baseline', 'receipts',
                             'nextRequests', 'cooldowns', 'paused',
+                            *(('hostStops',) if isinstance(state, dict) and 'hostStops' in state else ()),
                             *(('sourceImports',) if isinstance(state, dict) and 'sourceImports' in state else ())))
         if type(state['schemaVersion']) is not int or state['schemaVersion'] != 1:
             raise ValueError
@@ -204,11 +230,18 @@ def validate_state(state):
         _cooldowns(baseline['cooldowns'])
         _cooldowns(baseline['lastRequests'])
         _pause(state['paused'])
+        if 'hostStops' in state:
+            if not isinstance(state['hostStops'], dict):
+                raise ValueError
+            for host, pause in state['hostStops'].items():
+                _pause(pause)
+                if pause is None or host != pause['host']:
+                    raise ValueError
         _cooldowns(state['cooldowns'])
         _cooldowns(state['nextRequests'])
         if baseline['paused'] is not None and state['paused'] is None:
             raise ValueError
-        for pause in (baseline['paused'], state['paused']):
+        for pause in (baseline['paused'], state['paused'], *state.get('hostStops', {}).values()):
             if pause is not None and (
                     pause['host'] not in state['cooldowns']
                     or usage._time(state['cooldowns'][pause['host']]) < usage._time(pause['retryAt'])):
@@ -351,8 +384,13 @@ def validate_legacy(state, personal_state, analysis_state=None):
         if personal_state['budgets'] != legacy_budgets(state):
             raise ValueError
         _pause(personal_state['paused'])
-        if personal_state['paused'] is not None and state['paused'] != personal_state['paused']:
+        if (personal_state['paused'] is not None
+                and personal_state['paused'] not in (
+                    state['paused'], *state.get('hostStops', {}).values())):
             raise ValueError
+        for host, pause in personal_state.get('hostStops', {}).items():
+            if host_pauses(state).get(host) != pause:
+                raise ValueError
         if analysis_state is not None:
             usage.validate_state(analysis_state)
             if analysis_state.get('sourceImports', {}) != _all_source_imports(state):
@@ -418,8 +456,9 @@ def baseline_state(personal_state, *, source_hash, at, source_imports=None,
              'nextRequests': {host: usage._stamp(usage._time(stamp) + dt.timedelta(seconds=12))
                               for host, stamp in baseline['lastRequests'].items()},
              'cooldowns': copy.deepcopy(baseline['cooldowns']), 'paused': copy.deepcopy(baseline['paused'])}
-    if state['paused']:
-        pause = state['paused']
+    if personal_state.get('hostStops'):
+        state['hostStops'] = copy.deepcopy(personal_state['hostStops'])
+    for pause in host_pauses(state).values():
         previous = state['cooldowns'].get(pause['host'], pause['retryAt'])
         state['cooldowns'][pause['host']] = usage._stamp(max(
             usage._time(previous), usage._time(pause['retryAt'])))
@@ -714,7 +753,7 @@ class SharedSource:
         if kind not in KINDS or type(count) is not int or count < 1:
             raise ValueError('invalid_source_request')
         self._legacy()
-        if self.component != 'official' and self.state['paused'] is not None:
+        if paused_for(self.state, kind) is not None:
             raise SourceFailure('source_paused')
         if self.report()['remaining'][kind] < count:
             raise SourceFailure('source_budget_exhausted')
@@ -765,7 +804,7 @@ class SharedSource:
         if (item['status'] != 'reserved' or now < usage._time(item['reservedAt'])
                 or now.astimezone(JST).date().isoformat() != item['date']):
             raise SourceFailure('source_interrupted')
-        if self.component != 'official' and self.state['paused'] is not None:
+        if paused_for(self.state, item['kind']) is not None:
             raise SourceFailure('source_paused')
         until = self.state['cooldowns'].get(item['host'])
         if until is not None and usage._time(until) > now:
@@ -801,5 +840,7 @@ class SharedSource:
         self.state['cooldowns'][host] = usage._stamp(until)
         if paused is not None:
             _pause(paused)
+            self.state['hostStops'] = host_pauses(self.state)
+            self.state['hostStops'].setdefault(host, copy.deepcopy(paused))
             self.state['paused'] = copy.deepcopy(paused)
         self._save()

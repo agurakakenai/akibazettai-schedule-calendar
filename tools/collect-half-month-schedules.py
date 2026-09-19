@@ -31,6 +31,7 @@ official = _module('collect-shifts.py', 'half_month_official')
 personal = _module('collect-personal-shifts.py', 'half_month_personal')
 yahoo = _module('yahoo-search.py', 'half_month_yahoo')
 members = facts.member_registry()
+source_safety = official.source_module()
 Failure = official.FetchFailure
 
 
@@ -543,7 +544,7 @@ def _set_reason(state, name, periods, reason):
             state['coverage'][start][name]['reason'] = reason
 
 
-def waiting_candidates(state, targets, now):
+def waiting_candidates(state, targets, now, source=None):
     last_attempt = {}
     for item in state['pending']:
         name = item['name']
@@ -555,6 +556,9 @@ def waiting_candidates(state, targets, now):
         name = record['candidate']['name']
         last_attempt[name] = max(last_attempt.get(name, ''), record['checkedAt'])
     return sorted((item for item in state['pending'] if item['name'] in targets
+                   and not (source is not None and source_safety.paused_for(source.state, 'images')
+                            and any(record['source']['id'] == item['id'] and record['source']['media']
+                                    for record in state['sources'].values()))
                    and (item['nextAttemptAt'] is None or facts.timestamp(item['nextAttemptAt']) <= now)),
                   key=lambda item: (last_attempt[item['name']], item['lastAttemptAt'] or '',
                                     item['discoveredAt'], item['priority'], -int(item['id'])))
@@ -674,7 +678,13 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
                 else:
                     retained.append(item)
         state['pending'] = retained
-        waiting = waiting_candidates(state, targets, now)
+        image_held = {record['source']['name'] for record in state['sources'].values()
+                      if record['source']['media']
+                      and any(item['id'] == record['source']['id'] for item in state['pending'])}
+        image_held = image_held if source_safety.paused_for(source.state, 'images') else set()
+        for name in image_held:
+            _set_reason(state, name, periods, 'image_host_paused')
+        waiting = waiting_candidates(state, targets, now, source)
         due = []
         for name, possible in targets.items():
             rows = [state['coverage'][start][name] for start, _ in periods]
@@ -682,7 +692,7 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
                 due.append((min(row['lastSearchedAt'] or '' for row in rows), name, possible))
         first_pass = [item for item in due if item[0] == '']
         search_due = first_pass if waiting else due
-        if search_due and max_searches:
+        if search_due and max_searches and not source_safety.paused_for(source.state, 'searches'):
             target = min(search_due)[2]
             search_target = target
             guard(target['name'])
@@ -707,7 +717,7 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
                         else 'post_unverified' if candidates else 'no_candidates')
             enqueue(state, candidates, clock(), analyzer)
             guard(target['name'])
-            waiting = waiting_candidates(state, targets, clock())
+            waiting = waiting_candidates(state, targets, clock(), source)
             selected = waiting[0] if waiting else None
             save()
         elif waiting:
@@ -716,6 +726,12 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
             outcome = 'budget-exhausted'
         else:
             outcome = 'no-new'
+        if selected is None and image_held:
+            outcome = 'partial' if counts['searches'] else 'paused'
+        if selected is not None and source_safety.paused_for(source.state, 'posts'):
+            _set_reason(state, selected['name'], periods, 'paused')
+            outcome = 'partial' if counts['searches'] else 'paused'
+            selected = None
         if selected is not None and max_posts:
             target = targets[selected['name']]
             guard(target['name'])
@@ -757,12 +773,12 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
                 facts.bind_identity(state, verified)
                 facts.record_source(state, verified, 'pending', 'not_issued', clock())
                 save()
+                if urls:
+                    source.check('images', len(urls))
                 azure.check_caption_capacity(verified, text)
                 analyzer.check()
                 if len(urls) > max_images:
                     raise Failure('source_budget_exhausted')
-                if urls:
-                    source.check('images', len(urls))
                 images = []
                 try:
                     for url in urls:
@@ -841,7 +857,11 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
         if 'budget' in reason:
             outcome, coverage_reason = 'budget-exhausted', 'budget_wait'
         elif any(word in reason for word in ('paused', 'cooldown', 'backoff', 'auth_stopped')):
-            outcome, coverage_reason = 'paused', 'paused'
+            image_stop = (verified is not None and verified['media']
+                          and source_safety.paused_for(source.state, 'images'))
+            performed = client.requests if isinstance(getattr(client, 'requests', None), dict) else counts
+            outcome = 'partial' if performed['searches'] else 'paused'
+            coverage_reason = 'image_host_paused' if image_stop else 'paused'
         else:
             outcome = 'partial' if counts['searches'] else 'unavailable'
             coverage_reason = 'analysis_failed' if counts['analysis'] else 'source_failed'
@@ -892,6 +912,11 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
             row['lastSearchedAt'], row['nextCheckAt'] = previous
     state['lastRun'] = {'status': outcome}
     refresh_coverage(state, reasons, clock(), manual, registry=registry)
+    if source_safety.paused_for(source.state, 'images'):
+        pending_ids = {item['id'] for item in state['pending']}
+        for record in state['sources'].values():
+            if record['source']['id'] in pending_ids and record['source']['media']:
+                _set_reason(state, record['source']['name'], periods, 'image_host_paused')
     if registry_error is not None and target is not None:
         _set_reason(state, target['name'], periods, 'paused')
     if isinstance(getattr(client, 'requests', None), dict):
@@ -1047,7 +1072,7 @@ def run(args, *, clock=official.utc_now, sleep=time.sleep, environment=None):
             args.ai_state, run_id=args.analysis_run_id, component='schedule', clock=clock,
             sleep=guarded_sleep, request_limit=1,
             run_limit=usage_module.CATCHUP_RUN_LIMIT if args.catch_up else usage_module.RUN_LIMIT))
-        if source.state['paused'] is not None:
+        if all(source_safety.paused_for(source.state, kind) for kind in ('searches', 'posts')):
             return defer(state, 'paused')
         try:
             usage.check()

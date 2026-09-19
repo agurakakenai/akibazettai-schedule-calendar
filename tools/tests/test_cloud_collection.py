@@ -1632,6 +1632,26 @@ class CloudTests(unittest.TestCase):
         self.assertIn('2026-09-07 | 1 | 14 | 10', summary.read_text(encoding='utf-8'))
         self.assertIn('publication success is separate', summary.read_text(encoding='utf-8'))
         self.assertIn('::warning::', output.getvalue())
+
+    def test_transport_summary_exposes_persistent_host_and_zero_acquisition_after_three_days(self):
+        summary = self.root / 'summary.txt'
+        health = {
+            'hostStops': [{'host': 'pbs.twimg.com', 'reason': 'access_denied', 'httpStatus': 403,
+                           'at': '2026-09-16T08:59:18Z', 'retryAt': '2026-09-16T09:59:18Z'}],
+            'requests': {component: {'searches': 0, 'posts': 0, 'images': 0}
+                         for component in ('official', 'personal', 'schedule')},
+            'personalLastSuccessAt': '2026-09-16T08:00:00Z', 'personalPending': 252,
+            'halfMonthLastSuccessAt': '2026-09-13T13:38:21Z', 'halfMonthPending': 58}
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            cloud.emit({'persistenceStatus': 'saved', 'sourceHealth': health,
+                        'personalCollectionStatus': 'paused', 'halfMonthCollectionStatus': 'paused'},
+                       {'GITHUB_STEP_SUMMARY': str(summary)})
+        text = summary.read_text(encoding='utf8')
+        for value in ('pbs.twimg.com', '2026-09-16T08:59:18Z', 'HTTP=403',
+                      'this-run HTTP=0', 'pending=252', 'status=paused',
+                      'expiry does not clear the denial', 'deployment success is not acquisition success'):
+            self.assertIn(value, text)
+        self.assertIn('::warning::Source acquisition', output.getvalue())
     def test_half_month_child_is_bounded_headless_and_never_receives_git_credentials(self):
         environment = {
             **self.environment, 'CLOUD_COLLECTION_SHARED': 'true',

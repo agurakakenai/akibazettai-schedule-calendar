@@ -27,7 +27,7 @@ CAPACITY_HOLD_REASONS = {'azure_capacity_hold', 'azure_capacity_profile_stale'}
 REASONS = {
     'not_searched', 'account_unknown', 'account_ambiguous', 'account_identity_mismatch',
     'no_candidates', 'post_unverified', 'not_issued', 'period_unknown', 'schedule_pending',
-    'not_schedule', 'budget_wait', 'paused', 'valid_schedule', 'queue_limit',
+    'not_schedule', 'budget_wait', 'paused', 'image_host_paused', 'valid_schedule', 'queue_limit',
     'candidate_limit', 'outside_period', 'source_failed', 'analysis_failed',
     'known_source', 'search_failed', 'not_due', 'stale_candidate', TIMING_STORAGE_LIMIT_REASON,
     'transient_retry', 'retry_exhausted', 'permanent_failure',

@@ -73,7 +73,7 @@ KINDS = {'placement', 'absence', 'late', 'return', 'uncertain'}
 PUBLIC_FIELDS = {'schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt', 'posts', 'lastRun'}
 PRIVATE_FIELDS = {'pending', 'resolved', 'budgets', 'paused', 'identityBindings',
                   'originalTargets', 'lastRequests'}
-OPTIONAL_PRIVATE_FIELDS = {'azureAnalysis', 'coverage', 'searchHistory', 'savedPersonalImports'}
+OPTIONAL_PRIVATE_FIELDS = {'azureAnalysis', 'coverage', 'searchHistory', 'savedPersonalImports', 'hostStops'}
 SCOPES = ('昼', '夜', 'unspecified')
 LINK_STATUSES = ('work', 'withdrawn', 'conflict')
 TARGET_ORIGINS = {'original', 'scheduled', 'official_names', 'official_notice', 'personal', 'curated',
@@ -323,6 +323,13 @@ def read_state(path, private=True):
                 raise ValueError
             ids.add(post['id'])
         if private:
+            if 'hostStops' in value:
+                if not isinstance(value['hostStops'], dict):
+                    raise ValueError
+                for host, pause in value['hostStops'].items():
+                    SOURCE_LIMITS._pause(pause)
+                    if pause is None or pause['host'] != host:
+                        raise ValueError
             if 'azureAnalysis' in value:
                 azure.validate_state(value['azureAnalysis'], azure_context())
             validate_collection_coverage(value)
@@ -1235,9 +1242,17 @@ class DurableHttp:
         active = self.active()
         return bool(active) and (self.post_target is None or target_for_name(active, self.post_target) is not None)
 
+    def source_paused(self, kind):
+        return (SOURCE_LIMITS.paused_for(self.state, kind) is not None
+                or self.shared_source is not None
+                and SOURCE_LIMITS.paused_for(self.shared_source.state, kind) is not None)
+
+    def fully_paused(self):
+        return all(self.source_paused(kind) for kind in ('searches', 'posts'))
+
     def reserve(self, host, kind, target_name=None, url=None):
-        if self.state['paused']:
-            raise Failure('paused')
+        if self.source_paused(kind):
+            raise Failure('source_paused')
         target_name = target_name or (self.post_target if kind == 'posts' else None)
         self.check_window(target_name)
         self.cooldowns = official.load_transport(self.http_state)
@@ -1301,10 +1316,12 @@ class DurableHttp:
             until = max(until, official.timestamp(prior))
         until = max(now, until)
         self.cooldowns[host] = stamp(until)
+        self.state['hostStops'] = SOURCE_LIMITS.host_pauses(self.state)
         self.state['paused'] = {'reason': reason, 'host': host, 'at': stamp(now),
                                 'retryAt': stamp(until)}
         if status is not None:
             self.state['paused']['httpStatus'] = status
+        self.state['hostStops'].setdefault(host, dict(self.state['paused']))
         if self.shared_source is not None:
             official.source_call(self.shared_source, 'set_cooldown', host, until, paused=self.state['paused'])
         errors = []
@@ -1548,7 +1565,7 @@ def update_coverage(state, targets, date, now, *, scheduled=False, search_limit=
             row['reason'] = pending_reason
         elif failed_source:
             row['reason'] = failed_source['reason']
-        elif state['paused']:
+        elif any(SOURCE_LIMITS.paused_for(state, kind) for kind in ('searches', 'posts')):
             row['reason'] = 'paused'
         elif name not in active:
             row['reason'] = 'outside_window'
@@ -1583,13 +1600,16 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                 **candidate, 'reason': 'azure_saved_body_required',
                 'firstSeenAt': stamp(clock()), 'lastAttemptAt': None, 'attempts': 0})
     skipped = 0
-    early_status = 'paused' if state['paused'] else 'outside-window' if not active else None
+    early_status = 'paused' if durable.fully_paused() else 'outside-window' if not active else None
     search_targets = {name: target for name, target in targets.items()
                       if target['handle'].casefold() not in durable.searched_handles
                       and (not first_sources_only or not work_source_complete(state, target, date))}
     searches = (target_searches(search_targets, date, state, clock(), max_searches,
                                scheduled=durable.scheduled, catch_up=durable.catch_up)
-                if not early_status and saved_payloads is None else ())
+                if not early_status and not durable.source_paused('searches')
+                and saved_payloads is None else ())
+    if durable.source_paused('searches') and search_targets and saved_payloads is None:
+        failures.append({'reason': 'source_paused'})
     for name, url in searches:
         before = durable.used['searches']
         try:
@@ -1619,7 +1639,7 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
             sources.append({'url': url, 'status': 'failed', **exc.facts()})
             failures.append(exc.facts())
             if isinstance(exc, RegistryFailure) or exc.reason in ('budget_exhausted', 'current_day_reserved', 'outside_window', 'shared_host_cooldown',
-                              'source_budget_exhausted', 'source_paused', 'source_host_cooldown') or state['paused']:
+                              'source_budget_exhausted', 'source_paused', 'source_host_cooldown') or durable.source_paused('searches'):
                 break
         finally:
             if durable.used['searches'] > before:
@@ -1684,12 +1704,20 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                 and clock() - official.timestamp(item['lastAttemptAt']) < dt.timedelta(hours=1)):
             deferred += 1
             continue
-        if attempted >= max_posts or state['paused']:
-            item['reason'] = 'paused' if state['paused'] else 'post_limit'
+        if attempted >= max_posts or durable.source_paused('posts'):
+            item['reason'] = 'source_paused' if durable.source_paused('posts') else 'post_limit'
             if saved_payloads is not None:
                 item['reason'] = 'azure_saved_' + item['reason']
             deferred += 1
             continue
+        if saved_payloads is None and durable.shared_source is not None:
+            try:
+                official.source_call(durable.shared_source, 'check', 'posts')
+            except Failure as exc:
+                item['reason'] = exc.reason
+                failures.append({'id': item['id'], **exc.facts()})
+                deferred += 1
+                break
         if (saved_payloads is None and analyzer is not None
                 and callable(getattr(analyzer, 'check_capacity', None))):
             durable.post_target = item['name']
@@ -1793,8 +1821,9 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         state['pending'] = list(pending.values())
         durable.save()
     codes = {failure['reason'] for failure in failures}
-    if state['paused'] or codes & {'shared_host_cooldown', 'source_paused', 'source_host_cooldown'}:
-        status = 'paused'
+    if (any(durable.source_paused(kind) for kind in ('searches', 'posts'))
+            or codes & {'shared_host_cooldown', 'source_paused', 'source_host_cooldown'}):
+        status = 'partial' if new_posts or any(source['status'] == 'ok' for source in sources) else 'paused'
     elif early_status:
         status = early_status
     elif codes & {'budget_exhausted', 'current_day_reserved', 'azure_budget_exhausted', 'source_budget_exhausted'}:
@@ -1861,7 +1890,7 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
                 clock, members.display_projection(registry)['knownNames'], analyzer,
                 first_sources_only=day == today)
             reports.append(report)
-        if (day == today and not state['paused']
+        if (day == today and not durable.fully_paused()
                 and (clock() - durable.started).total_seconds() < RECOVERY_SECONDS
                 and (durable.used['searches'] < durable.caps['searches']
                      or durable.used['posts'] < durable.caps['posts'])):
@@ -1875,7 +1904,7 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
                     max(0, durable.caps['posts'] - durable.used['posts']),
                     clock, members.display_projection(registry)['knownNames'], analyzer)
                 reports.append(report)
-        if (day == today and not state['paused']
+        if (day == today and not durable.fully_paused()
                 and (durable.used['searches'] < durable.caps['searches']
                      or durable.used['posts'] < durable.caps['posts'])):
             discovery = select_targets(
@@ -1895,7 +1924,7 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
                 supplemental = {'targets': len(discovery), 'searched': durable.used['searches'] - searches_before,
                                 'bodyChecked': report['attemptedCount'], 'withSource': report['newPostCount'],
                                 'unsearched': sum(not rows[name]['searchedAt'] for name in discovery)}
-        if state['paused'] or (clock() - durable.started).total_seconds() >= RECOVERY_SECONDS:
+        if durable.fully_paused() or (clock() - durable.started).total_seconds() >= RECOVERY_SECONDS:
             break
     summaries = []
     for day, targets in by_day.items():
@@ -1929,7 +1958,7 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
     incomplete = bool(expired) or bool(supplemental and supplemental['unsearched']) or any(
         row['unsearched'] or row['pending'] or row['unavailableTargets'] or row['withoutWorkLink']
         for row in summaries)
-    status = ('paused' if state['paused'] or any(report['status'] == 'paused' for report in reports)
+    status = ('paused' if durable.fully_paused() or reports and all(report['status'] == 'paused' for report in reports)
               else 'partial' if incomplete or failures else 'ok' if reports else 'no-results')
     state['lastRun'] = {
         'status': status, 'date': today.isoformat(), 'dateBasis': 'JST calendar date, 00:00 boundary',
