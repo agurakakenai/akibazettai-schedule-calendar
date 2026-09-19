@@ -171,6 +171,34 @@ class DiscoveryTests(base.Offline):
 
 
 class FetchTests(base.Offline):
+    def test_successful_same_run_bytes_are_reused_without_get_or_new_receipt(self):
+        source_module = collector.source_safety
+        path = self.work_dir() / 'source.json'
+        source_module.atomic_json(path, source_module.baseline_state(
+            {'budgets': {}, 'paused': None}, source_hash='a' * 64, at=base.NOW))
+        clock = [base.NOW]
+        def sleep(seconds):
+            clock[0] += dt.timedelta(seconds=seconds)
+        document = base.document(base.entry())
+        url = collector.personal.account_search_url(base.TARGET['handle'])
+        with source_module.TransientSourceCache('two-stage') as cache:
+            with source_module.SharedSource(path, run_id='two-stage', component='personal',
+                                            clock=lambda: clock[0], sleep=sleep, cache=cache) as first:
+                receipt = first.reserve('searches', url)
+                first.issued(receipt)
+                first.finish(receipt)
+                first.remember(receipt, document.encode(), content_type='text/html')
+                before = copy.deepcopy(first.state)
+            opener = mock.Mock()
+            with source_module.SharedSource(path, run_id='two-stage', component='schedule',
+                                            clock=lambda: clock[0], sleep=sleep, cache=cache) as second:
+                client = collector.SourceClient(second, clock=lambda: clock[0], opener=opener)
+                self.assertEqual(client.search(base.TARGET['handle']), document)
+                self.assertEqual(client.requests, {'searches': 0, 'posts': 0, 'images': 0})
+                self.assertEqual(second.state, before)
+                opener.open.assert_not_called()
+        self.assertEqual(cache.counts()['searches'], 0)
+
     def test_registry_change_before_each_get_or_after_reservation_never_opens_http(self):
         for kind in ('searches', 'posts', 'images'):
             for boundary in ('before', 'reserve', 'issued'):
@@ -178,6 +206,7 @@ class FetchTests(base.Offline):
                     path = self.registry_file()
                     guard = collector.members.RegistryGuard(path, bindings=({},))
                     shared, opener = mock.Mock(), mock.Mock()
+                    shared.state = {'cooldowns': {}, 'receipts': {}}
                     client = collector.SourceClient(
                         shared, clock=lambda: base.NOW, opener=opener, registry_guard=guard)
                     client.registry_name = 'あむ'
@@ -371,6 +400,200 @@ class ProducerTests(base.Offline):
         return collector.collect(self.state, base.SCHEDULE, {}, base.ACCOUNTS,
                                  self.client, self.source, self.analyzer, clock=lambda: base.NOW,
                                  save=self.save, **kwargs)
+
+    def test_publication_openings_reset_first_pass_without_rejecting_early_or_late_facts(self):
+        cases = [
+            ('2026-09-01', [('2026-09-01', '2026-09-15')]),
+            ('2026-09-12', [('2026-09-01', '2026-09-15')]),
+            ('2026-09-13', [('2026-09-16', '2026-09-30'), ('2026-09-01', '2026-09-15')]),
+            ('2026-09-16', [('2026-09-16', '2026-09-30')]),
+            ('2026-09-29', [('2026-09-16', '2026-09-30')]),
+            ('2026-10-01', [('2026-10-01', '2026-10-15')]),
+            ('2027-01-01', [('2027-01-01', '2027-01-15')]),
+        ]
+        for day, expected in cases:
+            with self.subTest(day=day):
+                self.assertEqual(facts.discovery_periods(facts.day(day)), expected)
+        registry = base.registry_fixture()
+        registry['members'].append(collector.members.new_member(
+            '新人', 'https://x.com/new_member', base.NOW, member_id='m-' + '2' * 32))
+        now = dt.datetime(2026, 9, 13, 0, tzinfo=facts.UTC)
+        _, reasons, _ = collector.target_population(self.state, {}, {}, [], registry=registry)
+        periods = collector.refresh_coverage(self.state, reasons, now, {})
+        for start, _ in periods:
+            self.state['coverage'][start]['あむ']['lastSearchedAt'] = facts.stamp(now - dt.timedelta(hours=1))
+            self.state['coverage'][start]['新人']['lastSearchedAt'] = '2026-09-12T14:59:59Z'
+        self.assertFalse(facts.searched_in_period(
+            self.state['coverage']['2026-09-16']['新人'], ('2026-09-16', '2026-09-30')))
+        collector.refresh_coverage(self.state, reasons, now, {})
+        self.client.search.return_value = base.document()
+        for moment in (now, now + dt.timedelta(days=3), now + dt.timedelta(days=10)):
+            report, _ = collector.collect(
+                self.state, {}, {}, [], self.client, self.source, self.analyzer,
+                clock=lambda: moment, save=self.save, registry=registry)
+            self.assertEqual(report['requests']['searches'], 1)
+            if moment == now:
+                self.client.search.assert_called_once_with('new_member')
+        self.assertEqual(self.state['schedules'], [], 'not found does not invent days off')
+
+    def test_same_run_search_collision_skips_to_unsearched_person_and_failed_search_stays_unsearched(self):
+        registry = base.registry_fixture()
+        registry['members'].append(collector.members.new_member(
+            '新人', 'https://x.com/new_member', base.NOW, member_id='m-' + '2' * 32))
+        request_hash, _ = collector.source_safety.request_identity(
+            'searches', collector.personal.account_search_url(base.TARGET['handle']))
+        self.source.run_id = 'two-stage'
+        self.source.state['receipts'] = {'synthetic': {
+            'runId': 'two-stage', 'kind': 'searches', 'requestHash': request_hash, 'status': 'ok'}}
+        self.source.cached.return_value = None
+        before = copy.deepcopy(self.source.state)
+        self.client.search.side_effect = collector.Failure('network_error')
+        self.collect(registry=registry)
+        self.client.search.assert_called_once_with('new_member')
+        for people in self.state['coverage'].values():
+            self.assertIsNone(people['あむ']['lastSearchedAt'])
+            self.assertIsNone(people['新人']['lastSearchedAt'])
+            self.assertEqual(people['新人']['reason'], 'source_failed')
+        self.assertEqual(self.source.state, before)
+        self.client.search.side_effect = None
+        self.client.search.return_value = base.document()
+        self.collect(registry=registry)
+        self.assertEqual(self.client.search.call_count, 2)
+        self.assertEqual(self.state['coverage']['2026-09-01']['新人']['reason'], 'no_candidates')
+        self.assertIsNone(self.state['coverage']['2026-09-01']['あむ']['lastSearchedAt'])
+
+    def test_fresh_schedule_candidate_precedes_old_chatter_and_preserves_displaced_metadata(self):
+        targets = {'あむ': base.TARGET}
+        old = []
+        for suffix in range(1, 7):
+            row = base.entry(base.CREATED - dt.timedelta(days=3), suffix=suffix)
+            row['text'] = 'ordinary conversation'
+            old.extend(collector.discover(base.document(row), targets, base.NOW)[0])
+        self.state['pending'] = copy.deepcopy(old)
+        fresh = collector.discover(base.document(base.entry()), targets, base.NOW)[0]
+        collector.enqueue(self.state, fresh, base.NOW)
+        self.assertEqual(len(self.state['pending']), 6)
+        self.assertEqual(collector.waiting_candidates(self.state, targets, base.NOW)[0]['id'], fresh[0]['id'])
+        displaced = next(iter(self.state['candidateHistory'].values()))
+        self.assertIn(displaced['candidate'], old)
+        self.assertEqual(displaced['reason'], 'queue_limit')
+        facts.validate_state(self.state)
+
+    def test_failed_prior_run_search_rotates_without_claiming_a_successful_search(self):
+        registry = base.registry_fixture()
+        registry['members'].append(collector.members.new_member(
+            '新人', 'https://x.com/new_member', base.NOW, member_id='m-' + '2' * 32))
+        key, host = collector.source_safety.request_identity(
+            'searches', collector.personal.account_search_url(base.TARGET['handle']))
+        self.source.run_id = 'next-run'
+        self.source.state['receipts'] = {'synthetic': {
+            'runId': 'previous-run', 'kind': 'searches', 'requestHash': key, 'host': host,
+            'status': 'failed', 'httpStatus': 502, 'reservedAt': facts.stamp(base.NOW)}}
+        self.client.search.return_value = base.document()
+        self.collect(registry=registry)
+        self.client.search.assert_called_once_with('new_member')
+        self.assertIsNone(self.state['coverage']['2026-09-01']['あむ']['lastSearchedAt'])
+
+    def test_text_and_image_plans_connect_to_daily_luna_stores_and_public_name_links(self):
+        import test_personal_azure as daily
+        people = [(base.TARGET, base.AUTHOR, '昼', 1),
+                  ({'name': '新人', 'handle': 'new_member'}, str(int(base.AUTHOR) + 1), '夜', 0)]
+        registry = daily.base.registry_fixture(*(target for target, _, _, _ in people),
+                                                {'name': '未取得', 'handle': 'not_yet'})
+        for index, (target, author, shift, photos) in enumerate(people):
+            entry = base.entry(suffix=index + 1, handle=target['handle'])
+            entry['userId'] = author
+            payload = base.payload(suffix=index + 1, photos=photos)
+            payload['user'] = {'id_str': author, 'screen_name': target['handle']}
+            payload['text'] = f'9月前半のお給仕予定 7日{shift}、10日{shift}'
+            self.client.search.return_value = base.document(entry)
+            self.client.post.return_value = payload, facts.digest(payload)
+            self.model.structured.return_value = base.result(
+                [(7, '月', [shift]), (10, '木', [shift])], images=bool(photos))
+            self.analyzer = azure.AzureAnalyzer(self.usage, clock=lambda: base.NOW, client=self.model)
+            report, code = self.collect(registry=registry)
+            self.assertEqual((report['status'], code), ('ok', 0))
+            self.assertEqual(self.client.search.call_args.args[0], target['handle'])
+        self.assertEqual(len(self.state['schedules']), 2)
+        self.assertEqual(sum(len(row['days']) for row in self.state['schedules']), 4)
+        self.assertNotIn('storeId', json.dumps(facts.public_state(self.state)))
+        self.assertFalse(self.state['coverage']['2026-09-01']['未取得']['confirmedIds'])
+        effective = facts.effective_schedule({}, self.state, registry=registry)
+        helper = daily.AzureTests(methodName='runTest')
+        self.addCleanup(helper.doCleanups)
+        helper.setUp()
+        helper.clock = base.NOW
+        today = base.NOW.astimezone(facts.JST).date()
+        helper.targets = daily.personal.select_targets(
+            {'schedule': effective}, {}, [], today, helper.state, registry=registry,
+            binding_maps=(self.state['identityBindings'],))
+        self.assertEqual(set(helper.targets), {'あむ', '新人'})
+        self.assertEqual(helper.targets['あむ']['shifts'], ['昼'])
+        self.assertEqual(helper.targets['新人']['shifts'], ['夜'])
+        durable = daily.personal.DurableHttp(
+            helper.state, helper.snapshot, helper.http, today, helper.targets, 2, 2,
+            clock=lambda: helper.clock, sleep=helper.sleep)
+        candidates, payloads, responses = {}, {}, {}
+        for index, (target, author, shift, _) in enumerate(people):
+            created = base.NOW - dt.timedelta(minutes=30)
+            tid = base.post_id(created, suffix=10 + index)
+            candidate = {**daily.base.candidate(tid, facts.stamp(created), target, author),
+                         'date': today.isoformat()}
+            candidates[target['name']] = candidate
+            payloads[tid] = daily.base.post(
+                f'9月7日 {index + 1}号店{shift}', tid, facts.stamp(created), target, author)
+            responses[tid] = daily.response({
+                'events': [{'serviceDate': today.isoformat(),
+                            **daily.event(shift, 'placement', [1], 's' + str(index + 1))}],
+                'links': [{'serviceDate': today.isoformat(), **daily.link(shift)}],
+                'workTiming': []})
+        client = mock.Mock()
+        def search(url, targets, *unused):
+            durable.reserve(daily.personal.SEARCH_HOST, 'searches', url=url)
+            return [candidates[next(iter(targets))]]
+        def fetch(tid):
+            durable.reserve(daily.personal.POST_HOST, 'posts')
+            helper.opener.open.return_value = responses[tid]
+            return payloads[tid]
+        client.search.side_effect, client.fetch_post.side_effect = search, fetch
+        report, code = daily.personal.collect(
+            helper.state, durable, client, helper.targets, today, 2, 2,
+            clock=lambda: helper.clock, roster=tuple(helper.targets), analyzer=helper.analyzer)
+        self.assertEqual((report['newPostCount'], code), (2, 0))
+        daily.personal.read_state(helper.snapshot)
+        pages = collector._module('pages.py', 'two_stage_public_pages')
+        half_path = self.work_dir() / 'half.json'
+        collector.official.atomic_json(half_path, self.state)
+        half_feed = pages.load_public_half_month_snapshot(half_path)
+        personal_feed = pages.load_public_personal_snapshot(helper.snapshot)
+        script = """
+const assert=require('node:assert/strict'),fs=require('node:fs');
+const input=JSON.parse(fs.readFileSync(0,'utf8')),api=require(input.app);
+api.validateHalfMonthSchedules(input.half);api.validatePersonalShifts(input.personal);
+const schedule=api.buildEffectiveSchedule({},input.half);
+for(const [name,shift,store] of [['あむ','昼','s1'],['新人','夜','s2']]){
+  for(const day of ['2026-09-07','2026-09-10']){
+    const opts={schedule,insights:{},dateKey:day,shift,name};
+    assert.equal(api.rosterPostLink(opts).kind,'half-month-schedule');
+    const resolved=api.rosterPostLink({...opts,personal:input.personal});
+    if(day==='2026-09-07'){
+      assert.equal(resolved.kind,'personal');
+      assert.equal(resolved.post.events[0].storeId,store);
+      assert.equal(resolved.post.url,input.personal.posts.find(p=>p.name===name).url);
+    }else assert.equal(resolved.kind,'half-month-schedule');
+  }
+}
+assert(!schedule['2026-09-08']);
+process.stdout.write('two-stage-ok');
+"""
+        node = shutil.which('node') or str(collector.personal.NODE_FALLBACK)
+        completed = subprocess.run(
+            [node, '-e', script], input=json.dumps({
+                'app': str(base.TOOLS.parent / 'app.js'), 'half': half_feed, 'personal': personal_feed}),
+            capture_output=True, text=True, encoding='utf-8', timeout=15,
+            **({'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout, 'two-stage-ok')
 
     def test_inactive_paused_or_unknown_preserves_pending_and_all_historical_facts(self):
         verified, tables, proof = base.normalized(suffix=9)
