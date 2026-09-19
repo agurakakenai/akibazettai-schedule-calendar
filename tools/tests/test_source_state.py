@@ -216,7 +216,8 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(report['remaining']['images'], 4)
         with self.shared() as ledger:
             with self.assertRaisesRegex(source.SourceFailure, 'source_paused'):
-                ledger.check('posts')
+                ledger.check('searches')
+            ledger.check('posts')
         with self.shared('official') as ledger:
             ledger.check('posts')
         self.assertEqual(state['cooldowns'][source.HOSTS[0]], '2026-09-06T13:00:00Z')
@@ -236,6 +237,39 @@ class SourceTests(unittest.TestCase):
             source.validate_legacy(state, self.personal, analysis)
         self.assertEqual(self.personal['budgets']['2026-09-06'], {'searches': 18, 'posts': 11})
 
+    def test_legacy_image_denial_is_host_scoped_across_runs_days_and_issue_boundary(self):
+        pause = {'reason': 'access_denied', 'host': 'pbs.twimg.com',
+                 'at': source.usage._stamp(NOW), 'retryAt': source.usage._stamp(NOW + dt.timedelta(hours=1)),
+                 'httpStatus': 403}
+        original = source.load_state(self.path)
+        original['paused'] = pause
+        original['cooldowns'][pause['host']] = pause['retryAt']
+        source.atomic_json(self.path, original)
+        for day in (0, 1, 3):
+            self.clock = NOW + dt.timedelta(days=day, hours=4)
+            with self.shared('schedule', run_id=f'recovery-{day}') as ledger:
+                for kind in ('searches', 'posts'):
+                    self.reserve(ledger, kind, day)
+                before = copy.deepcopy(ledger.state)
+                with self.assertRaisesRegex(source.SourceFailure, 'source_paused'):
+                    ledger.reserve('images', url('images', day))
+                self.assertEqual(ledger.state, before)
+                self.assertEqual(ledger.state['paused'], pause)
+                self.assertEqual(ledger.state['baseline'], original['baseline'])
+        with self.shared('personal', run_id='later-denial', personal_path=self.personal_path) as ledger:
+            pending = self.reserve(ledger, 'posts', 90, complete=False)
+            later = {**pause, 'host': source.HOSTS[1], 'at': source.usage._stamp(self.clock),
+                     'retryAt': source.usage._stamp(self.clock + dt.timedelta(hours=1))}
+            ledger.set_cooldown(later['host'], self.clock + dt.timedelta(hours=1), paused=later)
+            with self.assertRaisesRegex(source.SourceFailure, 'source_paused'):
+                ledger.issued(pending)
+            self.assertEqual(source.host_pauses(ledger.state)['pbs.twimg.com'], pause)
+            ledger.check('searches')
+        self.clock += dt.timedelta(days=1)
+        with self.shared('official', run_id='also-official') as ledger:
+            with self.assertRaisesRegex(source.SourceFailure, 'source_paused'):
+                ledger.check('posts')
+            ledger.check('searches')
     def test_approved_imports_append_exact_records_without_changing_baseline_native_or_safety(self):
         image = {'receiptId': digest('past-image'), 'date': '2026-09-06',
                  'images': 1, 'sourceHash': digest('past-image-proof')}

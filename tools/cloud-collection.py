@@ -406,7 +406,7 @@ def validate_personal(path, personal=None, *, private=True):
     private_fields = ('pending', 'resolved', 'budgets', 'paused', 'identityBindings',
                       'originalTargets', 'lastRequests')
     fields = (*public_fields, *private_fields) if private else public_fields
-    keys(state, (*fields, 'azureAnalysis', 'coverage', 'searchHistory', 'savedPersonalImports')
+    keys(state, (*fields, 'azureAnalysis', 'coverage', 'searchHistory', 'savedPersonalImports', 'hostStops')
          if private else fields, fields)
     official = personal.official
 
@@ -1558,8 +1558,13 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
             if enabled:
                 environment['PERSONAL_ANALYSIS_BACKEND'] = 'azure'
             if enabled and collect_official:
-                source_paused = has_source and source_usage_state.get('paused') is not None
-                personal_active = collect_personal and not personal_state.get('paused') and not source_paused
+                source_paused = has_source and all(
+                    load_source_state().paused_for(source_usage_state, kind)
+                    for kind in ('searches', 'posts'))
+                personal_paused = personal_state is not None and all(
+                    load_source_state().paused_for(personal_state, kind)
+                    for kind in ('searches', 'posts'))
+                personal_active = collect_personal and not personal_paused and not source_paused
                 if catch_up:
                     official_limit = 0
                 elif collect_half_month and not half_month_state.get('paused') and not source_paused:
@@ -1753,6 +1758,19 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
         else:
             status, code = result['officialCollectionStatus'], result['officialCollectionCode']
         copy_pair(collected, state_dir, collector, **bundle)
+        if has_source:
+            source_state, _ = validate_source_usage(state_dir / SOURCE_USAGE)
+            source_module = load_source_state()
+            stops = source_module.host_pauses(source_state)
+            result['sourceHealth'] = {
+                'hostStops': list(stops.values()),
+                'requests': source_module.usage_counts(
+                    source_state, environment['CLOUD_COLLECTION_RUN_ID'], collector.utc_now(),
+                    'personal', catch_up=catch_up)['issued'],
+                'personalLastSuccessAt': personal_state.get('lastSuccessAt') if personal_state else None,
+                'personalPending': len(personal_state['pending']) if personal_state else 0,
+                'halfMonthLastSuccessAt': half_month_state.get('lastSuccessAt') if half_month_state else None,
+                'halfMonthPending': len(half_month_state['pending']) if half_month_state else 0}
         if has_ai:
             current_usage, _ = validate_ai_usage(state_dir / AI_USAGE)
             result['aiBudget'] = load_analysis_state().costs.balance(current_usage, collector.utc_now())
@@ -1798,6 +1816,29 @@ def emit(result, environment):
         print('::warning::AI budget or Azure cost reconciliation needs attention; see job summary.')
     acquisition = result.get('acquisition')
     half = result.get('halfMonthAcquisition')
+    health = result.get('sourceHealth')
+    if health:
+        lines = ['## Source transport health (deployment success is not acquisition success)\n']
+        for component, prefix in (('personal', 'personal'), ('schedule', 'halfMonth')):
+            counts = health['requests'][component]
+            lines.append(f"\n{component}: status={result.get(prefix + 'CollectionStatus', 'not-run')}; "
+                         f"this-run HTTP={sum(counts.values())}; "
+                         f"search/post/image={counts['searches']}/{counts['posts']}/{counts['images']}; "
+                         f"last successful acquisition={health[prefix + 'LastSuccessAt'] or 'never'}; "
+                         f"pending={health[prefix + 'Pending']}.\n")
+        for stop in health['hostStops']:
+            lines.append(f"\nPersistent host stop: {stop['host']}; since {stop['at']}; "
+                         f"reason={stop['reason']}; HTTP={stop.get('httpStatus', 'unknown')}; "
+                         f"retry boundary={stop['retryAt']} (expiry does not clear the denial). "
+                         "Other independent hosts remain eligible.\n")
+        if environment.get('GITHUB_STEP_SUMMARY'):
+            with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
+                target.writelines(lines)
+        if health['hostStops'] or any(
+                not sum(health['requests'][component].values()) and health[prefix + 'Pending']
+                for component, prefix in (('personal', 'personal'), ('schedule', 'halfMonth'))):
+            print('::warning::Source acquisition stopped or made zero requests with pending work; '
+                  'see transport host, stop time, last success and coverage in the job summary.')
     if environment.get('GITHUB_STEP_SUMMARY') and (acquisition or half):
         lines = ['## Collection coverage (publication success is separate)\n',
                  'Unconfirmed does not mean unposted or absent.\n']

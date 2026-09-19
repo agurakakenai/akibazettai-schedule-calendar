@@ -1094,7 +1094,7 @@ privateの`coverage`と`searchHistory`は、対象の由来、確認済みaccoun
 
 ローカルの単発CLIは既存のPythonとNodeを使い、`--snapshot` に非公開の永続JSON、`--http-state` に公式と共用するsidecarを明示します。`--publish` は公開用JSONの追加出力です。本人CLIの`--dry-run`は**公開mirror更新だけを抑止**し、通信予算・停止状態と検証済みの本人factsはprivate snapshotへ保存します（公式CLIのdry-runとは保存範囲が異なります）。取得を試すだけでも通信と永続stateの変更があるため、稼働中のcloudと同時には実行しません。
 
-本人用の取得が403・429・アクセス拒否等を受けた場合は、残りの同host要求を止め、共有の`Retry-After`と本人機能のpauseを永続化します。**時間が過ぎただけで本人機能を勝手に再開しません。**別クエリ・UA・proxyで迂回せず、公式更新を優先します。本人側の候補不足・意味不明・予算待ち・取得不能は本人componentの状態として表示し、正常な公式観測を空にしません。保存・leaseの障害は従来どおりfail-closedです。
+本人用の取得が403・429・アクセス拒否等を受けた場合は、残りの同host要求を止め、共有の`Retry-After`とhost単位のpauseを永続化します。**時間が過ぎただけで拒否されたhostを勝手に再開しません。**旧`paused`のhost付き記録・cooldown・失敗receiptも保持したまま読み、別hostの検索・本文取得は巻き添えにしません。複数hostの拒否は`hostStops`で保全し、HTTP直前にも照合します。別クエリ・UA・proxyで迂回しません。AIの認証/model等のglobal停止は別に維持します。本人側の候補不足・意味不明・予算待ち・取得不能は本人componentの状態として表示し、正常な公式観測を空にしません。保存・leaseの障害は従来どおりfail-closedです。
 
 本文全文は恒久保存せず、作者・投稿ID・日時・出典、時間帯ごとの抽出イベントと必要な短い引用、最小のscope付きリンク判定だけを保持します。公開用JSONでは内部の予算、pending/resolved、pause詳細、HTTP制限、coverage、適用receiptを除外します。ブラウザーは同じサイトのJSONを読むだけで、本人検索を実行しません。
 
@@ -1185,6 +1185,8 @@ Azure実費は既存定期処理の最初の機会にJST日1回、**前日まで
 公式のbuffer再生とcheckpoint読取は既存pendingの初見・試行時刻・回数を保持し、欠落した記録だけをqueue/cacheから再構成します。非再生対象のpending保全チェックは維持し、失敗runの復旧は保存済み結果・実費を検証して既存lease/CAS経路へ戻します。
 
 半月のtimeout・network error・5xx等は、1時間以上空けた後続runで初回を含め最大3回まで再試行します。再試行の実request hashとreceiptを別に保持し、旧失敗・原source・正規revisionを消しません。旧failed記録も既存usageから一時障害だと確認できるものだけ回収します。内容不正・拒否・本人不一致・回数上限は別の保留理由で残し、model変更や結果合わせによる自動再試行はしません。429/認証停止は共有の停止状態を優先します。
+
+画像hostの拒否中は`image_host_paused`として半月の画像付き候補を保留し、既知の同候補を後続runで繰り返し本文取得・試行回数加算しません。独立したYahoo検索と本文のみの候補は上限内で継続できます。画像の必要枚数はdownload前に共通source入口で確認し、拒否hostへの通信は0です。Actionsの既存job summaryは各componentの実HTTP数・最終正常取得・pending数、拒否host・発生日時・理由を表示し、継続停止やpendingを抱えた取得0をwarningにします。配信成功の緑を取得完了とは扱わず、サイトの既存根拠を消したり大型status一覧を戻したりしません。
 
 画像は元postが持つ`pbs.twimg.com/media/`のJPEG/PNGだけで、redirectは追従しません。timeout35秒、8MiB/枚・12MiB/post、長辺8192px・20MP/枚・40MP/post、総request17MiBまでです。実bytesのtype/寸法を確認し、metadataのoriginal寸法と取得variantの寸法を分けます。必要な全画像のsource/AI枠を先に確認し、不足が分かっていれば部分downloadを始めません。4枚超や途中失敗で完全な表を装いません。
 

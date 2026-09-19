@@ -600,7 +600,7 @@ for (const source of value.schedules) {
         return f'https://cdn.syndication.twimg.com/tweet-result?id={tid}&lang=ja&token=a'
 
     def scheduled_run(self, *, personal_ai=1, half_ai=1, buffer_count=0,
-                      half_enabled=True, when=None, official_posts=17):
+                      half_enabled=True, when=None, official_posts=17, half_images=1):
         self.now = when or dt.datetime(2026, 9, 7, 12, 30, tzinfo=cloud.JST)
         self.enable(half=half_enabled)
         phases, issued_ai, source_counts, allocations, buffer_sizes = [], [], [], [], []
@@ -722,7 +722,7 @@ for (const source of value.schedules) {
                 snapshot['lastRun'] = {'status': status, 'requests': requests}
                 collector.atomic_json(state / cloud.PERSONAL, snapshot)
             else:
-                requests = {'searches': 1, 'posts': 1, 'images': 1}
+                requests = {'searches': 1, 'posts': 1, 'images': half_images}
                 source_requests(component, state, environment, requests)
                 count = ai_requests(component, state, environment, phase, half_ai)
                 requests['analysis'] = count
@@ -751,6 +751,26 @@ for (const source of value.schedules) {
         for name in self.fx.remote_names():
             self.assertNotIn(RAW.encode(), self.fx.remote_json(name)[1])
         return result, phases, issued_ai, source_counts, allocations, buffer_sizes
+
+    def test_legacy_image_pause_survives_cloud_save_while_text_collectors_continue(self):
+        pause = {'host': 'pbs.twimg.com', 'reason': 'access_denied', 'httpStatus': 403,
+                 'at': '2026-09-04T04:00:00Z', 'retryAt': '2026-09-04T05:00:00Z'}
+        self.source_state['paused'] = pause
+        self.seed()
+        result, phases, ai, requests, allocations, _ = self.scheduled_run(
+            official_posts=3, half_images=0, buffer_count=1)
+        self.assertEqual(result['persistenceStatus'], 'saved')
+        self.assertEqual(ai, ['personal', 'schedule', 'official'])
+        self.assertEqual(sum(kind == 'images' for _, kind in requests), 0)
+        self.assertEqual(sum(component == 'personal' and kind == 'searches'
+                             for component, kind in requests), 14)
+        self.assertEqual(result['sourceHealth']['hostStops'], [pause])
+        source = self.fx.remote_json(cloud.SOURCE_USAGE)[0]
+        self.assertEqual(source['paused'], pause)
+        self.assertEqual(source['baseline'], self.source_state['baseline'])
+        self.assertEqual(source['cooldowns'], self.source_state['cooldowns'])
+        self.assertNotIn(cloud.LEASE, self.fx.remote_names())
+        self.assertEqual(result['sourceHealth']['requests']['schedule']['images'], 0)
 
     def test_scheduled_three_components_share_expanded_run_but_keep_daily_forty_and_source_caps(self):
         self.ai.apply_import(self.usage, {
