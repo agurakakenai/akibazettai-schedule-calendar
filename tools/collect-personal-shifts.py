@@ -1603,6 +1603,11 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
     early_status = 'paused' if durable.fully_paused() else 'outside-window' if not active else None
     search_targets = {name: target for name, target in targets.items()
                       if target['handle'].casefold() not in durable.searched_handles
+                      and (durable.shared_source is None
+                           or not SOURCE_LIMITS.already_requested(
+                               durable.shared_source.state, durable.shared_source.run_id,
+                               'searches', account_search_url(target['handle']))
+                           or durable.shared_source.cached('searches', account_search_url(target['handle'])) is not None)
                       and (not first_sources_only or not work_source_complete(state, target, date))}
     searches = (target_searches(search_targets, date, state, clock(), max_searches,
                                scheduled=durable.scheduled, catch_up=durable.catch_up)
@@ -1612,6 +1617,7 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         failures.append({'reason': 'source_paused'})
     for name, url in searches:
         before = durable.used['searches']
+        search_succeeded = False
         try:
             active_now = durable.active(targets)
             if name not in active_now:
@@ -1620,6 +1626,7 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
             candidates = client.search(url, {name: active_now[name]},
                                        date, clock(), durable.bindings())
             durable.check_registry(name)
+            search_succeeded = True
             sources.append({'url': url, 'status': 'ok', 'candidateCount': len(candidates)})
             for candidate in candidates:
                 if (candidate['name'] != name
@@ -1644,8 +1651,9 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         finally:
             if durable.used['searches'] > before:
                 durable.searched_handles.add(targets[name]['handle'].casefold())
+            if search_succeeded:
                 state.setdefault('searchHistory', {}).setdefault(date.isoformat(), {})[name] = {
-                    'handle': targets[name]['handle'], 'attemptedAt': state['lastRequests'][SEARCH_HOST]}
+                    'handle': targets[name]['handle'], 'attemptedAt': stamp(clock())}
                 durable.save()
     attempted = deferred = 0
     grouped, positions, previous_attempt = {}, {}, {}
@@ -1711,8 +1719,15 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
             deferred += 1
             continue
         if saved_payloads is None and durable.shared_source is not None:
+            url = f'https://{POST_HOST}/tweet-result?id={item["id"]}&lang=ja&token=a'
+            already_requested = SOURCE_LIMITS.already_requested(
+                durable.shared_source.state, durable.shared_source.run_id, 'posts', url)
+            if already_requested and durable.shared_source.cached('posts', url) is None:
+                deferred += 1
+                continue
             try:
-                official.source_call(durable.shared_source, 'check', 'posts')
+                if not already_requested:
+                    official.source_call(durable.shared_source, 'check', 'posts')
             except Failure as exc:
                 item['reason'] = exc.reason
                 failures.append({'id': item['id'], **exc.facts()})
@@ -1873,10 +1888,7 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
                                  registry=registry, binding_maps=bindings)
         if targets or state.get('coverage', {}).get(day.isoformat()):
             by_day[day] = targets
-    def age(day):
-        rows = state.get('searchHistory', {}).get(day.isoformat(), {})
-        return min((rows.get(name, {}).get('attemptedAt', '') for name in by_day[day]), default=''), day
-    days = [today] + sorted((d for d in by_day if d != today), key=age)
+    days = [today] + sorted((d for d in by_day if d != today), reverse=True)
     reports, pending_before = [], len(state['pending'])
     supplemental = None
     for day in days:
@@ -1904,26 +1916,6 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
                     max(0, durable.caps['posts'] - durable.used['posts']),
                     clock, members.display_projection(registry)['knownNames'], analyzer)
                 reports.append(report)
-        if (day == today and not durable.fully_paused()
-                and (durable.used['searches'] < durable.caps['searches']
-                     or durable.used['posts'] < durable.caps['posts'])):
-            discovery = select_targets(
-                schedule, insights, [], today, state, observations, registry=registry,
-                binding_maps=bindings, include_unannounced=True)
-            discovery = {name: target for name, target in discovery.items() if target.get('discovery')}
-            if discovery:
-                durable.date, durable.targets = today, discovery
-                searches_before = durable.used['searches']
-                report, _ = collect(
-                    state, durable, client_factory(durable), discovery, today,
-                    min(1, max(0, durable.caps['searches'] - durable.used['searches'])),
-                    min(1, max(0, durable.caps['posts'] - durable.used['posts'])),
-                    clock, members.display_projection(registry)['knownNames'], analyzer)
-                reports.append(report)
-                rows = report['coverage']
-                supplemental = {'targets': len(discovery), 'searched': durable.used['searches'] - searches_before,
-                                'bodyChecked': report['attemptedCount'], 'withSource': report['newPostCount'],
-                                'unsearched': sum(not rows[name]['searchedAt'] for name in discovery)}
         if durable.fully_paused() or (clock() - durable.started).total_seconds() >= RECOVERY_SECONDS:
             break
     summaries = []

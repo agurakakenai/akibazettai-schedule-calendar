@@ -584,6 +584,13 @@ def usage_counts(state, run_id, now, component='schedule', *, catch_up=False):
                           'posts': max(0, min(posts_left)), 'images': max(0, min(images_left))}}
 
 
+def already_requested(state, run_id, kind, url):
+    request_hash, _ = request_identity(kind, url)
+    return any(item['runId'] == run_id and item['kind'] == kind
+               and item['requestHash'] == request_hash
+               for item in state.get('receipts', {}).values())
+
+
 def request_identity(kind, url):
     """Canonicalize only for accounting. Each HTTP client still owns its allowlist."""
     if kind not in KINDS or not isinstance(url, str):

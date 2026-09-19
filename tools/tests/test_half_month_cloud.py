@@ -760,7 +760,7 @@ for (const source of value.schedules) {
         result, phases, ai, requests, allocations, _ = self.scheduled_run(
             official_posts=3, half_images=0, buffer_count=1)
         self.assertEqual(result['persistenceStatus'], 'saved')
-        self.assertEqual(ai, ['personal', 'schedule', 'official'])
+        self.assertEqual(ai, ['schedule', 'personal', 'official'])
         self.assertEqual(sum(kind == 'images' for _, kind in requests), 0)
         self.assertEqual(sum(component == 'personal' and kind == 'searches'
                              for component, kind in requests), 14)
@@ -780,8 +780,8 @@ for (const source of value.schedules) {
         self.source_state = self.baseline()
         self.seed()
         result, phases, ai, sources, allocations, _ = self.scheduled_run(buffer_count=1)
-        self.assertEqual([component for component, _ in phases], ['official', 'personal', 'schedule', 'official'])
-        self.assertEqual(ai, ['personal', 'schedule', 'official'])
+        self.assertEqual([component for component, _ in phases], ['official', 'schedule', 'personal', 'official'])
+        self.assertEqual(ai, ['schedule', 'personal', 'official'])
         self.assertEqual([limit for _, _, limit in allocations], [0, 1, 1, 1])
         self.assertEqual(sum(kind == 'searches' for _, kind in sources), 17)
         self.assertEqual(sum(kind in ('posts', 'images') for _, kind in sources), 20)
@@ -806,8 +806,8 @@ for (const source of value.schedules) {
     def test_unused_personal_ai_returns_to_official_source_zero_resume_after_half(self):
         self.seed()
         result, phases, ai, sources, _, sizes = self.scheduled_run(personal_ai=0, buffer_count=3)
-        self.assertEqual(phases, [('official', 'write'), ('personal', 'source'),
-                                  ('schedule', 'source'), ('official', 'replay')])
+        self.assertEqual(phases, [('official', 'write'), ('schedule', 'source'),
+                                  ('personal', 'source'), ('official', 'replay')])
         self.assertEqual(ai, ['schedule', 'official'])
         self.assertEqual(sizes, [2, 2])
         self.assertEqual(sum(component == 'official' and kind == 'posts' for component, kind in sources), 17)
@@ -821,8 +821,8 @@ for (const source of value.schedules) {
         self.seed()
         result, phases, ai, sources, _, _ = self.scheduled_run(
             when=dt.datetime(2026, 9, 7, 21, 30, tzinfo=cloud.JST), official_posts=16)
-        self.assertEqual([component for component, _ in phases], ['official', 'personal', 'schedule'])
-        self.assertEqual(ai, ['personal', 'schedule'])
+        self.assertEqual([component for component, _ in phases], ['official', 'schedule', 'personal'])
+        self.assertEqual(ai, ['schedule', 'personal'])
         self.assertTrue(any(component == 'personal' for component, _ in sources))
         private = self.fx.remote_json(cloud.PERSONAL)[0]
         self.assertEqual(private['budgets']['2026-09-06'], self.private['budgets']['2026-09-06'])

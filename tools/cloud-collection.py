@@ -1602,6 +1602,46 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                             buffered['items'][:2], collector.utc_now())
                         collector.atomic_json(analysis_buffer_path(root, collected), buffered)
                     initial_official, initial_requests = copy.deepcopy(canonical), dict(requests)
+            def run_half_month():
+                nonlocal half_month_state
+                if catch_up:
+                    environment['CLOUD_COLLECTION_HALF_ALLOCATION'] = str(allocation['schedule'])
+                code = invoke_half_month_collector(
+                    root, collected, work / 'half-month-report.json', environment)
+                require(code in (0, 2, 3), 'half_month_local_failure')
+                half_month_state, _ = validate_half_month(collected / HALF_MONTH)
+                status = half_month_state['lastRun']['status']
+                require(status in ('ok', 'partial', 'unavailable', 'no-new', 'no-results',
+                                   'paused', 'budget-exhausted', 'outside-window'),
+                        'half_month_status_mismatch')
+                require(code == (3 if status in ('unavailable', 'paused') else
+                                 2 if status in ('partial', 'budget-exhausted') else 0),
+                        'half_month_status_mismatch')
+                report = validate_completion(
+                    work / 'half-month-report.json', status, code, 'schedule')
+                keys(report.get('requests'), ('searches', 'posts', 'images', 'analysis'),
+                     ('searches', 'posts', 'images'))
+                for kind, maximum in (('searches', 1), ('posts', 1), ('images', 4)):
+                    integer(report['requests'][kind], 0, maximum)
+                if 'analysis' in report['requests']:
+                    integer(report['requests']['analysis'], 0, 1)
+                validate_source_usage(collected / SOURCE_USAGE)
+                result.update(halfMonthCollectionStatus=status, halfMonthCollectionCode=code)
+                registry = load_member_registry().load_registry(root / 'data' / 'members.json')
+                active_names = {member['canonicalName'] for member in registry['members']
+                                if member['membership'] == 'active'}
+                half_facts = load_half_month_state()
+                period = half_facts.discovery_periods(collector.utc_now())[0]
+                coverage = half_month_state['coverage'].get(period[0], {})
+                result['halfMonthAcquisition'] = {
+                    'period': period[0], 'targets': len(active_names),
+                    'searched': sum(half_facts.searched_in_period(coverage.get(name, {}), period)
+                                    for name in active_names),
+                    'confirmed': sum(bool(coverage.get(name, {}).get('confirmedIds')) for name in active_names),
+                    'pending': len(half_month_state['pending'])}
+
+            if collect_half_month and catch_up:
+                run_half_month()
             if collect_personal and scheduled and not catch_up and not personal_window_open(
                     collector.utc_now(), scheduled=True):
                 # Do not even construct the personal child after its scheduled cutoff.
@@ -1655,40 +1695,8 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 if 'acquisition' in personal_report:
                     result['acquisition'] = personal_report['acquisition']
                 result.update(personalCollectionStatus=status, personalCollectionCode=code)
-            if collect_half_month:
-                if catch_up:
-                    environment['CLOUD_COLLECTION_HALF_ALLOCATION'] = str(allocation['schedule'])
-                code = invoke_half_month_collector(
-                    root, collected, work / 'half-month-report.json', environment)
-                require(code in (0, 2, 3), 'half_month_local_failure')
-                half_month_state, _ = validate_half_month(collected / HALF_MONTH)
-                status = half_month_state['lastRun']['status']
-                require(status in ('ok', 'partial', 'unavailable', 'no-new', 'no-results',
-                                   'paused', 'budget-exhausted', 'outside-window'),
-                        'half_month_status_mismatch')
-                require(code == (3 if status in ('unavailable', 'paused') else
-                                 2 if status in ('partial', 'budget-exhausted') else 0),
-                        'half_month_status_mismatch')
-                report = validate_completion(
-                    work / 'half-month-report.json', status, code, 'schedule')
-                keys(report.get('requests'), ('searches', 'posts', 'images', 'analysis'),
-                     ('searches', 'posts', 'images'))
-                for kind, maximum in (('searches', 1), ('posts', 1), ('images', 4)):
-                    integer(report['requests'][kind], 0, maximum)
-                if 'analysis' in report['requests']:
-                    integer(report['requests']['analysis'], 0, 1)
-                validate_source_usage(collected / SOURCE_USAGE)
-                result.update(halfMonthCollectionStatus=status, halfMonthCollectionCode=code)
-                registry = load_member_registry().load_registry(root / 'data' / 'members.json')
-                active_names = {member['canonicalName'] for member in registry['members']
-                                if member['membership'] == 'active'}
-                period = load_half_month_state().target_periods(collector.utc_now())[0][0]
-                coverage = half_month_state['coverage'].get(period, {})
-                result['halfMonthAcquisition'] = {
-                    'period': period, 'targets': len(active_names),
-                    'searched': sum(bool(coverage.get(name, {}).get('lastSearchedAt')) for name in active_names),
-                    'confirmed': sum(bool(coverage.get(name, {}).get('confirmedIds')) for name in active_names),
-                    'pending': len(half_month_state['pending'])}
+            if collect_half_month and not catch_up:
+                run_half_month()
             if buffered and buffered['items']:
                 usage, _ = validate_ai_usage(collected / AI_USAGE)
                 now = collector.utc_now()

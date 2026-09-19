@@ -318,6 +318,17 @@ class SourceClient:
             raise ValueError('route_refused')
         if kind == 'images':
             media_url(url)
+        def guard():
+            if self.registry_guard is not None:
+                if self.registry_name is None:
+                    raise RegistryFailure('unknown_member')
+                check_registry(self.registry_guard, self.registry_name)
+        guard()
+        if source_safety.already_requested(self.source.state, self.source.run_id, kind, url):
+            cached = self.source.cached(kind, url)
+            if cached is not None:
+                return bytearray(cached['body']), cached['contentType']
+            raise Failure('source_already_issued')
         if kind not in ('searches', 'posts', 'images') or url in self.seen:
             raise Failure('source_already_issued')
         if self.http_state:
@@ -325,12 +336,6 @@ class SourceClient:
             until = official.load_transport(self.http_state).get(host)
             if until is not None:
                 self.source.set_cooldown(host, official.timestamp(until))
-        def guard():
-            if self.registry_guard is not None:
-                if self.registry_name is None:
-                    raise RegistryFailure('unknown_member')
-                check_registry(self.registry_guard, self.registry_name)
-        guard()
         self.source.check(kind)
         guard()
         receipt = self.source.reserve(kind, url)
@@ -374,6 +379,8 @@ class SourceClient:
                 content_type = response.headers.get('Content-Type', '').split(';')[0].strip().lower()
                 self.source.finish(receipt, http_status=status)
                 finished = True
+                if kind != 'images' and content_type in source_safety.TransientSourceCache.CONTENT_TYPES:
+                    self.source.remember(receipt, raw, content_type=content_type)
                 return raw, content_type
         except urllib.error.HTTPError as exc:
             status, retry = exc.code, exc.headers.get('Retry-After') if exc.headers else None
@@ -502,7 +509,16 @@ def enqueue(state, candidates, now, analyzer=None):
         if any(record['source']['id'] == candidate['id'] and terminal_source(record, analyzer)
                for record in state['sources'].values()):
             continue
-        count = sum(item['name'] == candidate['name'] for item in state['pending'])
+        people = [item for item in state['pending'] if item['name'] == candidate['name']]
+        count = len(people)
+        if count >= 6:
+            rank = lambda item: (item['priority'], -int(item['id']))
+            worst = max(people, key=rank)
+            if rank(candidate) < rank(worst):
+                state['candidateHistory'][facts.candidate_key(worst)] = {
+                    'candidate': dict(worst), 'reason': 'queue_limit', 'checkedAt': facts.stamp(now)}
+                state['pending'].remove(worst)
+                count -= 1
         if len(state['pending']) >= 240 or count >= 6:
             dropped.add(candidate['name'])
             continue
@@ -555,13 +571,23 @@ def waiting_candidates(state, targets, now, source=None):
     for record in state['candidateHistory'].values():
         name = record['candidate']['name']
         last_attempt[name] = max(last_attempt.get(name, ''), record['checkedAt'])
+    period = facts.discovery_periods(now)[0]
+    opened = facts.publication_start(period)
+    confirmed = {item['name'] for item in state['schedules'] if item['period']['from'] == period[0]}
     return sorted((item for item in state['pending'] if item['name'] in targets
                    and not (source is not None and source_safety.paused_for(source.state, 'images')
                             and any(record['source']['id'] == item['id'] and record['source']['media']
                                     for record in state['sources'].values()))
+                   and not (source is not None and source_safety.already_requested(
+                       source.state, source.run_id, 'posts',
+                       f'https://{POST_HOST}/tweet-result?id={item["id"]}&lang=ja&token=a')
+                       and source.cached('posts',
+                           f'https://{POST_HOST}/tweet-result?id={item["id"]}&lang=ja&token=a') is None)
                    and (item['nextAttemptAt'] is None or facts.timestamp(item['nextAttemptAt']) <= now)),
-                  key=lambda item: (last_attempt[item['name']], item['lastAttemptAt'] or '',
-                                    item['discoveredAt'], item['priority'], -int(item['id'])))
+                  key=lambda item: (item['name'] in confirmed,
+                                    facts.timestamp(item['searchCreatedAt']).astimezone(facts.JST).date() < opened,
+                                    item['priority'], last_attempt[item['name']], item['lastAttemptAt'] or '',
+                                    item['discoveredAt'], -int(item['id'])))
 
 
 def target_population(state, schedule, insights, accounts, existing_bindings=None, *, registry=None):
@@ -649,7 +675,7 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
     payload_received = False
     image_hashes = None
     registry_error = None
-    search_target, search_before = None, None
+    search_target, search_before, search_succeeded = None, None, False
 
     def guard(name=None):
         check_registry(registry_guard, name)
@@ -686,33 +712,51 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
             _set_reason(state, name, periods, 'image_host_paused')
         waiting = waiting_candidates(state, targets, now, source)
         due = []
+        search_attempts = {}
+        for receipt in source.state.get('receipts', {}).values():
+            if receipt['kind'] == 'searches':
+                key = receipt['requestHash']
+                search_attempts[key] = max(search_attempts.get(key, ''), receipt.get('reservedAt', ''))
         for name, possible in targets.items():
-            rows = [state['coverage'][start][name] for start, _ in periods]
-            if any(row['nextCheckAt'] is None or facts.timestamp(row['nextCheckAt']) <= now for row in rows):
-                due.append((min(row['lastSearchedAt'] or '' for row in rows), name, possible))
-        first_pass = [item for item in due if item[0] == '']
-        search_due = first_pass if waiting else due
+            url = personal.account_search_url(possible['handle'])
+            request_hash, _ = source_safety.request_identity('searches', url)
+            if (source_safety.already_requested(source.state, source.run_id, 'searches', url)
+                    and source.cached('searches', url) is None):
+                continue
+            priorities = []
+            for index, period in enumerate(facts.discovery_periods(now)):
+                row = state['coverage'][period[0]][name]
+                searched = row['lastSearchedAt']
+                first = not facts.searched_in_period(row, period)
+                if first or row['nextCheckAt'] is None or facts.timestamp(row['nextCheckAt']) <= now:
+                    priorities.append((bool(row['confirmedIds']), not first, index,
+                                       max(searched or '', search_attempts.get(request_hash, ''))))
+            if priorities:
+                due.append((min(priorities), name, possible))
+        search_due = due
         if search_due and max_searches and not source_safety.paused_for(source.state, 'searches'):
             target = min(search_due)[2]
             search_target = target
             guard(target['name'])
-            source.check('searches')
+            if not source_safety.already_requested(
+                    source.state, source.run_id, 'searches', personal.account_search_url(target['handle'])):
+                source.check('searches')
             guard(target['name'])
             search_before = {
                 start: (state['coverage'][start][target['name']]['lastSearchedAt'],
                         state['coverage'][start][target['name']]['nextCheckAt'])
                 for start, _ in periods}
-            for start, _ in periods:
-                row = state['coverage'][start][target['name']]
-                row['lastSearchedAt'] = facts.stamp(clock())
-                row['nextCheckAt'] = facts.stamp(clock() + dt.timedelta(hours=24))
-            save()
             counts['searches'] += 1
             document = client.search(target['handle'])
             candidates, truncated = discover(
                 document, {target['name']: target}, clock(), bindings,
                 registry=registry, other_bindings=binding_maps)
             del document
+            search_succeeded = True
+            for start, _ in periods:
+                row = state['coverage'][start][target['name']]
+                row['lastSearchedAt'] = facts.stamp(clock())
+                row['nextCheckAt'] = facts.stamp(clock() + dt.timedelta(hours=24))
             _set_reason(state, target['name'], periods, 'candidate_limit' if truncated
                         else 'post_unverified' if candidates else 'no_candidates')
             enqueue(state, candidates, clock(), analyzer)
@@ -736,7 +780,10 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
             target = targets[selected['name']]
             guard(target['name'])
             analyzer.check()
-            source.check('posts')
+            if not source_safety.already_requested(
+                    source.state, source.run_id, 'posts',
+                    f'https://{POST_HOST}/tweet-result?id={selected["id"]}&lang=ja&token=a'):
+                source.check('posts')
             guard(target['name'])
             if selected.get('attempts', 0) >= 3:
                 state['candidateHistory'][facts.candidate_key(selected)] = {
@@ -905,8 +952,7 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
                     state['pending'].remove(selected)
     finally:
         client.close()
-    if (search_before is not None and isinstance(getattr(client, 'requests', None), dict)
-            and client.requests['searches'] == 0):
+    if search_before is not None and not search_succeeded:
         for start, previous in search_before.items():
             row = state['coverage'][start][search_target['name']]
             row['lastSearchedAt'], row['nextCheckAt'] = previous

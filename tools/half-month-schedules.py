@@ -161,6 +161,22 @@ def candidate_start(now):
     return day(half_period(day(current[0]) - dt.timedelta(days=1))[0])
 
 
+def discovery_periods(now):
+    date = now.astimezone(JST).date() if isinstance(now, dt.datetime) else now
+    current, following = target_periods(date)
+    return [following, current] if 13 <= date.day <= 15 else [current]
+
+
+def publication_start(period):
+    start = day(period[0])
+    return start.replace(day=1 if start.day == 1 else 13)
+
+
+def searched_in_period(row, period):
+    searched = row.get('lastSearchedAt')
+    return searched is not None and timestamp(searched).astimezone(JST).date() >= publication_start(period)
+
+
 def validate_period(value):
     require_keys(value, ('from', 'to', 'printedYear', 'yearBasis'))
     start, end = day(value['from']), day(value['to'])

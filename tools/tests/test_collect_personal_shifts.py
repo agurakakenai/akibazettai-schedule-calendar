@@ -664,7 +664,7 @@ class StateTests(Offline):
                 self.assertEqual(self.state['posts'][0]['name'], AMU['name'])
                 personal.read_state(self.snapshot)
 
-    def test_announced_then_bounded_unannounced_today_then_past(self):
+    def test_announced_then_past_without_registry_only_discovery(self):
         extra = {'name': 'あい', 'handle': 'extra_member'}
         registry = registry_fixture(AMU, RARAKO, extra)
         yesterday = DATE - dt.timedelta(days=1)
@@ -677,17 +677,90 @@ class StateTests(Offline):
             self.state, durable, schedule, None, None, registry, (),
             lambda current: self.fake_client(current, entries=[]), None, lambda: NOW)
         today = self.state['searchHistory'][DATE.isoformat()]
-        self.assertEqual(set(today), {AMU['name'], extra['name']})
+        self.assertEqual(set(today), {AMU['name']})
         self.assertEqual(set(self.state['searchHistory'][yesterday.isoformat()]), {RARAKO['name']})
-        self.assertEqual(self.state['coverage'][DATE.isoformat()][extra['name']]['shifts'], [])
-        self.assertEqual(report['acquisition']['supplemental']['searched'], 1)
+        self.assertNotIn(extra['name'], self.state['coverage'][DATE.isoformat()])
+        self.assertIsNone(report['acquisition']['supplemental'])
         self.assertEqual(report['acquisition']['days'][0]['targets'], 1)
         self.assertEqual(report['acquisition']['days'][0]['unavailableTargets'], 0)
-        self.assertEqual(durable.used, {'searches': 3, 'posts': 0})
+        self.assertEqual(durable.used, {'searches': 2, 'posts': 0})
         self.assertEqual(self.state['posts'], [])
         personal.read_state(self.snapshot)
 
-    def test_current_missing_then_corrections_then_supplement_then_past(self):
+    def test_empty_today_recovers_recent_missing_days_before_older_history_across_month(self):
+        today = DATE.replace(month=10, day=1)
+        now = NOW.replace(month=10, day=1, hour=0)
+        recent = today - dt.timedelta(days=1)
+        oldest = today - dt.timedelta(days=6)
+        registry = registry_fixture(AMU, RARAKO, {'name': '補助', 'handle': 'unscheduled'})
+        schedule = {'schedule': {
+            recent.isoformat(): {'昼': [{'name': AMU['name']}]},
+            oldest.isoformat(): {'夜': [{'name': RARAKO['name']}]}}}
+        durable = self.durable(searches=1, posts=0, now=now)
+        durable.catch_up = True
+        report, _ = personal.collect_recovery(
+            self.state, durable, schedule, None, None, registry, (),
+            lambda current: self.fake_client(current, entries=[]), None, lambda: now)
+        self.assertEqual(set(self.state['searchHistory']), {recent.isoformat()})
+        self.assertEqual(set(self.state['searchHistory'][recent.isoformat()]), {AMU['name']})
+        self.assertEqual(self.state['budgets'], {today.isoformat(): {'searches': 1, 'posts': 0}})
+        self.assertEqual(report['date'], today.isoformat())
+        self.assertIsNone(report['acquisition']['supplemental'])
+        self.assertEqual(self.state['posts'], [])
+        personal.read_state(self.snapshot)
+
+    def test_no_known_work_means_no_daily_requests_not_a_day_off_fact(self):
+        durable = self.durable(searches=3, posts=3)
+        durable.catch_up = True
+        client = mock.Mock()
+        report, _ = personal.collect_recovery(
+            self.state, durable, {'schedule': {}}, None, None, registry_fixture(), (),
+            lambda _: client, None, lambda: NOW)
+        self.assertEqual(durable.used, {'searches': 0, 'posts': 0})
+        self.assertEqual(self.state['posts'], [])
+        self.assertEqual(report['acquisition']['days'], [])
+        self.assertIsNone(report['acquisition']['supplemental'])
+        self.assertIsNone(self.state['lastSuccessAt'])
+        client.search.assert_not_called()
+        client.fetch_post.assert_not_called()
+
+    def test_half_month_same_run_receipt_does_not_waste_daily_search_or_post_attempts(self):
+        durable = self.durable(searches=2, posts=2)
+        source = personal.SOURCE_LIMITS
+        search_url = personal.account_search_url(AMU['handle'])
+        post_url = f'https://{personal.POST_HOST}/tweet-result?id={TID}&lang=ja&token=a'
+        shared = mock.Mock()
+        shared.run_id = 'two-stage'
+        shared.cached.return_value = None
+        shared.state = {'cooldowns': {}, 'receipts': {
+            kind: {'runId': 'two-stage', 'kind': kind, 'status': 'ok',
+                   'requestHash': source.request_identity(kind, url)[0]}
+            for kind, url in (('searches', search_url), ('posts', post_url))}}
+        durable.shared_source = shared
+        pending = {**candidate(), 'reason': 'discovered', 'firstSeenAt': CREATED,
+                   'lastAttemptAt': None, 'attempts': 0}
+        self.state['pending'] = [copy.deepcopy(pending)]
+        client = mock.Mock()
+        client.search.return_value = []
+        report, _ = self.collect(client, durable)
+        self.assertEqual(client.search.call_count, 1)
+        self.assertEqual(client.search.call_args.args[0], personal.account_search_url(RARAKO['handle']))
+        self.assertNotIn(AMU['name'], self.state['searchHistory'][DATE.isoformat()])
+        self.assertEqual(self.state['pending'], [pending])
+        self.assertEqual(report['attemptedCount'], 0)
+        client.fetch_post.assert_not_called()
+        shared.reserve.assert_not_called()
+
+    def test_failed_daily_search_keeps_attempt_cost_but_not_searched_coverage(self):
+        durable = self.durable(searches=1, posts=0)
+        client = self.fake_client(durable, source_failure=personal.Failure('network_error'))
+        report, _ = self.collect(client, durable)
+        self.assertEqual(durable.used['searches'], 1)
+        self.assertEqual(self.state['budgets'][DATE.isoformat()]['searches'], 1)
+        self.assertFalse(self.state.get('searchHistory'))
+        self.assertTrue(all(row['searchedAt'] is None for row in report['coverage'].values()))
+
+    def test_current_missing_then_corrections_then_past_without_supplement(self):
         self.state['pending'] = [{**candidate(), 'reason': 'discovered', 'firstSeenAt': CREATED,
                                   'lastAttemptAt': None, 'attempts': 0}]
         first = self.durable(searches=0)
@@ -718,7 +791,6 @@ class StateTests(Offline):
         self.assertEqual(calls, [
             (DATE, personal.account_search_url(RARAKO['handle'])),
             (DATE, personal.account_search_url(AMU['handle'])),
-            (DATE, personal.account_search_url(extra['handle'])),
             (yesterday, personal.account_search_url(past['handle']))])
 
     def test_night_and_past_work_leave_half_of_real_day_source_capacity_for_today(self):
