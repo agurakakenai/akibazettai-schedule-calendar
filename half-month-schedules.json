@@ -706,7 +706,7 @@
         "lastSearchedAt": "2026-09-08T12:58:25.663529Z",
         "name": "あむ",
         "nextCheckAt": "2026-09-08T18:58:25.663529Z",
-        "reason": "not_schedule",
+        "reason": "source_failed",
         "to": "2026-09-30"
       },
       "あめる": {
@@ -755,7 +755,7 @@
         "lastSearchedAt": "2026-09-10T13:00:30.979012Z",
         "name": "いと",
         "nextCheckAt": "2026-09-10T19:00:30.979012Z",
-        "reason": "paused",
+        "reason": "image_host_paused",
         "to": "2026-09-30"
       },
       "いろは": {
@@ -1290,7 +1290,7 @@
         "lastSearchedAt": null,
         "name": "あむ",
         "nextCheckAt": null,
-        "reason": "not_searched",
+        "reason": "source_failed",
         "to": "2026-10-15"
       },
       "あめる": {
@@ -1339,7 +1339,7 @@
         "lastSearchedAt": null,
         "name": "いと",
         "nextCheckAt": null,
-        "reason": "paused",
+        "reason": "image_host_paused",
         "to": "2026-10-15"
       },
       "いろは": {
@@ -1890,7 +1890,7 @@
     }
   },
   "lastRun": {
-    "status": "paused"
+    "status": "partial"
   },
   "lastSuccessAt": "2026-09-15T09:06:35.318949Z",
   "pending": [
