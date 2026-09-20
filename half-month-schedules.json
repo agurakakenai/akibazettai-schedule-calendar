@@ -171,7 +171,7 @@
       "reason": "source_failed"
     }
   },
-  "checkedAt": "2026-09-20T08:44:43.879978Z",
+  "checkedAt": "2026-09-20T13:38:24.441880Z",
   "complete": false,
   "coverage": {
     "2026-09-01": {
@@ -395,8 +395,8 @@
         "handle": "koebi_zettai",
         "lastSearchedAt": null,
         "name": "こえび",
-        "nextCheckAt": null,
-        "reason": "source_failed",
+        "nextCheckAt": "2026-09-20T19:38:18.447491Z",
+        "reason": "queue_limit",
         "to": "2026-09-15"
       },
       "こん": {
@@ -972,13 +972,19 @@
         "to": "2026-09-30"
       },
       "こえび": {
-        "candidateIds": [],
+        "candidateIds": [
+          "2101549327768543714",
+          "2101437028877664526",
+          "2101343489791508667",
+          "2101343267535417591",
+          "2101342886398935091"
+        ],
         "confirmedIds": [],
         "handle": "koebi_zettai",
-        "lastSearchedAt": null,
+        "lastSearchedAt": "2026-09-20T13:38:18.447473Z",
         "name": "こえび",
-        "nextCheckAt": null,
-        "reason": "source_failed",
+        "nextCheckAt": "2026-09-20T19:38:18.447473Z",
+        "reason": "not_schedule",
         "to": "2026-09-30"
       },
       "こん": {
@@ -1562,13 +1568,19 @@
         "to": "2026-10-15"
       },
       "こえび": {
-        "candidateIds": [],
+        "candidateIds": [
+          "2101549327768543714",
+          "2101437028877664526",
+          "2101343489791508667",
+          "2101343267535417591",
+          "2101342886398935091"
+        ],
         "confirmedIds": [],
         "handle": "koebi_zettai",
-        "lastSearchedAt": null,
+        "lastSearchedAt": "2026-09-20T13:38:18.447484Z",
         "name": "こえび",
-        "nextCheckAt": null,
-        "reason": "not_searched",
+        "nextCheckAt": "2026-09-20T19:38:18.447484Z",
+        "reason": "not_schedule",
         "to": "2026-10-15"
       },
       "こん": {
@@ -1985,6 +1997,11 @@
       "authorScreenName": "koi_zettai",
       "verifiedAt": "2026-09-15T09:05:43.079470Z"
     },
+    "こえび": {
+      "authorId": "1966141137833664513",
+      "authorScreenName": "koebi_zettai",
+      "verifiedAt": "2026-09-20T13:38:22.067611Z"
+    },
     "ちぇる": {
       "authorId": "2075784010819928064",
       "authorScreenName": "cheru2_zettai",
@@ -1999,7 +2016,7 @@
   "lastRun": {
     "status": "no-results"
   },
-  "lastSuccessAt": "2026-09-20T08:44:43.879978Z",
+  "lastSuccessAt": "2026-09-20T13:38:24.441880Z",
   "pending": [
     {
       "authorId": "1954467457902809088",
@@ -2820,6 +2837,71 @@
       "priority": 1,
       "searchCreatedAt": "2026-09-18T23:00:57Z",
       "url": "https://x.com/nono_zettai/status/2101084088354693387"
+    },
+    {
+      "authorId": "1966141137833664513",
+      "authorScreenName": "koebi_zettai",
+      "discoveredAt": "2026-09-20T13:38:18.362775Z",
+      "discoveryHash": "2a079ad90dad6d028896391883f3fc34f22a45c10b7d5237c2f6a030e47a7804",
+      "id": "2101549327768543714",
+      "lastAttemptAt": null,
+      "name": "こえび",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-20T05:49:39Z",
+      "url": "https://x.com/koebi_zettai/status/2101549327768543714"
+    },
+    {
+      "authorId": "1966141137833664513",
+      "authorScreenName": "koebi_zettai",
+      "discoveredAt": "2026-09-20T13:38:18.362775Z",
+      "discoveryHash": "2a079ad90dad6d028896391883f3fc34f22a45c10b7d5237c2f6a030e47a7804",
+      "id": "2101437028877664526",
+      "lastAttemptAt": null,
+      "name": "こえび",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-19T22:23:25Z",
+      "url": "https://x.com/koebi_zettai/status/2101437028877664526"
+    },
+    {
+      "authorId": "1966141137833664513",
+      "authorScreenName": "koebi_zettai",
+      "discoveredAt": "2026-09-20T13:38:18.362775Z",
+      "discoveryHash": "2a079ad90dad6d028896391883f3fc34f22a45c10b7d5237c2f6a030e47a7804",
+      "id": "2101343489791508667",
+      "lastAttemptAt": null,
+      "name": "こえび",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-19T16:11:43Z",
+      "url": "https://x.com/koebi_zettai/status/2101343489791508667"
+    },
+    {
+      "authorId": "1966141137833664513",
+      "authorScreenName": "koebi_zettai",
+      "discoveredAt": "2026-09-20T13:38:18.362775Z",
+      "discoveryHash": "2a079ad90dad6d028896391883f3fc34f22a45c10b7d5237c2f6a030e47a7804",
+      "id": "2101343267535417591",
+      "lastAttemptAt": null,
+      "name": "こえび",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-19T16:10:50Z",
+      "url": "https://x.com/koebi_zettai/status/2101343267535417591"
+    },
+    {
+      "authorId": "1966141137833664513",
+      "authorScreenName": "koebi_zettai",
+      "discoveredAt": "2026-09-20T13:38:18.362775Z",
+      "discoveryHash": "2a079ad90dad6d028896391883f3fc34f22a45c10b7d5237c2f6a030e47a7804",
+      "id": "2101342886398935091",
+      "lastAttemptAt": null,
+      "name": "こえび",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-19T16:09:19Z",
+      "url": "https://x.com/koebi_zettai/status/2101342886398935091"
     }
   ],
   "receipts": {
@@ -3793,6 +3875,29 @@
         "observedAt": "2026-09-12T12:16:31.979583Z",
         "payloadHash": "10c4e0d7a65b2ab8bbcb8ade81c7df493d49d2449cdd80d582ec4ebc54edacfd",
         "url": "https://x.com/emi_zettai/status/2098596368181047438"
+      },
+      "status": "negative"
+    },
+    "ff65d7a830f016635fe17f60d3c8fda988b58433c37a5dcb0f12e4ffa9d52f59": {
+      "checkedAt": "2026-09-20T13:38:24.424623Z",
+      "imageHashes": [],
+      "reason": "not_schedule",
+      "requestHash": "e02597a4efef065162d262e41f0ba8fac5cb576f7bb41f8d4fba3b9492982a54",
+      "source": {
+        "authorId": "1966141137833664513",
+        "authorScreenName": "koebi_zettai",
+        "bodyHash": "0d8d9dbf6faaa03f6a7f0246d02aa375956277d58a564f0262d91a6a0cc48507",
+        "createdAt": "2026-09-20T11:18:04Z",
+        "discoveryHash": "2a079ad90dad6d028896391883f3fc34f22a45c10b7d5237c2f6a030e47a7804",
+        "editTweetIds": [
+          "2101631977401225670"
+        ],
+        "id": "2101631977401225670",
+        "media": [],
+        "name": "こえび",
+        "observedAt": "2026-09-20T13:38:22.067611Z",
+        "payloadHash": "40925235d6f5625bea61a9263b7089a24ad03d42a12b3857000cf2b0e4a5acbd",
+        "url": "https://x.com/koebi_zettai/status/2101631977401225670"
       },
       "status": "negative"
     }
