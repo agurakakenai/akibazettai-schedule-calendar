@@ -18,6 +18,9 @@ import urllib.request
 
 LIMIT = 1_000_000_000  # micro-JPY; 1,000 JPY
 JST = dt.timezone(dt.timedelta(hours=9))
+MONTH_LIMIT_OVERRIDES = {
+    '2026-09': (dt.datetime(2026, 9, 23, 8, 48, tzinfo=JST), 1_500_000_000),
+}
 PRICE_VERSION = 'azure-retail-jpy-2026-09-13-write4'
 PRICE_SOURCE = 'https://prices.azure.com/api/retail/prices'
 MODEL_SOURCE = 'https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure'
@@ -62,6 +65,11 @@ def digest(value):
 def month(now):
     require(isinstance(now, dt.datetime) and now.tzinfo is not None)
     return now.astimezone(JST).strftime('%Y-%m')
+
+
+def effective_limit(now):
+    override = MONTH_LIMIT_OVERRIDES.get(month(now))
+    return override[1] if override and now >= override[0] else LIMIT
 
 
 def empty():
@@ -253,7 +261,8 @@ def timestamp(value):
 
 def balance(state, now, exclude=None):
     period = month(now)
-    result = {'month': period, 'currency': 'JPY', 'limitMicroJPY': LIMIT,
+    limit = effective_limit(now)
+    result = {'month': period, 'currency': 'JPY', 'limitMicroJPY': limit,
               'openingProvisionalMicroJPY': 0, 'tokenPricedMicroJPY': 0, 'reservedMicroJPY': 0,
               'reconciledMicroJPY': 0,
               'utcBoundaryHoldMicroJPY': 0,
@@ -316,7 +325,7 @@ def balance(state, now, exclude=None):
         for day in set(local_days) | set(reported) if day > through)
     result['reconciledMicroJPY'] += result['utcBoundaryHoldMicroJPY']
     spent = result['reconciledMicroJPY']
-    result['availableMicroJPY'] = max(0, LIMIT - spent - result['reservedMicroJPY'])
+    result['availableMicroJPY'] = max(0, limit - spent - result['reservedMicroJPY'])
     result['reason'] = ('monthly_usage_inconsistent' if result['inconsistentUsageRecords'] else
                         'monthly_cost_unknown' if result['unknownRecords'] else
                         'monthly_budget_exhausted' if not result['availableMicroJPY'] else 'ok')
@@ -328,7 +337,7 @@ def balance(state, now, exclude=None):
         result['azureAgeSeconds'] = max(0, int((now - timestamp(last['fetchedAt'])).total_seconds()))
         if last['month'] == period:
             result['azurePreTaxMicroJPY'] = last['preTaxMicroJPY']
-            result['azureRemainingMicroJPY'] = max(0, LIMIT - last['preTaxMicroJPY'])
+            result['azureRemainingMicroJPY'] = max(0, limit - last['preTaxMicroJPY'])
     if result['reason'] != 'ok':
         result['availableMicroJPY'] = 0
     return result
