@@ -684,6 +684,37 @@ class PersistenceTests(unittest.TestCase):
             return collector.run(args or self.args(), self.snapshot, self.curated,
                                  client or FakeClient(), clock=lambda: NOW, **kwargs)
 
+    def test_scoped_correction_cli_queries_only_the_requested_official_day(self):
+        client = FakeClient(searches=[[TID]])
+        self.assertEqual(self.run_collector(self.args('--correction-date', END.isoformat()), client), 0)
+        self.assertEqual(client.source_calls, [collector.correction_search_url(END)])
+        self.assertEqual(client.calls, [TID])
+        saved = collector.load_snapshot(self.snapshot)
+        self.assertEqual(saved['lastRun']['dateFrom'], END.isoformat())
+        self.assertEqual(saved['lastRun']['dateTo'], END.isoformat())
+        again = FakeClient(searches=[[TID]])
+        self.assertEqual(self.run_collector(self.args('--correction-date', END.isoformat()), again), 0)
+        self.assertEqual(again.calls, [])
+
+    def test_correction_scope_rejects_future_old_or_watch_requests_before_source(self):
+        for extra in [
+            ['--correction-date', (END + dt.timedelta(days=1)).isoformat()],
+            ['--correction-date', (END - dt.timedelta(days=7)).isoformat()],
+            ['--correction-date', END.isoformat(), '--watch'],
+        ]:
+            client = FakeClient()
+            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, 'invalid_correction_date'):
+                self.run_collector(self.args(*extra), client)
+            self.assertEqual(client.source_calls, [])
+            self.assertEqual(client.calls, [])
+
+    def test_correction_transport_allowlist_is_exact_and_bounded(self):
+        client = collector.PublicClient(clock=lambda: NOW, correction_dates=[END])
+        self.assertEqual(client.search_urls, (*collector.SEARCH_URLS, collector.correction_search_url(END)))
+        for dates in [[END, START], [END + dt.timedelta(days=1)], [END - dt.timedelta(days=7)]]:
+            with self.subTest(dates=dates), self.assertRaisesRegex(ValueError, 'invalid_correction_date'):
+                collector.PublicClient(clock=lambda: NOW, correction_dates=dates)
+
     def run_child(self, body):
         code = (
             "import importlib.util, pathlib, sys\n"

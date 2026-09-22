@@ -2062,7 +2062,7 @@ class CloudTests(unittest.TestCase):
             'observedAt': '2026-09-08T00:00:00Z'}
         collector.atomic_json(path, state)
         self.assertEqual(cloud.recovery_allocation(path, '12345-1', now),
-                         {'personal': None, 'official': 3, 'schedule': 1})
+                         {'personal': None, 'official': 3, 'schedule': None})
 
     def test_eight_official_slots_keep_azure_without_personal_or_half_month_collection(self):
         module, seed = self.personal_seed()
@@ -2153,7 +2153,7 @@ class CloudTests(unittest.TestCase):
                        {'GITHUB_STEP_SUMMARY': str(summary)})
         text = summary.read_text(encoding='utf8')
         for value in ('pbs.twimg.com', '2026-09-16T08:59:18Z', 'HTTP=401',
-                      'this-run HTTP=0', 'pending=252', 'status=paused',
+                      'shared run/chain HTTP (cumulative across continuation)=0', 'pending=252', 'status=paused',
                       'Active host stop', 'deployment success is not acquisition success'):
             self.assertIn(value, text)
         self.assertIn('::warning::Source acquisition', output.getvalue())
@@ -2216,6 +2216,35 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(actual_environment['AZURE_OPENAI_API_KEY'], 'OFFLINE_SENTINEL')
         self.assertEqual(child.call_args.kwargs['timeout'], 900)
 
+    def test_finite_half_month_child_enables_cycle_without_a_one_request_ceiling(self):
+        environment = {
+            **self.environment, 'CLOUD_COLLECTION_SHARED': 'true',
+            'CLOUD_COLLECTION_SOURCE_ENABLED': 'true', 'CLOUD_COLLECTION_RUN_ID': '12345-1',
+            'CLOUD_COLLECTION_CATCH_UP': 'true', 'CLOUD_COLLECTION_HALF_ALLOCATION': '1',
+            'SCHEDULE_EVIDENCE_CACHE': str(self.base / '_private-evidence' / 'cache.bin'),
+            'SCHEDULE_EVIDENCE_KEY': 'OFFLINE_CACHE_KEY_SENTINEL'}
+        with mock.patch.object(cloud, 'child_process', return_value=mock.Mock(returncode=0)) as child:
+            cloud.invoke_half_month_collector(self.root, self.root, self.root / 'report.json', environment)
+            argv = child.call_args.args[0]
+            self.assertIn('--cycle', argv)
+            self.assertIn('--catch-up', argv)
+            self.assertEqual(argv[argv.index('--evidence-cache') + 1], environment['SCHEDULE_EVIDENCE_CACHE'])
+            self.assertNotIn(environment['SCHEDULE_EVIDENCE_KEY'], repr(argv))
+            passed = child.call_args.kwargs['environment']
+            self.assertEqual(passed['SCHEDULE_EVIDENCE_KEY'], environment['SCHEDULE_EVIDENCE_KEY'])
+            self.assertNotIn('GH_TOKEN', passed)
+            self.assertEqual(child.call_args.kwargs['timeout'], 1500)
+            self.assertEqual(argv[argv.index('--max-runtime-seconds') + 1], '1110')
+            self.assertNotIn('SCHEDULE_EVIDENCE_KEY', cloud.safe_environment(environment, azure=True))
+            self.assertEqual(argv[argv.index('--max-images') + 1], '4')
+            for missing in ('SCHEDULE_EVIDENCE_CACHE', 'SCHEDULE_EVIDENCE_KEY'):
+                child.reset_mock()
+                with self.subTest(missing=missing), self.assertRaisesRegex(
+                        cloud.CloudError, 'missing_half_month_evidence_cache'):
+                    cloud.invoke_half_month_collector(
+                        self.root, self.root, self.root / 'report.json',
+                        {key: value for key, value in environment.items() if key != missing})
+                child.assert_not_called()
         self.assertIn('-I', argv)
         self.assertIn('-B', argv)
 
@@ -2877,6 +2906,323 @@ class CloudTests(unittest.TestCase):
                 self.assertRaisesRegex(cloud.CloudError, 'missing_ai_usage'):
             cloud.invoke_personal_collector(self.root, self.root, self.root / 'report.json', environment)
         child.assert_not_called()
+
+    def half_cycle_fixture(self):
+        import base64
+        module, clock = self.finite_personal_fixture()
+        clock[0] = dt.datetime(2026, 10, 1, 0, 30, tzinfo=cloud.JST)
+        self.bare_commit({cloud.HALF_MONTH: cloud.load_half_month_state().empty_state()})
+        self.environment.update(
+            HALF_MONTH_SCHEDULE_ENABLED='true',
+            SCHEDULE_EVIDENCE_CACHE=str(self.base / '_private-evidence' / 'cache.bin'),
+            SCHEDULE_EVIDENCE_KEY=base64.b64encode(b'T' * 32).decode())
+        self.personal_mode('schedule')
+        return module, clock
+
+    def half_slot(self, when='2026-10-01T00:30:00+09:00', cron='30 15 * * *'):
+        at = dt.datetime.fromisoformat(when)
+        self.environment.update(
+            GITHUB_EVENT_NAME='schedule', RUN_CREATED_AT=collector.iso(at),
+            COLLECTION_KIND='half-month', COLLECTION_SLOT=collector.iso(at),
+            COLLECTION_SLOT_ID='half-month:' + at.isoformat(timespec='minutes'),
+            COLLECTION_DATE=at.date().isoformat())
+        event = json.loads(self.event_path.read_bytes())
+        event['schedule'] = cron
+        self.event_path.write_text(json.dumps(event), encoding='utf-8')
+
+    def half_cycle_child(self, *, complete=False):
+        def invoke(root, state, report, environment):
+            snapshot = cloud.validate_half_month(state / cloud.HALF_MONTH)[0]
+            previous = snapshot.get('collection')
+            if previous and cloud.unfinished_half_month(snapshot):
+                self.assertEqual(environment['CLOUD_COLLECTION_HALF_RESUME'], 'true')
+                self.assertEqual(environment['CLOUD_COLLECTION_HALF_CYCLE_ID'], previous['chainId'])
+                self.assertEqual(environment['COLLECTION_DATE'], previous['serviceDate'])
+                self.assertEqual(environment['CLOUD_COLLECTION_RUN_ID'], previous['chainId'])
+            else:
+                self.assertNotIn('CLOUD_COLLECTION_HALF_RESUME', environment)
+            progress = previous or {
+                'chainId': environment['CLOUD_COLLECTION_RUN_ID'], 'names': ['あむ', 'こい'],
+                'periods': [['2026-10-01', '2026-10-15']], 'cursor': 0, 'nextAt': None,
+                'reason': 'processing', 'ready': False}
+            progress.update(cursor=2 if complete else 1, ready=not complete,
+                            reason='complete' if complete else 'time_limit')
+            snapshot.update(collection=progress, lastRun={'status': 'no-new' if complete else 'partial'})
+            collector.atomic_json(state / cloud.HALF_MONTH, snapshot)
+            code = 0 if complete else 2
+            collector.atomic_json(report, {
+                'component': 'schedule', 'status': snapshot['lastRun']['status'], 'exitCode': code,
+                'requests': {'searches': 1, 'posts': 0, 'images': 0}, 'analysisRequests': 0,
+                'continuation': progress})
+            return code
+        return invoke
+
+    def test_schedule_checkpoint_restore_stale_normal_resume_and_duplicate_slot_across_month(self):
+        module, clock = self.half_cycle_fixture()
+        self.half_slot()
+        with mock.patch.object(cloud, 'invoke_half_month_collector', side_effect=self.half_cycle_child()), \
+                mock.patch.object(cloud, 'invoke_personal_collector') as personal, \
+                mock.patch.object(cloud, 'invoke_collector') as official:
+            first = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                              collector=collector, personal=module)
+            personal.assert_not_called()
+            official.assert_not_called()
+        self.assertEqual((first['continuationMode'], first['continuationReady']), ('schedule', 'true'))
+        saved = self.remote_json(cloud.HALF_MONTH)[0]
+        self.assertEqual(saved['collection']['serviceDate'], '2026-10-01')
+        self.assertEqual(saved['collectionSlots'], ['2026-09-30T15:30:00Z'])
+        self.args.mode = 'restore'
+        del self.environment['SCHEDULE_EVIDENCE_KEY']
+        head = self.git(self.remote, 'rev-parse', cloud.REF)
+        with mock.patch.object(cloud.StateRepository, 'persist') as persist:
+            restored = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                 collector=collector, personal=module)
+            persist.assert_not_called()
+        self.assertEqual((restored['continuationMode'], restored['continuationReady']), ('schedule', 'true'))
+        self.assertEqual(self.git(self.remote, 'rev-parse', cloud.REF), head)
+        other = self.remote_json(cloud.SNAPSHOT)[0]
+        other['checkedAt'] = collector.iso(clock[0])
+        self.bare_commit({cloud.SNAPSHOT: other})
+        self.environment.update(GITHUB_EVENT_NAME='workflow_dispatch', CONTINUATION_STATE=first['stateCommit'])
+        self.personal_mode('schedule')
+        with mock.patch.object(cloud, 'invoke_half_month_collector') as half:
+            stale = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                              collector=collector, personal=module)
+            half.assert_not_called()
+        self.assertEqual(stale['collectionStatus'], 'stale-continuation')
+        self.assertEqual(self.remote_json(cloud.HALF_MONTH)[0], saved)
+        del self.environment['CONTINUATION_STATE']
+        self.environment.update(SCHEDULE_EVIDENCE_KEY='test-key', GITHUB_RUN_ID='12346')
+        clock[0] = dt.datetime(2026, 11, 1, 1, tzinfo=cloud.JST)
+        self.half_slot('2026-11-01T00:30:00+09:00')
+        with mock.patch.object(cloud, 'invoke_half_month_collector',
+                       side_effect=self.half_cycle_child(complete=True)):
+            done = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                             collector=collector, personal=module)
+        self.assertEqual(done['continuationReady'], 'false')
+        saved = self.remote_json(cloud.HALF_MONTH)[0]
+        self.assertEqual(saved['collection']['periods'], [['2026-10-01', '2026-10-15']])
+        self.assertEqual(saved['collection']['serviceDate'], '2026-10-01')
+        self.assertEqual(saved['collection']['chainId'], '12345-1')
+        self.assertEqual(saved['collectionSlots'], ['2026-09-30T15:30:00Z', '2026-10-31T15:30:00Z'])
+        self.half_slot('2026-11-01T00:30:00+09:00')
+        del self.environment['SCHEDULE_EVIDENCE_KEY']
+        with mock.patch.object(cloud, 'invoke_half_month_collector') as half:
+            duplicate = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                  collector=collector, personal=module)
+            half.assert_not_called()
+        self.assertEqual(duplicate['collectionStatus'], 'duplicate-slot')
+        self.assertEqual(self.remote_json(cloud.HALF_MONTH)[0], saved)
+
+    def test_schedule_extra_day_and_october_start_gates_precede_cache_requirements(self):
+        module, clock = self.half_cycle_fixture()
+        del self.environment['SCHEDULE_EVIDENCE_KEY']
+        for when, cron in (
+                ('2026-09-30T00:30:00+09:00', '30 15 * * *'),
+                ('2026-10-29T06:30:00+09:00', '30 21 12,28-31 * *')):
+            self.half_slot(when, cron)
+            clock[0] = dt.datetime.fromisoformat(when)
+            with self.subTest(when=when), mock.patch.object(cloud, 'invoke_half_month_collector') as child:
+                result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                           collector=collector, personal=module)
+                child.assert_not_called()
+            self.assertEqual(result['collectionStatus'], 'not-started')
+            self.assertEqual(result['continuationReady'], 'false')
+        self.half_slot('2026-10-01T06:30:00+09:00', '30 21 12,28-31 * *')
+        self.assert_read_only_failure('missing_half_month_evidence_cache')
+
+    def test_half_cycle_failed_persist_keeps_private_checkpoint_for_recovery(self):
+        module, _ = self.half_cycle_fixture()
+        self.half_slot()
+        original = cloud.StateRepository.persist
+        def persist(repo, *args, **kwargs):
+            if not kwargs.get('leased'):
+                raise cloud.CloudError('offline_half_cas_failed')
+            return original(repo, *args, **kwargs)
+        with mock.patch.object(cloud, 'invoke_half_month_collector', side_effect=self.half_cycle_child()), \
+                mock.patch.object(cloud.StateRepository, 'persist', persist), \
+                self.assertRaisesRegex(cloud.CloudError, 'offline_half_cas_failed'):
+            cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                      collector=collector, personal=module)
+        recovered = cloud.validate_half_month(self.root / 'recovery' / cloud.HALF_MONTH)[0]
+        self.assertEqual(recovered['collection']['reason'], 'time_limit')
+        self.assertTrue(recovered['collection']['ready'])
+        self.assertIn(cloud.LEASE, self.remote_names())
+
+    def test_disabled_scheduled_half_restores_checkpoint_without_lease_cache_or_child(self):
+        module, _ = self.half_cycle_fixture()
+        state = cloud.load_half_month_state().empty_state()
+        state['collection'] = {
+            'chainId': '12344-1', 'serviceDate': '2026-10-01', 'mode': 'schedule',
+            'names': ['あむ', 'こい'], 'periods': [['2026-10-01', '2026-10-15']],
+            'cursor': 1, 'nextAt': None, 'reason': 'time_limit', 'ready': True}
+        self.bare_commit({cloud.HALF_MONTH: state})
+        self.half_slot()
+        self.environment['HALF_MONTH_SCHEDULE_ENABLED'] = 'false'
+        del self.environment['SCHEDULE_EVIDENCE_KEY']
+        del self.environment['SCHEDULE_EVIDENCE_CACHE']
+        before = self.remote_json(cloud.HALF_MONTH)[1]
+        head = self.git(self.remote, 'rev-parse', cloud.REF)
+        with mock.patch.object(cloud.StateRepository, 'persist') as persist, \
+                mock.patch.object(cloud, 'invoke_half_month_collector') as half, \
+                mock.patch.object(cloud, 'invoke_personal_collector') as personal, \
+                mock.patch.object(cloud, 'invoke_collector') as official:
+            result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                       collector=collector, personal=module)
+            for operation in (persist, half, personal, official):
+                operation.assert_not_called()
+        self.assertEqual((result['collectionStatus'], result['continuationReady']), ('disabled', 'false'))
+        self.assertEqual(self.git(self.remote, 'rev-parse', cloud.REF), head)
+        self.assertEqual((self.output.parent / cloud.HALF_MONTH).read_bytes(), before)
+        self.assertEqual(self.remote_json(cloud.HALF_MONTH)[1], before)
+
+    def test_explicit_manual_half_ignores_flag_but_keeps_run_creation_october_gate(self):
+        module, clock = self.half_cycle_fixture()
+        self.environment['HALF_MONTH_SCHEDULE_ENABLED'] = 'false'
+        key = self.environment.pop('SCHEDULE_EVIDENCE_KEY')
+        for created, actual in (
+                ('2026-09-30T15:29:00Z', dt.datetime(2026, 10, 1, 0, 29, tzinfo=cloud.JST)),
+                ('2026-09-30T15:29:00Z', dt.datetime(2026, 10, 2, 1, tzinfo=cloud.JST))):
+            self.environment['RUN_CREATED_AT'] = created
+            clock[0] = actual
+            with self.subTest(actual=actual), mock.patch.object(cloud.StateRepository, 'persist') as persist, \
+                    mock.patch.object(cloud, 'invoke_half_month_collector') as half:
+                result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                           collector=collector, personal=module)
+                persist.assert_not_called()
+                half.assert_not_called()
+            self.assertEqual(result['collectionStatus'], 'not-started')
+        clock[0] = dt.datetime(2026, 10, 1, 0, 30, tzinfo=cloud.JST)
+        self.environment.update(RUN_CREATED_AT='2026-09-30T15:30:00Z', SCHEDULE_EVIDENCE_KEY=key)
+        with mock.patch.object(cloud, 'invoke_half_month_collector',
+                               side_effect=self.half_cycle_child(complete=True)) as half:
+            result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                       collector=collector, personal=module)
+            half.assert_called_once()
+        self.assertEqual(result['persistenceStatus'], 'saved')
+        self.assertEqual(self.remote_json(cloud.HALF_MONTH)[0]['collection']['serviceDate'], '2026-10-01')
+
+    def test_schedule_child_resume_arguments_and_cache_path_are_private_and_bounded(self):
+        environment = {
+            **self.environment, 'CLOUD_COLLECTION_CATCH_UP': 'true',
+            'CLOUD_COLLECTION_SHARED': 'true',
+            'CLOUD_COLLECTION_SOURCE_ENABLED': 'true', 'CLOUD_COLLECTION_RUN_ID': '12345-1',
+            'CLOUD_COLLECTION_HALF_ALLOCATION': '1', 'CLOUD_COLLECTION_HALF_RESUME': 'true',
+            'CLOUD_COLLECTION_HALF_CYCLE_ID': '12345-1', 'COLLECTION_DATE': '2026-10-01',
+            'SCHEDULE_EVIDENCE_CACHE': str(self.base / '_private-evidence' / 'cache.bin'),
+            'SCHEDULE_EVIDENCE_KEY': 'SYNTHETIC-KEY'}
+        cloud.half_month_cache_environment(environment, self.root)
+        with mock.patch.object(cloud, 'child_process', return_value=subprocess.CompletedProcess([], 0)) as child:
+            cloud.invoke_half_month_collector(self.root, self.root, self.root / 'report.json', environment)
+            argv = child.call_args.args[0]
+            for option, value in (('--cycle-id', '12345-1'), ('--service-date', '2026-10-01'),
+                                  ('--max-runtime-seconds', '1110')):
+                self.assertEqual(argv[argv.index(option) + 1], value)
+            self.assertIn('--resume', argv)
+            self.assertEqual(child.call_args.kwargs['timeout'], 1500)
+            self.assertNotIn('SYNTHETIC-KEY', argv)
+            self.assertNotIn('SCHEDULE_EVIDENCE_KEY', cloud.safe_environment(environment, azure=True))
+        for path in (self.root / '_private-evidence' / 'cache.bin', Path('_private-evidence') / 'cache.bin',
+                     self.base / 'cache.bin'):
+            with self.subTest(path=path), self.assertRaisesRegex(cloud.CloudError, 'unsafe_half_month'):
+                cloud.half_month_cache_environment({**environment, 'SCHEDULE_EVIDENCE_CACHE': str(path)}, self.root)
+
+    def test_half_operational_diagnostics_preserve_nulls_and_reject_private_fields(self):
+        module, clock = self.half_cycle_fixture()
+        diagnostic = {
+            'name': 'あむ', 'postId': TID, 'postUrl': f'https://x.com/amu_zettai/status/{TID}',
+            'imageIndex': None, 'failedAt': collector.iso(clock[0]), 'host': None,
+            'httpStatus': None, 'retryAt': None, 'stage': 'cache', 'nextStage': 'held',
+            'reason': 'image_cache_expired'}
+        image_failure = {
+            **diagnostic, 'imageIndex': 1, 'host': 'pbs.twimg.com', 'httpStatus': 403,
+            'stage': 'fetch', 'nextStage': 'fetch', 'reason': 'image_host_paused',
+            'retryAt': collector.iso(clock[0] + dt.timedelta(hours=1))}
+        diagnostics = [diagnostic, image_failure]
+        invoke = self.half_cycle_child(complete=True)
+        def child(root, state, report, environment):
+            code = invoke(root, state, report, environment)
+            value = json.loads(report.read_bytes())
+            value['diagnostics'] = diagnostics
+            collector.atomic_json(report, value)
+            return code
+        with mock.patch.object(cloud, 'invoke_half_month_collector', side_effect=child):
+            result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                       collector=collector, personal=module)
+        self.assertEqual(result['halfMonthDiagnostics'], diagnostics)
+        self.assertIsNone(result['halfMonthDiagnostics'][0]['httpStatus'])
+        self.assertIsNone(result['halfMonthDiagnostics'][0]['host'])
+        self.assertNotIn('diagnostics', self.remote_json(cloud.HALF_MONTH)[0])
+        for field in ('imageUrl', 'text', 'cachePath', 'apiKey'):
+            with self.subTest(field=field), self.assertRaises((ValueError, cloud.CloudError)):
+                cloud.half_month_diagnostics({'diagnostics': [{**diagnostic, field: 'private-sentinel'}]})
+        for field, value in (('postUrl', 'https://pbs.twimg.com/image.png'),
+                             ('host', 'untrusted.invalid'), ('imageIndex', True),
+                             ('imageIndex', 4), ('httpStatus', False), ('failedAt', 'invalid'),
+                             ('reason', 'private-sentinel'), ('nextStage', 'private-sentinel')):
+            with self.subTest(field=field, value=value), self.assertRaises((ValueError, cloud.CloudError)):
+                cloud.half_month_diagnostics({'diagnostics': [{**diagnostic, field: value}]})
+        self.assertEqual(cloud.half_month_diagnostics({}), [])
+
+    def test_manual_both_resumes_old_half_cycle_before_current_personal_without_mixing_dates(self):
+        module, clock = self.half_cycle_fixture()
+        progress = {'chainId': '12344-1', 'serviceDate': '2026-10-01', 'mode': 'both',
+                    'names': ['あむ', 'こい'], 'periods': [['2026-10-01', '2026-10-15']],
+                    'cursor': 1, 'nextAt': None, 'reason': 'time_limit', 'ready': True}
+        state = cloud.load_half_month_state().empty_state()
+        state['collection'] = progress
+        self.bare_commit({cloud.HALF_MONTH: state})
+        clock[0] = dt.datetime(2026, 11, 1, 0, 30, tzinfo=cloud.JST)
+        self.personal_mode('both')
+        calls = []
+        half_child = self.half_cycle_child(complete=True)
+        def half(*args):
+            calls.append('schedule')
+            return half_child(*args)
+        def personal(root, state, report, environment):
+            calls.append('personal')
+            self.assertEqual(environment['COLLECTION_DATE'], '2026-11-01')
+            self.assertEqual(environment['CLOUD_COLLECTION_RUN_ID'], '12345-1')
+            snapshot = module.read_state(state / cloud.PERSONAL)
+            snapshot['lastRun'] = {'status': 'no-new', 'date': '2026-11-01',
+                                   'finishedAt': collector.iso(clock[0]), 'complete': False,
+                                   'requests': {'searches': 0, 'posts': 0}, 'pendingCount': 0}
+            collector.atomic_json(state / cloud.PERSONAL, snapshot)
+            collector.atomic_json(report, {'component': 'personal', 'status': 'no-new', 'exitCode': 0,
+                                          'requests': {'searches': 0, 'posts': 0}})
+            return 0
+        with mock.patch.object(cloud, 'invoke_half_month_collector', side_effect=half), \
+                mock.patch.object(cloud, 'invoke_personal_collector', side_effect=personal), \
+                mock.patch.object(cloud, 'invoke_collector') as official:
+            result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                       collector=collector, personal=module)
+            official.assert_not_called()
+        self.assertEqual(calls, ['schedule', 'personal'])
+        self.assertEqual(result['continuationReady'], 'false')
+        self.assertEqual(self.remote_json(cloud.HALF_MONTH)[0]['collection']['serviceDate'], '2026-10-01')
+
+    def test_half_noop_report_preserves_remaining_queue_but_cannot_self_dispatch(self):
+        module, _ = self.half_cycle_fixture()
+        state = cloud.load_half_month_state().empty_state()
+        progress = {'chainId': '12344-1', 'serviceDate': '2026-10-01', 'mode': 'schedule',
+                    'names': ['あむ', 'こい'], 'periods': [['2026-10-01', '2026-10-15']],
+                    'cursor': 1, 'nextAt': None, 'reason': 'time_limit', 'ready': True}
+        state['collection'] = progress
+        self.bare_commit({cloud.HALF_MONTH: state})
+        def defer(root, state, report, environment):
+            snapshot = cloud.validate_half_month(state / cloud.HALF_MONTH)[0]
+            snapshot['lastRun'] = {'status': 'budget-exhausted'}
+            collector.atomic_json(state / cloud.HALF_MONTH, snapshot)
+            collector.atomic_json(report, {'component': 'schedule', 'status': 'budget-exhausted', 'exitCode': 2,
+                                          'requests': {'searches': 0, 'posts': 0, 'images': 0, 'analysis': 0}})
+            return 2
+        with mock.patch.object(cloud, 'invoke_half_month_collector', side_effect=defer):
+            result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                       collector=collector, personal=module)
+        self.assertEqual(result['continuationReady'], 'false')
+        saved = self.remote_json(cloud.HALF_MONTH)[0]
+        self.assertEqual(saved['collection'], {**progress, 'reason': 'waiting', 'ready': False})
+        self.assertTrue(cloud.unfinished_half_month(saved))
 
     def test_zero_official_allocation_keeps_scarce_deadline_slot_for_personal(self):
         ledger = cloud.load_analysis_state()

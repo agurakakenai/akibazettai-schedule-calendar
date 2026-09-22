@@ -158,6 +158,7 @@ def safe_environment(environment, *, credentials=False, azure=False):
         and key.upper() not in ('PERSONAL_ANALYSIS_BACKEND', 'APPLY_SAVED_MANIFEST')
         and not key.upper().startswith('CLOUD_COLLECTION_')
         and not key.upper().startswith(('AZURE_COST_', 'ACTIONS_ID_TOKEN_'))
+        and not key.upper().startswith('SCHEDULE_EVIDENCE_')
     }
     if not credentials:
         result.pop('GH_TOKEN', None)
@@ -594,6 +595,7 @@ def scheduled_collection_slot(mode, environment):
         spec.loader.exec_module(slots)
         slot = slots.event_slot(event.get('schedule'), environment.get('RUN_CREATED_AT', ''))
         require(slot['kind'] == ('personal' if mode == 'personal' else 'half-month')
+                and environment.get('COLLECTION_KIND', slot['kind']) == slot['kind']
                 and slot['scheduledAt'] == environment.get('COLLECTION_SLOT')
                 and slot['slotId'] == environment.get('COLLECTION_SLOT_ID')
                 and slot['serviceDate'] == environment.get('COLLECTION_DATE'), 'invalid_collection_slot')
@@ -931,6 +933,8 @@ def invoke_half_month_collector(root, state, report, environment):
     require(environment.get('CLOUD_COLLECTION_SOURCE_ENABLED') == 'true'
             and environment.get('CLOUD_COLLECTION_SHARED') == 'true',
             'missing_half_month_accounting')
+    finite = environment.get('CLOUD_COLLECTION_CATCH_UP') == 'true'
+    child_environment = safe_environment(environment, azure=True)
     argv = [sys.executable, '-I', '-B', str(root / 'tools' / 'collect-half-month-schedules.py'),
             '--once', '--snapshot', str(state / HALF_MONTH),
             '--members', str(root / 'data' / 'members.json'),
@@ -942,9 +946,19 @@ def invoke_half_month_collector(root, state, report, environment):
             '--analysis-limit', environment.get('CLOUD_COLLECTION_HALF_ALLOCATION', '1'),
             '--max-searches', '1', '--max-posts', '1',
             '--max-images', '4', '--report', str(report)]
+    if finite:
+        require(bool(environment.get('SCHEDULE_EVIDENCE_CACHE'))
+                and bool(environment.get('SCHEDULE_EVIDENCE_KEY')), 'missing_half_month_evidence_cache')
+        argv.extend(['--cycle', '--evidence-cache', environment['SCHEDULE_EVIDENCE_CACHE'],
+                     '--max-runtime-seconds', '1110'])
+        if environment.get('COLLECTION_DATE'):
+            argv.extend(['--service-date', environment['COLLECTION_DATE']])
+        if environment.get('CLOUD_COLLECTION_HALF_RESUME') == 'true':
+            argv.extend(['--resume', '--cycle-id', environment['CLOUD_COLLECTION_HALF_CYCLE_ID']])
+        child_environment['SCHEDULE_EVIDENCE_KEY'] = environment['SCHEDULE_EVIDENCE_KEY']
     try:
         process = child_process(
-            argv, cwd=root, environment=safe_environment(environment, azure=True), timeout=900)
+            argv, cwd=root, environment=child_environment, timeout=1500 if finite else 900)
     except (OSError, subprocess.SubprocessError):
         raise CloudError('half_month_process_failed') from None
     return process.returncode
@@ -1313,7 +1327,7 @@ def recovery_allocation(path, run_id, now):
     usage, _ = validate_ai_usage(path)
     ledger = load_analysis_state()
     left = ledger.usage_counts(usage, run_id, now, ledger.CATCHUP_RUN_LIMIT)['remaining']
-    return {'official': 0 if left == 0 else 3, 'personal': left, 'schedule': 0 if left == 0 else 1}
+    return {'official': 0 if left == 0 else 3, 'personal': left, 'schedule': left}
 
 
 def validate_completion(path, status, code, component):
@@ -1333,6 +1347,34 @@ def validate_completion(path, status, code, component):
 
 def validate_personal_completion(path, status, code):
     return validate_completion(path, status, code, 'personal')
+
+
+def half_month_diagnostics(report):
+    rows = report.get('diagnostics', [])
+    require(isinstance(rows, list), 'invalid_half_month_diagnostics')
+    facts = load_half_month_state()
+    fields = ('name', 'postId', 'postUrl', 'imageIndex', 'failedAt', 'host',
+              'httpStatus', 'retryAt', 'stage', 'nextStage', 'reason')
+    stages = ('source', 'cache', 'fetch', 'original', 'detail', 'held', 'done')
+    for row in rows:
+        keys(row, fields, fields)
+        facts.post_identifier(row['postId'])
+        require(isinstance(row['name'], str) and bool(facts.NAME.fullmatch(row['name']))
+                and isinstance(row['postUrl'], str)
+                and bool(re.fullmatch(r'https://x\.com/[A-Za-z0-9_]{1,15}/status/' +
+                                      re.escape(row['postId']), row['postUrl']))
+                and row['host'] in (None, 'pbs.twimg.com', 'cdn.syndication.twimg.com', 'search.yahoo.co.jp')
+                and row['stage'] in stages and row['nextStage'] in stages
+                and isinstance(row['reason'], str) and row['reason'] in facts.REASONS,
+                'invalid_half_month_diagnostics')
+        for field, minimum, maximum in (('imageIndex', 0, 3), ('httpStatus', 100, 599)):
+            if row[field] is not None:
+                integer(row[field], minimum, maximum)
+        facts.timestamp(row['failedAt'])
+        if row['retryAt'] is not None:
+            facts.timestamp(row['retryAt'])
+    scan_private(rows)
+    return copy.deepcopy(rows)
 
 
 def validate_personal_continuation(state, acquisition):
@@ -1374,6 +1416,38 @@ def restored_personal_continuation(personal, usage, source, now, collector):
     return mode, True
 
 
+def unfinished_half_month(state):
+    progress = (state or {}).get('collection')
+    if not progress:
+        return False
+    pending = {item['id'] for item in state['pending'] if item['name'] in progress['names']}
+    return (progress.get('cursor', 0) < len(progress['names'])
+            or any(row['sourceId'] in pending and row['stage'] not in ('done', 'held')
+                   for row in state.get('readings', {}).values()))
+
+
+def restored_half_month_continuation(state, usage, source, now, collector):
+    progress = (state or {}).get('collection')
+    if (not progress or not unfinished_half_month(state) or not progress['ready']
+            or progress['reason'] != 'time_limit' or usage is None or source is None):
+        return False
+    if (progress.get('nextAt') and collector.timestamp(progress['nextAt']) > now
+            or usage['paused'] or usage['retryAt'] and collector.timestamp(usage['retryAt']) > now
+            or load_analysis_state().usage_counts(usage, progress['chainId'], now, None)['remaining'] == 0):
+        return False
+    source_module = load_source_state()
+    return not any(source_module.paused_for(source, kind, now) for kind in source_module.KINDS)
+
+
+def half_month_cache_environment(environment, root):
+    require(bool(environment.get('SCHEDULE_EVIDENCE_CACHE'))
+            and bool(environment.get('SCHEDULE_EVIDENCE_KEY')), 'missing_half_month_evidence_cache')
+    path = Path(environment['SCHEDULE_EVIDENCE_CACHE'])
+    require(path.is_absolute() and not path.resolve().is_relative_to(root.resolve())
+            and path.name == 'cache.bin' and path.parent.name == '_private-evidence',
+            'unsafe_half_month_evidence_cache')
+
+
 def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=None):
     environment = dict(os.environ if environment is None else environment)
     require(args.mode in ('restore', 'collect', 'personal', 'both', 'schedule', 'daily-guidance', 'apply-saved', 'cost-sync'),
@@ -1391,9 +1465,16 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
     half_start = dt.datetime(2026, 10, 1, 0, 30, tzinfo=JST)
     slot = (scheduled_collection_slot(args.mode, environment)
             if scheduled and args.mode in ('personal', 'schedule') else None)
-    half_started = (collector.timestamp(slot['scheduledAt']) if slot else collector.utc_now()) >= half_start
-    collect_half_month = half_enabled and half_started and args.mode in ('both', 'schedule')
-    require(args.mode != 'schedule' or half_enabled, 'half_month_not_enabled')
+    half_gate_at = (collector.timestamp(slot['scheduledAt']) if slot else
+                    collector.timestamp(environment['RUN_CREATED_AT'])
+                    if args.mode in ('both', 'schedule') and environment.get('RUN_CREATED_AT')
+                    else collector.utc_now())
+    half_started = half_gate_at >= half_start
+    half_requested = (args.mode == 'schedule' and (not scheduled or half_enabled)
+                      or args.mode == 'both' and half_enabled)
+    collect_half_month = half_requested and half_started
+    if slot and args.mode == 'schedule' and not slot['shouldCollect']:
+        collect_half_month = False
     require(not collect_half_month or enabled, 'half_month_requires_daily_guidance')
     personal_backend = environment.get('PERSONAL_ANALYSIS_BACKEND', 'rules')
     if collect_personal:
@@ -1500,13 +1581,18 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                     personal_state, usage_state if has_ai else None, source_usage_state,
                     collector.utc_now(), collector)
                 result.update(continuationMode=mode, continuationReady='true' if ready else 'false')
+            if (repo.head and result['continuationReady'] != 'true' and half_enabled and half_started
+                    and restored_half_month_continuation(
+                        half_month_state, usage_state, source_usage_state, collector.utc_now(), collector)):
+                result.update(continuationMode='schedule', continuationReady='true')
             # Byte-exact state handoff, and no seed replacement with an empty file.
             copy_pair(state_dir, output.parent, collector, **bundle)
             if personal_state is not None and not has_personal:
                 atomic_bytes(personal_seed, personal_raw)
             return result
-        if args.mode == 'schedule' and not half_started:
-            result.update(collectionStatus='not-started', collectionCode=0, persistenceStatus='unchanged')
+        if args.mode == 'schedule' and (not half_requested or not half_started or slot and not slot['shouldCollect']):
+            result.update(collectionStatus='disabled' if not half_requested else 'not-started',
+                          collectionCode=0, persistenceStatus='unchanged')
             copy_pair(state_dir, output.parent, collector, **bundle)
             return result
         expected = environment.get('CONTINUATION_STATE', '')
@@ -1521,21 +1607,41 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
         finite_personal = collect_personal and has_source and has_ai and (
             enabled or personal_backend == 'azure')
         continuing = bool(finite_personal and progress and (progress['searches'] or progress['postIds']))
-        if expected and args.mode != 'schedule':
-            require(continuing and progress['reason'] == 'time_limit', 'continuation_not_ready')
-        if expected and args.mode == 'schedule':
-            require((half_month_state or {}).get('collection', {}).get('ready'), 'continuation_not_ready')
+        half_progress = (half_month_state or {}).get('collection')
+        half_continuing = collect_half_month and unfinished_half_month(half_month_state)
+        if expected:
+            require((args.mode != 'schedule' and continuing and progress['reason'] == 'time_limit')
+                    or (args.mode in ('both', 'schedule') and half_continuing
+                        and half_progress['ready'] and half_progress['reason'] == 'time_limit'),
+                    'continuation_not_ready')
         if slot and args.mode == 'personal' and slot['slotId'] in personal_state.get('collectionSlots', []) and not continuing:
             result.update(collectionStatus='duplicate-slot', collectionCode=0, persistenceStatus='unchanged')
             copy_pair(state_dir, output.parent, collector, **bundle)
             return result
         if continuing:
             collect_official = collect_half_month = False
+            half_continuing = False
             environment['COLLECTION_DATE'] = progress['serviceDate']
         elif slot:
             environment['COLLECTION_DATE'] = slot['serviceDate']
+        personal_service_date = environment.get(
+            'COLLECTION_DATE', collector.utc_now().astimezone(JST).date().isoformat())
+        if half_continuing:
+            collect_official = False
+            environment['COLLECTION_DATE'] = half_progress.get(
+                'serviceDate', half_progress['periods'][0][0])
+            environment['CLOUD_COLLECTION_HALF_RESUME'] = 'true'
+            environment['CLOUD_COLLECTION_HALF_CYCLE_ID'] = half_progress['chainId']
+        if (slot and args.mode == 'schedule' and not half_continuing
+                and slot['scheduledAt'] in (half_month_state or {}).get('collectionSlots', [])):
+            result.update(collectionStatus='duplicate-slot', collectionCode=0, persistenceStatus='unchanged')
+            copy_pair(state_dir, output.parent, collector, **bundle)
+            return result
         require(not collect_half_month or applying or (has_half_month and has_source),
                 'missing_half_month_state')
+        if collect_half_month:
+            half_month_cache_environment(environment, root)
+            environment.setdefault('COLLECTION_DATE', collector.utc_now().astimezone(JST).date().isoformat())
         if slot and args.mode == 'personal':
             require(finite_personal, 'personal_slot_requires_shared_accounting')
         if args.mode == 'cost-sync':
@@ -1648,6 +1754,7 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
             environment.update(
                 CLOUD_COLLECTION_SHARED='true' if has_ai else 'false',
                 CLOUD_COLLECTION_RUN_ID=(progress['chainId'] if continuing else
+                                         half_progress['chainId'] if half_continuing else
                                          environment['GITHUB_RUN_ID'] + '-' + environment['GITHUB_RUN_ATTEMPT']),
                 CLOUD_COLLECTION_SCHEDULED='true' if scheduled else 'false',
                 CLOUD_COLLECTION_OFFICIAL_AZURE='true' if enabled else 'false',
@@ -1707,8 +1814,10 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                     initial_official, initial_requests = copy.deepcopy(canonical), dict(requests)
             def run_half_month():
                 nonlocal half_month_state
+                previous_progress = copy.deepcopy(half_month_state.get('collection'))
                 if catch_up:
-                    environment['CLOUD_COLLECTION_HALF_ALLOCATION'] = str(allocation['schedule'])
+                    # --cycle treats analysis-limit as an enable/disable gate, not a request ceiling.
+                    environment['CLOUD_COLLECTION_HALF_ALLOCATION'] = '0' if allocation['schedule'] == 0 else '1'
                 code = invoke_half_month_collector(
                     root, collected, work / 'half-month-report.json', environment)
                 require(code in (0, 2, 3), 'half_month_local_failure')
@@ -1722,20 +1831,48 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                         'half_month_status_mismatch')
                 report = validate_completion(
                     work / 'half-month-report.json', status, code, 'schedule')
+                result['halfMonthDiagnostics'] = half_month_diagnostics(report)
                 keys(report.get('requests'), ('searches', 'posts', 'images', 'analysis'),
                      ('searches', 'posts', 'images'))
                 for kind in ('searches', 'posts', 'images'):
                     integer(report['requests'][kind], 0)
                 if 'analysis' in report['requests']:
                     integer(report['requests']['analysis'], 0)
+                if 'analysisRequests' in report:
+                    integer(report['analysisRequests'], 0)
                 validate_source_usage(collected / SOURCE_USAGE)
+                progress = half_month_state.get('collection')
+                if 'continuation' in report:
+                    require(progress is not None and report['continuation'] == progress,
+                            'half_month_checkpoint_report_mismatch')
+                    progress.setdefault('serviceDate', environment['COLLECTION_DATE'])
+                    progress.setdefault('mode', args.mode)
+                    require(progress['chainId'] == environment['CLOUD_COLLECTION_RUN_ID'],
+                            'half_month_checkpoint_run_mismatch')
+                else:
+                    require(progress == previous_progress and not any(report['requests'].values())
+                            and not report.get('analysisRequests')
+                            and status in ('budget-exhausted', 'no-new'),
+                            'half_month_checkpoint_report_missing')
+                    if progress:
+                        progress.update(ready=False, reason='waiting')
+                if slot and slot['kind'] == 'half-month':
+                    slots = half_month_state.setdefault('collectionSlots', [])
+                    if slot['scheduledAt'] not in slots:
+                        slots.append(slot['scheduledAt'])
+                        del slots[:-100]
+                collector.atomic_json(collected / HALF_MONTH, half_month_state)
+                validate_half_month_links(
+                    half_month_state, validate_source_usage(collected / SOURCE_USAGE)[0],
+                    validate_ai_usage(collected / AI_USAGE)[0], personal_state)
                 result.update(halfMonthCollectionStatus=status, halfMonthCollectionCode=code)
-                result['halfMonthContinuation'] = report.get('continuation')
+                result['halfMonthContinuation'] = progress
                 registry = load_member_registry().load_registry(root / 'data' / 'members.json')
                 active_names = {member['canonicalName'] for member in registry['members']
                                 if member['membership'] == 'active'}
                 half_facts = load_half_month_state()
-                period = half_facts.discovery_periods(collector.utc_now())[0]
+                period = (progress['periods'][0] if progress
+                          else half_facts.discovery_periods(collector.utc_now())[0])
                 coverage = half_month_state['coverage'].get(period[0], {})
                 result['halfMonthAcquisition'] = {
                     'period': period[0], 'targets': len(active_names),
@@ -1746,6 +1883,10 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
 
             if collect_half_month and catch_up:
                 run_half_month()
+                if half_continuing and collect_personal:
+                    environment['COLLECTION_DATE'] = personal_service_date
+                    environment['CLOUD_COLLECTION_RUN_ID'] = (
+                        environment['GITHUB_RUN_ID'] + '-' + environment['GITHUB_RUN_ATTEMPT'])
             if collect_personal and scheduled and not catch_up and not personal_window_open(
                     collector.utc_now(), scheduled=True):
                 # Do not even construct the personal child after its scheduled cutoff.
@@ -1903,6 +2044,11 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
         continuation = (result.get('halfMonthContinuation') if args.mode == 'schedule'
                         else result.get('acquisition', {}).get('continuation'))
         result['continuationReady'] = 'true' if continuation and continuation['ready'] else 'false'
+        if collect_half_month and restored_half_month_continuation(
+                half_month_state, current_usage, source_state, collector.utc_now(), collector):
+            result.update(continuationReady='true', continuationMode='schedule')
+        elif args.mode == 'schedule':
+            result['continuationReady'] = 'false'
         copy_pair(state_dir, output.parent, collector, **bundle)
         if personal_state is not None and not has_personal:
             atomic_bytes(personal_seed, personal_raw)
@@ -1950,7 +2096,7 @@ def emit(result, environment):
         for component, prefix in (('personal', 'personal'), ('schedule', 'halfMonth')):
             counts = health['requests'][component]
             lines.append(f"\n{component}: status={result.get(prefix + 'CollectionStatus', 'not-run')}; "
-                         f"this-run HTTP={sum(counts.values())}; "
+                         f"shared run/chain HTTP (cumulative across continuation)={sum(counts.values())}; "
                          f"search/post/image={counts['searches']}/{counts['posts']}/{counts['images']}; "
                          f"last successful acquisition={health[prefix + 'LastSuccessAt'] or 'never'}; "
                          f"pending={health[prefix + 'Pending']}.\n")
@@ -2003,6 +2149,22 @@ def emit(result, environment):
         if half:
             lines.append(f"\nHalf-month {half['period']}: {half['searched']}/{half['targets']} searched, "
                          f"{half['confirmed']} confirmed, {half['pending']} pending candidates.\n")
+            continuation = result.get('halfMonthContinuation')
+            if continuation:
+                lines.append(f"\nHalf-month checkpoint: cursor={continuation['cursor']}/"
+                             f"{len(continuation['names'])}; reason={continuation['reason']}; "
+                             f"next={'after successful publication' if continuation['ready'] else continuation.get('nextAt') or 'next scheduled half-month slot; no immediate dispatch'}.\n")
+        with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
+            target.writelines(lines)
+    if environment.get('GITHUB_STEP_SUMMARY') and result.get('halfMonthDiagnostics'):
+        diagnostics = half_month_diagnostics({'diagnostics': result['halfMonthDiagnostics']})
+        lines = ['\n## Unresolved schedule evidence\n',
+                 'No source text, image bytes or private paths are included.\n']
+        for row in diagnostics:
+            lines.append(f"\n- {row['name']}: <{row['postUrl']}>; imageIndex={row['imageIndex']}; "
+                         f"failedAt={row['failedAt']}; host={row['host']}; HTTP={row['httpStatus']}; "
+                         f"retryAt={row['retryAt']}; stage={row['stage']}; "
+                         f"nextStage={row['nextStage']}; reason={row['reason']}.\n")
         with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
             target.writelines(lines)
     if acquisition and not acquisition['complete']:

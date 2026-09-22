@@ -118,16 +118,20 @@ def validate_accounting(state, usage, half_month):
         if receipt_id in imported:
             continue
         analysis = _analysis_for_receipt(state, receipt_id)
-        receipt = (usage or {}).get('receipts', {}).get(receipt_id)
-        _require(isinstance(receipt, dict) and receipt['component'] == 'schedule'
-                 and receipt['requestHash'] == analysis['requestHash']
-                 and receipt['issuedAt'] is not None and receipt['completedAt'] is not None
-                 and receipt['reason'] in ('events', 'schedule'), 'half_month_usage_missing')
-        identity = receipt['identity']
-        _require(identity['model'] == half_month.MODEL
-                 and identity['modelVersion'] == half_month.MODEL_VERSION
-                 and identity['deployment'] == half_month.MODEL,
-                 'half_month_usage_model_mismatch')
+        batch = analysis.get('readingBatch', [analysis])
+        for part in batch:
+            receipt = (usage or {}).get('receipts', {}).get(part['receiptId'])
+            allowed = ('events', 'schedule', 'no_event', 'azure_pending') if 'readingBatch' in analysis else (
+                'events', 'schedule')
+            _require(isinstance(receipt, dict) and receipt['component'] == 'schedule'
+                     and receipt['requestHash'] == part['requestHash']
+                     and receipt['issuedAt'] is not None and receipt['completedAt'] is not None
+                     and receipt['reason'] in allowed, 'half_month_usage_missing')
+            identity = receipt['identity']
+            _require(identity['model'] == half_month.MODEL
+                     and identity['modelVersion'] == half_month.MODEL_VERSION
+                     and identity['deployment'] == half_month.MODEL,
+                     'half_month_usage_model_mismatch')
 
 
 def validate_reanalysis_basis(state, authorization, source, images, half_month, *,
@@ -382,8 +386,13 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
             'issuedAt': proof['issuedAt'], 'importedAt': half_month.stamp(now),
         }
         working = copy.deepcopy(result)
-        half_month.apply_revision(working, amendment['schedules'], source, analysis,
-                                  timing_amendment=authorization, saved_import=(key, imported))
+        if analysis['contract'] == half_month.READING_VERSION:
+            _require(authorization is None, 'schedule_reading_timing_authorization')
+            half_month.apply_reading_revision(
+                working, amendment['schedules'], source, analysis, saved_import=(key, imported))
+        else:
+            half_month.apply_revision(working, amendment['schedules'], source, analysis,
+                                      timing_amendment=authorization, saved_import=(key, imported))
         if timing_only and not any(table.get('workTiming', {}).get('facts')
                                    for table in amendment['schedules']):
             continue
@@ -395,7 +404,8 @@ def apply_amendments(state, entries, usage, half_month, *, schedule, insights, a
             continue
         result = working
         result['checkedAt'] = half_month.stamp(now)
-        pending = analysis.get('timingOnly', {}).get('pendingSlotIds', [])
+        pending = (analysis.get('timingOnly', {}).get('pendingSlotIds', [])
+                   or any(half_month.is_partial(table) for table in amendment['schedules']))
         if not pending:
             result['lastSuccessAt'] = half_month.stamp(now)
         result['lastRun'] = {'status': 'partial' if pending else 'ok'}

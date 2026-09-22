@@ -47,6 +47,16 @@ def main():
             })
             if route['reason']:
                 result['skipReason'] = route['reason']
+        half_enabled = os.environ.get('HALF_MONTH_SCHEDULE_ENABLED', 'false') == 'true'
+        if result['collectionMode'] == 'schedule' and os.environ.get('EVENT_NAME') == 'schedule' and not half_enabled:
+            result.update(collectionMode='restore', skipReason='half_month_collection_disabled')
+        half_requested = (result['collectionMode'] == 'schedule' or
+                          result['collectionMode'] == 'both' and half_enabled)
+        half_started = (half_requested and
+                        slots.timestamp(os.environ.get('RUN_CREATED_AT', '')) >= slots.HALF_MONTH_START)
+        result['halfMonthCacheRequired'] = 'true' if half_started else 'false'
+        if result['collectionMode'] == 'schedule' and not half_started:
+            result.update(collectionMode='restore', skipReason='half_month_automation_not_started')
         if os.environ.get('GITHUB_OUTPUT'):
             with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8', newline='\n') as target:
                 for key, value in result.items():

@@ -13,6 +13,7 @@ UTC = dt.timezone.utc
 JST = dt.timezone(dt.timedelta(hours=9))
 LEGACY_VERSION = 'half-month-schedule-v1'
 VERSION = 'half-month-schedule-v2'
+READING_VERSION = 'half-month-reading-v3'
 TIMING_VERSION = 'half-month-timing-v1'
 MODEL, MODEL_VERSION = 'gpt-5.6-luna', '2026-07-09'
 HEX = re.compile(r'[a-f0-9]{64}\Z')
@@ -32,6 +33,10 @@ REASONS = {
     'known_source', 'search_failed', 'not_due', 'stale_candidate', TIMING_STORAGE_LIMIT_REASON,
     'transient_retry', 'retry_exhausted', 'permanent_failure',
     *CAPACITY_HOLD_REASONS,
+    'image_cache_unconfigured', 'image_cache_expired', 'reading_pending', 'reading_uncertain',
+    'reading_partial', 'reading_outside_period', 'time_limit', 'image_fetch_failed',
+    'source_not_found', 'identity_unknown',
+    'image_cache_invalid',
 }
 PUBLIC_FIELDS = {'schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt', 'schedules', 'lastRun'}
 PRIVATE_FIELDS = {'identityBindings', 'revisions', 'sources', 'pending', 'coverage', 'receipts',
@@ -191,15 +196,18 @@ def validate_period(value):
 
 
 def validate_schedule(value):
-    require_keys(value, SCHEDULE_FIELDS | ({'workTiming'} if isinstance(value, dict)
-                                         and 'workTiming' in value else set()))
+    optional = {'workTiming', 'reading', 'replyToId', 'replyToAuthorId'}
+    require_keys(value, SCHEDULE_FIELDS | (set(value) & optional if isinstance(value, dict) else set()))
     identity(value['name'], value['authorScreenName'], value['authorId'])
     identifier(value['id'])
     if value['url'] != public_url(value['authorScreenName'], value['id']):
         raise ValueError('invalid_schedule_url')
     created = validate_publication(value['id'], value['createdAt'], value['observedAt'])
-    if value['sourceKind'] != 'half-month-schedule':
+    if value['sourceKind'] not in ('half-month-schedule', 'own-reply'):
         raise ValueError('invalid_schedule_source')
+    validate_reply(value)
+    if (value['sourceKind'] == 'own-reply') != ('replyToId' in value):
+        raise ValueError('invalid_schedule_reply')
     start, end = validate_period(value['period'])
     if value['period']['yearBasis'] == 'post-context':
         local = created.astimezone(JST)
@@ -214,11 +222,15 @@ def validate_schedule(value):
         when = day(entry['date'])
         shifts = entry['shifts']
         if (not start <= when <= end or when in seen or not isinstance(shifts, list)
-                or not shifts or len(shifts) > 2
+                or (not shifts and 'reading' not in value) or len(shifts) > 2
                 or any(shift not in ('昼', '夜') for shift in shifts)
                 or len(set(shifts)) != len(shifts)):
             raise ValueError('invalid_schedule_day')
         seen.add(when)
+    if 'reading' in value:
+        validate_reading(value)
+    elif value['sourceKind'] == 'own-reply':
+        raise ValueError('invalid_schedule_reply')
     if 'workTiming' in value:
         timing().validate(value['workTiming'], owner=value,
                           days={row['date']: row['shifts'] for row in days},
@@ -226,11 +238,88 @@ def validate_schedule(value):
     return value
 
 
+def validate_reply(value):
+    present = set(value) & {'replyToId', 'replyToAuthorId'}
+    if present:
+        if len(present) != 2:
+            raise ValueError('invalid_schedule_reply')
+        post_identifier(value['replyToId'])
+        identifier(value['replyToAuthorId'])
+        if value['replyToAuthorId'] != value['authorId'] or int(value['replyToId']) >= int(value['id']):
+            raise ValueError('invalid_schedule_reply')
+
+
+def validate_reading(schedule):
+    reading = schedule['reading']
+    require_keys(reading, ('contract', 'complete', 'days'))
+    if (reading['contract'] != READING_VERSION or type(reading['complete']) is not bool
+            or not isinstance(reading['days'], dict)
+            or set(reading['days']) != {row['date'] for row in schedule['days']}):
+        raise ValueError('invalid_schedule_reading')
+    reply = schedule['sourceKind'] == 'own-reply'
+    if reply and reading['complete']:
+        raise ValueError('schedule_reply_requires_amendment')
+    for row in schedule['days']:
+        fact = reading['days'][row['date']]
+        require_keys(fact, ('weekday', 'qualifier', 'hours', 'evidence', 'transcriptionHash',
+                           'shiftStatus', *(('operation',) if reply else ())))
+        valid_hash(fact['transcriptionHash'])
+        if fact['weekday'] not in (None, *'月火水木金土日'):
+            raise ValueError('invalid_schedule_weekday')
+        if fact['weekday'] is not None and fact['weekday'] != '月火水木金土日'[day(row['date']).weekday()]:
+            raise ValueError('invalid_schedule_weekday')
+        if fact['qualifier'] not in (None, 'long', 'early', 'late', 'all_day'):
+            raise ValueError('invalid_schedule_qualifier')
+        if fact['shiftStatus'] not in ('stated', 'unstated', 'unreadable'):
+            raise ValueError('invalid_schedule_shift_status')
+        cancellation = reply and fact['operation'] == 'cancel'
+        if reply and fact['operation'] not in ('add', 'replace', 'cancel'):
+            raise ValueError('invalid_schedule_operation')
+        if ((not cancellation and bool(row['shifts']) != (fact['shiftStatus'] == 'stated'))
+                or cancellation and (fact['shiftStatus'] == 'unreadable'
+                                     or row['shifts'] and fact['shiftStatus'] != 'stated')
+                or cancellation and (fact['hours'] or fact['qualifier'] is not None)):
+            raise ValueError('invalid_schedule_shift_status')
+        hours = fact['hours']
+        if not isinstance(hours, dict) or set(hours) - {'start', 'end'}:
+            raise ValueError('invalid_schedule_hours')
+        rules = {('long', ('昼',)): ('12:00', '18:00'),
+                 ('early', ('夜',)): ('16:00', '22:00'),
+                 ('late', ('夜',)): ('18:00', '22:00')}
+        expected = rules.get((fact['qualifier'], tuple(row['shifts'])))
+        for key, hour in hours.items():
+            require_keys(hour, ('time', 'basis'))
+            if (hour['basis'] not in ('explicit', 'qualifier-rule-v1')
+                    or not isinstance(hour['time'], str)
+                    or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', hour['time'])
+                    or hour['basis'] == 'qualifier-rule-v1'
+                    and (expected is None or hour['time'] != expected[key == 'end'])):
+                raise ValueError('invalid_schedule_hours')
+        if fact['qualifier'] == 'all_day' and set(row['shifts']) != {'昼', '夜'}:
+            raise ValueError('invalid_schedule_qualifier')
+        region = fact['evidence']
+        require_keys(region, ('imageIndex', 'box', 'imageHash'))
+        index, box = region['imageIndex'], region['box']
+        if index is not None and (type(index) is not int or not 0 <= index < 4):
+            raise ValueError('invalid_schedule_region')
+        if region['imageHash'] is not None:
+            valid_hash(region['imageHash'])
+        if (index is None) != (region['imageHash'] is None):
+            raise ValueError('invalid_schedule_region')
+        if box is not None and (index is None or not isinstance(box, list) or len(box) != 4
+                or any(type(v) not in (int, float) or not 0 <= v <= 1 for v in box)
+                or box[0] >= box[2] or box[1] >= box[3]):
+            raise ValueError('invalid_schedule_region')
+
+
 def validate_candidate(value):
     require_keys(value, ('id', 'url', 'name', 'authorId', 'authorScreenName',
                          'searchCreatedAt', 'discoveredAt', 'discoveryHash', 'priority',
                          'lastAttemptAt', 'nextAttemptAt',
-                         *(('attempts',) if isinstance(value, dict) and 'attempts' in value else ())))
+                         *(tuple(sorted(set(value) & {'attempts', 'replyCandidate'}))
+                           if isinstance(value, dict) else ())))
+    if 'replyCandidate' in value and type(value['replyCandidate']) is not bool:
+        raise ValueError('invalid_schedule_candidate')
     if 'attempts' in value and (type(value['attempts']) is not int or not 0 <= value['attempts'] <= 3):
         raise ValueError('invalid_schedule_candidate_attempts')
     identity(value['name'], value['authorScreenName'], value['authorId'])
@@ -253,7 +342,10 @@ def candidate_key(value):
 def validate_source(value):
     require_keys(value, ('id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt',
                          'observedAt', 'editTweetIds', 'bodyHash', 'payloadHash',
-                         'discoveryHash', 'media'))
+                         'discoveryHash', 'media',
+                         *(sorted(set(value) & {'replyToId', 'replyToAuthorId'})
+                           if isinstance(value, dict) else ())))
+    validate_reply(value)
     identity(value['name'], value['authorScreenName'], value['authorId'])
     if value['url'] != public_url(value['authorScreenName'], value['id']):
         raise ValueError('invalid_schedule_source')
@@ -286,7 +378,9 @@ def validate_source(value):
 def source_key(source):
     validate_source(source)
     # Purpose/model changes must not re-enable an already attempted input.
-    return digest({key: source[key] for key in ('authorId', 'id', 'editTweetIds', 'bodyHash', 'media')})
+    return digest({key: source[key] for key in (
+        'authorId', 'id', 'editTweetIds', 'bodyHash', 'media', 'replyToId', 'replyToAuthorId')
+        if key in source})
 
 
 def validate_analysis(value):
@@ -294,8 +388,9 @@ def validate_analysis(value):
     timing_only = isinstance(value, dict) and value.get('contract') == TIMING_VERSION
     require_keys(value, ('contract', 'model', 'modelVersion', 'promptHash', 'schemaHash',
                          'contextHash', 'requestHash', 'resultHash', 'receiptId', 'analyzedAt', 'images',
-                         *(('timingOnly',) if timing_only else ())))
-    if (value['contract'] not in (LEGACY_VERSION, VERSION, TIMING_VERSION)
+                         *(('timingOnly',) if timing_only else ()),
+                         *(('readingBatch',) if isinstance(value, dict) and 'readingBatch' in value else ())))
+    if (value['contract'] not in (LEGACY_VERSION, VERSION, TIMING_VERSION, READING_VERSION)
             or (value['model'], value['modelVersion']) != (MODEL, MODEL_VERSION)):
         raise ValueError('invalid_schedule_contract')
     for field in ('promptHash', 'schemaHash', 'contextHash', 'requestHash', 'resultHash', 'receiptId'):
@@ -308,6 +403,11 @@ def validate_analysis(value):
             raise ValueError('invalid_schedule_contract_hash')
     if timing_only:
         load_module('half-month-timing.py', 'half_month_timing_contract').validate_analysis_binding(value)
+    if value['contract'] == READING_VERSION:
+        contract = load_module('schedule-azure.py', 'half_month_reading_contract')
+        prompt, schema, _ = contract.contract_parts(READING_VERSION)
+        if (value['promptHash'], value['schemaHash']) != (digest(prompt.encode('utf-8')), digest(schema)):
+            raise ValueError('invalid_schedule_contract_hash')
     timestamp(value['analyzedAt'])
     if not isinstance(value['images'], list) or len(value['images']) > 4:
         raise ValueError('invalid_schedule_images')
@@ -323,8 +423,25 @@ def validate_analysis(value):
             raise ValueError('invalid_schedule_image')
         total_bytes += image['bytes']
         total_pixels += image['width'] * image['height']
-    if total_bytes > 12 * 1024 * 1024 or total_pixels > 40_000_000:
+    if value['contract'] != READING_VERSION and (
+            total_bytes > 12 * 1024 * 1024 or total_pixels > 40_000_000):
         raise ValueError('invalid_schedule_images')
+    if 'readingBatch' in value:
+        batch = value['readingBatch']
+        if (value['contract'] != READING_VERSION or not isinstance(batch, list)
+                or not 2 <= len(batch) <= 256):
+            raise ValueError('invalid_reading_batch')
+        seen = set()
+        for item in batch:
+            if not isinstance(item, dict) or 'readingBatch' in item:
+                raise ValueError('invalid_reading_batch')
+            validate_analysis(item)
+            if (item['contract'] != READING_VERSION or item['images'] != value['images']
+                    or item['requestHash'] in seen):
+                raise ValueError('invalid_reading_batch')
+            seen.add(item['requestHash'])
+        if batch[-1] != {key: item for key, item in value.items() if key != 'readingBatch'}:
+            raise ValueError('invalid_reading_batch')
 
 
 def empty_state():
@@ -341,7 +458,8 @@ def contract_hash(analysis):
 
 
 def core_hash(schedules):
-    return digest([{key: copy.deepcopy(row[key]) for key in sorted(SCHEDULE_FIELDS - {'observedAt'})}
+    return digest([{key: copy.deepcopy(row[key]) for key in sorted(
+        (SCHEDULE_FIELDS - {'observedAt'}) | (set(row) & {'reading', 'replyToId', 'replyToAuthorId'}))}
                    for row in sorted(schedules, key=lambda item: (item['name'], item['period']['from']))])
 
 
@@ -374,7 +492,7 @@ def validate_timing_authorization(value, *, with_import=True):
     native = isinstance(previous, dict) and previous.get('kind') == 'native'
     require_keys(previous, ('contractVersion', 'contractHash', 'analysisReceiptId',
                             'kind' if native else 'importId'))
-    if previous['contractVersion'] not in (LEGACY_VERSION, VERSION, TIMING_VERSION):
+    if previous['contractVersion'] not in (LEGACY_VERSION, VERSION, TIMING_VERSION, READING_VERSION):
         raise ValueError('invalid_schedule_previous_contract')
     for field in ('contractHash', 'analysisReceiptId', *(('importId',) if not native else ())):
         valid_hash(previous[field])
@@ -401,6 +519,38 @@ def _post_order(schedule):
 
 def _pair(schedule):
     return schedule['name'], schedule['period']['from']
+
+
+def is_partial(schedule):
+    return schedule.get('reading', {}).get('complete') is False
+
+
+def partial_projection(state):
+    rows = {}
+    confirmed = {(*_pair(row), row['id']) for row in state['schedules']}
+    for revision in sorted(state['revisions'].values(), key=lambda revision: (
+            timestamp(revision['analysis']['analyzedAt']),
+            timestamp(revision['schedule']['observedAt']), digest(revision))):
+        row = revision['schedule']
+        key = (*_pair(row), row['id'])
+        if is_partial(row) and key not in confirmed:
+            old = rows.get(key)
+            merged = copy.deepcopy(row)
+            if old is not None:
+                days = {item['date']: copy.deepcopy(item) for item in old['days']}
+                evidence = copy.deepcopy(old['reading']['days'])
+                for item in row['days']:
+                    previous = days.get(item['date'])
+                    if (row['sourceKind'] != 'own-reply' and previous is not None
+                            and previous['shifts'] and not item['shifts']):
+                        continue
+                    days[item['date']] = copy.deepcopy(item)
+                    evidence[item['date']] = copy.deepcopy(row['reading']['days'][item['date']])
+                merged['days'] = sorted(days.values(), key=lambda item: item['date'])
+                merged['reading']['days'] = evidence
+            rows[key] = merged
+    return sorted(copy.deepcopy(list(rows.values())),
+                  key=lambda row: (*_post_order(row), *_pair(row)))
 
 
 def _project(selected):
@@ -472,6 +622,10 @@ def select_revisions(state):
     groups, children, authorizations = {}, {}, {}
     for key, revision in revisions.items():
         row = revision['schedule']
+        if is_partial(row):
+            if 'timingAmendment' in revision:
+                raise ValueError('schedule_partial_timing_amendment')
+            continue
         groups.setdefault((*_pair(row), row['id']), []).append(key)
         auth = revision.get('timingAmendment')
         if auth is None:
@@ -629,7 +783,8 @@ def validate_state(value, private=True):
     fields = PUBLIC_FIELDS | PRIVATE_FIELDS if private else PUBLIC_FIELDS
     if private and isinstance(value, dict) and 'savedImports' not in value:
         fields = fields - {'savedImports'}
-    require_keys(value, fields)
+    optional = {'partialSchedules'} | ({'readings', 'collectionSlots', 'collection'} if private else set())
+    require_keys(value, fields | (set(value) & optional if isinstance(value, dict) else set()))
     if type(value['schemaVersion']) is not int or value['schemaVersion'] != 1 or value['complete'] is not False:
         raise ValueError('invalid_schedule_state')
     for key in ('checkedAt', 'lastSuccessAt'):
@@ -646,6 +801,8 @@ def validate_state(value, private=True):
     keys, by_post = set(), {}
     for schedule in value['schedules']:
         validate_schedule(schedule)
+        if is_partial(schedule):
+            raise ValueError('invalid_confirmed_schedule')
         key = (schedule['name'], schedule['period']['from'])
         if key in keys:
             raise ValueError('duplicate_current_schedule')
@@ -656,8 +813,24 @@ def validate_state(value, private=True):
                 'name', 'url', 'authorId', 'authorScreenName', 'createdAt')) for previous in siblings):
             raise ValueError('inconsistent_schedule_post')
         siblings.append(schedule)
+    partials = value.get('partialSchedules', [])
+    if not isinstance(partials, list) or len(partials) > 240:
+        raise ValueError('invalid_partial_schedules')
+    partial_keys = {(*_pair(schedule), schedule['id']) for schedule in value['schedules']}
+    for schedule in partials:
+        validate_schedule(schedule)
+        key = (*_pair(schedule), schedule['id'])
+        if not is_partial(schedule) or key in partial_keys:
+            raise ValueError('invalid_partial_schedule')
+        partial_keys.add(key)
+        siblings = by_post.setdefault(schedule['id'], [])
+        if len(siblings) >= 2 or any(any(previous[field] != schedule[field] for field in (
+                'name', 'url', 'authorId', 'authorScreenName', 'createdAt')) for previous in siblings):
+            raise ValueError('inconsistent_schedule_post')
+        siblings.append(schedule)
     if not private:
         return value
+    validate_collection_state(value)
     for field in ('identityBindings', 'revisions', 'sources', 'coverage', 'receipts', 'candidateHistory'):
         if not isinstance(value[field], dict):
             raise ValueError('invalid_schedule_state')
@@ -717,11 +890,26 @@ def validate_state(value, private=True):
         if any(source[field] != schedule[field] for field in (
                 'id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt', 'observedAt')):
             raise ValueError('schedule_source_mismatch')
+        if any(source.get(field) != schedule.get(field) for field in ('replyToId', 'replyToAuthorId')):
+            raise ValueError('schedule_source_mismatch')
         validate_analysis(revision['analysis'])
+        if 'reading' in schedule:
+            if (revision['analysis']['contract'] != READING_VERSION
+                    and not (revision['analysis']['contract'] == TIMING_VERSION
+                             and 'timingAmendment' in revision)):
+                raise ValueError('invalid_schedule_contract')
+            for fact in schedule['reading']['days'].values():
+                evidence = fact['evidence']
+                index = evidence['imageIndex']
+                if index is not None and (index >= len(revision['analysis']['images'])
+                        or evidence['imageHash'] != revision['analysis']['images'][index]['sha256']):
+                    raise ValueError('schedule_reading_image_mismatch')
+        elif revision['analysis']['contract'] == READING_VERSION:
+            raise ValueError('invalid_schedule_reading')
         if revision['analysis']['contract'] == TIMING_VERSION and 'timingAmendment' not in revision:
             raise ValueError('schedule_timing_authorization_required')
         if 'workTiming' in schedule:
-            if revision['analysis']['contract'] not in (VERSION, TIMING_VERSION) or any(
+            if revision['analysis']['contract'] not in (VERSION, TIMING_VERSION, READING_VERSION) or any(
                     fact['source'] != timing().source_metadata(source, 'half-month-schedule')
                     for fact in schedule['workTiming']['facts']):
                 raise ValueError('schedule_timing_source_mismatch')
@@ -740,6 +928,8 @@ def validate_state(value, private=True):
             raise ValueError('schedule_revision_missing_or_stale')
     if len(winners) != len(value['schedules']):
         raise ValueError('schedule_current_missing')
+    if partials != partial_projection(value):
+        raise ValueError('schedule_partial_missing_or_stale')
     for receipt, keys in value['receipts'].items():
         valid_hash(receipt)
         if not isinstance(keys, list) or not 1 <= len(keys) <= 2 or len(set(keys)) != len(keys):
@@ -825,6 +1015,89 @@ def validate_state(value, private=True):
     return value
 
 
+def validate_collection_state(value):
+    if 'collection' in value:
+        collection = value['collection']
+        require_keys(collection, {'chainId', 'names', 'periods', 'reason', 'ready'}
+                     | (set(collection) & {'nextAt', 'cursor', 'serviceDate', 'mode'}
+                        if isinstance(collection, dict) else set()))
+        if (not isinstance(collection['chainId'], str)
+                or not re.fullmatch(r'[1-9][0-9]{0,19}-[1-9][0-9]{0,19}', collection['chainId'])
+                or not isinstance(collection['names'], list) or len(collection['names']) > 500
+                or any(not isinstance(name, str) or not NAME.fullmatch(name) for name in collection['names'])
+                or len(set(collection['names'])) != len(collection['names'])
+                or type(collection['ready']) is not bool
+                or collection['reason'] not in ('processing', 'time_limit', 'complete', 'waiting')):
+            raise ValueError('invalid_schedule_collection')
+        periods = collection['periods']
+        if not isinstance(periods, list) or not 1 <= len(periods) <= 4:
+            raise ValueError('invalid_collection_period')
+        for period in periods:
+            if not isinstance(period, list) or len(period) != 2 or tuple(period) != half_period(day(period[0])):
+                raise ValueError('invalid_collection_period')
+        if len({tuple(period) for period in periods}) != len(periods):
+            raise ValueError('invalid_collection_period')
+        if 'serviceDate' in collection:
+            day(collection['serviceDate'])
+        if 'mode' in collection and collection['mode'] not in ('schedule', 'both'):
+            raise ValueError('invalid_schedule_collection_mode')
+        if collection.get('nextAt') is not None:
+            timestamp(collection['nextAt'])
+        if 'cursor' in collection and (type(collection['cursor']) is not int
+                or not 0 <= collection['cursor'] <= len(collection['names'])):
+            raise ValueError('invalid_collection_cursor')
+    if 'collectionSlots' in value:
+        slots = value['collectionSlots']
+        if not isinstance(slots, list) or len(slots) > 100:
+            raise ValueError('invalid_collection_slots')
+        for slot in slots:
+            timestamp(slot)
+    if 'readings' in value:
+        if not isinstance(value['readings'], dict) or len(value['readings']) > 240:
+            raise ValueError('invalid_readings')
+        for key, record in value['readings'].items():
+            valid_hash(key)
+            require_keys(record, {'sourceId', 'cacheKey', 'stage', 'reason', 'nextAt', 'attemptedVariants'}
+                         | ({'failure'} if isinstance(record, dict) and 'failure' in record else set()))
+            post_identifier(record['sourceId'])
+            valid_hash(record['cacheKey'])
+            if record['stage'] not in ('fetch', 'original', 'detail', 'done', 'held'):
+                raise ValueError('invalid_reading_stage')
+            if record['reason'] not in REASONS:
+                raise ValueError('invalid_reading_reason')
+            if record['nextAt'] is not None:
+                timestamp(record['nextAt'])
+            variants = record['attemptedVariants']
+            if not isinstance(variants, list) or len(variants) > 256:
+                raise ValueError('invalid_reading_variants')
+            for variant in variants:
+                valid_hash(variant)
+            if len(set(variants)) != len(variants):
+                raise ValueError('invalid_reading_variants')
+            if 'failure' in record:
+                failure = record['failure']
+                require_keys(failure, ('name', 'postId', 'postUrl', 'imageIndex', 'failedAt',
+                                       'host', 'httpStatus', 'retryAt', 'stage', 'nextStage', 'reason'))
+                stages = ('source', 'cache', 'fetch', 'original', 'detail', 'held', 'done')
+                if (not isinstance(failure['name'], str) or not NAME.fullmatch(failure['name'])
+                        or failure['postId'] != record['sourceId']
+                        or not isinstance(failure['postUrl'], str)
+                        or not re.fullmatch(r'https://x\.com/[A-Za-z0-9_]{1,15}/status/' +
+                                            re.escape(record['sourceId']), failure['postUrl'])
+                        or failure['host'] not in (None, 'pbs.twimg.com', 'cdn.syndication.twimg.com',
+                                                   'search.yahoo.co.jp')
+                        or failure['stage'] not in stages or failure['nextStage'] not in stages
+                        or failure['reason'] not in REASONS
+                        or failure['imageIndex'] is not None and (type(failure['imageIndex']) is not int
+                                                                 or not 0 <= failure['imageIndex'] < 4)
+                        or failure['httpStatus'] is not None and (type(failure['httpStatus']) is not int
+                                                                 or not 100 <= failure['httpStatus'] <= 599)):
+                    raise ValueError('invalid_reading_failure')
+                timestamp(failure['failedAt'])
+                if failure['retryAt'] is not None:
+                    timestamp(failure['retryAt'])
+
+
 def read_state(path, private=True):
     # A missing authoritative state is not an empty migration.
     transport = load_module('azure-openai.py', 'schedule_json')
@@ -836,7 +1109,7 @@ def public_state(state):
     if not isinstance(state, dict):
         raise ValueError('invalid_schedule_state')
     validate_state(state, private=bool(PRIVATE_FIELDS & set(state)))
-    return copy.deepcopy({key: state[key] for key in PUBLIC_FIELDS})
+    return copy.deepcopy({key: state[key] for key in PUBLIC_FIELDS | (set(state) & {'partialSchedules'})})
 
 
 def bind_identity(state, source):
@@ -889,6 +1162,8 @@ def apply_revision(state, schedules, source, analysis, *, timing_amendment=None,
         raise ValueError('schedule_pending')
     for schedule in schedules:
         validate_schedule(schedule)
+        if is_partial(schedule) and analysis['contract'] != READING_VERSION:
+            raise ValueError('invalid_schedule_contract')
     if len({(s['name'], s['period']['from']) for s in schedules}) != len(schedules):
         raise ValueError('duplicate_schedule_period')
     working = copy.deepcopy(state)
@@ -905,7 +1180,8 @@ def apply_revision(state, schedules, source, analysis, *, timing_amendment=None,
                 for prior in prior_keys):
             raise ValueError('timing_selection_source_changed')
     else:
-        key = record_source(working, source, 'valid', 'valid_schedule',
+        key = record_source(working, source, 'valid',
+                            'reading_partial' if any(is_partial(row) for row in schedules) else 'valid_schedule',
                             timestamp(analysis['analyzedAt']), analysis['requestHash'],
                             [image['sha256'] for image in analysis['images']])
     revisions = [{'schedule': copy.deepcopy(schedule), 'sourceKey': key, 'source': copy.deepcopy(source),
@@ -957,7 +1233,10 @@ def apply_revision(state, schedules, source, analysis, *, timing_amendment=None,
                 row['workTiming'] = copy.deepcopy(update['workTiming'])
     else:
         working['schedules'] = sorted(projected.values(), key=lambda item: (item['period']['from'], item['name']))
-    changed = working['schedules'] != state['schedules']
+    if 'partialSchedules' in state or any(is_partial(row) for row in schedules):
+        working['partialSchedules'] = partial_projection(working)
+    changed = (working['schedules'] != state['schedules']
+               or working.get('partialSchedules', []) != state.get('partialSchedules', []))
     validate_state(working)
     if selected_mode:
         load_module('half-month-timing.py', 'half_month_selected_delta').validate_selection_delta(
@@ -965,6 +1244,13 @@ def apply_revision(state, schedules, source, analysis, *, timing_amendment=None,
     state.clear()
     state.update(working)
     return changed
+
+
+def apply_reading_revision(state, schedules, source, analysis, *, saved_import=None):
+    """Persist complete or partial v3 evidence atomically, without replacing confirmed tables."""
+    if analysis.get('contract') != READING_VERSION:
+        raise ValueError('invalid_schedule_contract')
+    return apply_revision(state, schedules, source, analysis, saved_import=saved_import)
 
 
 def population(schedule, insights, accounts, bindings=None, *, registry=None, other_bindings=()):
@@ -1020,24 +1306,52 @@ def population(schedule, insights, accounts, bindings=None, *, registry=None, ot
 
 
 def effective_schedule(manual_schedule_dict, feed, *, registry=None):
-    """date -> shift -> entries; manual attributes win, scheduleSources accumulate."""
+    """Date -> 昼/夜/unassigned -> [{name, scheduleSources, ...}]; manual attributes win."""
     validate_state(feed, private=bool(PRIVATE_FIELDS & set(feed)))
     result = copy.deepcopy(manual_schedule_dict or {})
-    for schedule in feed['schedules']:
+    automatic = {}
+    confirmed = {_pair(row): row for row in feed['schedules']}
+    for schedule in [*feed['schedules'], *sorted(feed.get('partialSchedules', []), key=_post_order)]:
+        current = confirmed.get(_pair(schedule))
+        if (schedule['sourceKind'] == 'own-reply' and current is not None
+                and _post_order(schedule) <= _post_order(current)):
+            continue
         source = {key: copy.deepcopy(schedule[key]) for key in (
             'id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt',
-            'observedAt', 'sourceKind', 'period')}
+            'observedAt', 'sourceKind', 'period', 'replyToId', 'replyToAuthorId') if key in schedule}
         for item in schedule['days']:
+            operation = schedule.get('reading', {}).get('days', {}).get(item['date'], {}).get('operation')
+            if operation in ('replace', 'cancel'):
+                matched = False
+                for shift, rows in automatic.get(item['date'], {}).items():
+                    if operation == 'cancel' and item['shifts'] and shift not in item['shifts']:
+                        continue
+                    for row in list(rows):
+                        if row['name'] != schedule['name']:
+                            continue
+                        bound = row['scheduleSources']
+                        retained = [proof for proof in bound if proof['id'] != schedule['replyToId']
+                                    and proof.get('replyToId') != schedule['replyToId']]
+                        if retained != bound:
+                            matched = True
+                            if retained:
+                                row['scheduleSources'] = retained
+                            else:
+                                rows.remove(row)
+                if operation == 'replace' and not matched:
+                    continue
+            if operation == 'cancel':
+                continue
             reviewed_shifts = {
                 shift for shift, rows in (manual_schedule_dict or {}).get(item['date'], {}).items()
                 if any(row['name'] == schedule['name'] and any(
                     review.get('id') == schedule['id']
                     and review.get('confirmation', {}).get('method') == 'source-confirmed'
                     for review in row.get('halfMonthSources', [])) for row in rows)}
-            for shift in item['shifts']:
-                if reviewed_shifts and shift not in reviewed_shifts:
+            for shift in item['shifts'] or ['unassigned']:
+                if shift != 'unassigned' and reviewed_shifts and shift not in reviewed_shifts:
                     continue
-                rows = result.setdefault(item['date'], {}).setdefault(shift, [])
+                rows = automatic.setdefault(item['date'], {}).setdefault(shift, [])
                 person = next((row for row in rows if row['name'] == schedule['name']), None)
                 if person is None:
                     person = {'name': schedule['name']}
@@ -1045,6 +1359,16 @@ def effective_schedule(manual_schedule_dict, feed, *, registry=None):
                 sources = person.setdefault('scheduleSources', [])
                 if source not in sources:
                     sources.append(copy.deepcopy(source))
+    for date, shifts in automatic.items():
+        for shift, rows in shifts.items():
+            for row in rows:
+                destination = result.setdefault(date, {}).setdefault(shift, [])
+                person = next((person for person in destination if person['name'] == row['name']), None)
+                if person is None:
+                    destination.append(copy.deepcopy(row))
+                else:
+                    sources = person.setdefault('scheduleSources', [])
+                    sources.extend(copy.deepcopy(source) for source in row['scheduleSources'] if source not in sources)
     if registry is not None:
         members = member_registry()
         members.validate_registry(registry)

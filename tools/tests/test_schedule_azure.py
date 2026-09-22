@@ -27,6 +27,27 @@ def http_envelope(value, *, indent=None, ensure_ascii=False):
 
 
 class CalendarTests(base.Offline):
+    def test_v3_contract_does_not_mutate_legacy_wire_or_normalization(self):
+        self.assertEqual(azure.VERSION, facts.VERSION)
+        for version, fields, minimum in [
+                (facts.LEGACY_VERSION, {'day', 'weekday', 'shifts'}, 1),
+                (facts.VERSION, {'day', 'weekday', 'shifts', 'workTiming'}, 1)]:
+            prompt, schema, _ = azure.contract_parts(version)
+            self.assertNotIn('classification', schema['properties'])
+            day = schema['properties']['periods']['items']['properties']['days']['items']
+            self.assertEqual(set(day['required']), fields)
+            self.assertEqual(day['properties']['shifts']['minItems'], minimum)
+            self.assertNotIn('operation', prompt)
+            source, text, _ = base.source()
+            value = base.result([(5, '土', [])], contract_version=version)
+            with self.assertRaises(ValueError):
+                azure.normalize_result(value, source, text, 1, contract_version=version)
+        prompt, schema, _ = azure.contract_parts(azure.READING_VERSION)
+        self.assertIn('classification', schema['properties'])
+        self.assertIn('operation', prompt)
+        self.assertEqual(schema['properties']['periods']['items']['properties']['days']['items']
+                         ['properties']['shifts']['minItems'], 0)
+
     def normalize(self, value, *, created=base.CREATED, text=None, count=1):
         verified, body, _ = base.source(created=created, photos=count)
         return azure.normalize_result(value, verified, body if text is None else text, count)

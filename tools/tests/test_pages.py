@@ -976,7 +976,7 @@ class ProbeTests(WorkspaceTests):
                     'https://' + collector.POST_HOST, code, SECRET, {}, io.BytesIO())
                 result, opener = self.probe(FakeOpener(
                     searches=[[TID, OTHER], [TID]],
-                    posts={TID: failure, OTHER: payload(OTHER, '2026-09-05T08:00:00Z')}))
+                    posts={TID: failure, OTHER: failure}))
                 self.assertEqual(len(opener.calls), 3)
                 self.assertEqual(result['http']['syndication'], {'getCount': 1, 'statuses': [code]})
                 self.assertEqual(result['sourceCount'], 2)

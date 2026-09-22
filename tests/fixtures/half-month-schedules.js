@@ -47,4 +47,21 @@ function halfMonthEvidence({ observedSameDay = false } = {}) {
   };
 }
 
-module.exports = { emptyHalfMonthSchedules, halfMonthEvidence };
+function readingSource(base, { complete = false, facts = {}, operation } = {}) {
+  return {
+    ...JSON.parse(JSON.stringify(base)),
+    reading: {
+      contract: "half-month-reading-v3", complete,
+      days: Object.fromEntries(base.days.map(day => [day.date, {
+        weekday: null, qualifier: null, hours: {},
+        evidence: { imageIndex: 0, imageHash: "a".repeat(64), box: [0, 0, 1, 1] },
+        transcriptionHash: "b".repeat(64),
+        shiftStatus: day.shifts.length ? "stated" : "unstated",
+        ...(operation ? { operation } : {}),
+        ...facts[day.date]
+      }]))
+    }
+  };
+}
+
+module.exports = { emptyHalfMonthSchedules, halfMonthEvidence, readingSource };

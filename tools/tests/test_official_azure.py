@@ -168,6 +168,102 @@ class OfficialAzureTests(unittest.TestCase):
         official.atomic_json(path, state)
         return official.load_snapshot(path)
 
+    def test_explicit_cancellation_roundtrip_does_not_rewrite_roster(self):
+        state = official.empty_snapshot()
+        body = payload()
+        body['text'] = body['text'].replace('みりあちゃんもあとから来るにゃんね~⊂(´ω´⊂)))',
+                                          'みりあちゃんは本日お休みです')
+        output = decision()
+        output['notices'][0]['kind'] = 'absent'
+        with self.usage() as usage:
+            analyzer, opener = self.analyzer(state, usage, output)
+            result, _, code = self.collect(state, analyzer, Source(posts={TID: body}))
+        self.assertEqual(code, 0)
+        self.assertEqual(result['posts'][0]['names'], ['あむ', 'こい'])
+        self.assertEqual(result['posts'][0]['notices'][0]['kind'], 'absent')
+        self.assertNotIn('time', result['posts'][0]['notices'][0])
+        self.assertEqual(self.roundtrip(result)['posts'], result['posts'])
+        self.assertEqual(len(opener.requests), 1)
+
+    def test_cancellation_needs_more_than_a_roster_name_and_cannot_have_time(self):
+        post = official.validate_post(TID, payload(), DAY, DAY, NOW)
+        lines = azure.source_lines(payload()['text'])
+        for output in (decision(name='あむ', ids=(1, 2, 4)), decision(when='18:00')):
+            output['notices'][0]['kind'] = 'absent'
+            with self.subTest(output=output), self.assertRaises(azure.AnalysisFailure):
+                azure.grounded_notices(output, lines, post, NAMES, official.iso(NOW), official.analysis_context())
+
+    def test_same_day_official_reply_uses_verified_parent_before_extraction(self):
+        state = official.empty_snapshot()
+        created = official.timestamp(CREATED) + dt.timedelta(seconds=3)
+        tid = str((int(created.timestamp() * 1000) - 1288834974657) << 22)
+        reply = payload('みりあちゃんは本日お休みです', tid, official.iso(created))
+        reply['in_reply_to_status_id_str'] = TID
+        source = Source({tid: reply, TID: payload()}, ids=[tid, TID])
+        with self.usage() as usage:
+            analyzer, opener = self.analyzer(state, usage)
+            original_open = opener.open
+
+            def reply_result(request, timeout):
+                request_body = json.loads(request.data)
+                context = json.loads(request_body['messages'][1]['content'])
+                opener.result = decision(ids=(1,)) if context['replyTo'] else decision(kind='no_event')
+                if context['replyTo']:
+                    opener.result['notices'][0]['kind'] = 'absent'
+                return original_open(request, timeout)
+
+            opener.open = reply_result
+            result, _, code = self.collect(state, analyzer, source)
+        self.assertEqual(code, 0)
+        self.assertEqual(source.calls, [TID, tid])
+        self.assertEqual(result['posts'][1]['replyTo'], TID)
+        self.assertEqual(result['posts'][1]['names'], [])
+        self.assertEqual(result['posts'][1]['notices'][0]['kind'], 'absent')
+        self.assertEqual(self.roundtrip(result)['posts'], result['posts'])
+        pages = azure.module('official_reply_public_projection', 'pages.py')
+        public = pages.public_projection(result, collector=official)
+        self.assertEqual(public['posts'][1]['replyTo'], TID)
+        self.assertEqual(public['posts'][1]['notices'][0]['kind'], 'absent')
+        self.assertNotIn('officialAnalysis', public)
+        self.assertNotIn('本日お休みです', json.dumps(public, ensure_ascii=False))
+
+    def test_reply_scope_does_not_cross_author_or_service_day(self):
+        parent = official.validate_post(TID, payload(), DAY, DAY, NOW)
+        created = official.timestamp(CREATED) + dt.timedelta(seconds=3)
+        tid = str((int(created.timestamp() * 1000) - 1288834974657) << 22)
+        reply = payload('みりあちゃんは本日お休みです', tid, official.iso(created))
+        reply['in_reply_to_status_id_str'] = TID
+        self.assertIsNone(official.validate_post(tid, reply, DAY, DAY, NOW))
+        invalid_parent = {**parent, 'authorId': '123456789'}
+        with self.assertRaises(official.FetchFailure):
+            official.validate_post(tid, reply, DAY, DAY, NOW, parents=[invalid_parent])
+        invalid_parent = {**parent, 'date': (DAY - dt.timedelta(days=1)).isoformat()}
+        with self.assertRaises(official.FetchFailure):
+            official.validate_post(tid, reply, DAY, DAY, NOW, parents=[invalid_parent])
+
+    def test_correction_query_checks_one_account_and_reuses_known_posts(self):
+        state = self.old_state()
+        created = official.timestamp(CREATED) + dt.timedelta(seconds=3)
+        tid = str((int(created.timestamp() * 1000) - 1288834974657) << 22)
+        reply = payload('みりあちゃんは本日お休みです', tid, official.iso(created))
+        reply['in_reply_to_status_id_str'] = TID
+        source = Source({tid: reply, TID: payload()})
+        output = decision(ids=(1,))
+        output['notices'][0]['kind'] = 'absent'
+        query = official.correction_search_url(DAY)
+        with self.usage() as usage:
+            analyzer, opener = self.analyzer(state, usage, output)
+            result, _, code = self.collect(state, analyzer, source, search_urls=(query,))
+            self.assertEqual(code, 0)
+            self.assertEqual(source.searches, [query])
+            self.assertEqual(source.calls, [tid])
+            again_source = Source({tid: reply, TID: payload()})
+            again, _, code = self.collect(result, analyzer, again_source, search_urls=(query,))
+            self.assertEqual(code, 0)
+            self.assertEqual(again_source.calls, [])
+            self.assertEqual(len(opener.requests), 1)
+            self.assertEqual(again['posts'], result['posts'])
+
     def test_full_unchanged_body_and_dynamic_enum_through_producer_roundtrip(self):
         state = official.empty_snapshot()
         with self.usage() as usage:

@@ -11,6 +11,9 @@ on:
     - cron: "0 22 * * *"
     - cron: "0 1 * * *"
     - cron: "0 3 * * *"
+    - cron: "30 15 * * *"
+    - cron: "30 21 12,28-31 * *"
+    - cron: "30 2 1,13 * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -21,6 +24,7 @@ on:
           - collect
           - personal
           - both
+          - schedule
           - apply-saved
           - cost-sync
           - probe
@@ -72,7 +76,7 @@ jobs:
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'schedule' ||
        (github.event_name == 'workflow_dispatch' &&
-        (inputs.mode == 'collect' || inputs.mode == 'personal' || inputs.mode == 'both' ||
+        (inputs.mode == 'collect' || inputs.mode == 'personal' || inputs.mode == 'both' || inputs.mode == 'schedule' ||
          inputs.mode == 'apply-saved' || inputs.mode == 'cost-sync')))
     runs-on: ubuntu-latest
     permissions:
@@ -97,12 +101,26 @@ jobs:
           REQUESTED_MODE: ${{ inputs.mode }}
           EVENT_SCHEDULE: ${{ github.event.schedule }}
           DAILY_GUIDANCE_ENABLED: ${{ vars.DAILY_GUIDANCE_ENABLED || 'false' }}
+          HALF_MONTH_SCHEDULE_ENABLED: ${{ vars.HALF_MONTH_SCHEDULE_ENABLED || 'false' }}
           GH_TOKEN: ${{ github.token }}
         run: |
           RUN_CREATED_AT="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at)"
           export RUN_CREATED_AT
           python tools/collection-routing.py
           echo "RUN_CREATED_AT=$RUN_CREATED_AT" >> "$GITHUB_ENV"
+      - name: Install declared image collection dependencies
+        if: steps.route.outputs.halfMonthCacheRequired == 'true'
+        run: python -m pip install --disable-pip-version-check -r tools/requirements-collection.txt
+      - name: Restore encrypted schedule evidence outside the checkout
+        if: steps.route.outputs.halfMonthCacheRequired == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SCHEDULE_EVIDENCE_KEY: ${{ secrets.SCHEDULE_EVIDENCE_KEY }}
+        run: |
+          python tools/schedule-cache-artifact.py --output "$RUNNER_TEMP/schedule-evidence.zip"
+          if [[ -f "$RUNNER_TEMP/schedule-evidence.zip" ]]; then
+            python tools/restore-schedule-cache.py --archive "$RUNNER_TEMP/schedule-evidence.zip" --cache-dir "$RUNNER_TEMP/_private-evidence"
+          fi
       - name: Authenticate read-only Azure cost access
         id: azure-cost-login
         if: >-
@@ -133,12 +151,29 @@ jobs:
           DAILY_GUIDANCE_ENABLED: ${{ vars.DAILY_GUIDANCE_ENABLED || 'false' }}
           APPLY_SAVED_MANIFEST: ${{ inputs.saved_manifest }}
           HALF_MONTH_SCHEDULE_ENABLED: ${{ vars.HALF_MONTH_SCHEDULE_ENABLED || 'false' }}
+          SCHEDULE_EVIDENCE_CACHE: ${{ runner.temp }}/_private-evidence/cache.bin
+          SCHEDULE_EVIDENCE_KEY: ${{ steps.route.outputs.halfMonthCacheRequired == 'true' && secrets.SCHEDULE_EVIDENCE_KEY || '' }}
           # Cloud strips Azure configuration from Git, restore, and all non-AI children.
           PERSONAL_ANALYSIS_BACKEND: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both') && 'azure' || 'rules' }}
-          AZURE_OPENAI_API_KEY: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both' || steps.route.outputs.collectionMode == 'daily-guidance' || (steps.route.outputs.collectionMode == 'collect' && vars.DAILY_GUIDANCE_ENABLED == 'true')) && secrets.AZURE_OPENAI_API_KEY || '' }}
-          AZURE_OPENAI_ENDPOINT: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both' || steps.route.outputs.collectionMode == 'daily-guidance' || (steps.route.outputs.collectionMode == 'collect' && vars.DAILY_GUIDANCE_ENABLED == 'true')) && vars.AZURE_OPENAI_ENDPOINT || '' }}
-          AZURE_OPENAI_DEPLOYMENT: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both' || steps.route.outputs.collectionMode == 'daily-guidance' || (steps.route.outputs.collectionMode == 'collect' && vars.DAILY_GUIDANCE_ENABLED == 'true')) && vars.AZURE_OPENAI_DEPLOYMENT || '' }}
+          AZURE_OPENAI_API_KEY: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both' || steps.route.outputs.collectionMode == 'schedule' || steps.route.outputs.collectionMode == 'daily-guidance' || (steps.route.outputs.collectionMode == 'collect' && vars.DAILY_GUIDANCE_ENABLED == 'true')) && secrets.AZURE_OPENAI_API_KEY || '' }}
+          AZURE_OPENAI_ENDPOINT: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both' || steps.route.outputs.collectionMode == 'schedule' || steps.route.outputs.collectionMode == 'daily-guidance' || (steps.route.outputs.collectionMode == 'collect' && vars.DAILY_GUIDANCE_ENABLED == 'true')) && vars.AZURE_OPENAI_ENDPOINT || '' }}
+          AZURE_OPENAI_DEPLOYMENT: ${{ (steps.route.outputs.collectionMode == 'personal' || steps.route.outputs.collectionMode == 'both' || steps.route.outputs.collectionMode == 'schedule' || steps.route.outputs.collectionMode == 'daily-guidance' || (steps.route.outputs.collectionMode == 'collect' && vars.DAILY_GUIDANCE_ENABLED == 'true')) && vars.AZURE_OPENAI_DEPLOYMENT || '' }}
         run: python tools/cloud-collection.py --mode "$COLLECTION_MODE" --output data/observed-shifts.json --recovery-dir _recovery-state
+      - name: Detect encrypted checkpoint for retention
+        id: evidence
+        if: always() && steps.route.outputs.halfMonthCacheRequired == 'true'
+        run: |
+          if [[ -f "$RUNNER_TEMP/_private-evidence/cache.bin" ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Preserve only encrypted schedule evidence
+        if: always() && steps.evidence.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: schedule-evidence-encrypted-v1
+          path: ${{ runner.temp }}/_private-evidence/cache.bin
+          retention-days: 7
+          if-no-files-found: error
       - name: Warn when verified data is published with incomplete collection
         if: >-
           steps.collection.outputs.collectionStatus == 'partial' ||
@@ -170,7 +205,7 @@ jobs:
       (github.event_name == 'push' || github.event_name == 'schedule' ||
        (github.event_name == 'workflow_dispatch' &&
         (inputs.mode == 'deploy' || inputs.mode == 'collect' ||
-         inputs.mode == 'personal' || inputs.mode == 'both' || inputs.mode == 'apply-saved'))) &&
+         inputs.mode == 'personal' || inputs.mode == 'both' || inputs.mode == 'schedule' || inputs.mode == 'apply-saved'))) &&
       (needs.collect.result == 'success' || needs.collect.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
@@ -239,7 +274,7 @@ jobs:
           CONTINUATION_MODE: ${{ needs.build.outputs.continuation_mode }}
         run: |
           [[ "$CHECKPOINT_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          [[ "$CONTINUATION_MODE" == "personal" || "$CONTINUATION_MODE" == "both" ]] || exit 1
+          [[ "$CONTINUATION_MODE" == "personal" || "$CONTINUATION_MODE" == "both" || "$CONTINUATION_MODE" == "schedule" ]] || exit 1
           for STATUS in queued pending waiting; do
             COUNT="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/deploy-pages.yml/runs?branch=main&status=$STATUS&per_page=100" \
               --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID and .event != \"pull_request\")] | length" |
