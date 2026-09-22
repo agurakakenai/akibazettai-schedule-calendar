@@ -1355,6 +1355,25 @@ def validate_personal_continuation(state, acquisition):
     integer(continuation['initialTasks'])
 
 
+def restored_personal_continuation(personal, usage, source, now, collector):
+    progress = (personal or {}).get('recovery')
+    mode = progress.get('mode', 'personal') if progress else 'personal'
+    if (not progress or usage is None or source is None
+            or progress['reason'] != 'time_limit'
+            or not (progress['searches'] or progress['postIds'])
+            or not sum(personal['lastRun'].get('requests', {}).values())):
+        return mode, False
+    ledger = load_analysis_state()
+    if (usage['paused'] or usage['retryAt'] is not None and collector.timestamp(usage['retryAt']) > now
+            or ledger.usage_counts(usage, progress['chainId'], now, ledger.CATCHUP_RUN_LIMIT)['remaining'] == 0):
+        return mode, False
+    source_module = load_source_state()
+    if any(source_module.paused_for(state, kind, now) is not None
+           for state in (personal, source) for kind in ('searches', 'posts')):
+        return mode, False
+    return mode, True
+
+
 def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=None):
     environment = dict(os.environ if environment is None else environment)
     require(args.mode in ('restore', 'collect', 'personal', 'both', 'schedule', 'daily-guidance', 'apply-saved', 'cost-sync'),
@@ -1476,6 +1495,11 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
             'continuationMode': args.mode if args.mode in ('personal', 'both', 'schedule') else 'personal',
         }
         if args.mode == 'restore':
+            if repo.head and has_personal:
+                mode, ready = restored_personal_continuation(
+                    personal_state, usage_state if has_ai else None, source_usage_state,
+                    collector.utc_now(), collector)
+                result.update(continuationMode=mode, continuationReady='true' if ready else 'false')
             # Byte-exact state handoff, and no seed replacement with an empty file.
             copy_pair(state_dir, output.parent, collector, **bundle)
             if personal_state is not None and not has_personal:
@@ -1767,6 +1791,10 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 if 'acquisition' in personal_report:
                     validate_personal_continuation(personal_state, personal_report['acquisition'])
                     result['acquisition'] = personal_report['acquisition']
+                if personal_state.get('recovery'):
+                    result['continuationMode'] = personal_state['recovery'].setdefault(
+                        'mode', args.mode if args.mode in ('personal', 'both') else 'personal')
+                    collector.atomic_json(collected / PERSONAL, personal_state)
                 result.update(personalCollectionStatus=status, personalCollectionCode=code)
             if collect_half_month and not catch_up:
                 run_half_month()

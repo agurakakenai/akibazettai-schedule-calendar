@@ -1483,6 +1483,77 @@ class CloudTests(unittest.TestCase):
                               collector=collector, personal=module)
         self.assertEqual(phases, ['write', 'replay'])
 
+    def test_restore_exposes_canonical_checkpoint_without_collection_or_canonical_writes(self):
+        module, clock = self.finite_personal_fixture()
+        self.personal_slot()
+        with mock.patch.object(cloud, 'invoke_personal_collector', side_effect=self.checkpoint_child(module)):
+            saved = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                      collector=collector, personal=module)
+        self.assertEqual(saved['continuationReady'], 'true')
+        original = self.remote_json(cloud.PERSONAL)[0]
+        self.assertEqual(original['recovery']['mode'], 'personal')
+        self.args.mode = 'restore'
+        def restored(ready, mode='personal'):
+            head = self.git(self.remote, 'rev-parse', cloud.REF)
+            expected = {name: self.remote_json(name)[1]
+                        for name in (cloud.PERSONAL, cloud.AI_USAGE, cloud.SOURCE_USAGE)}
+            with mock.patch.object(cloud.StateRepository, 'persist') as persist, \
+                    mock.patch.object(cloud, 'invoke_collector') as official, \
+                    mock.patch.object(cloud, 'invoke_personal_collector') as personal, \
+                    mock.patch.object(cloud, 'invoke_half_month_collector') as half, \
+                    mock.patch.object(cloud.load_analysis_state().costs, 'sync') as sync:
+                result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                           collector=collector, personal=module)
+                for unused in (persist, official, personal, half, sync):
+                    unused.assert_not_called()
+            self.assertEqual(result['stateCommit'], head.decode().strip())
+            self.assertEqual(result['continuationReady'], 'true' if ready else 'false')
+            self.assertEqual(result['continuationMode'], mode)
+            self.assertEqual(result['persistenceStatus'], 'restored')
+            self.assertEqual(self.git(self.remote, 'rev-parse', cloud.REF), head)
+            for name, raw in expected.items():
+                self.assertEqual((self.output.parent / name).read_bytes(), raw)
+        restored(True)
+        both = copy.deepcopy(original)
+        both['recovery']['mode'] = 'both'
+        self.bare_commit({cloud.PERSONAL: both})
+        restored(True, 'both')
+        legacy = copy.deepcopy(original)
+        del legacy['recovery']['mode']
+        self.bare_commit({cloud.PERSONAL: legacy})
+        restored(True)
+        for reason in ('complete', 'no_progress', 'analysis_held', 'source_paused'):
+            state = copy.deepcopy(original)
+            state['recovery']['reason'] = reason
+            self.bare_commit({cloud.PERSONAL: state})
+            restored(False)
+        state = copy.deepcopy(original)
+        state['recovery']['searches'] = []
+        self.bare_commit({cloud.PERSONAL: state})
+        restored(False)
+        state = copy.deepcopy(original)
+        state['lastRun']['requests'] = {'searches': 0, 'posts': 0}
+        self.bare_commit({cloud.PERSONAL: state})
+        restored(False)
+        usage = self.remote_json(cloud.AI_USAGE)[0]
+        usage['retryAt'] = collector.iso(clock[0] + dt.timedelta(hours=1))
+        self.bare_commit({cloud.PERSONAL: original, cloud.AI_USAGE: usage})
+        restored(False)
+        clock[0] += dt.timedelta(hours=2)
+        restored(True)
+        source = self.remote_json(cloud.SOURCE_USAGE)[0]
+        source['paused'] = {
+            'host': module.POST_HOST, 'reason': 'access_denied', 'httpStatus': 403,
+            'at': collector.iso(clock[0]), 'retryAt': collector.iso(clock[0] + dt.timedelta(hours=1))}
+        source['cooldowns'][module.POST_HOST] = source['paused']['retryAt']
+        self.bare_commit({cloud.SOURCE_USAGE: source})
+        restored(False)
+        clock[0] += dt.timedelta(hours=2)
+        restored(True)
+        usage['money']['opening']['2026-09']['amountMicroJPY'] = 1_000_000_000
+        self.bare_commit({cloud.AI_USAGE: usage})
+        restored(False)
+
     def test_finite_checkpoint_failed_cas_never_emits_ready_and_preserves_recovery(self):
         module, _ = self.finite_personal_fixture()
         self.personal_slot()
@@ -1533,6 +1604,7 @@ class CloudTests(unittest.TestCase):
                                       collector=collector, personal=module)
             half.assert_not_called()
         self.assertEqual(first['continuationMode'], 'both')
+        self.assertEqual(self.remote_json(cloud.PERSONAL)[0]['recovery']['mode'], 'both')
         self.assertNotIn(cloud.HALF_MONTH, self.remote_names())
         clock[0] = dt.datetime(2026, 10, 1, 0, 30, tzinfo=cloud.JST)
         self.environment['GITHUB_RUN_ID'] = '12346'

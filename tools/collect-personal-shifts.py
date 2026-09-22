@@ -783,7 +783,9 @@ def validate_personal_slot(value):
 
 
 def validate_recovery(value):
-    require_keys(value, ('chainId', 'serviceDate', 'targets', 'searches', 'postIds', 'reason', 'nextAt'))
+    require_keys(value, ('chainId', 'serviceDate', 'targets', 'searches', 'postIds', 'reason', 'nextAt'), ('mode',))
+    if value.get('mode', 'personal') not in ('personal', 'both'):
+        raise ValueError('invalid_recovery')
     if not isinstance(value['chainId'], str) or not re.fullmatch(
             r'[1-9][0-9]{0,19}-[1-9][0-9]{0,19}', value['chainId']):
         raise ValueError('invalid_recovery')
