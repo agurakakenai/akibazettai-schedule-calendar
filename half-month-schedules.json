@@ -256,7 +256,7 @@
       "reason": "source_failed"
     }
   },
-  "checkedAt": "2026-09-21T15:58:13.256924Z",
+  "checkedAt": "2026-09-22T08:41:55.418599Z",
   "complete": false,
   "coverage": {
     "2026-09-01": {
@@ -600,8 +600,8 @@
         "handle": "nyana_zettai",
         "lastSearchedAt": null,
         "name": "にゃな",
-        "nextCheckAt": null,
-        "reason": "not_searched",
+        "nextCheckAt": "2026-09-22T14:41:43.645834Z",
+        "reason": "queue_limit",
         "to": "2026-09-15"
       },
       "ねむり": {
@@ -1185,13 +1185,19 @@
         "to": "2026-09-30"
       },
       "にゃな": {
-        "candidateIds": [],
+        "candidateIds": [
+          "2101897371886158079",
+          "2101689348462899402",
+          "2101375560937279635",
+          "2101281627255329213",
+          "2100968592640717173"
+        ],
         "confirmedIds": [],
         "handle": "nyana_zettai",
-        "lastSearchedAt": null,
+        "lastSearchedAt": "2026-09-22T08:41:43.645811Z",
         "name": "にゃな",
-        "nextCheckAt": null,
-        "reason": "not_searched",
+        "nextCheckAt": "2026-09-22T14:41:43.645811Z",
+        "reason": "permanent_failure",
         "to": "2026-09-30"
       },
       "ねむり": {
@@ -1785,13 +1791,19 @@
         "to": "2026-10-15"
       },
       "にゃな": {
-        "candidateIds": [],
+        "candidateIds": [
+          "2101897371886158079",
+          "2101689348462899402",
+          "2101375560937279635",
+          "2101281627255329213",
+          "2100968592640717173"
+        ],
         "confirmedIds": [],
         "handle": "nyana_zettai",
-        "lastSearchedAt": null,
+        "lastSearchedAt": "2026-09-22T08:41:43.645824Z",
         "name": "にゃな",
-        "nextCheckAt": null,
-        "reason": "not_searched",
+        "nextCheckAt": "2026-09-22T14:41:43.645824Z",
+        "reason": "permanent_failure",
         "to": "2026-10-15"
       },
       "ねむり": {
@@ -2104,6 +2116,11 @@
       "authorScreenName": "cheru2_zettai",
       "verifiedAt": "2026-09-13T13:37:29.023828Z"
     },
+    "にゃな": {
+      "authorId": "2084466877821329408",
+      "authorScreenName": "nyana_zettai",
+      "verifiedAt": "2026-09-22T08:41:52.784226Z"
+    },
     "のの": {
       "authorId": "1935204513381765120",
       "authorScreenName": "nono_zettai",
@@ -2116,7 +2133,7 @@
     }
   },
   "lastRun": {
-    "status": "no-results"
+    "status": "partial"
   },
   "lastSuccessAt": "2026-09-21T15:58:13.256924Z",
   "pending": [
@@ -3069,6 +3086,71 @@
       "priority": 1,
       "searchCreatedAt": "2026-09-21T02:28:34Z",
       "url": "https://x.com/ameru_zettai/status/2101861112828559426"
+    },
+    {
+      "authorId": "2084466877821329408",
+      "authorScreenName": "nyana_zettai",
+      "discoveredAt": "2026-09-22T08:41:43.598338Z",
+      "discoveryHash": "f42b9bff8234dcb71163b4a504290b898cad9f4672b5fc30ac9b38d3dbb5768e",
+      "id": "2101897371886158079",
+      "lastAttemptAt": null,
+      "name": "にゃな",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-21T04:52:39Z",
+      "url": "https://x.com/nyana_zettai/status/2101897371886158079"
+    },
+    {
+      "authorId": "2084466877821329408",
+      "authorScreenName": "nyana_zettai",
+      "discoveredAt": "2026-09-22T08:41:43.598338Z",
+      "discoveryHash": "f42b9bff8234dcb71163b4a504290b898cad9f4672b5fc30ac9b38d3dbb5768e",
+      "id": "2101689348462899402",
+      "lastAttemptAt": null,
+      "name": "にゃな",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-20T15:06:02Z",
+      "url": "https://x.com/nyana_zettai/status/2101689348462899402"
+    },
+    {
+      "authorId": "2084466877821329408",
+      "authorScreenName": "nyana_zettai",
+      "discoveredAt": "2026-09-22T08:41:43.598338Z",
+      "discoveryHash": "f42b9bff8234dcb71163b4a504290b898cad9f4672b5fc30ac9b38d3dbb5768e",
+      "id": "2101375560937279635",
+      "lastAttemptAt": null,
+      "name": "にゃな",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-19T18:19:10Z",
+      "url": "https://x.com/nyana_zettai/status/2101375560937279635"
+    },
+    {
+      "authorId": "2084466877821329408",
+      "authorScreenName": "nyana_zettai",
+      "discoveredAt": "2026-09-22T08:41:43.598338Z",
+      "discoveryHash": "f42b9bff8234dcb71163b4a504290b898cad9f4672b5fc30ac9b38d3dbb5768e",
+      "id": "2101281627255329213",
+      "lastAttemptAt": null,
+      "name": "にゃな",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-19T12:05:54Z",
+      "url": "https://x.com/nyana_zettai/status/2101281627255329213"
+    },
+    {
+      "authorId": "2084466877821329408",
+      "authorScreenName": "nyana_zettai",
+      "discoveredAt": "2026-09-22T08:41:43.598338Z",
+      "discoveryHash": "f42b9bff8234dcb71163b4a504290b898cad9f4672b5fc30ac9b38d3dbb5768e",
+      "id": "2100968592640717173",
+      "lastAttemptAt": null,
+      "name": "にゃな",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-18T15:22:01Z",
+      "url": "https://x.com/nyana_zettai/status/2100968592640717173"
     }
   ],
   "receipts": {
@@ -4090,6 +4172,37 @@
         "url": "https://x.com/emi_zettai/status/2098596368181047438"
       },
       "status": "negative"
+    },
+    "da6706cb864bc41f3bd3d76ec401ea2a9dc3c6b5b6a012bbceb3d49bbf1b60a4": {
+      "checkedAt": "2026-09-22T08:41:55.396706Z",
+      "imageHashes": [],
+      "reason": "permanent_failure",
+      "requestHash": "1f6798270b16d9ecffc117ab950db20c0d0d7b239ebce7dba698b015f91da49f",
+      "retry": {
+        "attempts": 1,
+        "lastReason": "azure_invalid_output",
+        "notBefore": "2026-09-22T09:41:55.396784Z",
+        "previousRequests": [
+          "1f6798270b16d9ecffc117ab950db20c0d0d7b239ebce7dba698b015f91da49f"
+        ]
+      },
+      "source": {
+        "authorId": "2084466877821329408",
+        "authorScreenName": "nyana_zettai",
+        "bodyHash": "5ec6d74ba7e8f4da5b6c76fa8401565f7aebb68e379e9e5a7a9b2aef153780cc",
+        "createdAt": "2026-09-21T15:22:27Z",
+        "discoveryHash": "f42b9bff8234dcb71163b4a504290b898cad9f4672b5fc30ac9b38d3dbb5768e",
+        "editTweetIds": [
+          "2102055867567018383"
+        ],
+        "id": "2102055867567018383",
+        "media": [],
+        "name": "にゃな",
+        "observedAt": "2026-09-22T08:41:52.784226Z",
+        "payloadHash": "6ce1d2a2846e44120da6f42a92a6d922b3625f69240d1598b1a1727cd97fbee7",
+        "url": "https://x.com/nyana_zettai/status/2102055867567018383"
+      },
+      "status": "failed"
     },
     "ff65d7a830f016635fe17f60d3c8fda988b58433c37a5dcb0f12e4ffa9d52f59": {
       "checkedAt": "2026-09-20T13:38:24.424623Z",
