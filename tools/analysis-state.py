@@ -18,8 +18,6 @@ import uuid
 
 RUN_LIMIT, DAY_LIMIT, SPACING_SECONDS = 3, 40, 60
 CATCHUP_RUN_LIMIT = 16
-SOURCE_DAY_SEARCH_LIMIT = 120
-SOURCE_DAY_INDIVIDUAL_LIMIT = 80
 JST = dt.timezone(dt.timedelta(hours=9))
 HEX = re.compile(r'[0-9a-f]{64}\Z')
 TOKEN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}\Z')
@@ -128,14 +126,19 @@ def _source_budget(value):
 
 
 def _validate_source_import(receipt):
-    _keys(receipt, ('receiptId', 'date', 'searches', 'posts', 'sourceHash'))
+    if not isinstance(receipt, dict):
+        raise ValueError('invalid_ai_usage')
+    _keys(receipt, ('receiptId', 'date', 'searches', 'posts', 'sourceHash',
+                    *(('images',) if 'images' in receipt else ())))
     _hash(receipt['receiptId'])
     _hash(receipt['sourceHash'])
     _day(receipt['date'])
     _source_budget({key: receipt[key] for key in ('searches', 'posts')})
-    if (receipt['searches'] > SOURCE_DAY_SEARCH_LIMIT or receipt['posts'] > SOURCE_DAY_INDIVIDUAL_LIMIT
-            or receipt['searches'] + receipt['posts'] == 0):
+    if receipt['searches'] + receipt['posts'] == 0:
         raise ValueError('invalid_ai_usage')
+    if 'images' in receipt:
+        if type(receipt['images']) is not int or not 0 <= receipt['images'] <= receipt['posts']:
+            raise ValueError('invalid_ai_usage')
 
 
 def validate_result_attestation(value):

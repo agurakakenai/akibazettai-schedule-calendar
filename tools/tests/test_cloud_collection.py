@@ -1150,18 +1150,20 @@ class CloudTests(unittest.TestCase):
         self.assertEqual((self.output.parent / cloud.PERSONAL).read_bytes(),
                          self.remote_json(cloud.PERSONAL)[1])
 
-    def test_personal_daily_budget_exhaustion_does_not_block_official_success(self):
+    def test_personal_old_daily_quota_does_not_block_collection_or_official_success(self):
         module, seed = self.personal_seed()
         state = module.empty_state()
         module.merge_seed(state, seed)
-        state['budgets']['2026-09-06'] = dict(module.DAILY_LIMITS)
+        state['budgets']['2026-09-06'] = {'searches': 120, 'posts': 80}
         self.seed_branch()
         self.bare_commit({cloud.PERSONAL: state})
         self.personal_mode('both')
         result, calls = self.run_personal_cloud(module)
-        self.assertEqual(calls, [])
-        self.assertEqual(result['personalCollectionStatus'], 'budget-exhausted')
-        self.assertEqual(result['personalCollectionCode'], 2)
+        self.assertEqual([kind for kind, _ in calls], ['search', 'search'])
+        self.assertEqual(result['personalCollectionStatus'], 'no-new')
+        self.assertEqual(result['personalCollectionCode'], 0)
+        self.assertEqual(self.remote_json(cloud.PERSONAL)[0]['budgets']['2026-09-06'],
+                         {'searches': 122, 'posts': 80})
         self.assertEqual(result['officialCollectionStatus'], 'ok')
         self.assertNotIn(cloud.LEASE, self.remote_names())
 
@@ -1633,25 +1635,63 @@ class CloudTests(unittest.TestCase):
         self.assertIn('publication success is separate', summary.read_text(encoding='utf-8'))
         self.assertIn('::warning::', output.getvalue())
 
-    def test_transport_summary_exposes_persistent_host_and_zero_acquisition_after_three_days(self):
+    def test_transport_summary_exposes_persistent_auth_stop_and_zero_acquisition_after_three_days(self):
         summary = self.root / 'summary.txt'
         health = {
-            'hostStops': [{'host': 'pbs.twimg.com', 'reason': 'access_denied', 'httpStatus': 403,
+            'hostStops': [{'host': 'pbs.twimg.com', 'reason': 'access_denied', 'httpStatus': 401,
                            'at': '2026-09-16T08:59:18Z', 'retryAt': '2026-09-16T09:59:18Z'}],
             'requests': {component: {'searches': 0, 'posts': 0, 'images': 0}
                          for component in ('official', 'personal', 'schedule')},
             'personalLastSuccessAt': '2026-09-16T08:00:00Z', 'personalPending': 252,
             'halfMonthLastSuccessAt': '2026-09-13T13:38:21Z', 'halfMonthPending': 58}
+        health['activeHostStops'] = copy.deepcopy(health['hostStops'])
         with contextlib.redirect_stdout(io.StringIO()) as output:
             cloud.emit({'persistenceStatus': 'saved', 'sourceHealth': health,
                         'personalCollectionStatus': 'paused', 'halfMonthCollectionStatus': 'paused'},
                        {'GITHUB_STEP_SUMMARY': str(summary)})
         text = summary.read_text(encoding='utf8')
-        for value in ('pbs.twimg.com', '2026-09-16T08:59:18Z', 'HTTP=403',
+        for value in ('pbs.twimg.com', '2026-09-16T08:59:18Z', 'HTTP=401',
                       'this-run HTTP=0', 'pending=252', 'status=paused',
-                      'expiry does not clear the denial', 'deployment success is not acquisition success'):
+                      'Active host stop', 'deployment success is not acquisition success'):
             self.assertIn(value, text)
         self.assertIn('::warning::Source acquisition', output.getvalue())
+
+    def test_expired_transport_evidence_is_not_reported_as_an_active_stop(self):
+        summary = self.root / 'summary.txt'
+        health = {
+            'hostStops': [{'host': 'pbs.twimg.com', 'reason': 'access_denied', 'httpStatus': 403,
+                           'at': '2026-09-16T08:59:18Z', 'retryAt': '2026-09-16T09:59:18Z'}],
+            'activeHostStops': [],
+            'requests': {component: {'searches': 1, 'posts': 1, 'images': 0}
+                         for component in ('official', 'personal', 'schedule')},
+            'personalLastSuccessAt': '2026-09-19T08:00:00Z', 'personalPending': 0,
+            'halfMonthLastSuccessAt': '2026-09-19T08:00:00Z', 'halfMonthPending': 0}
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            cloud.emit({'persistenceStatus': 'saved', 'sourceHealth': health},
+                       {'GITHUB_STEP_SUMMARY': str(summary)})
+        text = summary.read_text(encoding='utf8')
+        self.assertIn('Expired host stop evidence retained', text)
+        self.assertNotIn('Active host stop:', text)
+        self.assertNotIn('::warning::Source acquisition', output.getvalue())
+
+    def test_saved_source_manifest_accepts_uncapped_counts_and_image_subset_only(self):
+        self.seed_branch()
+        receipt = {'receiptId': 'c' * 64, 'date': '2026-09-06', 'searches': 121,
+                   'posts': 100, 'images': 38, 'sourceHash': 'd' * 64}
+        manifest = self.saved_manifest()
+        manifest['sourceReceipts'] = [receipt]
+        self.saved_mode(manifest)
+        self.assertEqual(cloud.read_saved_manifest(self.environment)['sourceReceipts'], [receipt])
+        for field, values in (('images', (-1, 101, True, 1.5, '38')),
+                              ('posts', (-1, True, 1.5, '100')),
+                              ('searches', (-1, True, 1.5, '121'))):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    invalid = copy.deepcopy(manifest)
+                    invalid['sourceReceipts'][0][field] = value
+                    self.saved_mode(invalid)
+                    with self.assertRaisesRegex(cloud.CloudError, 'invalid_saved_manifest'):
+                        cloud.read_saved_manifest(self.environment)
     def test_half_month_child_is_bounded_headless_and_never_receives_git_credentials(self):
         environment = {
             **self.environment, 'CLOUD_COLLECTION_SHARED': 'true',
@@ -1761,7 +1801,7 @@ class CloudTests(unittest.TestCase):
         before = self.remote_json(cloud.PERSONAL)[0]
         manifest = self.saved_manifest()
         manifest['sourceReceipts'] = [{
-            'receiptId': 'c' * 64, 'date': '2026-09-06', 'searches': 8, 'posts': 6,
+            'receiptId': 'c' * 64, 'date': '2026-09-06', 'searches': 121, 'posts': 100, 'images': 38,
             'sourceHash': 'd' * 64,
         }]
         self.saved_mode(manifest)
@@ -1771,8 +1811,8 @@ class CloudTests(unittest.TestCase):
                 self.args, root=self.root, environment=self.environment, collector=collector, personal=module)
         self.assertEqual(result['collectionStatus'], 'applied-saved')
         self.assertNotIn(cloud.LEASE, self.remote_names())
-        before['budgets']['2026-09-06']['searches'] += 8
-        before['budgets']['2026-09-06']['posts'] += 6
+        before['budgets']['2026-09-06']['searches'] += 121
+        before['budgets']['2026-09-06']['posts'] += 100
         self.assertEqual(self.remote_json(cloud.PERSONAL)[0], before)
         state, raw = self.remote_json(cloud.AI_USAGE)
         self.assertEqual(state['imports']['a' * 64], manifest['usageImports'][0])

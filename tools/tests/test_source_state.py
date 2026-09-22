@@ -84,40 +84,27 @@ class SourceTests(unittest.TestCase):
             ledger.finish(key)
         return key
 
-    def test_catchup_first_pass_fits_fourteen_searches_in_one_real_run(self):
+    def test_finite_requests_can_exceed_old_run_limits_without_replacing_them_with_a_larger_quota(self):
         self.clock = NOW + dt.timedelta(hours=4)
         with self.shared('personal', catch_up=True, personal_path=self.personal_path) as ledger:
-            for index in range(14):
+            for index in range(17):
                 self.reserve(ledger, 'searches', index)
                 self.reserve(ledger, 'posts', index)
-            self.assertEqual(ledger.report()['run']['personal']['searches'], 14)
-            self.assertEqual(ledger.report()['remaining']['posts'], 0)
+            self.assertEqual(ledger.report()['run']['personal']['searches'], 17)
+            self.assertIsNone(ledger.report()['remaining']['posts'])
         with self.shared('schedule', catch_up=True) as ledger:
             self.reserve(ledger, 'searches', 99)
             self.reserve(ledger, 'posts', 99)
-            for index in range(4):
+            for index in range(9):
                 self.reserve(ledger, 'images', index)
-            self.assertEqual(ledger.report()['remaining']['searches'], 0)
+            self.assertIsNone(ledger.report()['remaining']['searches'])
         with self.shared('personal', run_id='next', catch_up=True, personal_path=self.personal_path) as ledger:
             for index in range(14):
                 self.reserve(ledger, 'posts', 100 + index)
-            with self.assertRaises(source.SourceFailure):
-                ledger.check('posts')
-        remaining = source.DAY_INDIVIDUAL_LIMIT - 33
-        for batch in range(4):
-            with self.shared('personal', run_id=f'last-{batch}', catch_up=True,
-                             personal_path=self.personal_path) as ledger:
-                count = min(14, remaining)
-                for index in range(count):
-                    self.reserve(ledger, 'posts', 200 + batch * 20 + index)
-                remaining -= count
-                with self.assertRaises(source.SourceFailure):
-                    ledger.check('posts')
-                report = ledger.report()
-        self.assertEqual(sum(report['day'][name]['posts'] + report['day'][name]['images']
-                             for name in ('personal', 'schedule')), source.DAY_INDIVIDUAL_LIMIT)
+            ledger.check('posts')
+            self.assertIsNone(ledger.report()['remaining']['posts'])
 
-    def test_old_sixty_forty_consumption_is_retained_under_explicit_new_daily_capacity(self):
+    def test_old_sixty_forty_consumption_is_retained_without_daily_quota(self):
         self.clock = NOW + dt.timedelta(hours=4)
         self.personal['budgets']['2026-09-07'] = {'searches': 60, 'posts': 40}
         self.initialize()
@@ -129,25 +116,123 @@ class SourceTests(unittest.TestCase):
             self.assertEqual(ledger.report()['day']['personal'], {'searches': 61, 'posts': 41, 'images': 0})
         self.assertEqual(source.load_state(self.path)['baseline'], baseline)
 
-    def test_half_month_and_personal_share_the_pre_noon_reservation(self):
+    def test_expired_refusals_allow_one_new_request_but_keep_proof_and_new_failures_stop(self):
+        for status in (403, 429):
+            with self.subTest(status=status):
+                self.clock = NOW
+                self.personal['paused'] = {
+                    'reason': 'rate_limited' if status == 429 else 'access_denied',
+                    'host': 'pbs.twimg.com', 'httpStatus': status,
+                    'at': source.usage._stamp(NOW - dt.timedelta(hours=2)),
+                    'retryAt': source.usage._stamp(NOW - dt.timedelta(hours=1))}
+                self.initialize()
+                old = copy.deepcopy(source.load_state(self.path)['baseline'])
+                with self.shared(run_id=f'expired-{status}') as ledger:
+                    receipt = self.reserve(ledger, 'images', status)
+                    with self.assertRaisesRegex(source.SourceFailure, 'already_requested'):
+                        ledger.reserve('images', url('images', status))
+                    next_receipt = ledger.reserve('images', url('images', status + 1))
+                    ledger.issued(next_receipt)
+                    until = self.clock + dt.timedelta(minutes=15)
+                    pause = {**self.personal['paused'], 'at': source.usage._stamp(self.clock),
+                             'retryAt': source.usage._stamp(until)}
+                    ledger.set_cooldown('pbs.twimg.com', until, paused=pause)
+                    ledger.finish(next_receipt, status='failed', http_status=status)
+                    with self.assertRaisesRegex(source.SourceFailure, 'source_paused'):
+                        ledger.reserve('images', url('images', status + 2))
+                    self.assertEqual(ledger.state['baseline'], old)
+                    self.assertEqual(ledger.state['receipts'][receipt]['status'], 'ok')
+                    ledger.check('posts')
+                    ledger.check('searches')
+                self.clock = until
+                with self.shared(run_id=f'recovered-{status}') as ledger:
+                    ledger.check('images')
+
+    def test_auth_and_undated_denials_do_not_expire(self):
+        for status in (None, 401):
+            pause = {'reason': 'access_denied', 'host': 'pbs.twimg.com',
+                     'at': source.usage._stamp(NOW - dt.timedelta(hours=2)),
+                     'retryAt': source.usage._stamp(NOW - dt.timedelta(hours=1))}
+            if status is not None:
+                pause['httpStatus'] = status
+            self.personal['paused'] = pause
+            self.initialize()
+            with self.shared() as ledger:
+                with self.assertRaisesRegex(source.SourceFailure, 'source_paused'):
+                    ledger.reserve('images', url('images'))
+
+    def test_legacy_receipts_are_not_interpreted_as_native_transport_and_host_stops_are_read(self):
+        expired = {'host': 'pbs.twimg.com', 'reason': 'access_denied', 'httpStatus': 403,
+                   'at': source.usage._stamp(NOW - dt.timedelta(hours=2)),
+                   'retryAt': source.usage._stamp(NOW - dt.timedelta(hours=1))}
+        auth = {**expired, 'host': 'cdn.syndication.twimg.com', 'httpStatus': 401}
+        state = {'paused': expired, 'receipts': {'legacy': {'status': 'failed'}},
+                 'hostStops': {auth['host']: auth}}
+        before = copy.deepcopy(state)
+        self.assertIsNone(source.paused_for(state, 'images', NOW))
+        self.assertEqual(source.paused_for(state, 'posts', NOW), auth)
+        self.assertEqual(source.host_pauses(state), {expired['host']: expired, auth['host']: auth})
+        self.assertEqual(state, before)
+
+    def test_pause_boundary_unknown_reason_and_no_deadline_remain_fail_closed(self):
+        at = NOW - dt.timedelta(hours=1)
+        pause = {'host': 'pbs.twimg.com', 'reason': 'access_denied', 'httpStatus': 403,
+                 'at': source.usage._stamp(at), 'retryAt': source.usage._stamp(NOW)}
+        for status in (403, 429):
+            with self.subTest(status=status):
+                pause['httpStatus'] = status
+                state = {'paused': copy.deepcopy(pause)}
+                self.assertIsNotNone(source.paused_for(state, 'images', NOW - dt.timedelta(seconds=1)))
+                self.assertIsNone(source.paused_for(state, 'images', NOW))
+                for changes in ({'retryAt': source.usage._stamp(at)},
+                                {'reason': 'auth_stopped'}, {'reason': 'unknown'}):
+                    state['paused'] = {**pause, **changes}
+                    self.assertIsNotNone(source.paused_for(state, 'images', NOW + dt.timedelta(days=3)))
+                state = {'paused': pause, 'hostStops': {
+                    pause['host']: {**pause, 'reason': 'auth_stopped', 'httpStatus': 401}}}
+                self.assertEqual(source.paused_for(state, 'images', NOW)['httpStatus'], 401)
+
+    def test_approved_manual_images_are_included_not_double_counted_and_do_not_change_ai_usage(self):
+        analysis = self.canonical_import_baseline()
+        before = copy.deepcopy(analysis)
+        state = source.load_state(self.path)
+        receipt = {**imported_source('manual-images', searches=121, posts=81), 'images': 38}
+        after_personal, after_analysis = prepare_imports(self.personal, analysis, [receipt])
+        result = source.apply_source_imports(
+            state, [receipt], personal_before=self.personal, personal_after=after_personal,
+            analysis_before=analysis, analysis_after=after_analysis)
+        replay = source.apply_source_imports(
+            result, [receipt], personal_before=after_personal, personal_after=after_personal,
+            analysis_before=after_analysis, analysis_after=after_analysis)
+        self.assertEqual(result, replay)
+        self.assertEqual({k: v for k, v in before.items() if k != 'sourceImports'},
+                         {k: v for k, v in after_analysis.items() if k != 'sourceImports'})
+        report = source.usage_counts(result, 'new', NOW)
+        self.assertEqual(report['day']['personal']['posts'], 81)
+        self.assertEqual(report['importedImagesIncludedInPosts'], 38)
+        self.assertIsNone(report['remaining']['images'])
+        for invalid in ({**receipt, 'images': 37}, {**receipt, 'receiptId': digest('another-id')}):
+            with self.assertRaises(ValueError):
+                prepare_imports(after_personal, after_analysis, [invalid])
+        self.assertEqual(result, replay)
+
+    def test_pre_noon_consumption_is_measured_without_a_reserved_quota(self):
         self.personal['budgets']['2026-09-07'] = {'searches': 59, 'posts': 37}
         self.initialize()
         baseline = copy.deepcopy(source.load_state(self.path)['baseline'])
         with self.shared('schedule') as ledger:
             self.reserve(ledger, 'searches')
             self.reserve(ledger, 'posts')
-            with self.assertRaisesRegex(source.SourceFailure, 'source_budget_exhausted'):
-                ledger.check('images', 3)
+            ledger.check('images', 3)
             self.reserve(ledger, 'images', 1)
             self.reserve(ledger, 'images', 2)
             receipts = copy.deepcopy(ledger.state['receipts'])
             for kind in source.KINDS:
-                with self.assertRaisesRegex(source.SourceFailure, 'source_budget_exhausted'):
-                    ledger.check(kind)
+                ledger.check(kind)
             self.assertEqual(ledger.state['receipts'], receipts)
         with self.shared('personal', run_id='next', catch_up=True,
                          personal_path=self.personal_path) as ledger:
-            self.assertEqual(ledger.report()['remaining'], {'searches': 0, 'posts': 0, 'images': 0})
+            self.assertEqual(ledger.report()['remaining'], {'searches': None, 'posts': None, 'images': 0})
         with self.shared('official', run_id='official') as ledger:
             ledger.check('searches')
             ledger.check('posts')
@@ -213,10 +298,9 @@ class SourceTests(unittest.TestCase):
         report = source.usage_counts(state, 'run', NOW - dt.timedelta(days=1))
         self.assertEqual(report['day']['personal'], {'searches': 18, 'posts': 11, 'images': 0})
         self.assertEqual(report['historicalImages'], 1)
-        self.assertEqual(report['remaining']['images'], 4)
+        self.assertIsNone(report['remaining']['images'])
         with self.shared() as ledger:
-            with self.assertRaisesRegex(source.SourceFailure, 'source_paused'):
-                ledger.check('searches')
+            ledger.check('searches')
             ledger.check('posts')
         with self.shared('official') as ledger:
             ledger.check('posts')
@@ -250,10 +334,7 @@ class SourceTests(unittest.TestCase):
             with self.shared('schedule', run_id=f'recovery-{day}') as ledger:
                 for kind in ('searches', 'posts'):
                     self.reserve(ledger, kind, day)
-                before = copy.deepcopy(ledger.state)
-                with self.assertRaisesRegex(source.SourceFailure, 'source_paused'):
-                    ledger.reserve('images', url('images', day))
-                self.assertEqual(ledger.state, before)
+                self.reserve(ledger, 'images', day)
                 self.assertEqual(ledger.state['paused'], pause)
                 self.assertEqual(ledger.state['baseline'], original['baseline'])
         with self.shared('personal', run_id='later-denial', personal_path=self.personal_path) as ledger:
@@ -267,8 +348,7 @@ class SourceTests(unittest.TestCase):
             ledger.check('searches')
         self.clock += dt.timedelta(days=1)
         with self.shared('official', run_id='also-official') as ledger:
-            with self.assertRaisesRegex(source.SourceFailure, 'source_paused'):
-                ledger.check('posts')
+            ledger.check('posts')
             ledger.check('searches')
     def test_approved_imports_append_exact_records_without_changing_baseline_native_or_safety(self):
         image = {'receiptId': digest('past-image'), 'date': '2026-09-06',
@@ -381,15 +461,14 @@ class SourceTests(unittest.TestCase):
                          {'searches': 0, 'posts': 0, 'images': 0})
         self.assertEqual(source.usage.usage_counts(after_analysis, 'run-1', NOW)['day'], 1)
 
-    def test_late_history_can_exhaust_day_without_retroactively_erasing_spent_native_requests(self):
+    def test_late_history_does_not_cap_day_or_erase_spent_native_requests(self):
         analysis = self.canonical_import_baseline()
         with self.shared('personal', personal_path=self.personal_path) as ledger:
             self.reserve(ledger, 'posts')
         with self.shared() as ledger:
             self.reserve(ledger, 'images')
         state = source.load_state(self.path)
-        receipt = imported_source('late-full-day', searches=source.DAY_SEARCH_LIMIT,
-                                  posts=source.DAY_INDIVIDUAL_LIMIT)
+        receipt = imported_source('late-full-day', searches=120, posts=80)
         after_personal, after_analysis = prepare_imports(self.personal, analysis, [receipt])
         result = source.apply_source_imports(
             state, [receipt], personal_before=self.personal, personal_after=after_personal,
@@ -397,15 +476,14 @@ class SourceTests(unittest.TestCase):
         source.validate_state(result)
         self.assertEqual(result['receipts'], state['receipts'])
         self.assertEqual(source.usage_counts(result, 'run-1', NOW)['day']['personal'],
-                         {'searches': source.DAY_SEARCH_LIMIT, 'posts': source.DAY_INDIVIDUAL_LIMIT + 1, 'images': 0})
+                         {'searches': 120, 'posts': 81, 'images': 0})
         source.atomic_json(self.path, result)
         self.personal = after_personal
         self.save_personal()
         for component in ('personal', 'schedule'):
             with self.shared(component, run_id='different', personal_path=self.personal_path) as ledger:
                 for kind in ('searches', 'posts'):
-                    with self.assertRaisesRegex(source.SourceFailure, 'source_budget_exhausted'):
-                        ledger.check(kind)
+                    ledger.check(kind)
         with self.shared('official', run_id='different', personal_path=self.personal_path) as ledger:
             ledger.check('searches', 2)
             ledger.check('posts', 20)
@@ -444,7 +522,7 @@ class SourceTests(unittest.TestCase):
                     analysis_before=analysis, analysis_after=after_analysis)
             self.assertEqual((state, before_personal, after_personal, analysis, after_analysis), original)
 
-    def test_reconciliation_rejects_replacement_duplicate_provenance_images_and_raw(self):
+    def test_reconciliation_rejects_replacement_duplicate_provenance_unapproved_images_and_raw(self):
         analysis = self.canonical_import_baseline()
         state = source.load_state(self.path)
         old = next(iter(analysis['sourceImports'].values()))['receipt']
@@ -492,63 +570,56 @@ class SourceTests(unittest.TestCase):
             with self.subTest(case=case), self.assertRaisesRegex(ValueError, 'invalid_source_usage'):
                 source.validate_state(invalid)
 
-    def test_searches_share_five_with_official_two_and_personal_schedule_three(self):
+    def test_searches_are_counted_across_components_without_old_shared_run_cap(self):
         with self.shared('official') as ledger:
             for index in range(2):
                 self.reserve(ledger, 'searches', index)
-            with self.assertRaisesRegex(source.SourceFailure, 'budget_exhausted'):
-                self.reserve(ledger, 'searches', 3)
+            self.reserve(ledger, 'searches', 3)
         with self.shared('personal', personal_path=self.personal_path) as ledger:
             for index in range(2):
                 self.reserve(ledger, 'searches', index + 10)
         with self.shared() as ledger:
             self.reserve(ledger, 'searches', 20)
             report = ledger.report()
-            self.assertEqual(sum(row['searches'] for row in report['run'].values()), 5)
-            with self.assertRaisesRegex(source.SourceFailure, 'budget_exhausted'):
-                self.reserve(ledger, 'searches', 21)
+            self.assertEqual(sum(row['searches'] for row in report['run'].values()), 6)
+            self.reserve(ledger, 'searches', 21)
         with self.shared('personal', personal_path=self.personal_path) as ledger:
-            with self.assertRaisesRegex(source.SourceFailure, 'budget_exhausted'):
-                self.reserve(ledger, 'searches', 99)
+            self.reserve(ledger, 'searches', 99)
         source.validate_legacy(source.load_state(self.path), self.personal)
 
     def test_all_individual_gets_twenty_official_not_artificially_reduced(self):
         with self.shared('official') as ledger:
             for index in range(20):
                 self.reserve(ledger, 'posts', index)
-            self.assertEqual(ledger.report()['remaining']['posts'], 0)
+            self.assertIsNone(ledger.report()['remaining']['posts'])
         with self.shared() as ledger:
             for kind in ('posts', 'images'):
-                with self.assertRaisesRegex(source.SourceFailure, 'budget_exhausted'):
-                    ledger.check(kind)
+                ledger.check(kind)
         with self.shared('personal') as ledger:
-            with self.assertRaisesRegex(source.SourceFailure, 'budget_exhausted'):
-                ledger.check('posts')
+            ledger.check('posts')
 
-    def test_personal_three_schedule_one_post_four_images_and_shared_twenty(self):
+    def test_personal_schedule_and_image_counts_remain_separate_without_shared_cap(self):
         with self.shared('official') as ledger:
             for index in range(12):
                 self.reserve(ledger, 'posts', index)
         with self.shared('personal', personal_path=self.personal_path) as ledger:
             for index in range(3):
                 self.reserve(ledger, 'posts', index + 20)
-            with self.assertRaisesRegex(source.SourceFailure, 'budget_exhausted'):
-                ledger.check('posts')
+            ledger.check('posts')
         with self.shared() as ledger:
             self.reserve(ledger, 'posts', 30)
             ledger.check('images', count=4)
             for index in range(4):
                 self.reserve(ledger, 'images', index)
-            self.assertEqual(ledger.report()['remaining']['images'], 0)
+            self.assertIsNone(ledger.report()['remaining']['images'])
             self.assertEqual(ledger.report()['run']['schedule'], {'searches': 0, 'posts': 1, 'images': 4})
-            with self.assertRaisesRegex(source.SourceFailure, 'budget_exhausted'):
-                ledger.check('posts')
+            ledger.check('posts')
         self.assertEqual(len(source.load_state(self.path)['receipts']), 20)
 
-    def test_personal_schedule_daily_cap_does_not_cap_official(self):
+    def test_old_daily_consumption_does_not_cap_any_component(self):
         self.clock = NOW + dt.timedelta(hours=4)
         self.personal['budgets']['2026-09-07'] = {
-            'searches': source.DAY_SEARCH_LIMIT - 1, 'posts': source.DAY_INDIVIDUAL_LIMIT - 2}
+            'searches': 119, 'posts': 78}
         self.initialize()
         with self.shared() as ledger:
             self.reserve(ledger, 'searches')
@@ -556,8 +627,7 @@ class SourceTests(unittest.TestCase):
             self.reserve(ledger, 'images')
         with self.shared('personal', run_id='different') as ledger:
             for kind in ('searches', 'posts'):
-                with self.assertRaisesRegex(source.SourceFailure, 'budget_exhausted'):
-                    ledger.check(kind)
+                ledger.check(kind)
         with self.shared('official', run_id='different') as ledger:
             self.reserve(ledger, 'searches', 99)
             self.reserve(ledger, 'posts', 99)
@@ -572,16 +642,15 @@ class SourceTests(unittest.TestCase):
         source.validate_state(state)
         report = source.usage_counts(state, 'third', self.clock, 'official')
         self.assertEqual(report['day']['official']['posts'], 40)
-        self.assertEqual(report['remaining']['posts'], 20)
+        self.assertIsNone(report['remaining']['posts'])
 
-    def test_eight_images_actual_jst_day_and_fail_closed_midnight_issue(self):
+    def test_images_above_old_day_quota_and_fail_closed_midnight_issue(self):
         for run in ('first', 'second'):
             with self.shared(run_id=run) as ledger:
                 for index in range(4):
                     self.reserve(ledger, 'images', index)
         with self.shared(run_id='third') as ledger:
-            with self.assertRaisesRegex(source.SourceFailure, 'budget_exhausted'):
-                ledger.check('images')
+            ledger.check('images')
         self.clock = NOW.replace(hour=14, minute=59, second=59)
         with self.shared('official', run_id='midnight') as ledger:
             key = self.reserve(ledger, 'posts', complete=False)
@@ -595,16 +664,16 @@ class SourceTests(unittest.TestCase):
 
     def test_spacing_rechecks_actual_day_after_sleep_and_uses_twelve_not_ai_sixty(self):
         self.personal['budgets']['2026-09-08'] = {
-            'searches': source.DAY_SEARCH_LIMIT, 'posts': source.DAY_INDIVIDUAL_LIMIT}
+            'searches': 120, 'posts': 80}
         self.initialize()
         self.clock = NOW.replace(hour=14, minute=59, second=59)
         with self.shared('official') as ledger:
             self.reserve(ledger, 'searches')
         with self.shared() as ledger:
-            with self.assertRaisesRegex(source.SourceFailure, 'budget_exhausted'):
-                self.reserve(ledger, 'searches', 2)
+            self.reserve(ledger, 'searches', 2)
+            self.assertEqual(ledger.report()['date'], '2026-09-08')
         self.assertEqual(self.sleeps, [12])
-        self.assertEqual(len(source.load_state(self.path)['receipts']), 1)
+        self.assertEqual(len(source.load_state(self.path)['receipts']), 2)
 
     def test_same_run_id_and_media_variants_are_not_requested_twice_after_restart(self):
         with self.shared('personal', personal_path=self.personal_path) as ledger:
@@ -654,14 +723,13 @@ class SourceTests(unittest.TestCase):
             self.assertEqual(ledger.state['cooldowns']['pbs.twimg.com'], source.usage._stamp(later))
             self.assertEqual(ledger.state['receipts'], {})
 
-    def test_preflight_is_pure_and_requires_full_image_capacity(self):
+    def test_preflight_is_pure_without_image_quota_and_validates_count(self):
         with self.shared() as ledger:
             before = self.path.read_bytes()
             ledger.check('images', 4)
             self.assertEqual(self.path.read_bytes(), before)
             self.assertEqual(self.sleeps, [])
-            with self.assertRaisesRegex(source.SourceFailure, 'budget_exhausted'):
-                ledger.check('images', 5)
+            ledger.check('images', 5)
             for count in (True, 0, -1, 1.5):
                 with self.assertRaises(ValueError):
                     ledger.check('images', count)
@@ -745,7 +813,7 @@ class SourceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             source.load_state(self.path)
 
-    def test_state_validation_detects_tampered_run_cap_and_pause_cooldown_rollback(self):
+    def test_state_validation_accepts_uncapped_counts_but_rejects_pause_cooldown_rollback(self):
         with self.shared() as ledger:
             self.reserve(ledger, 'posts')
         invalid = source.load_state(self.path)
@@ -753,8 +821,7 @@ class SourceTests(unittest.TestCase):
         record['requestHash'] = digest('different-post')
         key = digest(record['runId'] + ':' + record['kind'] + ':' + record['requestHash'])
         invalid['receipts'][key] = record
-        with self.assertRaisesRegex(ValueError, 'invalid_source_usage'):
-            source.validate_state(invalid)
+        source.validate_state(invalid)
         self.personal['paused'] = {
             'reason': 'access_denied', 'host': 'pbs.twimg.com', 'at': source.usage._stamp(NOW),
             'retryAt': source.usage._stamp(NOW + dt.timedelta(hours=2))}

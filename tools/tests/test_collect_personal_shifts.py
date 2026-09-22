@@ -793,7 +793,7 @@ class StateTests(Offline):
             (DATE, personal.account_search_url(AMU['handle'])),
             (yesterday, personal.account_search_url(past['handle']))])
 
-    def test_night_and_past_work_leave_half_of_real_day_source_capacity_for_today(self):
+    def test_night_and_past_work_have_no_reserved_daily_source_quota(self):
         early = NOW.astimezone(personal.JST).replace(hour=3, minute=0).astimezone(personal.UTC)
         later = NOW.astimezone(personal.JST).replace(hour=13, minute=0).astimezone(personal.UTC)
         self.state['budgets'][DATE.isoformat()] = {'searches': 60, 'posts': 40}
@@ -802,17 +802,16 @@ class StateTests(Offline):
             durable.catch_up, durable.date = True, day
             durable.preflight()
             for host, kind in ((personal.SEARCH_HOST, 'searches'), (personal.POST_HOST, 'posts')):
-                with self.assertRaisesRegex(personal.Failure, 'current_day_reserved'):
-                    durable.reserve(host, kind)
-            self.assertEqual(durable.used, {'searches': 0, 'posts': 0})
+                durable.reserve(host, kind)
+            self.assertEqual(durable.used, {'searches': 1, 'posts': 1})
         durable = self.durable(now=later)
         durable.catch_up = True
         report, _ = self.collect(self.fake_client(durable), durable)
         self.assertEqual(report['newPostCount'], 1)
-        self.assertEqual(self.state['budgets'][DATE.isoformat()], {'searches': 62, 'posts': 41})
+        self.assertEqual(self.state['budgets'][DATE.isoformat()], {'searches': 64, 'posts': 43})
         personal.read_state(self.snapshot)
 
-    def test_reserved_day_capacity_counts_half_month_and_images(self):
+    def test_half_month_consumption_does_not_reserve_personal_day_capacity(self):
         early = NOW.astimezone(personal.JST).replace(hour=3, minute=0).astimezone(personal.UTC)
         self.state['budgets'][DATE.isoformat()] = {'searches': 58, 'posts': 38}
         durable = self.durable(now=early)
@@ -820,13 +819,14 @@ class StateTests(Offline):
         durable.preflight()
         durable.shared_source = mock.Mock()
         durable.shared_source.state = {'paused': None}
+        durable.shared_source.state['cooldowns'] = {}
         durable.shared_source.counts.return_value = {
             'day': {'personal': {'searches': 58, 'posts': 38, 'images': 0},
                     'schedule': {'searches': 2, 'posts': 1, 'images': 1}}, 'historicalImages': 0}
         for host, kind in ((personal.SEARCH_HOST, 'searches'), (personal.POST_HOST, 'posts')):
-            with self.assertRaisesRegex(personal.Failure, 'current_day_reserved'):
-                durable.reserve(host, kind)
-        durable.shared_source.reserve.assert_not_called()
+            durable.reserve(host, kind)
+        self.assertEqual(durable.shared_source.reserve.call_count, 2)
+        self.assertEqual(durable.used, {'searches': 1, 'posts': 1})
 
     def test_image_stop_does_not_block_personal_and_midnight_keeps_work_date(self):
         self.state['paused'] = {
@@ -1602,14 +1602,13 @@ class StateTests(Offline):
         self.assertEqual(saved['budgets'][DATE.isoformat()]['searches'], 1)
         self.assertEqual(self.sleeps, [12])
 
-    def test_daily_and_run_budgets_are_hard_caps(self):
-        self.state['budgets'][DATE.isoformat()] = dict(personal.DAILY_LIMITS)
+    def test_daily_quota_is_removed_but_internal_run_batch_is_unchanged(self):
+        self.state['budgets'][DATE.isoformat()] = {'searches': 120, 'posts': 80}
         durable = self.durable()
         durable.preflight()
         for host, kind in ((personal.SEARCH_HOST, 'searches'), (personal.POST_HOST, 'posts')):
-            with self.assertRaisesRegex(personal.Failure, 'budget_exhausted'):
-                durable.reserve(host, kind)
-        self.state['budgets'][DATE.isoformat()] = {'searches': 0, 'posts': 0}
+            durable.reserve(host, kind)
+        self.assertEqual(self.state['budgets'][DATE.isoformat()], {'searches': 121, 'posts': 81})
         durable = self.durable(searches=1)
         durable.reserve(personal.SEARCH_HOST, 'searches')
         with self.assertRaisesRegex(personal.Failure, 'budget_exhausted'):
@@ -1687,7 +1686,7 @@ class StateTests(Offline):
         self.assertEqual((report['status'], code), ('paused', 3))
         self.assertEqual(durable.used['searches'], 0)
 
-    def test_pause_persists_across_runs_and_after_retry_after_expiry(self):
+    def test_expired_pause_preserves_evidence_and_new_refusal_stops_again(self):
         durable = self.durable()
         durable.preflight()
         with self.assertRaises(personal.Failure):
@@ -1698,6 +1697,11 @@ class StateTests(Offline):
         self.assertEqual(personal.official.timestamp(cooldown), NOW + dt.timedelta(hours=2))
         tomorrow = NOW + dt.timedelta(days=1)
         durable = self.durable(saved, now=tomorrow)
+        durable.date = tomorrow.astimezone(personal.JST).date()
+        durable.reserve(personal.SEARCH_HOST, 'searches')
+        self.assertEqual(personal.read_state(self.snapshot)['paused'], saved['paused'])
+        with self.assertRaises(personal.Failure):
+            durable.deny(personal.SEARCH_HOST, 'rate_limited', 429, '7200')
         with self.assertRaisesRegex(personal.Failure, 'paused'):
             durable.reserve(personal.SEARCH_HOST, 'searches')
 
@@ -1787,7 +1791,7 @@ class StateTests(Offline):
         self.assertEqual(saved['baseline']['personalBudgets'], {})
         self.assertEqual(self.state['budgets'][DATE.isoformat()], {'searches': 1, 'posts': 0})
 
-    def test_shared_source_capacity_is_denied_before_personal_get_without_legacy_delta(self):
+    def test_shared_source_old_capacity_does_not_block_personal_get(self):
         source = personal.official.source_module()
         ledger_path = self.folder / 'source-usage.json'
         personal.official.atomic_json(self.snapshot, self.state)
@@ -1811,11 +1815,16 @@ class StateTests(Offline):
             durable.preflight()
             client = personal.PersonalClient(durable)
             client.opener = mock.Mock()
-            with self.assertRaisesRegex(personal.Failure, 'source_budget_exhausted'):
-                client.fetch_post(str(int(TID) + 99))
-            client.opener.open.assert_not_called()
-            self.assertEqual(self.state['budgets'], {})
-            self.assertEqual(durable.used, {'searches': 0, 'posts': 0})
+            response = mock.MagicMock()
+            response.__enter__.return_value = response
+            response.getcode.return_value = 200
+            response.headers = {}
+            response.read.return_value = json.dumps(post()).encode()
+            client.opener.open.return_value = response
+            client.fetch_post(str(int(TID) + 99))
+            client.opener.open.assert_called_once()
+            self.assertEqual(self.state['budgets'][DATE.isoformat()], {'searches': 0, 'posts': 1})
+            self.assertEqual(durable.used, {'searches': 0, 'posts': 1})
             source.validate_legacy(shared.state, self.state)
 
     def test_opt_in_cache_reuses_personal_post_but_never_extends_deadline(self):

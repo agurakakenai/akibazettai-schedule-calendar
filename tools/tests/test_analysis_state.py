@@ -408,15 +408,47 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(personal_state['budgets'], {'2030-01-03': {'searches': 0, 'posts': 1}})
         usage.validate_state(state)
 
+    def test_source_image_subcounts_preserve_monthly_budget_hold_and_ai_records(self):
+        state, personal_state = usage.empty_state(), {'budgets': {}}
+        old = historical(date='2026-09-06')
+        usage.apply_import(state, old)
+        state['money'] = usage.costs.empty()
+        state['money']['opening']['2026-09'] = {
+            'amountMicroJPY': 707_000_000, 'basisHash': digest('synthetic-approved-hold'),
+            'records': {'import:' + old['receiptId']: usage.costs.digest(old)},
+            'kind': 'provisional-azure-actual', 'throughDate': '2026-09-06',
+            'observedAt': '2026-09-07T00:00:00Z'}
+        usage.validate_state(state)
+        before = copy.deepcopy(state)
+        balance = usage.costs.balance(state, NOW)
+        self.assertEqual(balance['limitMicroJPY'], 1_000_000_000)
+        self.assertEqual(balance['openingProvisionalMicroJPY'], 707_000_000)
+        for day, searches, posts, images in (
+                ('2026-09-22', 19, 3, 2), ('2026-09-23', 61, 78, 38),
+                ('2026-09-24', 121, 100, 100), ('2026-09-25', 0, 1, 0)):
+            receipt = {**source_receipt(day, searches, posts, label='synthetic-' + day), 'images': images}
+            usage.apply_source_import(state, receipt, personal_state)
+            saved = copy.deepcopy((state, personal_state))
+            usage.apply_source_import(state, receipt, personal_state)
+            self.assertEqual((state, personal_state), saved)
+            self.assertEqual(personal_state['budgets'][day], {'searches': searches, 'posts': posts})
+            self.assertEqual(state['sourceImports'][receipt['receiptId']]['receipt']['images'], images)
+        self.assertEqual({key: value for key, value in state.items() if key != 'sourceImports'},
+                         {key: value for key, value in before.items() if key != 'sourceImports'})
+        self.assertEqual(usage.costs.balance(state, NOW), balance)
+        usage.atomic_json(self.path, state)
+        self.assertEqual(usage.load_state(self.path), state)
+
     def test_invalid_source_imports_do_not_mutate_either_state(self):
         receipt = source_receipt()
         cases = [
             {**receipt, 'raw': 'PRIVATE_BODY_SENTINEL'}, {**receipt, 'searches': True},
             {**receipt, 'searches': -1}, {**receipt, 'posts': 0, 'searches': 0},
-            {**receipt, 'posts': 100, 'searches': 1}, {**receipt, 'sourceHash': 'invalid'},
+            {**receipt, 'posts': -1, 'searches': 1}, {**receipt, 'sourceHash': 'invalid'},
             {**receipt, 'date': '2026-9-6'}, {**receipt, 'posts': 1.5},
-            {**receipt, 'searches': usage.SOURCE_DAY_SEARCH_LIMIT + 1},
-            {**receipt, 'posts': usage.SOURCE_DAY_INDIVIDUAL_LIMIT + 1},
+            {**receipt, 'searches': '121'}, {**receipt, 'posts': True},
+            *({**receipt, 'images': value} for value in (-1, True, 1.5, '2', None, receipt['posts'] + 1)),
+            None,
         ]
         for invalid in cases:
             state, personal_state = usage.empty_state(), {'budgets': {}}

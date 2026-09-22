@@ -343,7 +343,7 @@ class FetchTests(base.Offline):
             collector.SEARCH_HOST: hour(5), collector.POST_HOST: hour(6), collector.PHOTO_HOST: hour(4)})
         self.assertEqual(source.set_cooldown.call_args.kwargs['paused']['retryAt'], hour(4))
 
-    def test_source_denial_pause_survives_cooldown_and_next_run(self):
+    def test_only_timed_403_and_429_expire_without_clearing_denial_evidence(self):
         module = collector._module('source-state.py', 'test_schedule_denial_usage')
         for status in (401, 403, 429, 302):
             with self.subTest(status=status):
@@ -364,15 +364,57 @@ class FetchTests(base.Offline):
                 for component in ('personal', 'schedule'):
                     with module.SharedSource(path, run_id='next', component=component,
                                               clock=lambda: later, sleep=lambda _: None) as usage:
-                        with self.assertRaises(module.SourceFailure) as caught:
+                        if status in (403, 429) and component == 'schedule':
                             usage.check('images')
-                        self.assertEqual(caught.exception.reason, 'source_paused')
+                        else:
+                            with self.assertRaises(module.SourceFailure) as caught:
+                                usage.check('images')
+                            self.assertEqual(caught.exception.reason,
+                                             'source_kind_not_enabled' if status in (403, 429) else 'source_paused')
+                        self.assertEqual(usage.state['paused']['httpStatus'], status)
                         usage.check('searches')
                         usage.check('posts')
                 with module.SharedSource(path, run_id='official-next', component='official',
                                           clock=lambda: later, sleep=lambda _: None) as usage:
                     usage.check('posts')
                 self.assertEqual(opener.open.call_count, 1)
+
+    def test_expired_image_denial_allows_get_and_new_denial_stops_before_next_get(self):
+        module = collector._module('source-state.py', 'test_expired_schedule_transport')
+        for status in (403, 429):
+            with self.subTest(status=status):
+                path = self.work_dir() / 'source.json'
+                pause = {'host': collector.PHOTO_HOST, 'reason': 'access_denied', 'httpStatus': status,
+                         'at': facts.stamp(base.NOW - dt.timedelta(hours=2)),
+                         'retryAt': facts.stamp(base.NOW - dt.timedelta(hours=1))}
+                module.atomic_json(path, module.baseline_state(
+                    {'budgets': {}, 'paused': pause}, source_hash=facts.digest(b'offline-expired'),
+                    at=base.NOW))
+                original = copy.deepcopy(module.load_state(path)['baseline'])
+                now = [base.NOW]
+                def sleep(seconds):
+                    now[0] += dt.timedelta(seconds=seconds)
+                opener = mock.Mock()
+                denied = self.response(b'', status=status)
+                denied.headers['Retry-After'] = '7200'
+                opener.open.side_effect = [self.response(base.png()), denied]
+                with module.SharedSource(path, run_id='recovered', component='schedule',
+                                         clock=lambda: now[0], sleep=sleep) as usage:
+                    client = collector.SourceClient(usage, clock=lambda: now[0], opener=opener)
+                    self.addCleanup(client.close)
+                    client.image('https://pbs.twimg.com/media/RECOVERED.png')
+                    with self.assertRaises(collector.Failure):
+                        client.image('https://pbs.twimg.com/media/DENIED.png')
+                    for _ in range(2):
+                        with self.assertRaises(module.SourceFailure):
+                            client.image('https://pbs.twimg.com/media/NOTREQUESTED.png')
+                    self.assertEqual(opener.open.call_count, 2)
+                    self.assertEqual(usage.state['baseline'], original)
+                    self.assertEqual(usage.state['paused']['httpStatus'], status)
+                    self.assertEqual(usage.state['paused']['retryAt'],
+                                     facts.stamp(now[0] + dt.timedelta(hours=2)))
+                    self.assertEqual(len(usage.state['receipts']), 2)
+                    self.assertEqual(usage.report()['issued']['schedule']['images'], 2)
 
 
 class ProducerTests(base.Offline):
@@ -756,14 +798,14 @@ process.stdout.write('two-stage-ok');
         self.assertEqual(next(iter(self.state['sources'].values()))['status'], 'pending')
         self.assertEqual(len(self.state['pending']), 1)
 
-    def test_old_image_stop_holds_known_media_without_rewalking_it_but_accepts_text(self):
+    def test_old_auth_image_stop_holds_known_media_without_rewalking_it_but_accepts_text(self):
         now = [base.NOW]
-        pause = {'host': collector.PHOTO_HOST, 'reason': 'access_denied', 'httpStatus': 403,
+        pause = {'host': collector.PHOTO_HOST, 'reason': 'access_denied', 'httpStatus': 401,
                  'at': facts.stamp(base.NOW - dt.timedelta(days=3)),
                  'retryAt': facts.stamp(base.NOW - dt.timedelta(days=3, hours=-1))}
         self.source.state = {'paused': pause}
         def check(kind, count=1):
-            if collector.source_safety.paused_for(self.source.state, kind):
+            if collector.source_safety.paused_for(self.source.state, kind, now[0]):
                 raise collector.Failure('source_paused')
         self.source.check.side_effect = check
         def run():
@@ -1217,7 +1259,7 @@ process.stdout.write('two-stage-ok');
         with mock.patch.object(collector, 'SourceClient', side_effect=AssertionError('no source client')), \
                 mock.patch.object(azure, 'AzureAnalyzer', side_effect=AssertionError('no Azure client')):
             source_zero, code = collector.run(args, clock=lambda: base.NOW, environment={})
-        self.assertEqual((source_zero['status'], code), ('budget-exhausted', 2))
+        self.assertEqual((source_zero['status'], code), ('no-new', 0))
         self.assertEqual(source_zero['registry'], report['registry'])
         self.assertTrue(all(people['あむ']['lastSearchedAt'] is None
                             for people in facts.read_state(snapshot)['coverage'].values()))
