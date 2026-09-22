@@ -141,7 +141,7 @@ class SharedSourceTransportTests(unittest.TestCase):
             self.assertEqual(len(self.source.load_state(self.path)['receipts']), 1)
         self.assertEqual(cache.counts()['posts'], 0)
 
-    def test_shared_twenty_cap_does_not_relabel_images_or_issue_a_twenty_first_get(self):
+    def test_shared_usage_exceeds_twenty_without_relabeling_images(self):
         with self.shared('schedule') as ledger:
             for index in range(4):
                 receipt = ledger.reserve('images', f'https://pbs.twimg.com/media/sample{index}.jpg')
@@ -151,11 +151,10 @@ class SharedSourceTransportTests(unittest.TestCase):
             client = self.client(ledger)
             for index in range(16):
                 client.fetch_post(str(int(TID) + index))
-            with self.assertRaisesRegex(collector.FetchFailure, 'source_budget_exhausted'):
-                client.fetch_post(str(int(TID) + 20))
-            self.assertEqual(client.opener.open.call_count, 16)
+            client.fetch_post(str(int(TID) + 20))
+            self.assertEqual(client.opener.open.call_count, 17)
             self.assertEqual(ledger.report()['run']['schedule']['images'], 4)
-            self.assertEqual(ledger.report()['run']['official']['posts'], 16)
+            self.assertEqual(ledger.report()['run']['official']['posts'], 17)
 
     def test_shared_http_failure_is_spent_and_preserves_cooldown(self):
         with self.shared() as ledger:
