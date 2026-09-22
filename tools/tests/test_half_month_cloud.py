@@ -178,7 +178,18 @@ class HalfMonthCloudTests(unittest.TestCase):
     def test_enabled_missing_half_state_stops_before_lease_or_child(self):
         self.seed(half=False)
         self.enable()
+        self.fx.environment['GITHUB_EVENT_NAME'] = 'workflow_dispatch'
+        self.fx.personal_mode('both')
+        self.now = dt.datetime(2026, 10, 1, 0, 30, tzinfo=cloud.JST)
         self.before_lease_failure('missing_half_month_state')
+
+    def test_september_manual_both_does_not_require_or_create_half_month_state(self):
+        self.seed(half=False)
+        result, phases, _, sources, _, _ = self.scheduled_run(mode='both', official_posts=3)
+        self.assertEqual(phases, [('official', 'write'), ('personal', 'source')])
+        self.assertFalse(any(component == 'schedule' for component, _ in sources))
+        self.assertNotIn(cloud.HALF_MONTH, self.fx.remote_names())
+        self.assertEqual(result['persistenceStatus'], 'saved')
 
     def test_enabled_missing_source_ledger_stops_before_lease_or_child(self):
         self.seed(source=False)
@@ -600,9 +611,23 @@ for (const source of value.schedules) {
         return f'https://cdn.syndication.twimg.com/tweet-result?id={tid}&lang=ja&token=a'
 
     def scheduled_run(self, *, personal_ai=1, half_ai=1, buffer_count=0,
-                      half_enabled=True, when=None, official_posts=17, half_images=1):
+                      half_enabled=True, when=None, official_posts=17, half_images=1,
+                      mode='daily-guidance'):
         self.now = when or dt.datetime(2026, 9, 7, 12, 30, tzinfo=cloud.JST)
         self.enable(half=half_enabled)
+        if mode == 'both':
+            self.fx.environment['GITHUB_EVENT_NAME'] = 'workflow_dispatch'
+            self.fx.personal_mode(mode)
+        usage = self.fx.remote_json(cloud.AI_USAGE)[0]
+        usage['money'] = self.ai.costs.empty()
+        usage['money']['opening']['2026-09'] = {
+            'amountMicroJPY': 707_000_000, 'basisHash': cloud.data_hash('fixture-opening'),
+            'records': {
+                **{'import:' + key: self.ai.costs.digest(value) for key, value in usage['imports'].items()},
+                **{'native:' + key: self.ai.costs.digest(value) for key, value in usage['receipts'].items()}},
+            'kind': 'provisional-azure-actual', 'throughDate': '2026-09-07',
+            'observedAt': '2026-09-08T00:00:00Z'}
+        self.fx.bare_commit({cloud.AI_USAGE: usage})
         phases, issued_ai, source_counts, allocations, buffer_sizes = [], [], [], [], []
         buffer_paths = []
 
@@ -635,12 +660,16 @@ for (const source of value.schedules) {
             allocations.append((component, phase, limit))
             with self.ai.SharedUsage(
                     state / cloud.AI_USAGE, run_id=environment['CLOUD_COLLECTION_RUN_ID'],
-                    component=component, clock=lambda: self.now, sleep=sleep, request_limit=limit,
-                    run_limit=16 if environment.get('CLOUD_COLLECTION_CATCH_UP') == 'true' else 3) as usage:
+                    component=component, clock=lambda: self.now, sleep=sleep,
+                    request_limit=None if limit and environment.get('CLOUD_COLLECTION_CATCH_UP') == 'true' else limit,
+                    run_limit=None if environment.get('CLOUD_COLLECTION_CATCH_UP') == 'true' else 3) as usage:
                 for index in range(count):
                     key = cloud.data_hash(['half-cloud-ai', component, phase, index])
                     try:
-                        usage.reserve(key, IDENTITY)
+                        request = self.official_analysis.transport.request_budget(
+                            [{'role': 'user', 'content': 'synthetic finite task'}], {},
+                            name='offline', max_completion_tokens=1)
+                        usage.reserve(key, IDENTITY, request=request)
                     except self.ai.UsageFailure as exc:
                         self.assertEqual(exc.reason, 'azure_budget_exhausted')
                         break
@@ -659,7 +688,8 @@ for (const source of value.schedules) {
                 path = cloud.analysis_buffer_path(self.fx.root, state)
                 if path.exists():
                     buffer_sizes.append(len(json.loads(path.read_bytes())['items']))
-                    self.assertLessEqual(buffer_sizes[-1], 2)
+                    self.assertEqual(buffer_sizes[-1], buffer_count)
+                    self.assertLessEqual(buffer_sizes[-1], 3)
             if component == 'official':
                 snapshot, _ = cloud.validate_snapshot(state / cloud.SNAPSHOT, collector)
                 if phase == 'replay':
@@ -711,9 +741,9 @@ for (const source of value.schedules) {
                     collector.atomic_json(path, buffered)
                     buffer_paths.append(path)
             elif component == 'personal':
-                if half_enabled:
-                    self.assertEqual(environment['CLOUD_COLLECTION_PERSONAL_SEARCHES'], '14')
-                requests = {'searches': int(environment.get('CLOUD_COLLECTION_PERSONAL_SEARCHES', '3')),
+                self.assertEqual(environment['CLOUD_COLLECTION_PERSONAL_SEARCHES'], '1')
+                self.assertEqual(environment['CLOUD_COLLECTION_CATCH_UP'], 'true')
+                requests = {'searches': 18,
                             'posts': 1 if personal_ai else 0}
                 source_requests(component, state, environment, requests)
                 ai_requests(component, state, environment, phase, personal_ai)
@@ -736,6 +766,8 @@ for (const source of value.schedules) {
             return code
 
         with mock.patch.object(collector, 'ROOT', self.fx.root), \
+                mock.patch.object(cloud, 'load_analysis_state', return_value=self.ai), \
+                mock.patch.object(self.ai.costs, 'sync', return_value=False), \
                 mock.patch.object(collector, 'analysis_module', return_value=self.official_analysis), \
                 mock.patch.object(collector, 'utc_now', side_effect=lambda: self.now), \
                 mock.patch.object(cloud, 'invoke_collector', side_effect=lambda r, s, p, e: invoke('official', s, p, e)), \
@@ -760,10 +792,10 @@ for (const source of value.schedules) {
         result, phases, ai, requests, allocations, _ = self.scheduled_run(
             official_posts=3, half_images=0, buffer_count=1)
         self.assertEqual(result['persistenceStatus'], 'saved')
-        self.assertEqual(ai, ['schedule', 'personal', 'official'])
+        self.assertEqual(ai, ['personal', 'official'])
         self.assertEqual(sum(kind == 'images' for _, kind in requests), 0)
         self.assertEqual(sum(component == 'personal' and kind == 'searches'
-                             for component, kind in requests), 14)
+                             for component, kind in requests), 18)
         self.assertEqual(result['sourceHealth']['hostStops'], [pause])
         source = self.fx.remote_json(cloud.SOURCE_USAGE)[0]
         self.assertEqual(source['paused'], pause)
@@ -772,7 +804,7 @@ for (const source of value.schedules) {
         self.assertNotIn(cloud.LEASE, self.fx.remote_names())
         self.assertEqual(result['sourceHealth']['requests']['schedule']['images'], 0)
 
-    def test_scheduled_three_components_share_expanded_run_but_keep_daily_forty_and_source_caps(self):
+    def test_september_finite_personal_exceeds_old_counts_without_starting_half_month(self):
         self.ai.apply_import(self.usage, {
             'receiptId': cloud.data_hash('today-37'), 'sourceHash': cloud.data_hash('today-evidence'),
             'date': '2026-09-07', 'counts': {'requests': 37},
@@ -780,53 +812,53 @@ for (const source of value.schedules) {
         self.source_state = self.baseline()
         self.seed()
         result, phases, ai, sources, allocations, _ = self.scheduled_run(buffer_count=1)
-        self.assertEqual([component for component, _ in phases], ['official', 'schedule', 'personal', 'official'])
-        self.assertEqual(ai, ['schedule', 'personal', 'official'])
-        self.assertEqual([limit for _, _, limit in allocations], [0, 1, 1, 1])
-        self.assertEqual(sum(kind == 'searches' for _, kind in sources), 17)
-        self.assertEqual(sum(kind in ('posts', 'images') for _, kind in sources), 20)
-        self.assertEqual(sum(component == 'schedule' and kind == 'images' for component, kind in sources), 1)
+        self.assertEqual([component for component, _ in phases], ['official', 'personal', 'official'])
+        self.assertEqual(ai, ['personal', 'official'])
+        self.assertEqual([limit for _, _, limit in allocations], [0, 1, 3])
+        self.assertEqual(sum(kind == 'searches' for _, kind in sources), 20)
+        self.assertEqual(sum(kind in ('posts', 'images') for _, kind in sources), 18)
+        self.assertFalse(any(component == 'schedule' for component, _ in sources))
         usage = self.fx.remote_json(cloud.AI_USAGE)[0]
-        self.assertEqual(self.ai.usage_counts(usage, RUN_ID, self.now), {'run': 3, 'day': 40, 'remaining': 0})
+        self.assertEqual(self.ai.usage_counts(usage, RUN_ID, self.now, None),
+                         {'run': 2, 'day': 39, 'remaining': None})
         for component in ('official', 'personal', 'schedule'):
             with self.ai.SharedUsage(self.fx.output.parent / cloud.AI_USAGE, run_id='next-run',
-                                     component=component, clock=lambda: self.now, sleep=lambda _: None) as shared:
-                with self.assertRaisesRegex(self.ai.UsageFailure, 'azure_budget_exhausted'):
-                    shared.check()
+                                     component=component, clock=lambda: self.now, sleep=lambda _: None,
+                                     request_limit=None, run_limit=None) as shared:
+                shared.check()
         source = self.fx.remote_json(cloud.SOURCE_USAGE)[0]
         personal = self.fx.remote_json(cloud.PERSONAL)[0]
         cloud.validate_half_month_links(self.fx.remote_json(cloud.HALF_MONTH)[0], source, usage, personal)
         self.assertEqual(personal['budgets']['2026-09-06'], {'searches': 18, 'posts': 11})
-        self.assertEqual(personal['budgets']['2026-09-07'], {'searches': 14, 'posts': 1})
+        self.assertEqual(personal['budgets']['2026-09-07'], {'searches': 18, 'posts': 1})
         self.assertEqual(source['baseline']['personalBudgets'], self.private['budgets'])
         self.assertEqual(usage['imports'], self.usage['imports'])
         self.assertEqual(usage['sourceImports'], self.usage['sourceImports'])
         self.assertEqual(result['persistenceStatus'], 'saved')
 
-    def test_unused_personal_ai_returns_to_official_source_zero_resume_after_half(self):
+    def test_finite_official_replay_keeps_all_three_buffered_posts_without_half_month(self):
         self.seed()
         result, phases, ai, sources, _, sizes = self.scheduled_run(personal_ai=0, buffer_count=3)
-        self.assertEqual(phases, [('official', 'write'), ('schedule', 'source'),
-                                  ('personal', 'source'), ('official', 'replay')])
-        self.assertEqual(ai, ['schedule', 'official'])
-        self.assertEqual(sizes, [2, 2])
+        self.assertEqual(phases, [('official', 'write'), ('personal', 'source'), ('official', 'replay')])
+        self.assertEqual(ai, ['official', 'official', 'official'])
+        self.assertEqual(sizes, [3])
         self.assertEqual(sum(component == 'official' and kind == 'posts' for component, kind in sources), 17)
         official = self.fx.remote_json(cloud.SNAPSHOT)[0]
         self.assertEqual(official['lastRun']['requests'], {'searches': 2, 'posts': 17})
         self.assertEqual(len(official['posts']), 3)
-        self.assertEqual(len(official['pending']), 2)
-        self.assertEqual(result['officialCollectionStatus'], 'partial')
+        self.assertEqual(len(official['pending']), 0)
+        self.assertEqual(result['officialCollectionStatus'], 'ok')
 
     def test_late_2130_runs_personal_recovery_and_preserves_old_day_budgets(self):
         self.seed()
         result, phases, ai, sources, _, _ = self.scheduled_run(
             when=dt.datetime(2026, 9, 7, 21, 30, tzinfo=cloud.JST), official_posts=16)
-        self.assertEqual([component for component, _ in phases], ['official', 'schedule', 'personal'])
-        self.assertEqual(ai, ['schedule', 'personal'])
+        self.assertEqual([component for component, _ in phases], ['official', 'personal'])
+        self.assertEqual(ai, ['personal'])
         self.assertTrue(any(component == 'personal' for component, _ in sources))
         private = self.fx.remote_json(cloud.PERSONAL)[0]
         self.assertEqual(private['budgets']['2026-09-06'], self.private['budgets']['2026-09-06'])
-        self.assertEqual(private['budgets']['2026-09-07'], {'searches': 14, 'posts': 1})
+        self.assertEqual(private['budgets']['2026-09-07'], {'searches': 18, 'posts': 1})
         self.assertEqual(private['posts'], self.private['posts'])
         self.assertEqual(result['personalCollectionStatus'], 'no-new')
 

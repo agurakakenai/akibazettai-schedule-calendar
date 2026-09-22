@@ -71,7 +71,8 @@ KINDS = {'placement', 'absence', 'late', 'return', 'uncertain'}
 PUBLIC_FIELDS = {'schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt', 'posts', 'lastRun'}
 PRIVATE_FIELDS = {'pending', 'resolved', 'budgets', 'paused', 'identityBindings',
                   'originalTargets', 'lastRequests'}
-OPTIONAL_PRIVATE_FIELDS = {'azureAnalysis', 'coverage', 'searchHistory', 'savedPersonalImports', 'hostStops'}
+OPTIONAL_PRIVATE_FIELDS = {'azureAnalysis', 'coverage', 'searchHistory', 'savedPersonalImports', 'hostStops',
+                           'recovery', 'collectionSlots'}
 SCOPES = ('昼', '夜', 'unspecified')
 LINK_STATUSES = ('work', 'withdrawn', 'conflict')
 TARGET_ORIGINS = {'original', 'scheduled', 'official_names', 'official_notice', 'personal', 'curated',
@@ -321,6 +322,14 @@ def read_state(path, private=True):
                 raise ValueError
             ids.add(post['id'])
         if private:
+            if 'recovery' in value:
+                validate_recovery(value['recovery'])
+            if 'collectionSlots' in value:
+                slots = value['collectionSlots']
+                if not isinstance(slots, list) or len(set(slots)) != len(slots):
+                    raise ValueError
+                for slot in slots:
+                    validate_personal_slot(slot)
             if 'hostStops' in value:
                 if not isinstance(value['hostStops'], dict):
                     raise ValueError
@@ -597,7 +606,7 @@ def name_aliases(insights):
 
 
 def select_targets(schedule, insights, accounts, date, state, observations=None, *,
-                   registry=None, binding_maps=(), include_unannounced=False):
+                   registry=None, binding_maps=(), include_unannounced=False, policy_day=None):
     insights = insights or {}
     aliases = name_aliases(insights) if registry is None else members.display_projection(registry)['aliases']
     if registry is not None:
@@ -612,7 +621,7 @@ def select_targets(schedule, insights, accounts, date, state, observations=None,
         by_name.setdefault(name, []).append(row)
         by_handle.setdefault(row['handle'].casefold(), set()).add(name)
     day = date.isoformat()
-    population = {}
+    population, official_population = {}, {}
 
     def include(name, shift, origin):
         name = canonical(name)
@@ -620,6 +629,8 @@ def select_targets(schedule, insights, accounts, date, state, observations=None,
         if shift in ('昼', '夜'):
             person['shifts'].add(shift)
         person['origins'].add(origin)
+        if origin in ('official_names', 'official_notice'):
+            official_population.setdefault(name, set()).add(shift)
 
     reviewed_shifts = {}
     for shift, rows in schedule.get('schedule', {}).get(day, {}).items():
@@ -651,6 +662,8 @@ def select_targets(schedule, insights, accounts, date, state, observations=None,
         for name in post['names']:
             include(corrections.get(name, {}).get('name', name), post['shift'], 'official_names')
         for notice in post.get('notices', []):
+            if policy_day is not None and date < policy_day and notice.get('kind') != 'late':
+                continue
             name = notice['name']
             include(corrections.get(name, {}).get('name', name), post['shift'], 'official_notice')
     for post in state['posts']:
@@ -665,7 +678,31 @@ def select_targets(schedule, insights, accounts, date, state, observations=None,
             for event in rule.get('events', []):
                 include(post['name'], event['shift'], 'personal')
 
-    if include_unannounced and registry is not None:
+    date_known = set()
+    if policy_day is not None:
+        if date == policy_day:
+            planned = {}
+            for shift, rows in schedule.get('schedule', {}).get(day, {}).items():
+                for row in rows:
+                    if row.get('scheduleSources') or any(
+                            source.get('confirmation', {}).get('method') == 'source-confirmed'
+                            for source in row.get('halfMonthSources', [])):
+                        planned.setdefault(canonical(row['name']), set()).update(
+                            [shift] if shift in ('昼', '夜') else [])
+            for plan in schedule.get('sourceConfirmedPlans', []):
+                if plan['source'].get('confirmation', {}).get('method') != 'source-confirmed':
+                    continue
+                for item in plan['days']:
+                    if item['date'] == day:
+                        planned.setdefault(canonical(plan['source']['name']), set()).update(item['shifts'])
+            date_known = set(planned)
+            population = {name: {'shifts': shifts, 'origins': {'scheduled'}}
+                          for name, shifts in planned.items()}
+        else:
+            population = {name: {'shifts': shifts, 'origins': {'official_names'}}
+                          for name, shifts in official_population.items()
+                          if 0 < (policy_day - date).days < RECOVERY_DAYS}
+    if include_unannounced and registry is not None and policy_day is None:
         for name in eligible_by_name:
             if name not in population:
                 include(name, None, 'supplemental')
@@ -699,23 +736,30 @@ def select_targets(schedule, insights, accounts, date, state, observations=None,
                         handle, reason = candidate, 'not_searched'
         shifts = [shift for shift in ('昼', '夜') if shift in population[name]['shifts']]
         if registry is not None:
-            if name in eligible_by_name and (shifts or include_unannounced):
+            if name in eligible_by_name and (shifts or name in date_known or include_unannounced):
                 eligible[name] = {**eligible_by_name[name], 'shifts': shifts,
                                   'registeredAt': members.lookup(registry, name)['registeredAt'],
                                   'aliases': sorted(members.names_of(members.lookup(registry, name)))}
                 if not shifts:
                     eligible[name]['discovery'] = True
+                if name in date_known:
+                    eligible[name]['dateKnown'] = True
             elif name in eligible_by_name:
                 reason = 'shift_unknown'
-        elif handle and not shifts:
+        elif handle and not shifts and name not in date_known:
             reason = 'shift_unknown'
         elif handle:
             eligible[name] = {'name': name, 'handle': handle, 'shifts': shifts}
+            if name in date_known:
+                eligible[name]['dateKnown'] = True
         coverage[name] = {
             'name': name, 'handle': handle, 'shifts': shifts,
             'origins': sorted(population[name]['origins']), 'reason': reason,
             'postIds': [], 'linkScopes': [], 'searchedAt': None}
-    if day not in state['originalTargets']:
+    if policy_day is not None and date < policy_day:
+        eligible = {name: target for name, target in eligible.items()
+                    if not work_source_complete(state, target, date)}
+    if day not in state['originalTargets'] and policy_day is None:
         state['originalTargets'][day] = {
             name: {'name': target['name'], 'handle': target['handle'], 'shifts': [
                 shift for shift in target['shifts']
@@ -728,7 +772,68 @@ def select_targets(schedule, insights, accounts, date, state, observations=None,
 
 RECOVERY_DAYS = 7
 RECOVERY_SECONDS = 1200
-MAX_RECOVERY_REQUESTS = 14
+RECOVERY_SAVE_SECONDS = 90
+
+
+def validate_personal_slot(value):
+    if not isinstance(value, str) or not re.fullmatch(
+            r'personal:\d{4}-\d{2}-\d{2}T(?:01|07|10|12):00\+09:00', value):
+        raise ValueError('invalid_collection_slot')
+    dt.datetime.fromisoformat(value.removeprefix('personal:'))
+
+
+def validate_recovery(value):
+    require_keys(value, ('chainId', 'serviceDate', 'targets', 'searches', 'postIds', 'reason', 'nextAt'), ('mode',))
+    if value.get('mode', 'personal') not in ('personal', 'both'):
+        raise ValueError('invalid_recovery')
+    if not isinstance(value['chainId'], str) or not re.fullmatch(
+            r'[1-9][0-9]{0,19}-[1-9][0-9]{0,19}', value['chainId']):
+        raise ValueError('invalid_recovery')
+    anchor = dt.date.fromisoformat(value['serviceDate'])
+    if anchor.isoformat() != value['serviceDate'] or not isinstance(value['targets'], dict):
+        raise ValueError('invalid_recovery')
+    for day, targets in value['targets'].items():
+        if not 0 <= (anchor - dt.date.fromisoformat(day)).days < RECOVERY_DAYS or not isinstance(targets, dict):
+            raise ValueError('invalid_recovery')
+        for name, target in targets.items():
+            require_keys(target, ('name', 'handle', 'shifts', 'dateKnown'))
+            if (name != target['name'] or not isinstance(name, str)
+                    or not re.fullmatch(r'[ぁ-んァ-ヶ一-龠ーａ-ｚA-Za-z0-9]{1,12}', name)
+                    or not re.fullmatch(r'[A-Za-z0-9_]{1,15}', target['handle'])
+                    or not isinstance(target['shifts'], list)
+                    or target['shifts'] != [shift for shift in ('昼', '夜') if shift in target['shifts']]
+                    or type(target['dateKnown']) is not bool
+                    or not target['shifts'] and not target['dateKnown']):
+                raise ValueError('invalid_recovery')
+    if not isinstance(value['searches'], list) or not isinstance(value['postIds'], list):
+        raise ValueError('invalid_recovery')
+    seen = set()
+    for task in value['searches']:
+        require_keys(task, ('date', 'name', 'handle'))
+        target = value['targets'].get(task['date'], {}).get(task['name'])
+        key = (task['date'], task['name'])
+        if target is None or task['handle'] != target['handle'] or key in seen:
+            raise ValueError('invalid_recovery')
+        seen.add(key)
+    if (any(not isinstance(tid, str) or not official.post_id(tid) for tid in value['postIds'])
+            or len(set(value['postIds'])) != len(value['postIds'])
+            or value['reason'] not in ('processing', 'time_limit', 'complete', 'source_paused',
+                                      'analysis_held', 'no_progress', 'expired')):
+        raise ValueError('invalid_recovery')
+    if value['nextAt'] is not None:
+        official.timestamp(value['nextAt'])
+
+
+def recoverable_candidate(item, state, targets, now):
+    target = target_for_name(targets, item['name'])
+    return bool(target and target['handle'].casefold() == item['authorScreenName'].casefold()
+                and item['id'] not in {entry['id'] for field in ('posts', 'resolved') for entry in state[field]}
+                and not item['reason'].startswith('azure_')
+                and item['reason'] not in ('author_mismatch', 'source_retry_limit', 'invalid_post_json',
+                                           'timestamp_mismatch', 'invalid_created_at', 'route_refused')
+                and item['attempts'] < 3
+                and (not item.get('lastAttemptAt')
+                     or now - official.timestamp(item['lastAttemptAt']) >= dt.timedelta(hours=1)))
 
 
 def active_targets(targets, date, now, *, scheduled=False, catch_up=False):
@@ -736,7 +841,8 @@ def active_targets(targets, date, now, *, scheduled=False, catch_up=False):
         if not 0 <= (calendar_day(now) - date).days < RECOVERY_DAYS:
             return {}
         return {name: target for name, target in targets.items()
-                if target['shifts'] or target.get('discovery') and calendar_day(now) == date}
+                if target['shifts'] or target.get('dateKnown')
+                or target.get('discovery') and calendar_day(now) == date}
     if calendar_day(now) != date:
         return {}
     local = now.astimezone(JST).timetz().replace(tzinfo=None)
@@ -1203,10 +1309,14 @@ class DurableHttp:
         self.bindings = bindings or (lambda: self.state['identityBindings'])
         self.catch_up = catch_up
         self.searched_handles = set()
+        self.progress = None
+        self.collection_slot = None
 
     def active(self, targets=None):
         if self.catch_up and (self.clock() - self.started).total_seconds() >= RECOVERY_SECONDS:
             return {}
+        if self.progress is not None:
+            return self.targets if targets is None else targets
         return active_targets(self.targets if targets is None else targets, self.date, self.clock(),
                               scheduled=self.scheduled, catch_up=self.catch_up)
 
@@ -1266,7 +1376,7 @@ class DurableHttp:
             raise Failure('shared_host_cooldown', retry_at=official.timestamp(self.cooldowns[host]))
         if self.shared_source is None:
             self.state['budgets'].setdefault(calendar_day(self.clock()).isoformat(), {'searches': 0, 'posts': 0})
-        if self.used[kind] >= self.caps[kind]:
+        if self.caps[kind] is not None and self.used[kind] >= self.caps[kind]:
             raise Failure('budget_exhausted')
         previous = official.timestamp(self.state['lastRequests'][host]) if host in self.state['lastRequests'] else self.started
         self.sleep(max(0, 12 - (self.clock() - previous).total_seconds()))
@@ -1427,7 +1537,15 @@ class PersonalClient(official.PublicClient):
     def search(self, url, targets, date, now, bindings):
         with self.open(urllib.request.Request(url)) as response:
             try:
-                return discover(response.read().decode('utf-8'), targets, date, now, bindings)
+                document = response.read().decode('utf-8')
+                candidates = discover(document, targets, date, now, bindings)
+                if self.durable.progress is not None:
+                    for day, saved in self.durable.progress['targets'].items():
+                        if day != date.isoformat():
+                            matching = {name: target for name, target in saved.items()
+                                        if name in targets and target['handle'] == targets[name]['handle']}
+                            candidates.extend(discover(document, matching, dt.date.fromisoformat(day), now, bindings))
+                return candidates
             except Failure as exc:
                 if exc.reason == 'access_denied':
                     self.durable.deny(SEARCH_HOST, 'access_denied', exc.status)
@@ -1498,6 +1616,9 @@ def post_link_scopes(posts, shifts):
 
 
 def work_source_complete(state, target, date):
+    if not target['shifts'] and target.get('dateKnown'):
+        return any(row['status'] == 'work' for row in post_link_scopes(
+            target_posts(state, target, date), SCOPES).values())
     scopes = post_link_scopes(target_posts(state, target, date), target['shifts'])
     return bool(target['shifts']) and all(
         scopes.get(shift, {}).get('status') == 'work' for shift in target['shifts'])
@@ -1594,6 +1715,9 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
     early_status = 'paused' if durable.fully_paused() else 'outside-window' if not active else None
     search_targets = {name: target for name, target in targets.items()
                       if target['handle'].casefold() not in durable.searched_handles
+                      and (durable.progress is None or any(
+                          task['date'] == date.isoformat() and task['name'] == name
+                          and task['handle'] == target['handle'] for task in durable.progress['searches']))
                       and (durable.shared_source is None
                            or not SOURCE_LIMITS.already_requested(
                                durable.shared_source.state, durable.shared_source.run_id,
@@ -1604,9 +1728,16 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                                scheduled=durable.scheduled, catch_up=durable.catch_up)
                 if not early_status and not durable.source_paused('searches')
                 and saved_payloads is None else ())
+    if durable.progress is not None and not early_status and not durable.source_paused('searches'):
+        searches = [(task['name'], account_search_url(task['handle']))
+                    for task in durable.progress['searches']
+                    if task['date'] == date.isoformat() and task['name'] in search_targets][:max_searches]
     if durable.source_paused('searches') and search_targets and saved_payloads is None:
         failures.append({'reason': 'source_paused'})
     for name, url in searches:
+        if durable.progress is not None and (clock() - durable.started).total_seconds() >= (
+                RECOVERY_SECONDS - RECOVERY_SAVE_SECONDS):
+            break
         before = durable.used['searches']
         search_succeeded = False
         try:
@@ -1631,6 +1762,8 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                     pending[tid] = {**candidate, 'reason': 'discovered',
                                     'firstSeenAt': stamp(clock()), 'lastAttemptAt': None,
                                     'attempts': 0}
+                if durable.progress is not None and tid not in durable.progress['postIds']:
+                    durable.progress['postIds'].append(tid)
             state['pending'] = list(pending.values())
             durable.save()
         except Failure as exc:
@@ -1642,6 +1775,15 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         finally:
             if durable.used['searches'] > before:
                 durable.searched_handles.add(targets[name]['handle'].casefold())
+            if durable.progress is not None and (search_succeeded or durable.used['searches'] > before):
+                tasks = [task for task in durable.progress['searches']
+                         if task['handle'].casefold() == targets[name]['handle'].casefold()]
+                if search_succeeded:
+                    for task in tasks:
+                        state.setdefault('searchHistory', {}).setdefault(task['date'], {})[task['name']] = {
+                            'handle': task['handle'], 'attemptedAt': stamp(clock())}
+                durable.progress['searches'] = [task for task in durable.progress['searches'] if task not in tasks]
+                durable.save()
             if search_succeeded:
                 state.setdefault('searchHistory', {}).setdefault(date.isoformat(), {})[name] = {
                     'handle': targets[name]['handle'], 'attemptedAt': stamp(clock())}
@@ -1671,6 +1813,8 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         return deadline, positions[item['id']], previous_attempt[item['name']], -int(item['id'])
 
     for item in sorted((item for item in pending.values() if item['date'] == date.isoformat()), key=priority):
+        if durable.progress is not None and item['id'] not in durable.progress['postIds']:
+            continue
         if saved_payloads is not None and item['id'] not in saved_payloads:
             continue
         target = target_for_name(targets if saved_payloads is not None else durable.active(targets), item['name'])
@@ -1703,7 +1847,7 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                 and clock() - official.timestamp(item['lastAttemptAt']) < dt.timedelta(hours=1)):
             deferred += 1
             continue
-        if attempted >= max_posts or durable.source_paused('posts'):
+        if max_posts is not None and attempted >= max_posts or durable.source_paused('posts'):
             item['reason'] = 'source_paused' if durable.source_paused('posts') else 'post_limit'
             if saved_payloads is not None:
                 item['reason'] = 'azure_saved_' + item['reason']
@@ -1734,11 +1878,18 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                     item['reason'] = 'analysis_capacity_deferred'
                 failures.append({'id': item['id'], **exc.facts()})
                 deferred += 1
+                if exc.reason in ('azure_budget_exhausted', 'azure_backoff', 'azure_auth_stopped',
+                                  'azure_rate_limited', 'azure_capacity_hold', 'azure_capacity_profile_stale'):
+                    break
                 continue
             finally:
                 durable.post_target = None
         unchanged = copy.deepcopy(item)
+        if durable.progress is not None and (clock() - durable.started).total_seconds() >= (
+                RECOVERY_SECONDS - RECOVERY_SAVE_SECONDS):
+            break
         attempted += 1
+        requests_before = durable.used['posts']
         item['lastAttemptAt'] = stamp(clock())
         item['attempts'] += 1
         state['pending'] = list(pending.values())
@@ -1811,7 +1962,10 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                 failures.append({'id': item['id'], 'reason': reason})
         except (Failure, azure.AnalysisFailure) as exc:
             facts = exc.facts()
-            if isinstance(exc, (RegistryFailure, azure.RegistryFailure)):
+            if (isinstance(exc, (RegistryFailure, azure.RegistryFailure))
+                    or durable.progress is not None and durable.used['posts'] == requests_before
+                    and exc.reason in ('outside_window', 'shared_host_cooldown', 'source_host_cooldown',
+                                       'source_paused', 'budget_exhausted')):
                 item.clear()
                 item.update(unchanged)
             elif saved_payloads is not None and not facts['reason'].startswith('azure_'):
@@ -1824,6 +1978,12 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                 deferred += 1
         finally:
             durable.post_target = None
+            if durable.progress is not None and (
+                    item['id'] not in pending or item['reason'].startswith('azure_')
+                    or (durable.shared_source is not None and SOURCE_LIMITS.already_requested(
+                        durable.shared_source.state, durable.shared_source.run_id, 'posts',
+                        f'https://{POST_HOST}/tweet-result?id={item["id"]}&lang=ja&token=a'))):
+                durable.progress['postIds'] = [tid for tid in durable.progress['postIds'] if tid != item['id']]
         state['pending'] = list(pending.values())
         durable.save()
     codes = {failure['reason'] for failure in failures}
@@ -1871,43 +2031,101 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
 
 def collect_recovery(state, durable, schedule, insights, observations, registry, bindings,
                      client_factory, analyzer, clock):
-    today = calendar_day(clock())
+    progress = state.get('recovery') if durable.shared_source is not None else None
+    chain_id = durable.shared_source.run_id if durable.shared_source is not None else None
+    if progress is not None and progress['chainId'] != chain_id:
+        if progress['searches'] or progress['postIds']:
+            raise InfrastructureFailure('recovery_chain_mismatch')
+        progress = None
+    today = dt.date.fromisoformat(progress['serviceDate']) if progress is not None else durable.date
     by_day = {}
-    for offset in range(RECOVERY_DAYS):
-        day = today - dt.timedelta(days=offset)
-        targets = select_targets(schedule, insights, [], day, state, observations,
-                                 registry=registry, binding_maps=bindings)
-        if targets or state.get('coverage', {}).get(day.isoformat()):
-            by_day[day] = targets
+    if progress is None:
+        for offset in range(RECOVERY_DAYS):
+            day = today - dt.timedelta(days=offset)
+            targets = select_targets(schedule, insights, [], day, state, observations,
+                                     registry=registry, binding_maps=bindings, policy_day=today)
+            if targets or state.get('coverage', {}).get(day.isoformat()):
+                by_day[day] = targets
+        if chain_id is not None:
+            progress = {'chainId': chain_id, 'serviceDate': today.isoformat(),
+                        'targets': {day.isoformat(): {
+                            name: {key: copy.deepcopy(target[key]) for key in ('name', 'handle', 'shifts')}
+                            | {'dateKnown': bool(target.get('dateKnown'))}
+                            for name, target in targets.items()} for day, targets in by_day.items()},
+                        'searches': [], 'postIds': [], 'reason': 'processing', 'nextAt': None}
+            for day, targets in by_day.items():
+                progress['searches'].extend(
+                    {'date': day.isoformat(), 'name': name, 'handle': targets[name]['handle']}
+                    for name, _ in target_searches(targets, day, state, clock(), None, catch_up=True))
+                progress['postIds'].extend(item['id'] for item in state['pending']
+                                           if item['date'] == day.isoformat()
+                                           and recoverable_candidate(item, state, targets, clock()))
+            state['recovery'] = progress
+            if durable.collection_slot:
+                slots = state.setdefault('collectionSlots', [])
+                if durable.collection_slot not in slots:
+                    slots.append(durable.collection_slot)
+    else:
+        population, _ = members.collection_population(registry, state['identityBindings'], *bindings)
+        permitted = {target['name']: target for target in population.values()}
+        for day, saved in progress['targets'].items():
+            by_day[dt.date.fromisoformat(day)] = {
+                name: {**permitted[name], **copy.deepcopy(target)}
+                for name, target in saved.items() if name in permitted
+                and permitted[name]['handle'].casefold() == target['handle'].casefold()}
+    durable.progress = progress
+    if progress is not None:
+        progress['reason'], progress['nextAt'] = 'processing', None
+        durable.save()
+    work_before = len(progress['searches']) + len(progress['postIds']) if progress is not None else 0
     days = [today] + sorted((d for d in by_day if d != today), reverse=True)
     reports, pending_before = [], len(state['pending'])
     supplemental = None
+    blocked = []
+
+    def remaining(kind):
+        cap = durable.caps[kind]
+        return None if cap is None else max(0, cap - durable.used[kind])
+
+    if progress is not None:
+        for source_state in (state, durable.shared_source.state):
+            for kind in ('searches', 'posts'):
+                pause = SOURCE_LIMITS.paused_for(source_state, kind, clock())
+                if pause is not None:
+                    blocked.append({'reason': 'source_paused', **{
+                        key: pause[key] for key in ('httpStatus', 'retryAt') if pause.get(key) is not None}})
+    if not blocked and analyzer is not None and any(by_day.values()) and callable(getattr(analyzer, 'check_capacity', None)):
+        durable.date, durable.targets = next((day, targets) for day, targets in by_day.items() if targets)
+        try:
+            analyzer.check_capacity()
+        except azure.AnalysisFailure as exc:
+            blocked.append(exc.facts())
     for day in days:
+        if blocked:
+            break
         targets = by_day.get(day, {})
         if targets:
             durable.date, durable.targets = day, targets
             report, _ = collect(
                 state, durable, client_factory(durable), targets, day,
-                max(0, durable.caps['searches'] - durable.used['searches']),
-                max(0, durable.caps['posts'] - durable.used['posts']),
+                remaining('searches'), remaining('posts'),
                 clock, members.display_projection(registry)['knownNames'], analyzer,
-                first_sources_only=day == today)
+                first_sources_only=True)
             reports.append(report)
         if (day == today and not durable.fully_paused()
-                and (clock() - durable.started).total_seconds() < RECOVERY_SECONDS
-                and (durable.used['searches'] < durable.caps['searches']
-                     or durable.used['posts'] < durable.caps['posts'])):
+                and (clock() - durable.started).total_seconds() < RECOVERY_SECONDS - RECOVERY_SAVE_SECONDS
+                and (remaining('searches') != 0 or remaining('posts') != 0)):
             corrections = {name: target for name, target in by_day.get(today, {}).items()
                            if work_source_complete(state, target, today)}
             if corrections:
                 durable.date, durable.targets = today, corrections
                 report, _ = collect(
                     state, durable, client_factory(durable), corrections, today,
-                    max(0, durable.caps['searches'] - durable.used['searches']),
-                    max(0, durable.caps['posts'] - durable.used['posts']),
+                    remaining('searches'), remaining('posts'),
                     clock, members.display_projection(registry)['knownNames'], analyzer)
                 reports.append(report)
-        if durable.fully_paused() or (clock() - durable.started).total_seconds() >= RECOVERY_SECONDS:
+        if durable.fully_paused() or (clock() - durable.started).total_seconds() >= (
+                RECOVERY_SECONDS - RECOVERY_SAVE_SECONDS):
             break
     summaries = []
     for day, targets in by_day.items():
@@ -1935,7 +2153,7 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
             'dayOnly': sum(target['shifts'] == ['昼'] for target in targets.values()),
             'analysisHeld': sum(item['reason'].startswith('azure_') for item in active_pending),
         })
-    failures = [failure for report in reports for failure in report['failures']]
+    failures = blocked + [failure for report in reports for failure in report['failures']]
     expired = sum((today - dt.date.fromisoformat(item['date'])).days >= RECOVERY_DAYS
                   for item in state['pending'])
     incomplete = bool(expired) or bool(supplemental and supplemental['unsearched']) or any(
@@ -1954,11 +2172,50 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
         'newEventCount': sum(report['newEventCount'] for report in reports),
         'pendingCount': len(state['pending']), 'deferredCount': sum(row['pending'] for row in summaries),
         'failures': failures, 'finishedAt': stamp(clock()), 'complete': False}
+    continuation = None
+    if progress is not None:
+        pending = {item['id']: item for item in state['pending']}
+        progress['postIds'] = [
+            tid for tid in progress['postIds'] if tid in pending
+            and recoverable_candidate(pending[tid], state,
+                                      by_day.get(dt.date.fromisoformat(pending[tid]['date']), {}), clock())
+            and (pending[tid]['date'] == today.isoformat()
+                 or not work_source_complete(state, by_day[dt.date.fromisoformat(pending[tid]['date'])][
+                     pending[tid]['name']], dt.date.fromisoformat(pending[tid]['date'])))
+            and not SOURCE_LIMITS.already_requested(
+                durable.shared_source.state, chain_id, 'posts',
+                f'https://{POST_HOST}/tweet-result?id={tid}&lang=ja&token=a')]
+        progress['searches'] = [
+            task for task in progress['searches']
+            if task['name'] in by_day.get(dt.date.fromisoformat(task['date']), {})
+            and not SOURCE_LIMITS.already_requested(
+                durable.shared_source.state, chain_id, 'searches', account_search_url(task['handle']))]
+        count = len(progress['searches']) + len(progress['postIds'])
+        codes = {failure['reason'] for failure in failures}
+        progressed = sum(durable.used.values()) > 0
+        reason = 'complete'
+        if count:
+            if any(durable.source_paused(kind) for kind in ('searches', 'posts')) or codes & {
+                    'shared_host_cooldown', 'source_host_cooldown', 'source_paused'}:
+                reason = 'source_paused'
+            elif codes & {'azure_budget_exhausted', 'azure_backoff', 'azure_auth_stopped',
+                          'azure_rate_limited', 'azure_capacity_hold', 'azure_capacity_profile_stale'}:
+                reason = 'analysis_held'
+            elif (clock() - durable.started).total_seconds() >= RECOVERY_SECONDS - RECOVERY_SAVE_SECONDS:
+                reason = 'time_limit' if progressed else 'no_progress'
+            else:
+                reason = 'no_progress'
+        progress['reason'] = reason
+        progress['nextAt'] = max((failure['retryAt'] for failure in failures if failure.get('retryAt')), default=None)
+        continuation = {'reason': reason, 'remaining': count, 'searches': len(progress['searches']),
+                        'posts': len(progress['postIds']), 'nextAt': progress['nextAt'],
+                        'ready': reason == 'time_limit', 'progressed': progressed, 'initialTasks': work_before}
     durable.save()
     return {'component': 'personal', **state['lastRun'], 'acquisition': {
         'lookbackDays': RECOVERY_DAYS, 'days': summaries, 'pendingBefore': pending_before,
         'expired': expired,
         'supplemental': supplemental,
+        'continuation': continuation,
         'complete': not incomplete and not failures,
     }}, (3 if status == 'paused' else 2 if status == 'partial' else 0)
 
@@ -1982,6 +2239,7 @@ def argument_parser():
                         help='validated official names/notices for the same-run target population')
     parser.add_argument('--node', type=Path, help='existing Node executable for the local schedule JS')
     parser.add_argument('--date', help='JST calendar date; only today may make requests')
+    parser.add_argument('--collection-slot-id', help='validated personal scheduled slot identity')
     parser.add_argument('--max-searches', type=int, default=2, help='maximum 0..3 pages/run')
     parser.add_argument('--max-posts', type=int, default=3, help='maximum 0..3 new individual GETs/run')
     parser.add_argument('--dry-run', action='store_true', help='persist private safety/facts, do not publish')
@@ -2057,6 +2315,15 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
             except source_usage.SourceFailure as exc:
                 raise InfrastructureFailure(exc.reason) from None
         date = dt.date.fromisoformat(args.date) if args.date else calendar_day(clock())
+        if args.collection_slot_id:
+            validate_personal_slot(args.collection_slot_id)
+            if not args.catch_up:
+                raise ValueError('collection_slot_requires_finite_recovery')
+            date = dt.datetime.fromisoformat(args.collection_slot_id.removeprefix('personal:')).date()
+        if args.catch_up and state.get('recovery') and (
+                state['recovery']['searches'] or state['recovery']['postIds']
+                or state['recovery']['chainId'] == args.source_run_id):
+            date = dt.date.fromisoformat(state['recovery']['serviceDate'])
         schedule = read_js(args.schedule, 'SCHEDULE_DATA', args.node)
         half_bindings = {}
         if args.half_month_snapshot:
@@ -2085,13 +2352,17 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
             accounts = list(csv.DictReader(source))
         observations = official.load_snapshot(args.observations)
         targets = select_targets(schedule, insights, accounts, date, state, observations,
-                                 registry=registry, binding_maps=(half_bindings,))
+                                 registry=registry, binding_maps=(half_bindings,),
+                                 policy_day=date if args.catch_up else None)
         durable = DurableHttp(state, snapshot, http_state, date, targets,
-                              args.max_searches, args.max_posts, clock, sleep, scheduled=args.scheduled,
+                              None if args.catch_up and args.max_searches else args.max_searches,
+                              None if args.catch_up and args.max_posts else args.max_posts,
+                              clock, sleep, scheduled=args.scheduled,
                               shared_source=shared_source, registry_guard=guard,
                               catch_up=args.catch_up,
                               bindings=lambda: identity_bindings(
                                   registry, current_half_bindings(), state['identityBindings']))
+        durable.collection_slot = args.collection_slot_id
         durable.preflight()
         analyzer = None
         if args.analysis_backend == 'azure':
@@ -2106,7 +2377,7 @@ def run(args, clock=official.utc_now, sleep=time.sleep, client_factory=PersonalC
                 try:
                     options['usage'] = locks.enter_context(usage_module.SharedUsage(
                         args.ai_state, run_id=args.analysis_run_id, component='personal',
-                        clock=clock, sleep=sleep, request_limit=args.analysis_limit,
+                        clock=clock, sleep=sleep, request_limit=None if args.catch_up else args.analysis_limit,
                         run_limit=usage_module.CATCHUP_RUN_LIMIT if args.catch_up else usage_module.RUN_LIMIT,
                         deadline=None if args.analyze_saved else durable.analysis_allowed))
                 except usage_module.UsageFailure as exc:
@@ -2147,9 +2418,8 @@ def main(argv=None):
     parser = argument_parser()
     try:
         args = parser.parse_args(argv)
-        cap = MAX_RECOVERY_REQUESTS if args.catch_up else 3
-        if (not 0 <= args.max_searches <= cap or not 0 <= args.max_posts <= cap
-                or not 1 <= args.analysis_limit <= cap):
+        if (args.max_searches < 0 or args.max_posts < 0 or args.analysis_limit < 1
+                or not args.catch_up and max(args.max_searches, args.max_posts, args.analysis_limit) > 3):
             parser.error('--max-searches/--max-posts must be 0..3; --analysis-limit must be 1..3')
     except SystemExit as exc:
         if exc.code != 2:

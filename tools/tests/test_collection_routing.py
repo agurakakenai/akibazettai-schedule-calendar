@@ -6,6 +6,9 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -21,7 +24,7 @@ REPOSITORY = 'agurakakenai/akibazettai-schedule-calendar'
 
 
 def job_block(name):
-    return re.search(r'^  ' + name + r':\n(.*?)(?=^  [a-z]+:|\Z)',
+    return re.search(r'^  ' + name + r':\n(.*?)(?=^  [a-z][a-z-]*:|\Z)',
                      WORKFLOW, re.M | re.S).group(1)
 
 
@@ -42,7 +45,8 @@ def job_condition(name):
 
 
 def evaluate(expression, *, event='workflow_dispatch', mode='deploy', ref='refs/heads/main',
-             repository=REPOSITORY, collect='skipped', build='success', cancelled=False):
+             repository=REPOSITORY, collect='skipped', build='success', deploy='success',
+             continuation='true', cancelled=False):
     # Evaluate only the checked-in boolean guard, with no builtins or API calls.
     expression = expression.replace('&&', ' and ').replace('||', ' or ')
     expression = re.sub(r'!(?!=)', 'not ', expression)
@@ -51,8 +55,10 @@ def evaluate(expression, *, event='workflow_dispatch', mode='deploy', ref='refs/
             event_name=event, ref=ref, repository=repository,
             event=SimpleNamespace(pull_request=SimpleNamespace(number=32))),
         'inputs': SimpleNamespace(mode=mode),
-        'needs': SimpleNamespace(collect=SimpleNamespace(result=collect),
-                                 build=SimpleNamespace(result=build)),
+        'needs': SimpleNamespace(collect=SimpleNamespace(
+            result=collect, outputs=SimpleNamespace(continuation_ready=continuation)),
+            build=SimpleNamespace(result=build, outputs=SimpleNamespace(continuation_ready=continuation)),
+            deploy=SimpleNamespace(result=deploy)),
         'always': lambda: True, 'cancelled': lambda: cancelled,
         'format': lambda template, value: template.format(value),
     })
@@ -76,7 +82,7 @@ class RoutingTests(unittest.TestCase):
 
     def test_activation_uses_same_eight_frames_without_clock_routing(self):
         self.assertEqual(routing.collection_mode(
-            'schedule', 'collect', routing.LEGACY_SCHEDULE, enabled=True), 'daily-guidance')
+            'schedule', 'collect', routing.LEGACY_SCHEDULE, enabled=True), 'collect')
         self.assertEqual({(hour + 9) % 24 for hour in hours(routing.LEGACY_SCHEDULE)},
                          {12, 13, 14, 15, 17, 18, 19, 20})
         for schedule in ('30 3-6,8-10 * * *', '30 11 * * *', '30 0-2,7,15-23 * * *'):
@@ -104,21 +110,71 @@ class RoutingTests(unittest.TestCase):
         self.addCleanup(output.unlink, missing_ok=True)
         with mock.patch.dict(os.environ, {
                 'EVENT_NAME': 'schedule', 'EVENT_SCHEDULE': routing.LEGACY_SCHEDULE,
+                'RUN_CREATED_AT': '2026-09-23T03:33:00Z',
                 'REQUESTED_MODE': 'personal', 'GITHUB_OUTPUT': str(output)}, clear=True), \
                 contextlib.redirect_stdout(io.StringIO()) as stream:
             self.assertEqual(routing.main(), 0)
-        self.assertEqual(json.loads(stream.getvalue()), {'collectionMode': 'collect'})
-        self.assertEqual(output.read_text(), 'collectionMode=collect\n')
+        result = json.loads(stream.getvalue())
+        self.assertEqual(result['collectionMode'], 'collect')
+        self.assertEqual(result['collectionKind'], 'official')
+        self.assertEqual(result['collectionDate'], '2026-09-23')
+        self.assertEqual(result['collectionSlot'], '2026-09-23T03:30:00Z')
+        self.assertEqual(result['collectionSlotId'], 'official:2026-09-23T12:30+09:00')
+        saved_output = output.read_text()
         with mock.patch.dict(os.environ, {
                 'EVENT_NAME': 'schedule', 'EVENT_SCHEDULE': 'private-invalid-value',
                 'GITHUB_OUTPUT': str(output)}, clear=True), \
                 contextlib.redirect_stdout(io.StringIO()) as stream:
             self.assertEqual(routing.main(), 1)
         self.assertNotIn('private-invalid-value', stream.getvalue())
-        self.assertEqual(output.read_text(), 'collectionMode=collect\n')
+        self.assertEqual(output.read_text(), saved_output)
 
 
 class ProductionWorkflowTests(unittest.TestCase):
+    def test_dispatch_script_preserves_queued_runs_and_reports_api_failure(self):
+        if os.name == 'nt':
+            git = shutil.which('git')
+            bash = Path(git).parent.parent / 'bin' / 'bash.exe' if git else None
+            if bash is None or not bash.is_file():
+                self.skipTest('Git Bash is unavailable')
+        else:
+            bash = shutil.which('bash')
+            if not bash:
+                self.skipTest('Bash is unavailable')
+        block = job_block('continue-collection')
+        raw = block.split('        run: |\n', 1)[1]
+        script = '\n'.join(line[10:] for line in raw.splitlines() if line.startswith('          '))
+        mock_gh = '''
+gh() {
+  case "$*" in
+    *"--method POST"*) echo dispatched >> "$DISPATCH_LOG"; return "$POST_CODE";;
+    *"status=queued"*) printf '%s\\n' "$QUEUED"; return "$GET_CODE";;
+    *) echo 0; return "$GET_CODE";;
+  esac
+}
+'''
+        for queued, get_code, post_code, expected_calls, success in [
+                ('0', '0', '0', 1, True), ('1', '0', '0', 0, True),
+                ('0', '1', '0', 0, False), ('0', '0', '1', 1, False)]:
+            with self.subTest(queued=queued, get=get_code, post=post_code), \
+                    tempfile.TemporaryDirectory() as folder:
+                result = subprocess.run(
+                    [str(bash), '--noprofile', '--norc', '-e', '-o', 'pipefail', '-s'],
+                    input=mock_gh + script, text=True, capture_output=True, cwd=folder, timeout=15,
+                    env={**os.environ, 'CHECKPOINT_SHA': 'a' * 40, 'CONTINUATION_MODE': 'personal',
+                         'GITHUB_REPOSITORY': REPOSITORY, 'GITHUB_RUN_ID': '12345',
+                         'GITHUB_STEP_SUMMARY': 'summary.txt', 'DISPATCH_LOG': 'dispatch.txt',
+                         'QUEUED': queued, 'GET_CODE': get_code, 'POST_CODE': post_code,
+                         'BASH_ENV': ''},
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                self.assertEqual(result.returncode == 0, success, result.stderr)
+                log = Path(folder) / 'dispatch.txt'
+                calls = log.read_text().splitlines() if log.exists() else []
+                self.assertEqual(len(calls), expected_calls)
+                if queued == '1':
+                    self.assertIn('checkpoint ' + 'a' * 40 + ' is retained',
+                                  (Path(folder) / 'summary.txt').read_text())
+
     def test_azure_backend_and_credentials_exclude_saved_restore_and_build(self):
         collect = job_block('collect')
         for name in ('PERSONAL_ANALYSIS_BACKEND', 'AZURE_OPENAI_API_KEY',
@@ -136,15 +192,19 @@ class ProductionWorkflowTests(unittest.TestCase):
             self.assertNotIn('AZURE_OPENAI_', job_block(job))
             self.assertNotIn('PERSONAL_ANALYSIS_BACKEND', job_block(job))
 
-    def test_only_legacy_cron_is_enabled_and_manual_modes_are_explicit(self):
+    def test_personal_slots_are_independent_of_unchanged_official_cron(self):
         enabled = re.findall(r'^\s+- cron: "([^"]+)"$', WORKFLOW, re.M)
-        self.assertEqual(enabled, [routing.LEGACY_SCHEDULE])
+        self.assertEqual(enabled, [routing.LEGACY_SCHEDULE, *routing.slots.PERSONAL_SCHEDULES])
         options = re.search(r'        options:\n(.*?)        default:', WORKFLOW, re.S).group(1)
         self.assertEqual(re.findall(r'          - (\S+)', options),
                          ['deploy', 'collect', 'personal', 'both', 'apply-saved', 'cost-sync', 'probe'])
         collect = job_block('collect')
         self.assertIn('EVENT_SCHEDULE: ${{ github.event.schedule }}', collect)
-        self.assertIn('run: python tools/collection-routing.py', collect)
+        self.assertIn('          python tools/collection-routing.py', collect)
+        self.assertIn('actions/runs/$GITHUB_RUN_ID', collect)
+        self.assertIn('echo "RUN_CREATED_AT=$RUN_CREATED_AT" >> "$GITHUB_ENV"', collect)
+        for key in ('KIND', 'SLOT', 'SLOT_ID', 'DATE'):
+            self.assertIn('COLLECTION_' + key + ': ${{ steps.route.outputs.', collect)
         self.assertIn('--mode "$COLLECTION_MODE"', collect)
         self.assertIn("DAILY_GUIDANCE_ENABLED: ${{ vars.DAILY_GUIDANCE_ENABLED || 'false' }}", collect)
         self.assertIn('APPLY_SAVED_MANIFEST: ${{ inputs.saved_manifest }}', collect)
@@ -216,6 +276,36 @@ class ProductionWorkflowTests(unittest.TestCase):
             self.assertIn('          persist-credentials: false', job_block(name))
         self.assertNotIn('ref: main', job_block('validate'))
         self.assertNotIn('ref: main', job_block('probe'))
+
+    def test_continuation_requires_saved_data_and_successful_publication(self):
+        condition = job_condition('continue-collection')
+        self.assertTrue(evaluate(condition, collect='success', deploy='success'))
+        self.assertTrue(evaluate(condition, collect='skipped', build='success', deploy='success'),
+                        "a code-only deployment can resume the checkpoint it actually published")
+        for change in (
+                {'collect': 'failure'}, {'collect': 'cancelled'}, {'deploy': 'failure'},
+                {'build': 'failure'}, {'build': 'skipped'}, {'build': 'cancelled'},
+                {'deploy': 'cancelled'}, {'deploy': 'skipped'}, {'continuation': 'false'},
+                {'continuation': ''}, {'cancelled': True}, {'ref': 'refs/heads/feature'},
+                {'repository': 'someone/fork'}):
+            args = {'collect': 'success', 'deploy': 'success', **change}
+            with self.subTest(change=change):
+                self.assertFalse(evaluate(condition, **args))
+        block = job_block('continue-collection')
+        self.assertIn('needs: [collect, build, deploy]', block)
+        self.assertIn('needs.build.outputs.state_commit', block)
+        self.assertIn('steps.restore.outputs.stateCommit', job_block('build'))
+        self.assertNotIn('needs.collect.outputs.state_commit', block)
+        self.assertLess(block.index('for STATUS in queued pending waiting'),
+                        block.index('gh api --method POST'))
+        self.assertIn('exit 0', block)
+        self.assertEqual(block.count('gh api --method POST'), 1)
+        self.assertIn('actions: write', block)
+        self.assertNotIn('actions: write', job_block('collect'))
+        self.assertIn('^[0-9a-f]{40}$', block)
+        self.assertNotIn('continue-on-error', block)
+        self.assertNotIn('AZURE_OPENAI_', block)
+        self.assertNotIn('SCHEDULE_EVIDENCE_KEY', block)
 
 
 if __name__ == '__main__':
