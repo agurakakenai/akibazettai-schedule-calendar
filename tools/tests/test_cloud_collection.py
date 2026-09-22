@@ -1348,6 +1348,48 @@ class CloudTests(unittest.TestCase):
             return 2
         return invoke
 
+    def test_real_seven_am_slot_identity_is_separate_from_both_accounting_run_ids(self):
+        module, _ = self.finite_personal_fixture()
+        slot_id = 'personal:2026-09-23T07:00+09:00'
+        slot_time = '2026-09-22T22:00:00Z'
+        self.environment.update(
+            GITHUB_EVENT_NAME='schedule', COLLECTION_KIND='personal',
+            RUN_CREATED_AT=slot_time, COLLECTION_SLOT=slot_time,
+            COLLECTION_SLOT_ID=slot_id, COLLECTION_DATE='2026-09-23')
+        event = json.loads(self.event_path.read_bytes())
+        event['schedule'] = '0 22 * * *'
+        self.event_path.write_text(json.dumps(event), encoding='utf-8')
+        real_invoke = cloud.invoke_personal_collector
+        def invoke(root, state, report, environment):
+            self.assertEqual(environment['COLLECTION_SLOT_ID'], slot_id)
+            self.assertEqual(environment['COLLECTION_DATE'], '2026-09-23')
+            self.assertEqual(environment['CLOUD_COLLECTION_RUN_ID'], '12345-1')
+            with mock.patch.object(cloud, 'child_process', return_value=mock.Mock(returncode=0)) as child:
+                real_invoke(root, state, report, environment)
+                args = module.argument_parser().parse_args(child.call_args.args[0][4:])
+            self.assertEqual(args.collection_slot_id, slot_id)
+            self.assertEqual(args.date, '2026-09-23')
+            self.assertEqual((args.source_run_id, args.analysis_run_id), ('12345-1', '12345-1'))
+            self.assertNotEqual(args.analysis_run_id, slot_id)
+            ledger, source = cloud.load_analysis_state(), cloud.load_source_state()
+            with ledger.SharedUsage(args.ai_state, run_id=args.analysis_run_id, component='personal',
+                                    clock=collector.utc_now, sleep=lambda seconds: None,
+                                    request_limit=None, run_limit=None), \
+                    source.SharedSource(args.source_state, run_id=args.source_run_id, component='personal',
+                                        clock=collector.utc_now, sleep=lambda seconds: None):
+                pass
+            snapshot = module.read_state(state / cloud.PERSONAL)
+            snapshot['lastRun'] = {'status': 'no-results', 'requests': {'searches': 0, 'posts': 0}}
+            collector.atomic_json(state / cloud.PERSONAL, snapshot)
+            collector.atomic_json(report, {'component': 'personal', 'status': 'no-results', 'exitCode': 0,
+                                           'requests': snapshot['lastRun']['requests']})
+            return 0
+        with mock.patch.object(cloud, 'invoke_personal_collector', side_effect=invoke) as called:
+            result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                       collector=collector, personal=module)
+        called.assert_called_once()
+        self.assertEqual(result['persistenceStatus'], 'saved')
+
     def test_finite_checkpoint_cas_stale_dispatch_normal_resume_and_duplicate_slot(self):
         module, clock = self.finite_personal_fixture()
         self.personal_slot()
