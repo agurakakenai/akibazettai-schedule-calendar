@@ -238,6 +238,24 @@
       "checkedAt": "2026-09-09T13:03:49.162850Z",
       "reason": "source_failed"
     },
+    "a8ce825971a82a3d5ef9e76b6202e62aad5c882086bb6509e93839b63ab1d399": {
+      "candidate": {
+        "attempts": 1,
+        "authorId": "1991081247444258817",
+        "authorScreenName": "mahiro1_zettai",
+        "discoveredAt": "2026-09-22T14:06:09.006807Z",
+        "discoveryHash": "e8aa2e825af46a6d09fbedec89faede7f084bba1a493af2ddc180e6a72340fcf",
+        "id": "2101698097734979769",
+        "lastAttemptAt": "2026-09-22T14:06:09.340971Z",
+        "name": "まひろ",
+        "nextAttemptAt": null,
+        "priority": 1,
+        "searchCreatedAt": "2026-09-20T15:40:48Z",
+        "url": "https://x.com/mahiro1_zettai/status/2101698097734979769"
+      },
+      "checkedAt": "2026-09-22T14:06:13.423267Z",
+      "reason": "source_failed"
+    },
     "c8aba1e1fd94e5192bdefce7fb25f8471c4e0def2e79607d61f333d86b6721cf": {
       "candidate": {
         "authorId": "1954467457902809088",
@@ -256,7 +274,7 @@
       "reason": "source_failed"
     }
   },
-  "checkedAt": "2026-09-22T08:41:55.418599Z",
+  "checkedAt": "2026-09-22T14:06:13.446182Z",
   "complete": false,
   "coverage": {
     "2026-09-01": {
@@ -710,8 +728,8 @@
         "handle": "mahiro1_zettai",
         "lastSearchedAt": null,
         "name": "まひろ",
-        "nextCheckAt": null,
-        "reason": "not_searched",
+        "nextCheckAt": "2026-09-22T20:06:09.093261Z",
+        "reason": "queue_limit",
         "to": "2026-09-15"
       },
       "みえる": {
@@ -1313,13 +1331,19 @@
         "to": "2026-09-30"
       },
       "まひろ": {
-        "candidateIds": [],
+        "candidateIds": [
+          "2101696633788612632",
+          "2101660200914874385",
+          "2101659974615355757",
+          "2101659849566392376",
+          "2101265557752541383"
+        ],
         "confirmedIds": [],
         "handle": "mahiro1_zettai",
-        "lastSearchedAt": null,
+        "lastSearchedAt": "2026-09-22T14:06:09.093236Z",
         "name": "まひろ",
-        "nextCheckAt": null,
-        "reason": "not_searched",
+        "nextCheckAt": "2026-09-22T20:06:09.093236Z",
+        "reason": "source_failed",
         "to": "2026-09-30"
       },
       "みえる": {
@@ -1919,13 +1943,19 @@
         "to": "2026-10-15"
       },
       "まひろ": {
-        "candidateIds": [],
+        "candidateIds": [
+          "2101696633788612632",
+          "2101660200914874385",
+          "2101659974615355757",
+          "2101659849566392376",
+          "2101265557752541383"
+        ],
         "confirmedIds": [],
         "handle": "mahiro1_zettai",
-        "lastSearchedAt": null,
+        "lastSearchedAt": "2026-09-22T14:06:09.093252Z",
         "name": "まひろ",
-        "nextCheckAt": null,
-        "reason": "not_searched",
+        "nextCheckAt": "2026-09-22T20:06:09.093252Z",
+        "reason": "source_failed",
         "to": "2026-10-15"
       },
       "みえる": {
@@ -3151,6 +3181,71 @@
       "priority": 1,
       "searchCreatedAt": "2026-09-18T15:22:01Z",
       "url": "https://x.com/nyana_zettai/status/2100968592640717173"
+    },
+    {
+      "authorId": "1991081247444258817",
+      "authorScreenName": "mahiro1_zettai",
+      "discoveredAt": "2026-09-22T14:06:09.006807Z",
+      "discoveryHash": "e8aa2e825af46a6d09fbedec89faede7f084bba1a493af2ddc180e6a72340fcf",
+      "id": "2101696633788612632",
+      "lastAttemptAt": null,
+      "name": "まひろ",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-20T15:34:59Z",
+      "url": "https://x.com/mahiro1_zettai/status/2101696633788612632"
+    },
+    {
+      "authorId": "1991081247444258817",
+      "authorScreenName": "mahiro1_zettai",
+      "discoveredAt": "2026-09-22T14:06:09.006807Z",
+      "discoveryHash": "e8aa2e825af46a6d09fbedec89faede7f084bba1a493af2ddc180e6a72340fcf",
+      "id": "2101660200914874385",
+      "lastAttemptAt": null,
+      "name": "まひろ",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-20T13:10:13Z",
+      "url": "https://x.com/mahiro1_zettai/status/2101660200914874385"
+    },
+    {
+      "authorId": "1991081247444258817",
+      "authorScreenName": "mahiro1_zettai",
+      "discoveredAt": "2026-09-22T14:06:09.006807Z",
+      "discoveryHash": "e8aa2e825af46a6d09fbedec89faede7f084bba1a493af2ddc180e6a72340fcf",
+      "id": "2101659974615355757",
+      "lastAttemptAt": null,
+      "name": "まひろ",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-20T13:09:19Z",
+      "url": "https://x.com/mahiro1_zettai/status/2101659974615355757"
+    },
+    {
+      "authorId": "1991081247444258817",
+      "authorScreenName": "mahiro1_zettai",
+      "discoveredAt": "2026-09-22T14:06:09.006807Z",
+      "discoveryHash": "e8aa2e825af46a6d09fbedec89faede7f084bba1a493af2ddc180e6a72340fcf",
+      "id": "2101659849566392376",
+      "lastAttemptAt": null,
+      "name": "まひろ",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-20T13:08:49Z",
+      "url": "https://x.com/mahiro1_zettai/status/2101659849566392376"
+    },
+    {
+      "authorId": "1991081247444258817",
+      "authorScreenName": "mahiro1_zettai",
+      "discoveredAt": "2026-09-22T14:06:09.006807Z",
+      "discoveryHash": "e8aa2e825af46a6d09fbedec89faede7f084bba1a493af2ddc180e6a72340fcf",
+      "id": "2101265557752541383",
+      "lastAttemptAt": null,
+      "name": "まひろ",
+      "nextAttemptAt": null,
+      "priority": 1,
+      "searchCreatedAt": "2026-09-19T11:02:03Z",
+      "url": "https://x.com/mahiro1_zettai/status/2101265557752541383"
     }
   ],
   "receipts": {
