@@ -516,7 +516,7 @@ for (const entry of maidEntries) {
 }
 
 const linkedNames = withClass(calendar, "maid-name").filter((node) => node.tagName === "A");
-assert.equal(linkedNames.length, 257, "reviewed half-month sources link only their exact person/date/shift");
+assert.equal(linkedNames.length, 265, "reviewed half-month sources link only their exact person/date/shift");
 const reviewedUrls = new Set(schedule.sourceConfirmedPlans.map(plan => plan.source.url));
 assert.ok(linkedNames.every(node => reviewedUrls.has(node.href)),
   "daily names must use their verified source, never a profile fallback");
