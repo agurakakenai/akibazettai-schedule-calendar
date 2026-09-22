@@ -71,6 +71,23 @@ def registry_fixture(*targets):
     return personal.members.validate_registry(value)
 
 
+def confirmed_schedule(schedule):
+    result = copy.deepcopy(schedule)
+    for shifts in result['schedule'].values():
+        for rows in shifts.values():
+            for row in rows:
+                row['halfMonthSources'] = [{'id': TID, 'confirmation': {'method': 'source-confirmed'}}]
+    return result
+
+
+def official_schedule(schedule):
+    return {'posts': [{'id': str(int(TID) + index), 'date': day, 'shift': shift,
+                       'names': [row['name'] for row in rows], 'notices': []}
+                      for index, (day, shift, rows) in enumerate(
+                          (day, shift, rows) for day, shifts in schedule['schedule'].items()
+                          for shift, rows in shifts.items() if shift in ('昼', '夜'))]}
+
+
 class Offline(unittest.TestCase):
     def setUp(self):
         self.net = mock.patch.object(urllib.request.OpenerDirector, 'open',
@@ -569,7 +586,7 @@ class StateTests(Offline):
         durable = self.durable(searches=14, posts=0, now=late)
         durable.catch_up = True
         report, code = personal.collect_recovery(
-            self.state, durable, schedule, None, None, registry, (),
+            self.state, durable, confirmed_schedule(schedule), None, None, registry, (),
             lambda current: self.fake_client(current, entries=[]), None, lambda: late)
         self.assertEqual((report['requests']['searches'], report['requests']['posts']), (14, 0))
         day = report['acquisition']['days'][0]
@@ -619,7 +636,7 @@ class StateTests(Offline):
                 client.fetch_post.side_effect = fetch
                 return client
             report, _ = personal.collect_recovery(
-                self.state, durable, schedule, None, None, registry, (),
+                self.state, durable, confirmed_schedule(schedule), None, None, registry, (),
                 client_factory, None, lambda: now)
             day = report['acquisition']['days'][0]
             self.assertEqual((day['targets'], day['personShifts']), (18, 19))
@@ -664,6 +681,341 @@ class StateTests(Offline):
                 self.assertEqual(self.state['posts'][0]['name'], AMU['name'])
                 personal.read_state(self.snapshot)
 
+    def test_finite_checkpoint_exceeds_fourteen_resumes_without_research_or_reanalysis(self):
+        people = [{'name': f'人{i:02}', 'handle': f'person{i}', 'shifts': ['夜']} for i in range(18)]
+        registry = registry_fixture(*people)
+        schedule = {'schedule': {DATE.isoformat(): {'夜': [{'name': row['name']} for row in people]}}}
+        candidates, payloads = [], {}
+        for i, target in enumerate(people):
+            for offset in range(2):
+                tid, uid = str(int(TID) + i * 10 + offset), str(int(UID) + i)
+                item = candidate(tid=tid, target=target, uid=uid)
+                candidates.append(item)
+                payloads[tid] = post('コーヒーを飲みました' if offset and i % 2 == 0 else '本日1号店夜',
+                                     tid=tid, target=target, uid=uid)
+        now = [NOW + dt.timedelta(hours=1)]
+        source = personal.SOURCE_LIMITS
+        source_path = self.folder / 'source.json'
+        baseline = source.baseline_state(self.state, source_hash='a' * 64, at=now[0])
+        denial = {'reason': 'access_denied', 'host': 'pbs.twimg.com',
+                  'at': CREATED, 'retryAt': CREATED, 'httpStatus': 403}
+        baseline['paused'] = denial
+        baseline['cooldowns']['pbs.twimg.com'] = denial['retryAt']
+        source.atomic_json(source_path, baseline)
+        calls, searched = [], []
+
+        def sleep(seconds):
+            now[0] += dt.timedelta(seconds=seconds)
+
+        def segment(analyzer=None):
+            personal.official.atomic_json(self.snapshot, self.state)
+            with source.SharedSource(source_path, run_id='12345-1', component='personal',
+                                     clock=lambda: now[0], sleep=sleep, catch_up=True,
+                                     personal_path=self.snapshot) as shared:
+                durable = personal.DurableHttp(
+                    self.state, self.snapshot, self.http, DATE, {}, None, None,
+                    clock=lambda: now[0], sleep=sleep, catch_up=True, shared_source=shared)
+                def factory(current):
+                    client = mock.Mock()
+                    def search(url, *args):
+                        receipt = current.reserve(personal.SEARCH_HOST, 'searches', url=url)
+                        shared.finish(receipt)
+                        searched.append(url)
+                        return [item for item in candidates if personal.account_search_url(item['authorScreenName']) == url]
+                    def fetch(tid):
+                        receipt = current.reserve(personal.POST_HOST, 'posts',
+                                                  url=f'https://{personal.POST_HOST}/tweet-result?id={tid}&lang=ja&token=a')
+                        shared.finish(receipt)
+                        calls.append(tid)
+                        sleep(60)
+                        return payloads[tid]
+                    client.search.side_effect, client.fetch_post.side_effect = search, fetch
+                    return client
+                return personal.collect_recovery(
+                    self.state, durable, confirmed_schedule(schedule), None, None, registry, (),
+                    factory, analyzer, lambda: now[0])[0]
+
+        first = segment()
+        self.assertGreater(first['requests']['posts'], 14)
+        self.assertTrue(first['acquisition']['continuation']['ready'])
+        checkpoint = personal.read_state(self.snapshot)
+        self.assertTrue(checkpoint['posts'])
+        self.assertEqual(checkpoint['posts'], self.state['posts'])
+        self.state = copy.deepcopy(checkpoint)
+        source_before = source.load_state(source_path)
+        stop = {**denial, 'host': personal.POST_HOST}
+        stopped = copy.deepcopy(source_before)
+        stopped['hostStops'] = {personal.POST_HOST: stop}
+        stopped['cooldowns'][personal.POST_HOST] = stop['retryAt']
+        source.atomic_json(source_path, stopped)
+        held = segment()
+        self.assertEqual(held['requests'], {'searches': 0, 'posts': 0})
+        self.assertEqual(held['acquisition']['continuation']['reason'], 'source_paused')
+        self.assertFalse(held['acquisition']['continuation']['ready'])
+        source.atomic_json(source_path, source_before)
+        self.state = copy.deepcopy(checkpoint)
+        blocked_ai = mock.Mock()
+        blocked_ai.check_capacity.side_effect = personal.azure.AnalysisFailure('azure_backoff')
+        held = segment(blocked_ai)
+        self.assertEqual(held['requests'], {'searches': 0, 'posts': 0})
+        self.assertEqual(held['acquisition']['continuation']['reason'], 'analysis_held')
+        self.assertFalse(held['acquisition']['continuation']['ready'])
+        blocked_ai.parse_with_timing.assert_not_called()
+        self.state = checkpoint
+        # A new real day does not change any queued service date or rewind searches.
+        now[0] = NOW + dt.timedelta(days=1, hours=1)
+        second = segment()
+        if second['acquisition']['continuation']['ready']:
+            self.state = personal.read_state(self.snapshot)
+            second = segment()
+        self.assertFalse(second['acquisition']['continuation']['ready'])
+        self.assertEqual(second['acquisition']['continuation']['reason'], 'complete')
+        before = len(calls), len(searched)
+        third = segment()
+        self.assertEqual((len(calls), len(searched)), before)
+        self.assertEqual(third['requests'], {'searches': 0, 'posts': 0})
+        self.assertEqual(len(calls), len(set(calls)))
+        self.assertEqual(len(searched), len(set(searched)))
+        self.assertEqual(len({item['name'] for item in self.state['posts']}), 18)
+        self.assertEqual({item['date'] for item in self.state['posts']}, {DATE.isoformat()})
+        self.assertEqual(len(self.state['resolved']), 36)
+        self.assertEqual(source.load_state(source_path)['paused'], denial)
+        self.assertFalse(any(item['kind'] == 'images' for item in source.load_state(source_path)['receipts'].values()))
+
+    def test_finite_target_policy_excludes_curated_original_official_only_today_and_plan_only_past(self):
+        people = [{'name': f'人{i}', 'handle': f'person{i}'} for i in range(6)]
+        registry = registry_fixture(*people, {'name': '不明', 'handle': None})
+        yesterday = DATE - dt.timedelta(days=1)
+        schedule = {'schedule': {
+            DATE.isoformat(): {'昼': [
+                {'name': people[0]['name'], 'scheduleSources': [{'id': TID}]},
+                {'name': people[1]['name']}],
+                'unassigned': [{'name': people[2]['name'], 'scheduleSources': [{'id': TID}]}]},
+            yesterday.isoformat(): {'昼': [
+                {'name': people[0]['name'], 'scheduleSources': [{'id': TID}]},
+                {'name': people[3]['name']}]}},
+            'sourceConfirmedPlans': [{'source': {'name': '不明', 'confirmation': {'method': 'source-confirmed'}},
+                                      'days': [{'date': DATE.isoformat(), 'shifts': []}]}]}
+        self.state['originalTargets'][DATE.isoformat()] = {
+            people[4]['name']: {**people[4], 'shifts': ['昼']}}
+        observations = {'posts': [
+            {'id': TID, 'date': DATE.isoformat(), 'shift': '昼', 'names': [people[5]['name']], 'notices': []},
+            {'id': str(int(TID) + 1), 'date': yesterday.isoformat(), 'shift': '昼',
+             'names': [people[3]['name']], 'notices': [{'name': people[4]['name'], 'kind': 'late'}]}]}
+        insights = {'actualRoster': {DATE.isoformat(): {'昼': {'stores': {'s1': [people[5]['name']]}}}}}
+        targets = personal.select_targets(schedule, insights, [], DATE, self.state, observations,
+                                          registry=registry, include_unannounced=True, policy_day=DATE)
+        self.assertEqual(set(targets), {people[0]['name'], people[2]['name']})
+        self.assertEqual(targets[people[2]['name']]['shifts'], [])
+        self.assertTrue(targets[people[2]['name']]['dateKnown'])
+        self.assertIn('不明', self.state['coverage'][DATE.isoformat()])
+        self.assertIn(people[4]['name'], self.state['originalTargets'][DATE.isoformat()])
+        past = personal.select_targets(schedule, insights, [], yesterday, self.state, observations,
+                                       registry=registry, policy_day=DATE)
+        self.assertEqual(set(past), {people[3]['name'], people[4]['name']})
+        for hour in (1, 7, 10, 12):
+            now = dt.datetime.combine(DATE, dt.time(hour), personal.JST)
+            self.assertEqual(set(personal.active_targets(targets, DATE, now, scheduled=True, catch_up=True)),
+                             set(targets))
+        wrong_day = {**candidate(target=people[2]), 'date': yesterday.isoformat()}
+        with self.assertRaisesRegex(personal.Failure, 'timestamp_mismatch'):
+            personal.validate_post(wrong_day, post(target=people[2]), targets[people[2]['name']], NOW)
+
+    def test_finite_targets_accept_existing_v1_and_v2_half_month_feeds(self):
+        import test_half_month_schedules as half
+        for version in (half.facts.LEGACY_VERSION, half.facts.VERSION):
+            with self.subTest(version=version):
+                source, schedules, analysis = half.normalized(contract_version=version)
+                feed = half.facts.empty_state()
+                half.facts.apply_revision(feed, schedules, source, analysis)
+                registry = half.registry_fixture()
+                projection = half.facts.effective_schedule(
+                    {}, half.facts.public_state(feed), registry=registry)
+                day = dt.date(2026, 9, 7)
+                targets = personal.select_targets(
+                    {'schedule': projection}, None, [], day, personal.empty_state(),
+                    registry=registry, policy_day=day)
+                self.assertEqual(set(targets), {half.TARGET['name']})
+                self.assertEqual(targets[half.TARGET['name']]['shifts'], ['昼'])
+
+    def test_past_target_gate_requires_names_or_explicit_late_not_absent_mentions(self):
+        people = [{'name': f'人{i}', 'handle': f'person{i}'} for i in range(5)]
+        yesterday = DATE - dt.timedelta(days=1)
+        day = yesterday.isoformat()
+        schedule = confirmed_schedule({'schedule': {day: {'昼': [{'name': people[1]['name']}]}}})
+        self.state['originalTargets'][day] = {
+            people[1]['name']: {**people[1], 'shifts': ['昼']}}
+        original = copy.deepcopy(self.state['originalTargets'])
+        observations = {'posts': [{
+            'id': TID, 'date': day, 'shift': '昼', 'names': [people[0]['name']],
+            'notices': [
+                {'name': people[0]['name'], 'kind': 'absent'},
+                {'name': people[1]['name'], 'kind': 'absent'},
+                {'name': people[2]['name'], 'kind': 'late'},
+                {'name': people[2]['name'], 'kind': 'absent'},
+                {'name': people[3]['name']},
+                {'name': people[4]['name'], 'kind': 'unknown'}]}]}
+        evidence = copy.deepcopy(observations)
+        targets = personal.select_targets(
+            schedule, None, [], yesterday, self.state, observations,
+            registry=registry_fixture(*people), policy_day=DATE)
+        self.assertEqual(set(targets), {people[0]['name'], people[2]['name']})
+        self.assertEqual(targets[people[0]['name']]['shifts'], ['昼'])
+        self.assertEqual(targets[people[2]['name']]['shifts'], ['昼'])
+        self.assertEqual(observations, evidence)
+        self.assertEqual(self.state['originalTargets'], original)
+
+    def test_date_only_work_link_completes_without_inventing_a_shift(self):
+        target = {**AMU, 'shifts': [], 'dateKnown': True}
+        self.state['posts'] = [{
+            **candidate(), 'createdAt': CREATED, 'observedAt': personal.stamp(NOW),
+            'events': [], 'links': [{'scope': 'unspecified', 'status': 'work'}]}]
+        self.assertTrue(personal.work_source_complete(self.state, target, DATE))
+        self.assertEqual(target['shifts'], [])
+
+    def test_finite_checkpoint_host_holds_and_no_http_deadline_keep_actionable_work(self):
+        source = personal.SOURCE_LIMITS
+        source_path = self.folder / 'source.json'
+        source.atomic_json(source_path, source.baseline_state(self.state, source_hash='a' * 64, at=NOW))
+        now = [NOW]
+        registry = registry_fixture(AMU)
+        schedule = confirmed_schedule({'schedule': {DATE.isoformat(): {'昼': [{'name': AMU['name']}]}}})
+        def sleep(seconds):
+            now[0] += dt.timedelta(seconds=seconds)
+        with source.SharedSource(source_path, run_id='12345-1', component='personal',
+                                 clock=lambda: now[0], sleep=sleep) as shared:
+            for status in (403, 429):
+                self.state['paused'] = {'host': personal.POST_HOST, 'reason': 'access_denied',
+                                        'httpStatus': status, 'at': personal.stamp(now[0]),
+                                        'retryAt': personal.stamp(now[0] + dt.timedelta(hours=1))}
+                durable = personal.DurableHttp(self.state, self.snapshot, self.http, DATE, {}, None, None,
+                                              clock=lambda: now[0], sleep=sleep, catch_up=True, shared_source=shared)
+                factory = mock.Mock(side_effect=AssertionError('Paused checkpoint must not construct a source client'))
+                report, _ = personal.collect_recovery(
+                    self.state, durable, schedule, None, None, registry, (), factory, None, lambda: now[0])
+                factory.assert_not_called()
+                self.assertEqual(report['requests'], {'searches': 0, 'posts': 0})
+                self.assertEqual(report['acquisition']['continuation']['reason'], 'source_paused')
+                self.assertFalse(report['acquisition']['continuation']['ready'])
+                self.assertEqual(len(self.state['recovery']['searches']), 1)
+            self.state['paused'] = None
+            self.state['pending'] = [{**candidate(), 'reason': 'discovered', 'attempts': 0,
+                                      'firstSeenAt': personal.stamp(now[0]), 'lastAttemptAt': None}]
+            self.state['recovery'].update(searches=[], postIds=[TID])
+            durable = personal.DurableHttp(self.state, self.snapshot, self.http, DATE, {}, None, None,
+                                          clock=lambda: now[0], sleep=sleep, catch_up=True, shared_source=shared)
+            client = mock.Mock()
+            def timeout(tid):
+                now[0] += dt.timedelta(seconds=personal.RECOVERY_SECONDS)
+                durable.check_window()
+            client.fetch_post.side_effect = timeout
+            report, _ = personal.collect_recovery(
+                self.state, durable, schedule, None, None, registry, (), lambda current: client, None, lambda: now[0])
+            self.assertEqual(self.state['recovery']['postIds'], [TID])
+            self.assertEqual(self.state['pending'][0]['attempts'], 0)
+            self.assertIsNone(self.state['pending'][0]['lastAttemptAt'])
+            self.assertFalse(report['acquisition']['continuation']['ready'])
+            self.assertEqual(report['acquisition']['continuation']['reason'], 'no_progress')
+            self.assertEqual(shared.report()['issued']['personal'], {'searches': 0, 'posts': 0, 'images': 0})
+
+    def test_real_ai_finite_queue_exceeds_fourteen_and_resumes_across_month_without_reanalysis(self):
+        from test_analysis_state import usage, historical
+        from test_personal_azure import ENV, response
+        workday = dt.date(2026, 9, 30)
+        created = '2026-09-29T16:00:00Z'
+        now = [dt.datetime(2026, 9, 30, 14, 35, tzinfo=personal.UTC)]
+        people = [{'name': f'人{i:02}', 'handle': f'person{i}', 'shifts': ['夜']} for i in range(18)]
+        registry = registry_fixture(*people)
+        schedule = confirmed_schedule({'schedule': {workday.isoformat(): {
+            '夜': [{'name': person['name']} for person in people]}}})
+        candidates, payloads = [], {}
+        for index, person in enumerate(people):
+            for offset in range(2 if index < 6 else 1):
+                tid = str(int(snowflake(created)) + index * 10 + offset)
+                item = {**candidate(tid, created, person, str(int(UID) + index)), 'date': workday.isoformat()}
+                candidates.append(item)
+                payloads[tid] = post('コーヒーを飲みました' if offset else '本日夜1号店',
+                                     tid, created, person, str(int(UID) + index))
+        ai_path, source_path = self.folder / 'ai.json', self.folder / 'source.json'
+        ai = usage.empty_state()
+        old = historical(date='2026-09-29', count=1)
+        usage.apply_import(ai, old)
+        ai['money'] = usage.costs.empty()
+        ai['money']['opening']['2026-09'] = {
+            'amountMicroJPY': 707_000_000, 'basisHash': 'a' * 64,
+            'records': {'import:' + old['receiptId']: usage.costs.digest(old)},
+            'kind': 'provisional-azure-actual', 'throughDate': '2026-09-29',
+            'observedAt': '2026-09-30T00:00:00Z'}
+        usage.atomic_json(ai_path, ai)
+        source = personal.SOURCE_LIMITS
+        source.atomic_json(source_path, source.baseline_state(self.state, source_hash='b' * 64, at=now[0]))
+        fetched, model_inputs = [], []
+
+        def sleep(seconds):
+            now[0] += dt.timedelta(seconds=seconds)
+
+        def model(request, timeout):
+            wire = json.loads(request.data)
+            model_inputs.append(wire)
+            empty = 'コーヒー' in json.dumps(wire, ensure_ascii=False)
+            return response({'events': [] if empty else [{
+                'serviceDate': workday.isoformat(), 'shift': '夜', 'kind': 'placement',
+                'storeId': 's1', 'time': None, 'evidenceLineIds': [1]}],
+                'links': [], 'workTiming': []})
+
+        def segment():
+            personal.official.atomic_json(self.snapshot, self.state)
+            with source.SharedSource(source_path, run_id='12345-1', component='personal',
+                                     clock=lambda: now[0], sleep=sleep, personal_path=self.snapshot) as shared, \
+                    usage.SharedUsage(ai_path, run_id='12345-1', component='personal', request_limit=None,
+                                      run_limit=None, clock=lambda: now[0], sleep=sleep) as ledger:
+                durable = personal.DurableHttp(
+                    self.state, self.snapshot, self.http, workday, {}, None, None,
+                    clock=lambda: now[0], sleep=sleep, catch_up=True, scheduled=True, shared_source=shared)
+                opener = mock.Mock()
+                opener.open.side_effect = model
+                analyzer = personal.azure.AzureAnalyzer(
+                    self.state, durable.save, personal.azure_context(), ENV, clock=lambda: now[0],
+                    sleep=sleep, opener=opener, usage=ledger, deadline=durable.analysis_allowed)
+                def factory(current):
+                    client = mock.Mock()
+                    def search(url, *args):
+                        receipt = current.reserve(personal.SEARCH_HOST, 'searches', url=url)
+                        shared.finish(receipt)
+                        return [item for item in candidates
+                                if personal.account_search_url(item['authorScreenName']) == url]
+                    def fetch(tid):
+                        receipt = current.reserve(personal.POST_HOST, 'posts',
+                                                  url=f'https://{personal.POST_HOST}/tweet-result?id={tid}&lang=ja&token=a')
+                        shared.finish(receipt)
+                        fetched.append(tid)
+                        return payloads[tid]
+                    client.search.side_effect, client.fetch_post.side_effect = search, fetch
+                    return client
+                return personal.collect_recovery(
+                    self.state, durable, schedule, None, None, registry, (), factory, analyzer, lambda: now[0])[0]
+        first = segment()
+        self.assertGreater(len(model_inputs), 14)
+        self.assertTrue(first['acquisition']['continuation']['ready'])
+        self.state = personal.read_state(self.snapshot)
+        self.assertEqual(self.state['recovery']['serviceDate'], workday.isoformat())
+        now[0] = dt.datetime(2026, 9, 30, 15, 10, tzinfo=personal.UTC)
+        second = segment()
+        self.assertFalse(second['acquisition']['continuation']['ready'])
+        self.assertEqual(len(self.state['posts']), 18)
+        self.assertEqual(len(self.state['resolved']), 24)
+        self.assertEqual(len(model_inputs), 24)
+        self.assertEqual(len(fetched), len(set(fetched)))
+        self.assertEqual({post['date'] for post in self.state['posts']}, {workday.isoformat()})
+        ledger = usage.load_state(ai_path)
+        self.assertEqual({row['date'] for row in ledger['receipts'].values()}, {'2026-09-30', '2026-10-01'})
+        self.assertEqual(ledger['money']['opening'], ai['money']['opening'])
+        self.assertEqual({row['date'] for row in source.load_state(source_path)['receipts'].values()},
+                         {'2026-09-30', '2026-10-01'})
+        segment()
+        self.assertEqual(len(model_inputs), 24)
+        self.assertEqual(len(fetched), 24)
+
     def test_announced_then_past_without_registry_only_discovery(self):
         extra = {'name': 'あい', 'handle': 'extra_member'}
         registry = registry_fixture(AMU, RARAKO, extra)
@@ -674,7 +1026,7 @@ class StateTests(Offline):
         durable = self.durable(searches=3, posts=0)
         durable.catch_up = True
         report, _ = personal.collect_recovery(
-            self.state, durable, schedule, None, None, registry, (),
+            self.state, durable, confirmed_schedule(schedule), None, official_schedule(schedule), registry, (),
             lambda current: self.fake_client(current, entries=[]), None, lambda: NOW)
         today = self.state['searchHistory'][DATE.isoformat()]
         self.assertEqual(set(today), {AMU['name']})
@@ -698,8 +1050,9 @@ class StateTests(Offline):
             oldest.isoformat(): {'夜': [{'name': RARAKO['name']}]}}}
         durable = self.durable(searches=1, posts=0, now=now)
         durable.catch_up = True
+        durable.date = today
         report, _ = personal.collect_recovery(
-            self.state, durable, schedule, None, None, registry, (),
+            self.state, durable, schedule, None, official_schedule(schedule), registry, (),
             lambda current: self.fake_client(current, entries=[]), None, lambda: now)
         self.assertEqual(set(self.state['searchHistory']), {recent.isoformat()})
         self.assertEqual(set(self.state['searchHistory'][recent.isoformat()]), {AMU['name']})
@@ -786,7 +1139,7 @@ class StateTests(Offline):
             client.search.side_effect = capture
             return client
 
-        personal.collect_recovery(self.state, durable, schedule, None, None, registry, (),
+        personal.collect_recovery(self.state, durable, confirmed_schedule(schedule), None, official_schedule(schedule), registry, (),
                                   clients, None, lambda: NOW)
         self.assertEqual(calls, [
             (DATE, personal.account_search_url(RARAKO['handle'])),
@@ -871,8 +1224,9 @@ class StateTests(Offline):
                                   'lastAttemptAt': None, 'attempts': 0}]
         durable = self.durable(searches=0, posts=1, now=tomorrow)
         durable.catch_up = True
+        durable.date = DATE + dt.timedelta(days=1)
         report, _ = personal.collect_recovery(
-            self.state, durable, self.schedule, None, None, registry, (),
+            self.state, durable, self.schedule, None, official_schedule(self.schedule), registry, (),
             lambda current: self.fake_client(current), None, lambda: tomorrow)
         self.assertEqual(report['newPostCount'], 1)
         self.assertEqual(self.state['posts'][0]['date'], DATE.isoformat())
@@ -888,7 +1242,7 @@ class StateTests(Offline):
         durable = self.durable(searches=0, posts=0)
         durable.catch_up = True
         report, code = personal.collect_recovery(
-            self.state, durable, schedule, None, None, registry, (),
+            self.state, durable, confirmed_schedule(schedule), None, None, registry, (),
             lambda current: self.fake_client(current, entries=[]), None, lambda: NOW)
         day = report['acquisition']['days'][0]
         self.assertEqual((day['targets'], day['searched'], day['unsearched']), (1, 0, 1))
@@ -897,7 +1251,7 @@ class StateTests(Offline):
         registry['members'][0]['xProfileUrl'] = None
         registry['members'][0]['accountTrust'] = None
         report, code = personal.collect_recovery(
-            self.state, durable, schedule, None, None, registry, (),
+            self.state, durable, confirmed_schedule(schedule), None, None, registry, (),
             lambda current: self.fake_client(current, entries=[]), None, lambda: NOW)
         day = report['acquisition']['days'][0]
         self.assertEqual((day['targets'], day['unsearched'], day['unavailableTargets']), (0, 0, 3))
@@ -910,6 +1264,7 @@ class StateTests(Offline):
         future = NOW + dt.timedelta(days=8)
         durable = self.durable(searches=0, posts=1, now=future)
         durable.catch_up = True
+        durable.date = personal.calendar_day(future)
         client = self.fake_client(durable)
         report, _ = personal.collect_recovery(self.state, durable, self.schedule, None, None,
                                               registry, (), lambda _: client, None, lambda: future)

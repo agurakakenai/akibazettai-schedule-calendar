@@ -21,7 +21,7 @@ NOW = dt.datetime(2026, 9, 13, 2, tzinfo=dt.timezone.utc)
 
 class BudgetTests(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory()
+        temporary = tempfile.TemporaryDirectory(dir=base.TOOLS / 'tests', prefix='budget-test-')
         self.addCleanup(temporary.cleanup)
         self.path = Path(temporary.name) / 'ai-usage.json'
         self.now = NOW
@@ -40,9 +40,12 @@ class BudgetTests(unittest.TestCase):
     def sleep(self, seconds):
         self.now += dt.timedelta(seconds=seconds)
 
-    def shared(self, run='one', component='personal'):
+    def shared(self, run='one', component='personal', **kwargs):
         return ledger.SharedUsage(self.path, run_id=run, component=component,
-                                  clock=lambda: self.now, sleep=self.sleep)
+                                  clock=lambda: self.now, sleep=self.sleep, **kwargs)
+
+    def finite(self, **kwargs):
+        return self.shared(request_limit=None, run_limit=None, **kwargs)
 
     def opening(self, amount, count=1):
         old = base.historical(date='2026-09-13', count=count)
@@ -78,6 +81,176 @@ class BudgetTests(unittest.TestCase):
         usage.reserve(key, base.IDENTITY, request=self.request)
         usage.issued(key)
         return key
+
+    def test_finite_queue_exceeds_forty_with_cached_non_events_and_707_hold(self):
+        self.opening(707_000_000, count=40)
+        expected_cost = 0
+        for component, count in (('personal', 41), ('official', 5), ('schedule', 5)):
+            with self.finite(component=component) as usage:
+                for index in range(count):
+                    usage.check()
+                    key = self.issue(usage, f'{component}-{index}')
+                    envelope = self.envelope(cached=80 if index % 2 else 0)
+                    self.reply(envelope)
+                    self.assertEqual(self.client(usage).structured(self.messages, {}, **self.arguments), {'ok': True})
+                    usage.finish(key, 'no_event' if index % 2 else 'events')
+                    charge = usage.state['receipts'][ledger._receipt_id(component, key)]['money']
+                    expected_cost += charge['chargedMicroJPY']
+                    before = copy.deepcopy(usage.state)
+                    with self.assertRaisesRegex(ledger.UsageFailure, 'azure_already_analyzed'):
+                        usage.reserve(key, base.IDENTITY, request=self.request)
+                    self.assertEqual(usage.state, before)
+                usage.check()
+        state = ledger.load_state(self.path)
+        self.assertIsNone(ledger.CATCHUP_RUN_LIMIT)
+        self.assertEqual(ledger.usage_counts(state, 'one', self.now, None),
+                         {'run': 51, 'day': 91, 'remaining': None})
+        self.assertIsNone(ledger.remaining(state, 'one', self.now, run_limit=None))
+        self.assertEqual(self.opener.open.call_count, 51)
+        receipts = list(state['receipts'].values())
+        times = sorted(ledger._time(item['issuedAt']) for item in receipts)
+        self.assertTrue(all((after - before).total_seconds() >= 60 for before, after in zip(times, times[1:])))
+        balance = money.balance(state, self.now)
+        self.assertEqual(balance['openingProvisionalMicroJPY'], 707_000_000)
+        self.assertEqual(balance['tokenPricedMicroJPY'], expected_cost)
+        self.assertEqual(balance['reservedMicroJPY'], 0)
+        self.assertEqual(balance['availableMicroJPY'], 293_000_000 - expected_cost)
+
+    def test_finite_unmigrated_and_unknown_costs_fail_before_http_or_sleep(self):
+        for migrated in (False, True):
+            with self.subTest(migrated=migrated):
+                state = ledger.empty_state()
+                if migrated:
+                    state['money'] = money.empty()
+                    ledger.apply_import(state, base.historical(date='2026-09-13'))
+                ledger.atomic_json(self.path, state)
+                with self.finite() as usage, mock.patch.object(usage, 'sleep') as sleep:
+                    self.assertEqual(ledger.remaining(usage.state, 'one', self.now, None), 0)
+                    with self.assertRaisesRegex(ledger.UsageFailure, 'azure_budget_exhausted'):
+                        usage.check()
+                    with self.assertRaisesRegex(ledger.UsageFailure, 'azure_budget_exhausted'):
+                        self.issue(usage)
+                    self.assertEqual(usage.state, state)
+                    sleep.assert_not_called()
+                self.opener.open.assert_not_called()
+
+    def test_finite_exact_budget_reservation_reconciles_without_count_allowance(self):
+        reservation = money.reservation(base.IDENTITY, self.request)['reservedMicroJPY']
+        self.opening(money.LIMIT - reservation)
+        with self.finite() as usage:
+            self.assertIsNone(ledger.remaining(usage.state, 'one', self.now, None))
+            key = self.issue(usage)
+            self.assertEqual(ledger.remaining(usage.state, 'one', self.now, None), 0)
+            self.reply()
+            self.client(usage).structured(self.messages, {}, **self.arguments)
+            usage.finish(key, 'no_event')
+            self.assertIsNone(ledger.remaining(usage.state, 'one', self.now, None))
+            with self.assertRaisesRegex(ledger.UsageFailure, 'azure_budget_exhausted'):
+                self.issue(usage, 'does-not-fit')
+            self.assertEqual(len(usage.state['receipts']), 1)
+        self.opener.open.assert_called_once()
+        self.setUp_ledger()
+        self.opening(money.LIMIT - reservation + 1)
+        self.opener.reset_mock()
+        with self.finite() as usage:
+            with self.assertRaisesRegex(ledger.UsageFailure, 'azure_budget_exhausted'):
+                self.issue(usage)
+            self.assertEqual(usage.state['receipts'], {})
+        self.opener.open.assert_not_called()
+
+    def test_finite_707_hold_rejects_image_reservation_larger_than_remaining_money(self):
+        self.opening(707_000_000)
+        image = azure.request_budget([{'role': 'user', 'content': [
+            {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,AAAA'}}
+        ]}], {}, **self.arguments)
+        self.assertGreater(money.reservation(base.IDENTITY, image)['reservedMicroJPY'], 293_000_000)
+        with self.finite() as usage:
+            with self.assertRaisesRegex(ledger.UsageFailure, 'azure_budget_exhausted'):
+                usage.reserve(base.digest('image'), base.IDENTITY, request=image)
+            self.assertEqual(usage.state['receipts'], {})
+            self.assertEqual(money.balance(usage.state, self.now)['openingProvisionalMicroJPY'], 707_000_000)
+        self.opener.open.assert_not_called()
+
+    def test_finite_queue_still_obeys_backoff_auth_deadline_and_request_validation(self):
+        for status, reason in ((429, 'azure_rate_limited'), (401, 'azure_auth_stopped'), (403, 'azure_auth_stopped')):
+            with self.subTest(status=status):
+                self.setUp_ledger()
+                with self.finite() as usage:
+                    key = self.issue(usage, str(status))
+                    with self.assertRaisesRegex(ledger.UsageFailure, reason):
+                        usage.http_failure(status, '600')
+                    usage.finish(key, reason)
+                with self.finite(run='next') as usage:
+                    before = copy.deepcopy(usage.state)
+                    for operation in (usage.check, lambda: self.issue(usage, 'blocked')):
+                        with self.assertRaisesRegex(ledger.UsageFailure,
+                                                    'azure_backoff' if status == 429 else reason):
+                            operation()
+                    self.assertEqual(usage.state, before)
+        self.setUp_ledger()
+        with self.finite(deadline=lambda: False) as usage:
+            with self.assertRaisesRegex(ledger.UsageFailure, 'azure_deadline'):
+                self.issue(usage)
+        with self.finite() as usage:
+            for request in (None, {**self.request, 'inputCeiling': money.INPUT_MAX + 1},
+                            {**self.request, 'outputCeiling': money.OUTPUT_MAX + 1}):
+                with self.assertRaisesRegex(ledger.UsageFailure, 'azure_input_limit'):
+                    usage.reserve(base.digest('oversized'), base.IDENTITY, request=request)
+            self.assertEqual(usage.state['receipts'], {})
+        self.opener.open.assert_not_called()
+
+    def test_finite_charge_uses_issue_day_and_month_not_reservation_or_completion(self):
+        for day in (13, 30):
+            with self.subTest(day=day):
+                self.setUp_ledger()
+                self.now = dt.datetime(2026, 9, day, 14, 59, 50, tzinfo=dt.timezone.utc)
+                reserved_at = self.now
+                with self.finite() as usage:
+                    key = base.digest('boundary')
+                    usage.reserve(key, base.IDENTITY, request=self.request)
+                    self.now += dt.timedelta(seconds=20)
+                    usage.issued(key)
+                    issued_at = self.now
+                    self.reply()
+
+                    def delayed_response(*args):
+                        self.now += dt.timedelta(days=1)
+                        return json.dumps(self.envelope()).encode()
+
+                    self.opener.open.return_value.read.side_effect = delayed_response
+                    self.client(usage).structured(self.messages, {}, **self.arguments)
+                    usage.finish(key, 'no_event')
+                    receipt = next(iter(usage.state['receipts'].values()))
+                    self.assertEqual(receipt['date'], issued_at.astimezone(ledger.JST).date().isoformat())
+                    self.assertEqual(ledger.usage_counts(usage.state, 'one', reserved_at, None)['day'], 0)
+                    self.assertEqual(ledger.usage_counts(usage.state, 'one', issued_at, None)['day'], 1)
+                    self.assertEqual(ledger.usage_counts(usage.state, 'one', self.now, None)['day'], 0)
+                    if day == 30:
+                        self.assertEqual(money.balance(usage.state, reserved_at)['tokenPricedMicroJPY'], 0)
+                        self.assertEqual(money.balance(usage.state, issued_at)['tokenPricedMicroJPY'],
+                                         receipt['money']['chargedMicroJPY'])
+
+    def test_finite_month_rollover_rechecks_money_at_issue_and_final_http_gate(self):
+        for gate in ('issue', 'http'):
+            with self.subTest(gate=gate):
+                self.setUp_ledger()
+                self.now = dt.datetime(2026, 9, 30, 14, 59, 50, tzinfo=dt.timezone.utc)
+                with self.finite() as usage:
+                    key = base.digest('new-month-blocked')
+                    usage.reserve(key, base.IDENTITY, request=self.request)
+                    if gate == 'http':
+                        usage.issued(key)
+                    usage.state['money']['billing']['highWater']['2026-10-01'] = money.LIMIT
+                    usage._save()
+                    self.now += dt.timedelta(seconds=20)
+                    with self.assertRaisesRegex(ledger.UsageFailure, 'azure_budget_exhausted'):
+                        if gate == 'issue':
+                            usage.issued(key)
+                        else:
+                            usage.authorize_http(base.IDENTITY, self.request)
+                    self.assertEqual(ledger.remaining(usage.state, 'one', self.now, None), 0)
+                    self.assertEqual(len(usage.state['receipts']), 1)
+                self.opener.open.assert_not_called()
 
     def test_exact_1000_allowed_one_micro_over_stops_before_http(self):
         reservation = money.reservation(base.IDENTITY, self.request)['reservedMicroJPY']

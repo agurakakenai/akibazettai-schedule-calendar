@@ -17,7 +17,7 @@ import uuid
 
 
 RUN_LIMIT, DAY_LIMIT, SPACING_SECONDS = 3, 40, 60
-CATCHUP_RUN_LIMIT = 16
+CATCHUP_RUN_LIMIT = None
 JST = dt.timezone(dt.timedelta(hours=9))
 HEX = re.compile(r'[0-9a-f]{64}\Z')
 TOKEN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}\Z')
@@ -367,23 +367,26 @@ def _counts(state, run_id, now, run_limit=RUN_LIMIT):
     daily = (sum(item['date'] == day for item in state['receipts'].values())
              + sum(item['counts']['requests'] for item in state['imports'].values()
                    if item['date'] == day))
-    # Keep old count-only snapshots readable, but their transport cannot issue
-    # without the monetary migration. Migrated ledgers have no daily AI cap.
+    # Finite queues are bounded by money, not request counts. Unmigrated
+    # snapshots remain readable in legacy mode, but cannot admit finite work.
+    if run_limit is None:
+        return {'run': run, 'day': daily,
+                'remaining': None if costs.balance(state, now)['reason'] == 'ok' else 0}
     available = (run_limit if costs.balance(state, now)['reason'] == 'ok' else 0) if 'money' in state else DAY_LIMIT - daily
     return {'run': run, 'day': daily, 'remaining': max(0, min(run_limit - run, available))}
 
 
 def usage_counts(state, run_id, now, run_limit=RUN_LIMIT):
-    """Return actual-JST-day and combined-run counts for fair child scheduling."""
+    """Return counts; finite queues have None remaining when money permits."""
     validate_state(state)
     _token(run_id)
-    if run_limit not in (RUN_LIMIT, CATCHUP_RUN_LIMIT):
+    if run_limit is not None and (type(run_limit) is not int or run_limit not in (RUN_LIMIT, 16)):
         raise ValueError('invalid_ai_run_limit')
     return _counts(state, run_id, now, run_limit)
 
 
-def remaining(state, run_id, now):
-    return usage_counts(state, run_id, now)['remaining']
+def remaining(state, run_id, now, run_limit=RUN_LIMIT):
+    return usage_counts(state, run_id, now, run_limit)['remaining']
 
 
 def apply_import(state, receipt):
@@ -460,20 +463,26 @@ class SharedUsage:
     Production requires an existing validated file. ``create=True`` is only for
     explicit initialization/migration. ``deadline()`` returns True when allowed.
     The lock fails closed rather than polling/retrying a concurrent child.
+    ``run_limit=None`` admits finite queues only with monetary accounting;
+    ``request_limit=None`` also removes the component's legacy request ceiling.
     """
     failure_type = UsageFailure
 
     def __init__(self, path, *, run_id, component, clock, sleep,
                  request_limit=RUN_LIMIT, deadline=None, create=False, run_limit=RUN_LIMIT):
         _token(run_id)
-        if (component not in ('official', 'personal', 'schedule') or type(request_limit) is not int
-                or run_limit not in (RUN_LIMIT, CATCHUP_RUN_LIMIT)
-                or not 0 <= request_limit <= run_limit
+        if (component not in ('official', 'personal', 'schedule')
+                or run_limit is not None and (type(run_limit) is not int or run_limit not in (RUN_LIMIT, 16))
+                or request_limit is None and run_limit is not None
+                or request_limit is not None and (
+                    type(request_limit) is not int or request_limit < 0
+                    or run_limit is not None and request_limit > run_limit)
                 or deadline is not None and not callable(deadline)):
             raise ValueError('invalid_ai_usage_configuration')
         self.path, self.run_id, self.component = Path(path), run_id, component
         self.clock, self.sleep = clock, sleep
-        self.request_limit = min(request_limit, 1) if component == 'schedule' else request_limit
+        self.request_limit = (min(request_limit, 1)
+                              if component == 'schedule' and request_limit is not None else request_limit)
         self.run_limit = run_limit
         self.deadline, self.create = deadline, create
         self.state, self._lock = None, None
@@ -551,13 +560,17 @@ class SharedUsage:
         if self.state['paused']:
             raise UsageFailure('azure_auth_stopped', self.state['paused']['httpStatus'])
 
+    def _budget_allowed(self, now):
+        if (self.request_limit is not None and self.used >= self.request_limit
+                or _counts(self.state, self.run_id, now, self.run_limit)['remaining'] == 0):
+            raise UsageFailure('azure_budget_exhausted')
+
     def check(self):
         """Non-reserving preflight before source GETs; never save, wait or spend."""
         self._require_open()
         self._allowed()
         now = _now(self.clock())
-        if self.used >= self.request_limit or not _counts(self.state, self.run_id, now, self.run_limit)['remaining']:
-            raise UsageFailure('azure_budget_exhausted')
+        self._budget_allowed(now)
         retry = self.state['retryAt']
         if retry is not None and _time(retry) > now:
             raise UsageFailure('azure_backoff', retry_at=retry)
@@ -579,8 +592,7 @@ class SharedUsage:
         if self._active is not None:
             raise UsageFailure('azure_interrupted')
         now = _now(self.clock())
-        if self.used >= self.request_limit or not _counts(self.state, self.run_id, now, self.run_limit)['remaining']:
-            raise UsageFailure('azure_budget_exhausted')
+        self._budget_allowed(now)
         retry = self.state['retryAt']
         if retry is not None and _time(retry) > now:
             raise UsageFailure('azure_backoff', retry_at=retry)
@@ -593,8 +605,7 @@ class SharedUsage:
                 raise UsageFailure('azure_backoff', retry_at=until)
         self._allowed()
         now = _now(self.clock())
-        if self.used >= self.request_limit or not _counts(self.state, self.run_id, now, self.run_limit)['remaining']:
-            raise UsageFailure('azure_budget_exhausted')
+        self._budget_allowed(now)
         charge = None
         if 'money' in self.state:
             try:

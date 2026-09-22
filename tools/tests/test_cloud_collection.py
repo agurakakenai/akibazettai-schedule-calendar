@@ -1262,16 +1262,222 @@ class CloudTests(unittest.TestCase):
         self.assertGreater(recovery['budgets']['2026-09-06']['searches'], 7)
         self.assert_read_only_failure('unresolved_lease')
 
-    def test_personal_requires_explicit_manual_input_and_is_not_scheduled_yet(self):
+    def test_personal_requires_explicit_manual_input_or_valid_scheduled_slot(self):
         self.personal_seed()
         self.personal_mode('personal')
         self.environment['GITHUB_EVENT_NAME'] = 'schedule'
-        self.assert_read_only_failure('personal_requires_manual_run')
+        self.assert_read_only_failure('invalid_collection_slot')
         self.environment['GITHUB_EVENT_NAME'] = 'workflow_dispatch'
         self.args.mode = 'both'
         self.assert_read_only_failure('personal_requires_explicit_input')
         self.environment['GITHUB_REF'] = 'refs/heads/feature'
         self.assert_read_only_failure('untrusted_context')
+
+    def finite_personal_fixture(self):
+        module = cloud.load_personal_collector()
+        personal = module.empty_state()
+        ledger = cloud.load_analysis_state()
+        usage = ledger.empty_state()
+        receipt = {'receiptId': 'a' * 64, 'date': '2026-09-29', 'counts': {'requests': 1},
+                   'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'text', 'count': 1}],
+                   'sourceHash': 'b' * 64}
+        ledger.apply_import(usage, receipt)
+        usage['money'] = ledger.costs.empty()
+        usage['money']['opening']['2026-09'] = {
+            'amountMicroJPY': 707_000_000, 'basisHash': 'c' * 64,
+            'records': {'import:' + receipt['receiptId']: ledger.costs.digest(receipt)},
+            'kind': 'provisional-azure-actual', 'throughDate': receipt['date'],
+            'observedAt': '2026-09-30T00:00:00Z'}
+        clock = [dt.datetime(2026, 9, 30, 1, 5, tzinfo=cloud.JST)]
+        source = cloud.load_source_state()
+        baseline = source.baseline_state(personal, source_hash='d' * 64, at=clock[0])
+        self.seed_branch()
+        self.bare_commit({cloud.PERSONAL: personal, cloud.AI_USAGE: usage, cloud.SOURCE_USAGE: baseline})
+        self.personal_mode('personal')
+        self.environment['DAILY_GUIDANCE_ENABLED'] = 'true'
+        sync = mock.patch.object(ledger.costs, 'sync', return_value=False)
+        self.addCleanup(sync.stop)
+        sync.start()
+        patch = mock.patch.object(cloud, 'load_analysis_state', return_value=ledger)
+        self.addCleanup(patch.stop)
+        patch.start()
+        patch = mock.patch.object(collector, 'utc_now', side_effect=lambda: clock[0])
+        self.addCleanup(patch.stop)
+        patch.start()
+        return module, clock
+
+    def personal_slot(self, hour=1):
+        cron = {1: '0 16 * * *', 7: '0 22 * * *', 10: '0 1 * * *', 12: '0 3 * * *'}[hour]
+        at = dt.datetime(2026, 9, 30, hour, tzinfo=cloud.JST)
+        self.environment.update(GITHUB_EVENT_NAME='schedule', RUN_CREATED_AT=collector.iso(at),
+                                COLLECTION_SLOT=collector.iso(at),
+                                COLLECTION_SLOT_ID=f'personal:2026-09-30T{hour:02}:00+09:00',
+                                COLLECTION_DATE='2026-09-30')
+        event = json.loads(self.event_path.read_bytes())
+        event['schedule'] = cron
+        self.event_path.write_text(json.dumps(event), encoding='utf-8')
+
+    def checkpoint_child(self, module, *, reason='time_limit'):
+        def invoke(root, state, report, environment):
+            self.assertEqual(environment['CLOUD_COLLECTION_CATCH_UP'], 'true')
+            snapshot = module.read_state(state / cloud.PERSONAL)
+            target = {'name': 'あむ', 'handle': 'akb_amu', 'shifts': [], 'dateKnown': True}
+            previous = snapshot.get('recovery')
+            self.assertEqual(environment['CLOUD_COLLECTION_RUN_ID'],
+                             previous['chainId'] if previous else '12345-1')
+            self.assertEqual(environment['COLLECTION_DATE'], '2026-09-30')
+            progress = previous or {
+                'chainId': environment['CLOUD_COLLECTION_RUN_ID'], 'serviceDate': '2026-09-30',
+                'targets': {'2026-09-30': {'あむ': target}}, 'postIds': [],
+                'searches': [{'date': '2026-09-30', 'name': 'あむ', 'handle': 'akb_amu'}],
+                'reason': 'processing', 'nextAt': None}
+            progress['reason'] = reason
+            if reason == 'complete':
+                progress['searches'] = []
+            snapshot['recovery'] = progress
+            if not previous and environment.get('COLLECTION_SLOT_ID'):
+                snapshot.setdefault('collectionSlots', []).append(environment['COLLECTION_SLOT_ID'])
+            snapshot['lastRun'] = {'status': 'partial', 'requests': {'searches': 1, 'posts': 0}}
+            continuation = {'remaining': len(progress['searches']), 'searches': len(progress['searches']),
+                            'posts': 0, 'reason': reason, 'nextAt': None, 'progressed': True,
+                            'ready': reason == 'time_limit', 'initialTasks': 2}
+            collector.atomic_json(state / cloud.PERSONAL, snapshot)
+            collector.atomic_json(report, {
+                'component': 'personal', 'status': 'partial', 'exitCode': 2,
+                'requests': snapshot['lastRun']['requests'], 'acquisition': {'continuation': continuation}})
+            return 2
+        return invoke
+
+    def test_finite_checkpoint_cas_stale_dispatch_normal_resume_and_duplicate_slot(self):
+        module, clock = self.finite_personal_fixture()
+        self.personal_slot()
+        with mock.patch.object(cloud, 'invoke_collector') as official, \
+                mock.patch.object(cloud, 'invoke_half_month_collector') as half, \
+                mock.patch.object(cloud, 'invoke_personal_collector',
+                                  side_effect=self.checkpoint_child(module)):
+            first = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                      collector=collector, personal=module)
+            official.assert_not_called()
+            half.assert_not_called()
+        self.assertEqual(first['continuationReady'], 'true')
+        self.assertEqual(first['continuationMode'], 'personal')
+        self.assertEqual(first['stateCommit'], self.git(self.remote, 'rev-parse', cloud.REF).decode().strip())
+        self.assertEqual(self.remote_json(cloud.PERSONAL)[0]['recovery']['chainId'], '12345-1')
+        self.assertNotIn(cloud.LEASE, self.remote_names())
+        latest = self.remote_json(cloud.SNAPSHOT)[0]
+        latest['checkedAt'] = '2026-09-30T00:05:00Z'
+        self.bare_commit({cloud.SNAPSHOT: latest})
+        head = self.git(self.remote, 'rev-parse', cloud.REF)
+        self.environment.update(GITHUB_EVENT_NAME='workflow_dispatch', CONTINUATION_STATE=first['stateCommit'])
+        with mock.patch.object(cloud, 'invoke_personal_collector') as child:
+            stale = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                      collector=collector, personal=module)
+            child.assert_not_called()
+        self.assertEqual(stale['collectionStatus'], 'stale-continuation')
+        self.assertEqual(stale['continuationReady'], 'false')
+        self.assertEqual(self.git(self.remote, 'rev-parse', cloud.REF), head)
+        del self.environment['CONTINUATION_STATE']
+        self.environment['GITHUB_RUN_ID'] = '12346'
+        self.personal_slot(7)
+        clock[0] = dt.datetime(2026, 10, 1, 0, 10, tzinfo=cloud.JST)
+        with mock.patch.object(cloud, 'invoke_personal_collector',
+                               side_effect=self.checkpoint_child(module, reason='complete')):
+            resumed = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                        collector=collector, personal=module)
+        self.assertEqual(resumed['continuationReady'], 'false')
+        checkpoint = self.remote_json(cloud.PERSONAL)[0]['recovery']
+        self.assertEqual(checkpoint['serviceDate'], '2026-09-30')
+        self.assertEqual(checkpoint['searches'], [])
+        self.personal_slot()
+        with mock.patch.object(cloud, 'invoke_personal_collector') as child:
+            duplicate = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                          collector=collector, personal=module)
+            child.assert_not_called()
+        self.assertEqual(duplicate['collectionStatus'], 'duplicate-slot')
+        self.assertEqual(duplicate['stateCommit'], resumed['stateCommit'])
+
+    def test_finite_checkpoint_failed_cas_never_emits_ready_and_preserves_recovery(self):
+        module, _ = self.finite_personal_fixture()
+        self.personal_slot()
+        original = cloud.StateRepository.persist
+        def persist(repo, *args, **kwargs):
+            if not kwargs.get('leased'):
+                raise cloud.CloudError('offline_persistence_failed')
+            return original(repo, *args, **kwargs)
+        with mock.patch.object(cloud, 'invoke_personal_collector',
+                               side_effect=self.checkpoint_child(module)), \
+                mock.patch.object(cloud.StateRepository, 'persist', persist), \
+                self.assertRaisesRegex(cloud.CloudError, 'offline_persistence_failed'):
+            cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                              collector=collector, personal=module)
+        self.assertIn(cloud.LEASE, self.remote_names())
+        recovery = module.read_state(self.root / 'recovery' / cloud.PERSONAL)
+        self.assertEqual(recovery['recovery']['reason'], 'time_limit')
+        self.assertEqual(len(recovery['recovery']['searches']), 1)
+
+    def test_personal_slot_contract_accepts_four_slots_and_rejects_mismatched_day(self):
+        self.personal_seed()
+        self.args.mode = 'personal'
+        for hour in (1, 7, 10, 12):
+            self.personal_slot(hour)
+            slot = cloud.scheduled_collection_slot('personal', self.environment)
+            self.assertEqual(slot['serviceDate'], '2026-09-30')
+        self.environment['COLLECTION_DATE'] = '2026-10-01'
+        self.assert_read_only_failure('invalid_collection_slot')
+
+    def test_manual_both_defers_half_month_until_start_and_resumes_personal_checkpoint_first(self):
+        module, clock = self.finite_personal_fixture()
+        self.personal_mode('both')
+        self.environment.update(HALF_MONTH_SCHEDULE_ENABLED='true', COLLECTION_DATE='2026-09-30')
+        def official(root, state, report, environment):
+            snapshot = collector.load_snapshot(state / cloud.SNAPSHOT)
+            snapshot['lastRun'] = {'status': 'no-new', 'dateFrom': '2026-09-30', 'dateTo': '2026-09-30',
+                                   'requests': {'searches': 0, 'posts': 0}}
+            collector.atomic_json(state / cloud.SNAPSHOT, snapshot)
+            self.empty_analysis_buffer(state, environment)
+            collector.atomic_json(report, {'component': 'official', 'status': 'no-new', 'exitCode': 0,
+                                           'requests': snapshot['lastRun']['requests']})
+            return 0
+        with mock.patch.object(cloud, 'invoke_collector', side_effect=official), \
+                mock.patch.object(cloud, 'invoke_half_month_collector') as half, \
+                mock.patch.object(cloud, 'invoke_personal_collector',
+                                  side_effect=self.checkpoint_child(module)):
+            first = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                      collector=collector, personal=module)
+            half.assert_not_called()
+        self.assertEqual(first['continuationMode'], 'both')
+        self.assertNotIn(cloud.HALF_MONTH, self.remote_names())
+        clock[0] = dt.datetime(2026, 10, 1, 0, 30, tzinfo=cloud.JST)
+        self.environment['GITHUB_RUN_ID'] = '12346'
+        with mock.patch.object(cloud, 'invoke_collector') as official, \
+                mock.patch.object(cloud, 'invoke_half_month_collector') as half, \
+                mock.patch.object(cloud, 'invoke_personal_collector',
+                                  side_effect=self.checkpoint_child(module, reason='complete')):
+            resumed = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                        collector=collector, personal=module)
+            official.assert_not_called()
+            half.assert_not_called()
+        self.assertEqual(resumed['continuationReady'], 'false')
+        self.assert_read_only_failure('missing_half_month_state')
+        clock[0] -= dt.timedelta(seconds=1)
+        self.personal_mode('schedule')
+        before_start = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                        collector=collector, personal=module)
+        self.assertEqual(before_start['collectionStatus'], 'not-started')
+        self.assertEqual(before_start['continuationReady'], 'false')
+
+    def test_finite_checkpoint_does_not_chain_no_progress_or_analysis_holds(self):
+        module, _ = self.finite_personal_fixture()
+        self.personal_slot()
+        for reason in ('no_progress', 'analysis_held', 'source_paused'):
+            with self.subTest(reason=reason), mock.patch.object(
+                    cloud, 'invoke_personal_collector', side_effect=self.checkpoint_child(module, reason=reason)):
+                result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                           collector=collector, personal=module)
+            self.assertEqual(result['continuationReady'], 'false')
+            self.assertEqual(self.remote_json(cloud.PERSONAL)[0]['recovery']['reason'], reason)
+        self.environment.update(GITHUB_EVENT_NAME='workflow_dispatch', CONTINUATION_STATE=result['stateCommit'])
+        self.assert_read_only_failure('continuation_not_ready')
 
     def test_personal_missing_seed_refuses_migration_without_http_or_empty_replacement(self):
         self.personal_mode('personal')
@@ -1544,11 +1750,14 @@ class CloudTests(unittest.TestCase):
         self.bare_commit({cloud.AI_USAGE: ledger})
         self.personal_mode('both')
         self.environment['HALF_MONTH_SCHEDULE_ENABLED'] = 'true'
-        self.assert_read_only_failure('half_month_requires_daily_guidance')
-        self.environment['DAILY_GUIDANCE_ENABLED'] = 'true'
-        self.assert_read_only_failure('missing_half_month_state')
+        with mock.patch.object(collector, 'utc_now', return_value=dt.datetime(2026, 10, 1, 1, tzinfo=cloud.JST)):
+            self.assert_read_only_failure('half_month_requires_daily_guidance')
+            self.environment['DAILY_GUIDANCE_ENABLED'] = 'true'
+            self.assert_read_only_failure('missing_half_month_state')
         self.args.mode = 'restore'
-        self.assert_read_only_failure('missing_half_month_state')
+        result = cloud.orchestrate(self.args, root=self.root, environment=self.environment, collector=collector)
+        self.assertEqual(result['persistenceStatus'], 'restored')
+        self.assertNotIn(cloud.HALF_MONTH, self.remote_names())
 
     def test_half_month_allocation_preserves_personal_deadline_and_shared_remainder(self):
         ledger = cloud.load_analysis_state()
@@ -1578,25 +1787,40 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(cloud.half_month_official_allocation(
             path, '12345-1', now, personal_active=True, scheduled=True), 0)
 
-    def test_recovery_allocation_prioritizes_personal_without_raising_daily_cap(self):
+    def test_recovery_allocation_requires_money_and_has_no_count_cap(self):
         ledger = cloud.load_analysis_state()
         state = ledger.empty_state()
         path = self.root / 'allocation.json'
         now = dt.datetime(2026, 9, 7, 22, 0, tzinfo=cloud.JST)
         collector.atomic_json(path, state)
         self.assertEqual(cloud.recovery_allocation(path, '12345-1', now),
-                         {'personal': 14, 'official': 1, 'schedule': 1})
+                         {'personal': 0, 'official': 0, 'schedule': 0})
         ledger.apply_import(state, {
             'receiptId': 'c' * 64, 'sourceHash': 'd' * 64, 'date': '2026-09-07',
             'counts': {'requests': 39},
             'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'text', 'count': 39}]})
         collector.atomic_json(path, state)
-        self.assertEqual(sum(cloud.recovery_allocation(path, '12345-1', now).values()), 1)
+        self.assertEqual(sum(cloud.recovery_allocation(path, '12345-1', now).values()), 0)
+        state['money'] = ledger.costs.empty()
+        state['money']['opening']['2026-09'] = {
+            'amountMicroJPY': 707_000_000, 'basisHash': 'e' * 64,
+            'records': {'import:' + key: ledger.costs.digest(receipt) for key, receipt in state['imports'].items()},
+            'kind': 'provisional-azure-actual', 'throughDate': '2026-09-07',
+            'observedAt': '2026-09-08T00:00:00Z'}
+        collector.atomic_json(path, state)
+        self.assertEqual(cloud.recovery_allocation(path, '12345-1', now),
+                         {'personal': None, 'official': 3, 'schedule': 1})
 
-    def test_enabled_official_only_collect_assigns_legacy_limit_without_catchup(self):
+    def test_eight_official_slots_keep_azure_without_personal_or_half_month_collection(self):
         module, seed = self.personal_seed()
         private = module.empty_state()
         module.merge_seed(private, seed)
+        private['recovery'] = {
+            'chainId': '12344-1', 'serviceDate': '2026-09-07',
+            'targets': {'2026-09-07': {'あむ': {
+                'name': 'あむ', 'handle': 'akb_amu', 'shifts': [], 'dateKnown': True}}},
+            'searches': [{'date': '2026-09-07', 'name': 'あむ', 'handle': 'akb_amu'}],
+            'postIds': [], 'reason': 'time_limit', 'nextAt': None}
         self.seed_branch()
         ledger = cloud.load_analysis_state()
         usage = ledger.empty_state()
@@ -1605,10 +1829,19 @@ class CloudTests(unittest.TestCase):
             'counts': {'requests': 1},
             'modelBreakdown': [{'model': 'gpt-5.6-luna', 'kind': 'text', 'count': 1}]})
         self.bare_commit({cloud.PERSONAL: private, cloud.AI_USAGE: usage})
-        self.environment['DAILY_GUIDANCE_ENABLED'] = 'true'
+        self.environment.update(
+            DAILY_GUIDANCE_ENABLED='true', HALF_MONTH_SCHEDULE_ENABLED='true',
+            COLLECTION_KIND='official', GITHUB_EVENT_NAME='schedule')
+        event = json.loads(self.event_path.read_bytes())
+        event['schedule'] = cloud.DAILY_SCHEDULE
+        self.event_path.write_text(json.dumps(event), encoding='utf-8')
         self.args.mode = 'collect'
         def invoke(root, state, report, environment):
             self.assertNotIn('CLOUD_COLLECTION_CATCH_UP', environment)
+            self.assertNotIn('CLOUD_COLLECTION_BUFFER_MODE', environment)
+            self.assertEqual(environment['COLLECTION_KIND'], 'official')
+            self.assertEqual(environment['DAILY_GUIDANCE_ENABLED'], 'true')
+            self.assertEqual(environment['CLOUD_COLLECTION_OFFICIAL_AZURE'], 'true')
             self.assertEqual(environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'], '3')
             snapshot, _ = cloud.validate_snapshot(state / cloud.SNAPSHOT, collector)
             snapshot['lastRun'] = {**snapshot['lastRun'], 'status': 'no-new', 'sourceCount': 0,
@@ -1617,11 +1850,27 @@ class CloudTests(unittest.TestCase):
             collector.atomic_json(report, {'component': 'official', 'status': 'no-new', 'exitCode': 0,
                                             'requests': {'searches': 0, 'posts': 0}})
             return 0
-        with mock.patch.object(cloud, 'invoke_collector', side_effect=invoke) as called:
-            result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
-                                       collector=collector, personal=module)
-        called.assert_called_once()
-        self.assertEqual(result['persistenceStatus'], 'saved')
+        for hour in (12, 13, 14, 15, 17, 18, 19, 20):
+            now = dt.datetime(2026, 10, 1, hour, 30, tzinfo=cloud.JST)
+            self.environment.update(
+                GITHUB_RUN_ID=str(12345 + hour), RUN_CREATED_AT=collector.iso(now),
+                COLLECTION_SLOT=collector.iso(now),
+                COLLECTION_SLOT_ID='official:' + now.isoformat(timespec='minutes'),
+                COLLECTION_DATE='2026-10-01')
+            with self.subTest(hour=hour), \
+                    mock.patch.object(collector, 'utc_now', return_value=now), \
+                    mock.patch.object(cloud, 'invoke_collector', side_effect=invoke) as called, \
+                    mock.patch.object(cloud, 'invoke_personal_collector') as personal_child, \
+                    mock.patch.object(cloud, 'invoke_half_month_collector') as half_child:
+                result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                           collector=collector, personal=module)
+                called.assert_called_once()
+                personal_child.assert_not_called()
+                half_child.assert_not_called()
+            self.assertEqual(result['persistenceStatus'], 'saved')
+            self.assertEqual(result['continuationReady'], 'false')
+            self.assertEqual(self.remote_json(cloud.PERSONAL)[0], private)
+
     def test_acquisition_summary_separates_published_status_from_missing_work_dates(self):
         summary = self.root / 'summary.txt'
         acquisition = {'complete': False, 'expired': 2, 'days': [{
@@ -1713,6 +1962,7 @@ class CloudTests(unittest.TestCase):
         self.assertNotIn('GH_TOKEN', actual_environment)
         self.assertEqual(actual_environment['AZURE_OPENAI_API_KEY'], 'OFFLINE_SENTINEL')
         self.assertEqual(child.call_args.kwargs['timeout'], 900)
+
         self.assertIn('-I', argv)
         self.assertIn('-B', argv)
 
@@ -2208,7 +2458,7 @@ class CloudTests(unittest.TestCase):
                 self.empty_analysis_buffer(state, environment)
                 code = 0
             else:
-                self.assertEqual(environment['CLOUD_COLLECTION_PERSONAL_POSTS'], '1')
+                self.assertEqual(environment['CLOUD_COLLECTION_PERSONAL_POSTS'], '3')
                 snapshot = module.read_state(state / cloud.PERSONAL)
                 self.assertEqual(snapshot['posts'], private['posts'])
                 snapshot['lastRun'] = {'status': 'partial', 'requests': {'searches': 3, 'posts': 1}}
@@ -2617,9 +2867,8 @@ class CloudTests(unittest.TestCase):
         self.assertEqual((state['lastRun']['newPostCount'], state['lastRun']['newNameCount']), (3, 6))
         self.assertEqual(state['pending'], [])
         self.assertTrue(all(len(post['notices']) == 1 for post in state['posts']))
-        replayed = state['posts'][0]
-        cached = next(entry for entry in state['officialAnalysis']['cache'].values()
-                      if entry['postId'] == replayed['id'])
+        cached = max(state['officialAnalysis']['cache'].values(), key=lambda entry: entry['at'])
+        replayed = next(post for post in state['posts'] if post['id'] == cached['postId'])
         self.assertGreater(collector.timestamp(cached['at']),
                            collector.timestamp(replayed['notices'][0]['observedAt']))
         spec = importlib.util.spec_from_file_location('buffer_pages', ROOT / 'tools' / 'pages.py')
