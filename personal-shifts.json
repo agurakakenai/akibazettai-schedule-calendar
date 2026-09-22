@@ -82,6 +82,72 @@
         "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
         "workTiming": []
       },
+      "03434b531bba3fb36331c76afea23c470871bf9e1827ff4aff45ba8eda02f4a0": {
+        "at": "2026-09-22T23:44:07.133740Z",
+        "bodyHash": "c3f19e5c1bf1746efcfb2f5ec7face58b4ad0d6dff5af53cc8c529ed9ca216ca",
+        "channels": {
+          "events": "none",
+          "links": "none",
+          "workTiming": "none"
+        },
+        "events": [],
+        "links": [],
+        "postId": "2102304919852315071",
+        "reason": "no_event",
+        "serviceDates": {
+          "events": [],
+          "links": [],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
+      "03f279e0ae73b96edec28c2254feb04ad30f79a17191f4a3ca2e2eb71d4ec6d5": {
+        "at": "2026-09-22T23:31:13.743967Z",
+        "bodyHash": "d024a4981120145c7269211bf652f1f3a87f177b69ce84da2ad40c21431d9150",
+        "channels": {
+          "events": "confirmed",
+          "links": "confirmed",
+          "workTiming": "pending"
+        },
+        "events": [
+          {
+            "excerpt": "2号店",
+            "kind": "placement",
+            "shift": "昼",
+            "storeId": "s2"
+          },
+          {
+            "excerpt": "1号店",
+            "kind": "placement",
+            "shift": "夜",
+            "storeId": "s1"
+          }
+        ],
+        "links": [
+          {
+            "scope": "昼",
+            "status": "work"
+          },
+          {
+            "scope": "夜",
+            "status": "work"
+          }
+        ],
+        "postId": "2102415131229786308",
+        "reason": "events",
+        "serviceDates": {
+          "events": [
+            "2026-09-23"
+          ],
+          "links": [
+            "2026-09-23"
+          ],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
       "03fc388a002e06af7c20ddf8abde020bc8450d1cb5c2e34d67ae367f73e03deb": {
         "at": "2026-09-12T20:05:41.699797Z",
         "bodyHash": "7e5c2f66f8edbf12bd25759f26e9b7870e9d8ca4452814ef1512b2e26edc0415",
@@ -602,6 +668,26 @@
         "events": [],
         "links": [],
         "postId": "2099513165419823290",
+        "reason": "no_event",
+        "serviceDates": {
+          "events": [],
+          "links": [],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
+      "1304e35ba74719fe34e3c2c898da9687b3dfe02923d401d14c26a1b0f781c711": {
+        "at": "2026-09-22T23:35:05.438218Z",
+        "bodyHash": "6c525d4b9cabe7889a8568f2bf532a22245b87fe6e726367fd6bc5e397cd502b",
+        "channels": {
+          "events": "none",
+          "links": "none",
+          "workTiming": "none"
+        },
+        "events": [],
+        "links": [],
+        "postId": "2102210120231071812",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -1318,6 +1404,26 @@
         "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
         "workTiming": []
       },
+      "2ae860b92b00ae13ca5edc3ed9d6661954a986f428248e7e691540983e26856e": {
+        "at": "2026-09-22T23:42:06.315622Z",
+        "bodyHash": "e8b0abd6e9c1d37644fd55633fc79d4e64c77192dc8c1ecd13c18744136513eb",
+        "channels": {
+          "events": "none",
+          "links": "none",
+          "workTiming": "none"
+        },
+        "events": [],
+        "links": [],
+        "postId": "2102209879478075773",
+        "reason": "no_event",
+        "serviceDates": {
+          "events": [],
+          "links": [],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
       "2b3fc583950eb4635f82f9d0c7f77f5a96018d6fb352babc6d5f946a0375e14c": {
         "at": "2026-09-13T13:26:28.313633Z",
         "bodyHash": "3debb7e34b96826939410dc78671911ece1380109907d46a8596baf3d21b30c1",
@@ -1625,6 +1731,26 @@
         "events": [],
         "links": [],
         "postId": "2099495617429213554",
+        "reason": "no_event",
+        "serviceDates": {
+          "events": [],
+          "links": [],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
+      "3c40549ca2702cc703e225d501fda9a74fb072aebdd4f98af2d544e582066092": {
+        "at": "2026-09-22T23:40:05.841347Z",
+        "bodyHash": "bfe6da6aa1c6dad7d677f56ec85ca78d0fe2a2c83fa705d38c5bbaa78fb4b21d",
+        "channels": {
+          "events": "none",
+          "links": "none",
+          "workTiming": "none"
+        },
+        "events": [],
+        "links": [],
+        "postId": "2102372340986528071",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -2342,6 +2468,26 @@
         "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
         "workTiming": []
       },
+      "58eebafb834a8e821290aae8b4bd24c18d648268a03bb3dfa27f493e19a4cb81": {
+        "at": "2026-09-22T23:33:05.387982Z",
+        "bodyHash": "b886bf6ee94e8ca733574b43c07dd99d18bd3d2fa24b695be34ca570cc3fa864",
+        "channels": {
+          "events": "none",
+          "links": "none",
+          "workTiming": "none"
+        },
+        "events": [],
+        "links": [],
+        "postId": "2102513398504423570",
+        "reason": "no_event",
+        "serviceDates": {
+          "events": [],
+          "links": [],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
       "58fc024c48662bc6589c4724e9e83adc75910e0edb35fa828910e6a4827cbd56": {
         "at": "2026-09-22T08:54:29.557295Z",
         "bodyHash": "32d2f5fb23ab434746dfa5dd2d37148d0ed6f3886670ab64e317b9c55c83fb4b",
@@ -3016,6 +3162,43 @@
         "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
         "workTiming": []
       },
+      "6df8b34a964988b9df43c3cd15d12fbd5dd249e234d2ecfa2190ead4633ced96": {
+        "at": "2026-09-22T23:34:05.150930Z",
+        "bodyHash": "38400d7e58a2e8d65142dea20166a0d74b816ae25831847800830061dc553f04",
+        "channels": {
+          "events": "confirmed",
+          "links": "confirmed",
+          "workTiming": "none"
+        },
+        "events": [
+          {
+            "excerpt": "2号店",
+            "kind": "placement",
+            "shift": "昼",
+            "storeId": "s2"
+          }
+        ],
+        "links": [
+          {
+            "scope": "昼",
+            "status": "work"
+          }
+        ],
+        "postId": "2102337386281939074",
+        "reason": "events",
+        "serviceDates": {
+          "events": [
+            "2026-09-22"
+          ],
+          "links": [
+            "2026-09-22",
+            "2026-09-24"
+          ],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
       "6e8881e4d0efa377c4ab61def4bb4b2ca1b1d01762db562e978e126ada4a2070": {
         "at": "2026-09-12T20:04:40.009653Z",
         "bodyHash": "4e0d9ce59a54cb915a1aaf603b2150cb760c4604d58c847f314d49067bf9f365",
@@ -3143,6 +3326,26 @@
         "events": [],
         "links": [],
         "postId": "2101632708455940180",
+        "reason": "no_event",
+        "serviceDates": {
+          "events": [],
+          "links": [],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
+      "72e0ba61af55b589050b509332bc61ac56909fe6ce0aadc94b3fb6c93af77e5a": {
+        "at": "2026-09-22T23:31:01.496658Z",
+        "bodyHash": "2a80636253566840cecb563f4de3f0b5c769e4231084bed041743d6fe784fa63",
+        "channels": {
+          "events": "none",
+          "links": "none",
+          "workTiming": "none"
+        },
+        "events": [],
+        "links": [],
+        "postId": "2102414541082820775",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -3835,6 +4038,37 @@
         "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
         "workTiming": []
       },
+      "91c8cdb4dd91ac4083b75382b3ce89c4d8cf14e3d76a9d49b0f681586cff3e74": {
+        "at": "2026-09-22T23:37:05.904810Z",
+        "bodyHash": "d8d17addf7235029a502d24c57f21744c66c364148a780f9e009e15636dec6d9",
+        "channels": {
+          "events": "pending",
+          "links": "confirmed",
+          "workTiming": "none"
+        },
+        "events": [],
+        "links": [
+          {
+            "scope": "昼",
+            "status": "work"
+          },
+          {
+            "scope": "夜",
+            "status": "work"
+          }
+        ],
+        "postId": "2102065025590722951",
+        "reason": "links",
+        "serviceDates": {
+          "events": [],
+          "links": [
+            "2026-09-22"
+          ],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
       "92c368a76bf40ea48fbd0fa997e42e9d9d9f6c04d1b4e83ced9f9ac4ef658a14": {
         "at": "2026-09-12T18:14:25.743970Z",
         "bodyHash": "af8a9a9c35fb299836849a0e87b747795061679f4ebfdad0e96df84c10f9e9b2",
@@ -4270,6 +4504,26 @@
         "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
         "workTiming": []
       },
+      "a00f385720b4fd35ac376762eb0c99607bd83200386ed7ca273e1b188dd089ea": {
+        "at": "2026-09-22T23:41:06.308922Z",
+        "bodyHash": "ce127caa2ee5f96641dbe5ee70db42ea24047134f539452c474cee16d11ac3a4",
+        "channels": {
+          "events": "none",
+          "links": "none",
+          "workTiming": "none"
+        },
+        "events": [],
+        "links": [],
+        "postId": "2102305239378661655",
+        "reason": "no_event",
+        "serviceDates": {
+          "events": [],
+          "links": [],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
       "a126f58d29ff7fb48a40cff47f1e9eb0bf5e84ad9546cb687f8f5b35e3f57ef8": {
         "at": "2026-09-22T14:08:47.504454Z",
         "bodyHash": "ac4f7ef572af360847129528218c7c860d9c606542cd3a63b849a3c659320356",
@@ -4665,6 +4919,26 @@
         "events": [],
         "links": [],
         "postId": "2102167767843746056",
+        "reason": "no_event",
+        "serviceDates": {
+          "events": [],
+          "links": [],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
+      "ad3dd75ddb1c415dfc1cf082997041c1c972160eae00bb8d49ae8d4038f627ce": {
+        "at": "2026-09-22T23:46:07.303509Z",
+        "bodyHash": "7c5434495a950a5be7f0a428f72a5ba693c6536801d9cc11075ffd1f7c712342",
+        "channels": {
+          "events": "none",
+          "links": "none",
+          "workTiming": "none"
+        },
+        "events": [],
+        "links": [],
+        "postId": "2102357621378539801",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -5788,6 +6062,26 @@
         "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
         "workTiming": []
       },
+      "d87250e24fcf129189dc3f83d707334778d98219f543b116bdae4b493f735774": {
+        "at": "2026-09-22T23:39:05.784730Z",
+        "bodyHash": "7db6354ae6947a259253d96abeadcc74087f9dd6b17d69803878a375461e595b",
+        "channels": {
+          "events": "none",
+          "links": "none",
+          "workTiming": "none"
+        },
+        "events": [],
+        "links": [],
+        "postId": "2102210056788058488",
+        "reason": "no_event",
+        "serviceDates": {
+          "events": [],
+          "links": [],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
       "d8ee706f885e1c59e25f16ef9f4d2b92d957c48dbf4bb6eaa4690616dc8d4115": {
         "at": "2026-09-12T19:01:55.623889Z",
         "bodyHash": "13a1e19bfa7de7551467f6f5ab6df524c3335f58bb6829d25f217736ffe8c60e",
@@ -5908,6 +6202,26 @@
         "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
         "workTiming": []
       },
+      "db53d804479367371f54f97befac82ef5fe661ea7e11e6bf577575e08e8a603c": {
+        "at": "2026-09-22T23:45:06.699102Z",
+        "bodyHash": "50b7e2f2d6117409e970aab25b9acca40ec28919759006418f964dda14d4479f",
+        "channels": {
+          "events": "none",
+          "links": "none",
+          "workTiming": "none"
+        },
+        "events": [],
+        "links": [],
+        "postId": "2102207636498485502",
+        "reason": "no_event",
+        "serviceDates": {
+          "events": [],
+          "links": [],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
       "dfc642923b91878452f641990d638f3ccf3436415fa52211a71453455aa305ff": {
         "at": "2026-09-20T08:57:29.696066Z",
         "bodyHash": "e2665b5226f17bad39d3da09cbb45064a59f7178a10d73676f23ee1c1ba9ea01",
@@ -5919,6 +6233,26 @@
         "events": [],
         "links": [],
         "postId": "2101328900488089697",
+        "reason": "no_event",
+        "serviceDates": {
+          "events": [],
+          "links": [],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
+      "e03df67ebae58edeeb92b17dd8eea72216eb922b0806c65e3ef5243415022b8c": {
+        "at": "2026-09-22T23:36:05.328774Z",
+        "bodyHash": "9bb4f89aca9703e1710bd46794cabd87ce77e96a424a3abcfa45dc9346b0abce",
+        "channels": {
+          "events": "none",
+          "links": "none",
+          "workTiming": "none"
+        },
+        "events": [],
+        "links": [],
+        "postId": "2102376350699114922",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -6086,6 +6420,26 @@
         "events": [],
         "links": [],
         "postId": "2099069519318983031",
+        "reason": "no_event",
+        "serviceDates": {
+          "events": [],
+          "links": [],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
+      "e7866ebb058c6ae33c6a61d0b6dca80ba764204475c7d3fb6f5998ebd384b9a1": {
+        "at": "2026-09-22T23:49:07.820799Z",
+        "bodyHash": "2423167c99dbbdda1c230d7f90d5f1642d492aca8a05fa4656d44f6db31e9754",
+        "channels": {
+          "events": "none",
+          "links": "none",
+          "workTiming": "none"
+        },
+        "events": [],
+        "links": [],
+        "postId": "2102335258922561717",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -6275,6 +6629,16 @@
           ],
           "workTiming": []
         },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
+      "ef78c858fd4d5fdf7bbde5c36fd4894d51b1097402b582fceca5635857f9047a": {
+        "at": "2026-09-22T23:47:07.263087Z",
+        "bodyHash": "7837c465f7f1fdee60b890f38be43926e30dd31d3bb2e21bf9e1d3c394fcac81",
+        "events": [],
+        "links": [],
+        "postId": "2102271660279939460",
+        "reason": "azure_invalid_output",
         "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
         "workTiming": []
       },
@@ -6534,6 +6898,62 @@
         "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
         "workTiming": []
       },
+      "fbc469acceb101dca1ff285bcf00fe9d711b9965f5c880557a9b6fe645b2f03f": {
+        "at": "2026-09-22T23:32:05.216820Z",
+        "bodyHash": "5382936bdc6315004e5baa424a84b0c39114fdebecc7abb44492787486e7a816",
+        "channels": {
+          "events": "confirmed",
+          "links": "confirmed",
+          "workTiming": "none"
+        },
+        "events": [
+          {
+            "excerpt": "2号店",
+            "kind": "placement",
+            "shift": "昼",
+            "storeId": "s2"
+          }
+        ],
+        "links": [
+          {
+            "scope": "昼",
+            "status": "work"
+          }
+        ],
+        "postId": "2102413968044360147",
+        "reason": "events",
+        "serviceDates": {
+          "events": [
+            "2026-09-23"
+          ],
+          "links": [
+            "2026-09-23"
+          ],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
+      "fcd8d70e200952d4bb60e9c510400ec52f64ef46aece38a446b3fc5d7975ddf2": {
+        "at": "2026-09-22T23:43:06.488799Z",
+        "bodyHash": "3e056170a62abc753bd0e0fbbb4a5d335aa0670e7c672013e18423693a6fb390",
+        "channels": {
+          "events": "none",
+          "links": "none",
+          "workTiming": "none"
+        },
+        "events": [],
+        "links": [],
+        "postId": "2102361986269114700",
+        "reason": "no_event",
+        "serviceDates": {
+          "events": [],
+          "links": [],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
       "fd0802abf521e7f9b0a2510c15aa7d7dc01e9867b8279561f639c187198fb273": {
         "at": "2026-09-13T13:29:19.299234Z",
         "bodyHash": "624223dc71e5df2a39d73194029f95347ccd143cd89384a1525761f2e9cca585",
@@ -6570,6 +6990,26 @@
         "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
         "workTiming": []
       },
+      "fd7504c1c6480f0439d3fcf06c92520826db510a01569357d638935737a0c664": {
+        "at": "2026-09-22T23:38:06.323764Z",
+        "bodyHash": "1db7086d48be3e17e273977ffb28e9d1eae4fbea126c4a5d5abdc5ecdf02b618",
+        "channels": {
+          "events": "none",
+          "links": "none",
+          "workTiming": "none"
+        },
+        "events": [],
+        "links": [],
+        "postId": "2102305586079744483",
+        "reason": "no_event",
+        "serviceDates": {
+          "events": [],
+          "links": [],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
       "fd8de8728c49d12311ac28a53bb2be22f6039b62462e7806d2ff1fd4c1b60405": {
         "at": "2026-09-16T08:54:00.453554Z",
         "bodyHash": "1eed1c991be2cac3e67d8791c9f83f39ceddccb64c3b7f80f80e112eccc33184",
@@ -6581,6 +7021,26 @@
         "events": [],
         "links": [],
         "postId": "2100138291626676586",
+        "reason": "no_event",
+        "serviceDates": {
+          "events": [],
+          "links": [],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
+      "fe5074cf47521eeaeab16701985d482f5b1f6c5f199a4277fe45b974a4565502": {
+        "at": "2026-09-22T23:48:08.133545Z",
+        "bodyHash": "e07918e95257ea1c7c578099cbb2a9d81384649ddd3fa54d93ef4d7abe573e77",
+        "channels": {
+          "events": "none",
+          "links": "none",
+          "workTiming": "none"
+        },
+        "events": [],
+        "links": [],
+        "postId": "2102198836236316794",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -6827,11 +7287,11 @@
       "searches": 61
     },
     "2026-09-23": {
-      "posts": 116,
+      "posts": 136,
       "searches": 79
     }
   },
-  "checkedAt": "2026-09-22T23:09:01.622321Z",
+  "checkedAt": "2026-09-22T23:34:04.305507Z",
   "complete": false,
   "coverage": {
     "2026-09-07": {
@@ -12117,7 +12577,7 @@
           "registry"
         ],
         "postIds": [],
-        "reason": "post_limit",
+        "reason": "azure_invalid_output",
         "searchedAt": "2026-09-22T14:06:45.424516Z",
         "shifts": [
           "夜"
@@ -12192,13 +12652,20 @@
       },
       "ひなり": {
         "handle": "hinari_zettai",
-        "linkScopes": [],
+        "linkScopes": [
+          {
+            "id": "2102337386281939074",
+            "scope": "昼"
+          }
+        ],
         "name": "ひなり",
         "origins": [
           "official_names",
           "registry"
         ],
-        "postIds": [],
+        "postIds": [
+          "2102337386281939074"
+        ],
         "reason": "post_limit",
         "searchedAt": "2026-09-22T14:07:21.328173Z",
         "shifts": [
@@ -12224,14 +12691,25 @@
       },
       "まこっちゃん": {
         "handle": "makoto2_zettai",
-        "linkScopes": [],
+        "linkScopes": [
+          {
+            "id": "2102065025590722951",
+            "scope": "夜"
+          },
+          {
+            "id": "2102065025590722951",
+            "scope": "昼"
+          }
+        ],
         "name": "まこっちゃん",
         "origins": [
           "official_names",
           "registry"
         ],
-        "postIds": [],
-        "reason": "post_limit",
+        "postIds": [
+          "2102065025590722951"
+        ],
+        "reason": "verified_post_available",
         "searchedAt": "2026-09-22T14:08:46.741023Z",
         "shifts": [
           "昼",
@@ -12406,14 +12884,21 @@
       },
       "こえび": {
         "handle": "koebi_zettai",
-        "linkScopes": [],
+        "linkScopes": [
+          {
+            "id": "2102413968044360147",
+            "scope": "昼"
+          }
+        ],
         "name": "こえび",
         "origins": [
           "registry",
           "scheduled"
         ],
-        "postIds": [],
-        "reason": "metadata_only",
+        "postIds": [
+          "2102413968044360147"
+        ],
+        "reason": "verified_post_available",
         "searchedAt": "2026-09-22T22:38:47.785798Z",
         "shifts": [
           "昼"
@@ -12435,7 +12920,7 @@
         "postIds": [
           "2102513628385837258"
         ],
-        "reason": "metadata_only",
+        "reason": "verified_post_available",
         "searchedAt": "2026-09-22T22:41:48.897119Z",
         "shifts": [
           "夜"
@@ -12606,14 +13091,25 @@
       },
       "るるか": {
         "handle": "ruruka_zettai",
-        "linkScopes": [],
+        "linkScopes": [
+          {
+            "id": "2102415131229786308",
+            "scope": "夜"
+          },
+          {
+            "id": "2102415131229786308",
+            "scope": "昼"
+          }
+        ],
         "name": "るるか",
         "origins": [
           "registry",
           "scheduled"
         ],
-        "postIds": [],
-        "reason": "metadata_only",
+        "postIds": [
+          "2102415131229786308"
+        ],
+        "reason": "verified_post_available",
         "searchedAt": "2026-09-22T22:40:35.927264Z",
         "shifts": [
           "昼",
@@ -12681,12 +13177,12 @@
     "こえび": {
       "authorId": "1966141137833664513",
       "authorScreenName": "koebi_zettai",
-      "verifiedAt": "2026-09-22T23:26:08.683210Z"
+      "verifiedAt": "2026-09-22T23:33:04.354871Z"
     },
     "こん": {
       "authorId": "2025115850811080707",
       "authorScreenName": "kon1_zettai",
-      "verifiedAt": "2026-09-22T23:13:05.649433Z"
+      "verifiedAt": "2026-09-22T23:50:07.027989Z"
     },
     "しゃち": {
       "authorId": "1937381891445075968",
@@ -12696,7 +13192,7 @@
     "すくい": {
       "authorId": "1858869123947917314",
       "authorScreenName": "sukui_zettai",
-      "verifiedAt": "2026-09-22T14:20:52.402733Z"
+      "verifiedAt": "2026-09-22T23:49:06.748390Z"
     },
     "ちぇる": {
       "authorId": "2075784010819928064",
@@ -12716,7 +13212,7 @@
     "ちゆ": {
       "authorId": "2055533720107454464",
       "authorScreenName": "chiyu_zettai",
-      "verifiedAt": "2026-09-22T22:49:17.842865Z"
+      "verifiedAt": "2026-09-22T23:45:05.955277Z"
     },
     "ちょこ": {
       "authorId": "2041767360751669248",
@@ -12756,7 +13252,7 @@
     "ひなり": {
       "authorId": "1891056504125743104",
       "authorScreenName": "hinari_zettai",
-      "verifiedAt": "2026-09-22T14:19:52.164044Z"
+      "verifiedAt": "2026-09-22T23:35:04.689209Z"
     },
     "ぴあの": {
       "authorId": "2090672918976221185",
@@ -12766,7 +13262,7 @@
     "まこっちゃん": {
       "authorId": "1350436303721033729",
       "authorScreenName": "makoto2_zettai",
-      "verifiedAt": "2026-09-22T14:15:51.498342Z"
+      "verifiedAt": "2026-09-22T23:38:05.386906Z"
     },
     "まひろ": {
       "authorId": "1991081247444258817",
@@ -12806,11 +13302,11 @@
     "るるか": {
       "authorId": "2017568855321964544",
       "authorScreenName": "ruruka_zettai",
-      "verifiedAt": "2026-09-22T23:27:07.851362Z"
+      "verifiedAt": "2026-09-22T23:32:04.288480Z"
     }
   },
   "lastRequests": {
-    "cdn.syndication.twimg.com": "2026-09-22T23:27:08.245833Z",
+    "cdn.syndication.twimg.com": "2026-09-22T23:49:07.298600Z",
     "search.yahoo.co.jp": "2026-09-22T22:42:10.961751Z"
   },
   "lastRun": {
@@ -12819,12 +13315,17 @@
     "complete": false,
     "date": "2026-09-23",
     "dateBasis": "JST calendar date, 00:00 boundary",
-    "deferredCount": 245,
-    "failures": [],
-    "finishedAt": "2026-09-22T23:28:08.254826Z",
-    "newEventCount": 6,
-    "newPostCount": 6,
-    "pendingCount": 518,
+    "deferredCount": 226,
+    "failures": [
+      {
+        "id": "2102271660279939460",
+        "reason": "azure_invalid_output"
+      }
+    ],
+    "finishedAt": "2026-09-22T23:50:07.201970Z",
+    "newEventCount": 4,
+    "newPostCount": 4,
+    "pendingCount": 499,
     "requests": {
       "posts": 20,
       "searches": 0
@@ -12834,7 +13335,7 @@
     "status": "partial",
     "targetCount": 103
   },
-  "lastSuccessAt": "2026-09-22T23:28:08.210383Z",
+  "lastSuccessAt": "2026-09-22T23:34:04.269670Z",
   "originalTargets": {
     "2026-09-06": {
       "あくび": {
@@ -19578,71 +20079,6 @@
       "authorId": "1858869123947917314",
       "authorScreenName": "sukui_zettai",
       "date": "2026-09-22",
-      "firstSeenAt": "2026-09-22T08:42:58.595807Z",
-      "id": "2102210120231071812",
-      "lastAttemptAt": null,
-      "name": "すくい",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-22T01:35:24Z",
-      "url": "https://x.com/sukui_zettai/status/2102210120231071812"
-    },
-    {
-      "attempts": 0,
-      "authorId": "1858869123947917314",
-      "authorScreenName": "sukui_zettai",
-      "date": "2026-09-22",
-      "firstSeenAt": "2026-09-22T08:42:58.595809Z",
-      "id": "2102210056788058488",
-      "lastAttemptAt": null,
-      "name": "すくい",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-22T01:35:09Z",
-      "url": "https://x.com/sukui_zettai/status/2102210056788058488"
-    },
-    {
-      "attempts": 0,
-      "authorId": "1858869123947917314",
-      "authorScreenName": "sukui_zettai",
-      "date": "2026-09-22",
-      "firstSeenAt": "2026-09-22T08:42:58.595812Z",
-      "id": "2102209879478075773",
-      "lastAttemptAt": null,
-      "name": "すくい",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-22T01:34:27Z",
-      "url": "https://x.com/sukui_zettai/status/2102209879478075773"
-    },
-    {
-      "attempts": 0,
-      "authorId": "1858869123947917314",
-      "authorScreenName": "sukui_zettai",
-      "date": "2026-09-22",
-      "firstSeenAt": "2026-09-22T08:42:58.595814Z",
-      "id": "2102207636498485502",
-      "lastAttemptAt": null,
-      "name": "すくい",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-22T01:25:32Z",
-      "url": "https://x.com/sukui_zettai/status/2102207636498485502"
-    },
-    {
-      "attempts": 0,
-      "authorId": "1858869123947917314",
-      "authorScreenName": "sukui_zettai",
-      "date": "2026-09-22",
-      "firstSeenAt": "2026-09-22T08:42:58.595817Z",
-      "id": "2102198836236316794",
-      "lastAttemptAt": null,
-      "name": "すくい",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-22T00:50:34Z",
-      "url": "https://x.com/sukui_zettai/status/2102198836236316794"
-    },
-    {
-      "attempts": 0,
-      "authorId": "1858869123947917314",
-      "authorScreenName": "sukui_zettai",
-      "date": "2026-09-22",
       "firstSeenAt": "2026-09-22T08:42:58.595820Z",
       "id": "2102051428932174003",
       "lastAttemptAt": null,
@@ -19663,19 +20099,6 @@
       "reason": "post_limit",
       "searchCreatedAt": "2026-09-21T15:00:00Z",
       "url": "https://x.com/ito_zettai/status/2102050216241148182"
-    },
-    {
-      "attempts": 0,
-      "authorId": "1350436303721033729",
-      "authorScreenName": "makoto2_zettai",
-      "date": "2026-09-22",
-      "firstSeenAt": "2026-09-22T08:44:23.539000Z",
-      "id": "2102065025590722951",
-      "lastAttemptAt": null,
-      "name": "まこっちゃん",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-21T15:58:51Z",
-      "url": "https://x.com/makoto2_zettai/status/2102065025590722951"
     },
     {
       "attempts": 0,
@@ -19730,54 +20153,15 @@
       "url": "https://x.com/akubi_zettai/status/2102053283561128387"
     },
     {
-      "attempts": 0,
-      "authorId": "2055533720107454464",
-      "authorScreenName": "chiyu_zettai",
-      "date": "2026-09-22",
-      "firstSeenAt": "2026-09-22T14:06:45.400971Z",
-      "id": "2102305239378661655",
-      "lastAttemptAt": null,
-      "name": "ちゆ",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-22T07:53:22Z",
-      "url": "https://x.com/chiyu_zettai/status/2102305239378661655"
-    },
-    {
-      "attempts": 0,
-      "authorId": "2055533720107454464",
-      "authorScreenName": "chiyu_zettai",
-      "date": "2026-09-22",
-      "firstSeenAt": "2026-09-22T14:06:45.400994Z",
-      "id": "2102305586079744483",
-      "lastAttemptAt": null,
-      "name": "ちゆ",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-22T07:54:45Z",
-      "url": "https://x.com/chiyu_zettai/status/2102305586079744483"
-    },
-    {
-      "attempts": 0,
-      "authorId": "2055533720107454464",
-      "authorScreenName": "chiyu_zettai",
-      "date": "2026-09-22",
-      "firstSeenAt": "2026-09-22T14:06:45.400997Z",
-      "id": "2102304919852315071",
-      "lastAttemptAt": null,
-      "name": "ちゆ",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-22T07:52:06Z",
-      "url": "https://x.com/chiyu_zettai/status/2102304919852315071"
-    },
-    {
-      "attempts": 0,
+      "attempts": 1,
       "authorId": "2055533720107454464",
       "authorScreenName": "chiyu_zettai",
       "date": "2026-09-22",
       "firstSeenAt": "2026-09-22T14:06:45.401000Z",
       "id": "2102271660279939460",
-      "lastAttemptAt": null,
+      "lastAttemptAt": "2026-09-22T23:47:06.622780Z",
       "name": "ちゆ",
-      "reason": "post_limit",
+      "reason": "azure_invalid_output",
       "searchCreatedAt": "2026-09-22T05:39:56Z",
       "url": "https://x.com/chiyu_zettai/status/2102271660279939460"
     },
@@ -19832,84 +20216,6 @@
       "reason": "post_limit",
       "searchCreatedAt": "2026-09-21T15:26:01Z",
       "url": "https://x.com/piano1_zettai/status/2102056762098758142"
-    },
-    {
-      "attempts": 0,
-      "authorId": "1891056504125743104",
-      "authorScreenName": "hinari_zettai",
-      "date": "2026-09-22",
-      "firstSeenAt": "2026-09-22T14:07:21.304859Z",
-      "id": "2102337386281939074",
-      "lastAttemptAt": null,
-      "name": "ひなり",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-22T10:01:07Z",
-      "url": "https://x.com/hinari_zettai/status/2102337386281939074"
-    },
-    {
-      "attempts": 0,
-      "authorId": "2025115850811080707",
-      "authorScreenName": "kon1_zettai",
-      "date": "2026-09-22",
-      "firstSeenAt": "2026-09-22T14:07:45.722272Z",
-      "id": "2102361986269114700",
-      "lastAttemptAt": null,
-      "name": "こん",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-22T11:38:52Z",
-      "url": "https://x.com/kon1_zettai/status/2102361986269114700"
-    },
-    {
-      "attempts": 0,
-      "authorId": "2025115850811080707",
-      "authorScreenName": "kon1_zettai",
-      "date": "2026-09-22",
-      "firstSeenAt": "2026-09-22T14:07:45.722291Z",
-      "id": "2102376350699114922",
-      "lastAttemptAt": null,
-      "name": "こん",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-22T12:35:56Z",
-      "url": "https://x.com/kon1_zettai/status/2102376350699114922"
-    },
-    {
-      "attempts": 0,
-      "authorId": "2025115850811080707",
-      "authorScreenName": "kon1_zettai",
-      "date": "2026-09-22",
-      "firstSeenAt": "2026-09-22T14:07:45.722294Z",
-      "id": "2102372340986528071",
-      "lastAttemptAt": null,
-      "name": "こん",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-22T12:20:00Z",
-      "url": "https://x.com/kon1_zettai/status/2102372340986528071"
-    },
-    {
-      "attempts": 0,
-      "authorId": "2025115850811080707",
-      "authorScreenName": "kon1_zettai",
-      "date": "2026-09-22",
-      "firstSeenAt": "2026-09-22T14:07:45.722297Z",
-      "id": "2102357621378539801",
-      "lastAttemptAt": null,
-      "name": "こん",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-22T11:21:31Z",
-      "url": "https://x.com/kon1_zettai/status/2102357621378539801"
-    },
-    {
-      "attempts": 0,
-      "authorId": "2025115850811080707",
-      "authorScreenName": "kon1_zettai",
-      "date": "2026-09-22",
-      "firstSeenAt": "2026-09-22T14:07:45.722301Z",
-      "id": "2102335258922561717",
-      "lastAttemptAt": null,
-      "name": "こん",
-      "reason": "post_limit",
-      "searchCreatedAt": "2026-09-22T09:52:39Z",
-      "url": "https://x.com/kon1_zettai/status/2102335258922561717"
     },
     {
       "attempts": 0,
@@ -19975,32 +20281,6 @@
       "reason": "post_limit",
       "searchCreatedAt": "2026-09-22T09:15:19Z",
       "url": "https://x.com/kon1_zettai/status/2102325861148238235"
-    },
-    {
-      "attempts": 0,
-      "authorId": "1966141137833664513",
-      "authorScreenName": "koebi_zettai",
-      "date": "2026-09-23",
-      "firstSeenAt": "2026-09-22T22:38:47.736241Z",
-      "id": "2102414541082820775",
-      "lastAttemptAt": null,
-      "name": "こえび",
-      "reason": "discovered",
-      "searchCreatedAt": "2026-09-22T15:07:42Z",
-      "url": "https://x.com/koebi_zettai/status/2102414541082820775"
-    },
-    {
-      "attempts": 0,
-      "authorId": "1966141137833664513",
-      "authorScreenName": "koebi_zettai",
-      "date": "2026-09-23",
-      "firstSeenAt": "2026-09-22T22:38:47.736246Z",
-      "id": "2102413968044360147",
-      "lastAttemptAt": null,
-      "name": "こえび",
-      "reason": "discovered",
-      "searchCreatedAt": "2026-09-22T15:05:25Z",
-      "url": "https://x.com/koebi_zettai/status/2102413968044360147"
     },
     {
       "attempts": 0,
@@ -20105,19 +20385,6 @@
       "reason": "discovered",
       "searchCreatedAt": "2026-09-16T15:00:01Z",
       "url": "https://x.com/rarako_zettai/status/2100238282345025549"
-    },
-    {
-      "attempts": 0,
-      "authorId": "2017568855321964544",
-      "authorScreenName": "ruruka_zettai",
-      "date": "2026-09-23",
-      "firstSeenAt": "2026-09-22T22:40:35.876449Z",
-      "id": "2102415131229786308",
-      "lastAttemptAt": null,
-      "name": "るるか",
-      "reason": "discovered",
-      "searchCreatedAt": "2026-09-22T15:10:02Z",
-      "url": "https://x.com/ruruka_zettai/status/2102415131229786308"
     },
     {
       "attempts": 0,
@@ -20313,19 +20580,6 @@
       "reason": "discovered",
       "searchCreatedAt": "2026-09-17T15:01:00Z",
       "url": "https://x.com/chiyu_zettai/status/2100600916370186253"
-    },
-    {
-      "attempts": 0,
-      "authorId": "2025115850811080707",
-      "authorScreenName": "kon1_zettai",
-      "date": "2026-09-23",
-      "firstSeenAt": "2026-09-22T22:41:48.845808Z",
-      "id": "2102513398504423570",
-      "lastAttemptAt": null,
-      "name": "こん",
-      "reason": "discovered",
-      "searchCreatedAt": "2026-09-22T21:40:31Z",
-      "url": "https://x.com/kon1_zettai/status/2102513398504423570"
     },
     {
       "attempts": 0,
@@ -22668,6 +22922,27 @@
       "url": "https://x.com/nyana_zettai/status/2102055867567018383"
     },
     {
+      "authorId": "1350436303721033729",
+      "authorScreenName": "makoto2_zettai",
+      "createdAt": "2026-09-21T15:58:51Z",
+      "date": "2026-09-22",
+      "events": [],
+      "id": "2102065025590722951",
+      "links": [
+        {
+          "scope": "昼",
+          "status": "work"
+        },
+        {
+          "scope": "夜",
+          "status": "work"
+        }
+      ],
+      "name": "まこっちゃん",
+      "observedAt": "2026-09-22T23:37:05.874591Z",
+      "url": "https://x.com/makoto2_zettai/status/2102065025590722951"
+    },
+    {
       "authorId": "1935204513381765120",
       "authorScreenName": "nono_zettai",
       "createdAt": "2026-09-21T22:39:26Z",
@@ -22772,6 +23047,30 @@
       "url": "https://x.com/piano1_zettai/status/2102271638872223807"
     },
     {
+      "authorId": "1891056504125743104",
+      "authorScreenName": "hinari_zettai",
+      "createdAt": "2026-09-22T10:01:07Z",
+      "date": "2026-09-22",
+      "events": [
+        {
+          "excerpt": "2号店",
+          "kind": "placement",
+          "shift": "昼",
+          "storeId": "s2"
+        }
+      ],
+      "id": "2102337386281939074",
+      "links": [
+        {
+          "scope": "昼",
+          "status": "work"
+        }
+      ],
+      "name": "ひなり",
+      "observedAt": "2026-09-22T23:34:05.121682Z",
+      "url": "https://x.com/hinari_zettai/status/2102337386281939074"
+    },
+    {
       "authorId": "1954467457902809088",
       "authorScreenName": "akubi_zettai",
       "createdAt": "2026-09-22T11:32:13Z",
@@ -22859,6 +23158,64 @@
       "name": "つぼみ",
       "observedAt": "2026-09-22T23:11:06.340969Z",
       "url": "https://x.com/tsubomi_zettai/status/2102413336042447103"
+    },
+    {
+      "authorId": "1966141137833664513",
+      "authorScreenName": "koebi_zettai",
+      "createdAt": "2026-09-22T15:05:25Z",
+      "date": "2026-09-23",
+      "events": [
+        {
+          "excerpt": "2号店",
+          "kind": "placement",
+          "shift": "昼",
+          "storeId": "s2"
+        }
+      ],
+      "id": "2102413968044360147",
+      "links": [
+        {
+          "scope": "昼",
+          "status": "work"
+        }
+      ],
+      "name": "こえび",
+      "observedAt": "2026-09-22T23:32:05.187515Z",
+      "url": "https://x.com/koebi_zettai/status/2102413968044360147"
+    },
+    {
+      "authorId": "2017568855321964544",
+      "authorScreenName": "ruruka_zettai",
+      "createdAt": "2026-09-22T15:10:02Z",
+      "date": "2026-09-23",
+      "events": [
+        {
+          "excerpt": "2号店",
+          "kind": "placement",
+          "shift": "昼",
+          "storeId": "s2"
+        },
+        {
+          "excerpt": "1号店",
+          "kind": "placement",
+          "shift": "夜",
+          "storeId": "s1"
+        }
+      ],
+      "id": "2102415131229786308",
+      "links": [
+        {
+          "scope": "昼",
+          "status": "work"
+        },
+        {
+          "scope": "夜",
+          "status": "work"
+        }
+      ],
+      "name": "るるか",
+      "observedAt": "2026-09-22T23:31:13.712773Z",
+      "url": "https://x.com/ruruka_zettai/status/2102415131229786308"
     },
     {
       "authorId": "1988584542077370368",
@@ -22984,7 +23341,6 @@
     "mode": "personal",
     "nextAt": null,
     "postIds": [
-      "2102051073464955325",
       "2102104961530413189",
       "2102104053383848254",
       "2102096093647655087",
@@ -22994,23 +23350,7 @@
       "2102054089052057711",
       "2102051867605991773",
       "2102050220519379411",
-      "2102210120231071812",
-      "2102210056788058488",
-      "2102209879478075773",
-      "2102207636498485502",
-      "2102198836236316794",
       "2102051428932174003",
-      "2102065025590722951",
-      "2102305239378661655",
-      "2102305586079744483",
-      "2102304919852315071",
-      "2102271660279939460",
-      "2102337386281939074",
-      "2102361986269114700",
-      "2102376350699114922",
-      "2102372340986528071",
-      "2102357621378539801",
-      "2102335258922561717",
       "2102335084451995649",
       "2102334781786886242",
       "2102330792806605138",
@@ -23177,8 +23517,6 @@
       "2101115852699685046",
       "2101146667894587531",
       "2100963065240109142",
-      "2102414541082820775",
-      "2102413968044360147",
       "2100502395939914091",
       "2100949690288357887",
       "2100894768561893421",
@@ -23187,7 +23525,6 @@
       "2100597824518049956",
       "2100597120197915001",
       "2100238282345025549",
-      "2102415131229786308",
       "2100753059005804987",
       "2100752613520343226",
       "2100750953674871095",
@@ -23203,7 +23540,6 @@
       "2100664367448826060",
       "2100660009298530618",
       "2100600916370186253",
-      "2102513398504423570",
       "2100929250618716445",
       "2100925079358263610",
       "2100922016039927978",
@@ -26736,6 +27072,158 @@
       "reason": "no_event",
       "resolvedAt": "2026-09-22T23:28:08.026256Z",
       "url": "https://x.com/piano1_zettai/status/2102422885940011337"
+    },
+    {
+      "date": "2026-09-23",
+      "id": "2102414541082820775",
+      "name": "こえび",
+      "reason": "no_event",
+      "resolvedAt": "2026-09-22T23:31:04.063896Z",
+      "url": "https://x.com/koebi_zettai/status/2102414541082820775"
+    },
+    {
+      "date": "2026-09-23",
+      "id": "2102415131229786308",
+      "name": "るるか",
+      "reason": "events",
+      "resolvedAt": "2026-09-22T23:32:04.288518Z",
+      "url": "https://x.com/ruruka_zettai/status/2102415131229786308"
+    },
+    {
+      "date": "2026-09-23",
+      "id": "2102413968044360147",
+      "name": "こえび",
+      "reason": "events",
+      "resolvedAt": "2026-09-22T23:33:04.354901Z",
+      "url": "https://x.com/koebi_zettai/status/2102413968044360147"
+    },
+    {
+      "date": "2026-09-23",
+      "id": "2102513398504423570",
+      "name": "こん",
+      "reason": "no_event",
+      "resolvedAt": "2026-09-22T23:34:04.248752Z",
+      "url": "https://x.com/kon1_zettai/status/2102513398504423570"
+    },
+    {
+      "date": "2026-09-22",
+      "id": "2102337386281939074",
+      "name": "ひなり",
+      "reason": "events",
+      "resolvedAt": "2026-09-22T23:35:04.689238Z",
+      "url": "https://x.com/hinari_zettai/status/2102337386281939074"
+    },
+    {
+      "date": "2026-09-22",
+      "id": "2102210120231071812",
+      "name": "すくい",
+      "reason": "no_event",
+      "resolvedAt": "2026-09-22T23:36:04.510919Z",
+      "url": "https://x.com/sukui_zettai/status/2102210120231071812"
+    },
+    {
+      "date": "2026-09-22",
+      "id": "2102376350699114922",
+      "name": "こん",
+      "reason": "no_event",
+      "resolvedAt": "2026-09-22T23:37:04.734976Z",
+      "url": "https://x.com/kon1_zettai/status/2102376350699114922"
+    },
+    {
+      "date": "2026-09-22",
+      "id": "2102065025590722951",
+      "name": "まこっちゃん",
+      "reason": "links",
+      "resolvedAt": "2026-09-22T23:38:05.386938Z",
+      "url": "https://x.com/makoto2_zettai/status/2102065025590722951"
+    },
+    {
+      "date": "2026-09-22",
+      "id": "2102305586079744483",
+      "name": "ちゆ",
+      "reason": "no_event",
+      "resolvedAt": "2026-09-22T23:39:05.050378Z",
+      "url": "https://x.com/chiyu_zettai/status/2102305586079744483"
+    },
+    {
+      "date": "2026-09-22",
+      "id": "2102210056788058488",
+      "name": "すくい",
+      "reason": "no_event",
+      "resolvedAt": "2026-09-22T23:40:05.083995Z",
+      "url": "https://x.com/sukui_zettai/status/2102210056788058488"
+    },
+    {
+      "date": "2026-09-22",
+      "id": "2102372340986528071",
+      "name": "こん",
+      "reason": "no_event",
+      "resolvedAt": "2026-09-22T23:41:05.332459Z",
+      "url": "https://x.com/kon1_zettai/status/2102372340986528071"
+    },
+    {
+      "date": "2026-09-22",
+      "id": "2102305239378661655",
+      "name": "ちゆ",
+      "reason": "no_event",
+      "resolvedAt": "2026-09-22T23:42:05.387624Z",
+      "url": "https://x.com/chiyu_zettai/status/2102305239378661655"
+    },
+    {
+      "date": "2026-09-22",
+      "id": "2102209879478075773",
+      "name": "すくい",
+      "reason": "no_event",
+      "resolvedAt": "2026-09-22T23:43:05.725961Z",
+      "url": "https://x.com/sukui_zettai/status/2102209879478075773"
+    },
+    {
+      "date": "2026-09-22",
+      "id": "2102361986269114700",
+      "name": "こん",
+      "reason": "no_event",
+      "resolvedAt": "2026-09-22T23:44:06.245022Z",
+      "url": "https://x.com/kon1_zettai/status/2102361986269114700"
+    },
+    {
+      "date": "2026-09-22",
+      "id": "2102304919852315071",
+      "name": "ちゆ",
+      "reason": "no_event",
+      "resolvedAt": "2026-09-22T23:45:05.955311Z",
+      "url": "https://x.com/chiyu_zettai/status/2102304919852315071"
+    },
+    {
+      "date": "2026-09-22",
+      "id": "2102207636498485502",
+      "name": "すくい",
+      "reason": "no_event",
+      "resolvedAt": "2026-09-22T23:46:06.504178Z",
+      "url": "https://x.com/sukui_zettai/status/2102207636498485502"
+    },
+    {
+      "date": "2026-09-22",
+      "id": "2102357621378539801",
+      "name": "こん",
+      "reason": "no_event",
+      "resolvedAt": "2026-09-22T23:47:06.479018Z",
+      "url": "https://x.com/kon1_zettai/status/2102357621378539801"
+    },
+    {
+      "date": "2026-09-22",
+      "id": "2102198836236316794",
+      "name": "すくい",
+      "reason": "no_event",
+      "resolvedAt": "2026-09-22T23:49:06.748423Z",
+      "url": "https://x.com/sukui_zettai/status/2102198836236316794"
+    },
+    {
+      "date": "2026-09-22",
+      "id": "2102335258922561717",
+      "name": "こん",
+      "reason": "no_event",
+      "resolvedAt": "2026-09-22T23:50:07.028027Z",
+      "url": "https://x.com/kon1_zettai/status/2102335258922561717"
     }
   ],
   "savedPersonalImports": {
