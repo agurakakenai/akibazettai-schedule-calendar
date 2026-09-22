@@ -982,7 +982,8 @@ for (const id of storeIdList) {
     "the pending count must be measured against the whole roster"
   );
   const postedNames = new Set(
-    Object.values(schedule.schedule).flatMap((byShift) =>
+    // This saved statistic predates the reviewed second-half bootstrap.
+    Object.entries(schedule.schedule).filter(([date]) => date <= "2026-09-15").flatMap(([, byShift]) =>
       Object.values(byShift).flatMap((entries) => entries.map((entry) => entry.name))
     )
   );

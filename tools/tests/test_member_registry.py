@@ -405,6 +405,14 @@ class MigrationTests(unittest.TestCase):
         saved = registry.load_registry(path)
         migrated = registry.migrate_legacy(self.schedule, self.accounts, self.insights,
                                            registry.timestamp(saved['legacySnapshot']['registeredAt']), REVISION)
+        with self.assertRaisesRegex(registry.RegistryError, 'account_change_requires_review'):
+            registry.validate_transition(migrated, saved)
+        # Explicitly reviewed correction; generic account replacement remains rejected.
+        monaka = next(member for member in migrated['members'] if member['canonicalName'] == 'もなか')
+        self.assertEqual(monaka['xProfileUrl'], 'https://x.com/monaka_zettai')
+        monaka['xProfileUrl'] = 'https://x.com/monaka1_zettai'
+        monaka['accountTrust'] = 'user-provided'
+        self.assertIn('monaka_zettai', saved['reservedHandles'])
         registry.validate_transition(migrated, saved)
         registry.check_projection(path, saved)
 

@@ -5,6 +5,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const api = require("../app.js");
 
 const schedulePath = path.join(__dirname, "..", "data", "schedule.js");
 const source = fs.readFileSync(schedulePath, "utf8");
@@ -175,11 +176,69 @@ assert.ok(
 );
 
 function shiftsFor(name) {
-  return Object.entries(data.schedule).flatMap(([date, day]) =>
+  return Object.entries(data.schedule).filter(([date]) => date <= "2026-09-15").flatMap(([date, day]) =>
     [...validShifts]
       .filter((shift) => day[shift].some((entry) => entry.name === name))
       .map((shift) => `${date}|${shift}`)
   );
+}
+
+{
+  const plans = data.sourceConfirmedPlans;
+  const legacyContext = { window: {} };
+  vm.runInNewContext(source.slice(0, source.indexOf("// Reviewed original sources")), legacyContext);
+  for (const [date, day] of Object.entries(legacyContext.window.SCHEDULE_DATA.schedule)) {
+    assert.equal(JSON.stringify(data.schedule[date]), JSON.stringify(day),
+      `${date}: the original manual data must remain unchanged`);
+  }
+  assert.equal(new Set(plans.map(plan => plan.source.name)).size, 35);
+  assert.equal(plans.length, 36);
+  assert.equal(plans.reduce((total, plan) => total + plan.days.length, 0), 221);
+  assert.equal(plans.reduce((total, plan) =>
+    total + plan.days.reduce((count, day) => count + day.shifts.length, 0), 0), 257);
+  const registry = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "data", "members.json"), "utf8"));
+  const excluded = ["ちま", "まこっちゃん", "うる", "みりん", "けだま"];
+  for (const plan of plans) {
+    const source = plan.source;
+    const member = registry.members.find(member => member.canonicalName === source.name);
+    assert.ok(member && member.membership === "active");
+    assert.equal(member.xProfileUrl, `https://x.com/${source.authorScreenName}`);
+    assert.equal(source.confirmation.method, "source-confirmed");
+    assert.match(source.confirmation.bodySha256, /^[a-f0-9]{64}$/);
+    for (const hash of source.confirmation.imageSha256) assert.match(hash, /^[a-f0-9]{64}$/);
+    assert.ok(!excluded.includes(source.name));
+    for (const day of plan.days) {
+      assert.ok("2026-09-16" <= day.date && day.date <= "2026-09-30");
+      for (const shift of day.shifts) {
+        const entry = data.schedule[day.date][shift].find(entry => entry.name === source.name);
+        assert.ok(entry.halfMonthSources.some(item => item.id === source.id));
+        if (entry.workTiming) api.validateWorkTiming(entry.workTiming);
+        if (day.derivedHours) {
+          assert.equal(day.explicitStart, undefined);
+          assert.equal(day.explicitEnd, undefined);
+          assert.ok(entry.workTiming.facts.every(fact => fact.explicitTime === null));
+        }
+      }
+    }
+  }
+  const today = [...new Set(Object.values(data.schedule["2026-09-23"]).flat().map(entry => entry.name))].sort();
+  assert.deepEqual(today, ["ひかり", "みりあ", "ちさと", "える", "あめる", "うな", "こえび",
+    "かなた", "まひろ", "るるか", "こん", "えみ", "つぼみ", "ちゆ", "ららこ", "ぴあの", "もち", "あらた"].sort());
+  const ito = data.schedule["2026-09-26"]["夜"].find(entry => entry.name === "いと").workTiming.facts[0];
+  assert.equal(ito.qualifier, "early");
+  assert.equal(ito.explicitTime, null);
+  assert.match(api.workTimingDescription(ito), /明示語/);
+  const kanata = data.schedule["2026-09-30"]["夜"].find(entry => entry.name === "かなた").workTiming.facts
+    .find(fact => fact.boundary === "start");
+  assert.equal(kanata.explicitTime, "17:30");
+  assert.match(api.workTimingDescription(kanata), /17:30/);
+  const monakaReply = plans.find(plan => plan.source.confirmation.replyTo);
+  assert.equal(monakaReply.source.name, "もなか");
+  assert.equal(monakaReply.source.authorId, "2010583256014729217");
+  assert.deepEqual([...monakaReply.days.map(day => day.date)], ["2026-09-26", "2026-09-28"]);
+  assert.equal(plans.find(plan => plan.source.name === "こん").days.length, 8);
+  assert.ok(plans.find(plan => plan.source.name === "える").days.every(day => !day.qualifier));
+  assert.equal(plans.find(plan => plan.source.name === "はぴる").days.length, 6);
 }
 
 assert.deepEqual(

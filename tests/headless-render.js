@@ -516,7 +516,10 @@ for (const entry of maidEntries) {
 }
 
 const linkedNames = withClass(calendar, "maid-name").filter((node) => node.tagName === "A");
-assert.equal(linkedNames.length, 0, "daily names without a verified own day post have no profile fallback");
+assert.equal(linkedNames.length, 257, "reviewed half-month sources link only their exact person/date/shift");
+const reviewedUrls = new Set(schedule.sourceConfirmedPlans.map(plan => plan.source.url));
+assert.ok(linkedNames.every(node => reviewedUrls.has(node.href)),
+  "daily names must use their verified source, never a profile fallback");
 
 // 1人ずつ独立に決めると全員が1号店になるので、複数店に割れることを確かめる。
 // ただし少人数のシフトは1店で収まるのが正しいので、標準人数を超えた場合だけ2店以上を要求する。
@@ -912,11 +915,16 @@ assert.ok(
 
 // 並びは公式の掲載順のまま。モードを変えても顔ぶれの順序は変わらない。
 // 記録にしかいない方は名簿に位置が無いので、最後にまとめて並ぶ。
-const planOrder = planNames.map((name) => rosterOrder.get(name) ?? Infinity);
+const displayRoster = [...schedule.roster];
+for (const [name, before] of Object.entries(schedule.normalOrderBefore ?? {})) {
+  displayRoster.splice(displayRoster.indexOf(name), 1);
+  displayRoster.splice(displayRoster.indexOf(before), 0, name);
+}
+const planOrder = planNames.map((name) => displayRoster.includes(name) ? displayRoster.indexOf(name) : Infinity);
 assert.deepEqual(
   planOrder,
   [...planOrder].sort((a, b) => a - b),
-  "the maid mode must keep the official roster order"
+  "the maid mode must keep the roster order with the saved normal-member anchors"
 );
 
 selectViewMode("forecast");
@@ -2306,7 +2314,9 @@ test(`half-month plans reach all four views with exact source scope and retained
     assert.ok(button && !button.disabled);
     listeners.find(entry => entry.element === button && entry.type === "click").fn({ target: button });
   };
-  const halfLinks = root => walk(root).filter(node => node.tagName === "A" && node.dataset.sourceKind === "half-month-schedule");
+  const halfLinks = root => walk(root).filter(node => node.tagName === "A" &&
+    node.dataset.sourceKind === "half-month-schedule" && node.dataset.name === source.name &&
+    source.period.from <= node.dataset.date && node.dataset.date <= source.period.to);
   const assertSources = (root, expected = datesAndShifts) => {
     const links = halfLinks(root);
     assert.equal(withClass(root, "half-month-source").length, 0, "no independent source link");
