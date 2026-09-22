@@ -7,6 +7,10 @@ on:
   pull_request:
   schedule:
     - cron: "30 3-6,8-11 * * *"
+    - cron: "0 16 * * *"
+    - cron: "0 22 * * *"
+    - cron: "0 1 * * *"
+    - cron: "0 3 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -23,6 +27,10 @@ on:
         default: deploy
       saved_manifest:
         description: Approved bounded data-only JSON for apply-saved (expected main/state SHA required)
+        type: string
+        default: ""
+      continuation_state:
+        description: Saved checkpoint SHA from a successfully published finite collection chain
         type: string
         default: ""
 
@@ -70,6 +78,11 @@ jobs:
     permissions:
       contents: write
       id-token: write
+      actions: read
+    outputs:
+      continuation_ready: ${{ steps.collection.outputs.continuationReady }}
+      state_commit: ${{ steps.collection.outputs.stateCommit }}
+      continuation_mode: ${{ steps.collection.outputs.continuationMode }}
     steps:
       # A queued collector must use current code, not the old triggering commit.
       - name: Check out current production code
@@ -84,7 +97,12 @@ jobs:
           REQUESTED_MODE: ${{ inputs.mode }}
           EVENT_SCHEDULE: ${{ github.event.schedule }}
           DAILY_GUIDANCE_ENABLED: ${{ vars.DAILY_GUIDANCE_ENABLED || 'false' }}
-        run: python tools/collection-routing.py
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN_CREATED_AT="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at)"
+          export RUN_CREATED_AT
+          python tools/collection-routing.py
+          echo "RUN_CREATED_AT=$RUN_CREATED_AT" >> "$GITHUB_ENV"
       - name: Authenticate read-only Azure cost access
         id: azure-cost-login
         if: >-
@@ -107,6 +125,11 @@ jobs:
           GH_PROMPT_DISABLED: "1"
           GIT_TERMINAL_PROMPT: "0"
           COLLECTION_MODE: ${{ steps.route.outputs.collectionMode }}
+          COLLECTION_KIND: ${{ steps.route.outputs.collectionKind }}
+          COLLECTION_SLOT: ${{ steps.route.outputs.collectionSlot }}
+          COLLECTION_SLOT_ID: ${{ steps.route.outputs.collectionSlotId }}
+          COLLECTION_DATE: ${{ steps.route.outputs.collectionDate }}
+          CONTINUATION_STATE: ${{ inputs.continuation_state }}
           DAILY_GUIDANCE_ENABLED: ${{ vars.DAILY_GUIDANCE_ENABLED || 'false' }}
           APPLY_SAVED_MANIFEST: ${{ inputs.saved_manifest }}
           HALF_MONTH_SCHEDULE_ENABLED: ${{ vars.HALF_MONTH_SCHEDULE_ENABLED || 'false' }}
@@ -136,6 +159,10 @@ jobs:
   build:
     name: Validate and stage current production site
     needs: collect
+    outputs:
+      continuation_ready: ${{ steps.restore.outputs.continuationReady }}
+      state_commit: ${{ steps.restore.outputs.stateCommit }}
+      continuation_mode: ${{ steps.restore.outputs.continuationMode }}
     if: >-
       always() && !cancelled() &&
       github.repository == 'agurakakenai/akibazettai-schedule-calendar' &&
@@ -153,6 +180,7 @@ jobs:
           ref: main
           persist-credentials: false
       - name: Restore latest observations for every deployment
+        id: restore
         env:
           GH_TOKEN: ${{ github.token }}
           GH_PROMPT_DISABLED: "1"
@@ -189,3 +217,38 @@ jobs:
       - name: Deploy the artifact validated in this run
         id: deployment
         uses: actions/deploy-pages@v4
+
+  continue-collection:
+    name: Continue a published finite checkpoint
+    needs: [collect, build, deploy]
+    if: >-
+      always() && !cancelled() && needs.build.result == 'success' &&
+      (needs.collect.result == 'success' || needs.collect.result == 'skipped') &&
+      needs.deploy.result == 'success' &&
+      needs.build.outputs.continuation_ready == 'true' &&
+      github.repository == 'agurakakenai/akibazettai-schedule-calendar' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch the published checkpoint once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKPOINT_SHA: ${{ needs.build.outputs.state_commit }}
+          CONTINUATION_MODE: ${{ needs.build.outputs.continuation_mode }}
+        run: |
+          [[ "$CHECKPOINT_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$CONTINUATION_MODE" == "personal" || "$CONTINUATION_MODE" == "both" ]] || exit 1
+          for STATUS in queued pending waiting; do
+            COUNT="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/deploy-pages.yml/runs?branch=main&status=$STATUS&per_page=100" \
+              --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID and .event != \"pull_request\")] | length" |
+              awk '{ total += $1 } END { print total + 0 }')"
+            if (( COUNT > 0 )); then
+              echo "Another production workflow is queued; checkpoint $CHECKPOINT_SHA is retained and competing dispatch suppressed." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          done
+          gh api --method POST repos/agurakakenai/akibazettai-schedule-calendar/actions/workflows/deploy-pages.yml/dispatches \
+            -f ref=main -f "inputs[mode]=$CONTINUATION_MODE" -f "inputs[continuation_state]=$CHECKPOINT_SHA"
+          echo "Continuation requested for published checkpoint $CHECKPOINT_SHA." >> "$GITHUB_STEP_SUMMARY"
