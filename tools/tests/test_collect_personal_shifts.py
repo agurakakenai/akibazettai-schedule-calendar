@@ -927,6 +927,22 @@ class StateTests(Offline):
         self.assertEqual(personal.select_targets(
             self.schedule, self.insights, self.accounts, DATE, self.state), {})
 
+    def test_reviewed_shifts_override_legacy_targets_but_not_official_evidence(self):
+        day = DATE.isoformat()
+        self.state['originalTargets'][day] = {'あむ': copy.deepcopy(AMU)}
+        original = copy.deepcopy(self.state['originalTargets'])
+        schedule = copy.deepcopy(self.schedule)
+        schedule['schedule'][day]['夜'] = []
+        schedule['schedule'][day]['昼'][0]['halfMonthSources'] = [{
+            'id': TID, 'confirmation': {'method': 'source-confirmed'}}]
+        targets = personal.select_targets(schedule, self.insights, self.accounts, DATE, self.state)
+        self.assertEqual(targets['あむ']['shifts'], ['昼'])
+        self.assertEqual(self.state['originalTargets'], original)
+        observations = {'posts': [{'id': TID, 'date': day, 'shift': '夜', 'names': ['あむ']}]}
+        targets = personal.select_targets(schedule, self.insights, self.accounts, DATE, self.state,
+                                          observations=observations)
+        self.assertEqual(targets['あむ']['shifts'], ['昼', '夜'])
+
     def test_registration_requires_dated_work_but_not_statistics_home_or_promotion(self):
         registry = registry_fixture(AMU, {'name': '追加', 'handle': 'new_member'},
                                     {'name': '不明', 'handle': None})

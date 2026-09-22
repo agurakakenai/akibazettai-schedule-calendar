@@ -193,7 +193,7 @@ function shiftsFor(name) {
   }
   assert.equal(new Set(plans.map(plan => plan.source.name)).size, 35);
   assert.equal(plans.length, 36);
-  assert.equal(plans.reduce((total, plan) => total + plan.days.length, 0), 221);
+  assert.equal(plans.reduce((total, plan) => total + plan.days.length, 0), 222);
   assert.equal(plans.reduce((total, plan) =>
     total + plan.days.reduce((count, day) => count + day.shifts.length, 0), 0), 257);
   const registry = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "data", "members.json"), "utf8"));
@@ -239,6 +239,30 @@ function shiftsFor(name) {
   assert.equal(plans.find(plan => plan.source.name === "こん").days.length, 8);
   assert.ok(plans.find(plan => plan.source.name === "える").days.every(day => !day.qualifier));
   assert.equal(plans.find(plan => plan.source.name === "はぴる").days.length, 6);
+  const hinari = plans.find(plan => plan.source.name === "ひなり");
+  assert.deepEqual(JSON.parse(JSON.stringify(hinari.days.map(day => [
+    day.date.slice(8), day.shifts.join(""), day.qualifier ?? day.unmappedQualifier ?? null
+  ]))), [
+    ["16", "昼", null], ["17", "昼", "long"], ["18", "昼", null], ["20", "昼", null],
+    ["21", "昼", "long"], ["22", "昼", "long"], ["24", "夜", "ながめ夜"],
+    ["25", "夜", null], ["27", "昼", "long"], ["28", "夜", "ながめ夜"], ["30", "昼", null]
+  ]);
+  for (const day of ["2026-09-18", "2026-09-19"]) {
+    assert.ok(!data.schedule[day]["夜"].some(entry => entry.name === "ひなり"));
+  }
+  for (const day of ["2026-09-24", "2026-09-28"]) {
+    assert.equal(data.schedule[day]["夜"].find(entry => entry.name === "ひなり").workTiming, undefined);
+  }
+  assert.ok(!data.schedule["2026-09-19"]["夜"].some(entry => entry.name === "ちぇる"));
+  const cheru = plans.find(plan => plan.source.name === "ちぇる");
+  const oldAnalysis = { ...cheru.source, observedAt: "2026-09-19T00:00:00Z",
+    days: [{ date: "2026-09-19", shifts: ["昼", "夜"] }] };
+  const merged = api.buildEffectiveSchedule(data.schedule, { schedules: [oldAnalysis] });
+  assert.ok(merged["2026-09-19"]["昼"].some(entry => entry.name === "ちぇる"));
+  assert.ok(!merged["2026-09-19"]["夜"].some(entry => entry.name === "ちぇる"));
+  const anotherSource = { ...oldAnalysis, id: "2101144673276641666" };
+  assert.ok(api.buildEffectiveSchedule(data.schedule, { schedules: [anotherSource] })
+    ["2026-09-19"]["夜"].some(entry => entry.name === "ちぇる"));
 }
 
 assert.deepEqual(
