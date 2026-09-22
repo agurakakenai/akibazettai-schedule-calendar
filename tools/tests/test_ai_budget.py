@@ -1,9 +1,11 @@
 """Offline monetary boundaries on the actual shared reservation/HTTP path."""
 import copy
+import contextlib
 import datetime as dt
 from decimal import Decimal
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -81,6 +83,45 @@ class BudgetTests(unittest.TestCase):
         usage.reserve(key, base.IDENTITY, request=self.request)
         usage.issued(key)
         return key
+
+    def test_official_cli_finite_batches_share_run_without_a_three_request_terminal(self):
+        import test_official_azure as fixture
+        official, model = fixture.official, fixture.azure
+        self.now = fixture.NOW
+        snapshot = self.path.parent / 'official.json'
+        curated = self.path.parent / 'curated.csv'
+        curated.write_text('tweet_id,maid\n', encoding='utf-8')
+        envelope = self.envelope()
+        envelope['choices'][0]['message']['content'] = json.dumps(fixture.decision())
+        self.reply(envelope)
+        def segment(offset, limit=3, target=snapshot):
+            posts = {str(int(fixture.TID) + index): fixture.payload(tid=str(int(fixture.TID) + index))
+                     for index in range(offset, offset + 3)}
+            args = official.argument_parser().parse_args([
+                '--once', '--catch-up', '--analysis-backend', 'azure',
+                '--ai-state', str(self.path), '--analysis-run-id', '12345-1',
+                '--analysis-limit', str(limit), '--max-posts', '3',
+                '--date-from', fixture.DAY.isoformat(), '--date-to', fixture.DAY.isoformat(),
+                '--snapshot', str(target)])
+            with mock.patch.dict(os.environ, fixture.ENV), \
+                    mock.patch.object(official, 'analysis_module', return_value=model), \
+                    mock.patch.object(model, 'load_names', return_value=fixture.NAMES), \
+                    mock.patch.object(model.transport.urllib.request, 'build_opener', return_value=self.opener), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                return official.run(args, curated=curated, client=fixture.Source(posts),
+                                    clock=lambda: self.now, sleep=self.sleep)
+        self.assertEqual(segment(0), 0)
+        self.assertEqual(self.opener.open.call_count, 3)
+        self.assertEqual(segment(3), 0)
+        self.assertEqual(self.opener.open.call_count, 6)
+        receipts = ledger.load_state(self.path)['receipts']
+        self.assertEqual(len(receipts), 6)
+        self.assertEqual({row['runId'] for row in receipts.values()}, {'12345-1'})
+        self.assertTrue(all(row['money']['chargedMicroJPY'] is not None for row in receipts.values()))
+        self.assertEqual(segment(3), 0)
+        self.assertEqual(self.opener.open.call_count, 6)
+        self.assertEqual(segment(6, 0, self.path.parent / 'disabled.json'), 2)
+        self.assertEqual(self.opener.open.call_count, 6)
 
     def test_finite_queue_exceeds_forty_with_cached_non_events_and_707_hold(self):
         self.opening(707_000_000, count=40)

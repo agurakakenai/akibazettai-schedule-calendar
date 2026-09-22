@@ -1779,7 +1779,8 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 used = sum(item['runId'] == run_id and item['component'] == 'official'
                            for item in usage['receipts'].values())
                 official_cap = allocation['official'] if catch_up else 3
-                if (remaining != 0 and used < official_cap and usage['paused'] is None
+                if (remaining != 0 and official_cap > 0 and (catch_up or used < official_cap)
+                        and usage['paused'] is None
                         and (usage['retryAt'] is None or collector.timestamp(usage['retryAt']) <= now)):
                     environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = str(
                         official_cap if remaining is None else min(official_cap, used + remaining))

@@ -1348,7 +1348,8 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
                     analysis = analysis_module()
                     usage = analysis_lock.enter_context(analysis.ledger.SharedUsage(
                         args.ai_state, run_id=args.analysis_run_id, component='official',
-                        clock=clock, sleep=sleep, request_limit=args.analysis_limit,
+                        clock=clock, sleep=sleep,
+                        request_limit=None if args.catch_up and args.analysis_limit else args.analysis_limit,
                         run_limit=analysis.ledger.CATCHUP_RUN_LIMIT if args.catch_up else analysis.ledger.RUN_LIMIT))
                     def save_analysis(partial):
                         checkpoint = copy.deepcopy(state if args.dry_run else partial)

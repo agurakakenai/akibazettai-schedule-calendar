@@ -1396,6 +1396,51 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(duplicate['collectionStatus'], 'duplicate-slot')
         self.assertEqual(duplicate['stateCommit'], resumed['stateCommit'])
 
+    def test_finite_official_replay_is_admitted_after_three_same_run_reservations(self):
+        from test_analysis_state import IDENTITY
+        module, clock = self.finite_personal_fixture()
+        self.personal_mode('both')
+        self.environment['COLLECTION_DATE'] = '2026-09-30'
+        ledger = cloud.load_analysis_state()
+        path = self.root / 'usage-fixture.json'
+        collector.atomic_json(path, self.remote_json(cloud.AI_USAGE)[0])
+        request = collector.analysis_module().transport.request_budget(
+            [{'role': 'user', 'content': 'synthetic official batch'}], {},
+            name='offline', max_completion_tokens=1)
+        def sleep(seconds):
+            clock[0] += dt.timedelta(seconds=seconds)
+        with ledger.SharedUsage(path, run_id='12345-1', component='official',
+                                request_limit=None, run_limit=None, clock=lambda: clock[0], sleep=sleep) as usage:
+            for index in range(3):
+                key = cloud.data_hash(['official-initial', index])
+                usage.reserve(key, IDENTITY, request=request)
+                usage.issued(key)
+                usage.finish(key, 'no_event')
+        self.bare_commit({cloud.AI_USAGE: ledger.load_state(path)})
+        phases = []
+        def invoke(root, state, report, environment):
+            phases.append(environment.get('CLOUD_COLLECTION_BUFFER_MODE'))
+            if phases[-1] == 'replay':
+                self.assertEqual(environment['CLOUD_COLLECTION_CATCH_UP'], 'true')
+                self.assertEqual(environment['CLOUD_COLLECTION_RUN_ID'], '12345-1')
+                self.assertEqual(environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'], '3')
+                raise cloud.CloudError('finite_replay_admitted')
+            snapshot = collector.load_snapshot(state / cloud.SNAPSHOT)
+            snapshot['lastRun'] = {'status': 'no-new', 'dateFrom': '2026-09-30', 'dateTo': '2026-09-30',
+                                   'requests': {'searches': 0, 'posts': 0}}
+            collector.atomic_json(state / cloud.SNAPSHOT, snapshot)
+            collector.atomic_json(report, {'component': 'official', 'status': 'no-new', 'exitCode': 0,
+                                           'requests': snapshot['lastRun']['requests']})
+            return 0
+        with mock.patch.object(cloud, 'invoke_collector', side_effect=invoke), \
+                mock.patch.object(cloud, 'load_official_buffer', return_value={'items': [{'id': '2096165714604486679'}]}), \
+                mock.patch.object(cloud, 'invoke_personal_collector',
+                                  side_effect=self.checkpoint_child(module, reason='complete')), \
+                self.assertRaisesRegex(cloud.CloudError, 'finite_replay_admitted'):
+            cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                              collector=collector, personal=module)
+        self.assertEqual(phases, ['write', 'replay'])
+
     def test_finite_checkpoint_failed_cas_never_emits_ready_and_preserves_recovery(self):
         module, _ = self.finite_personal_fixture()
         self.personal_slot()
