@@ -93,6 +93,7 @@ def slots_for(core, authorization):
     full_hash = facts.digest(core)
     slots, expected_scopes = [], set()
     for table in core:
+        _require(not facts.is_partial(table), 'timing_partial_schedule')
         for row in table['days']:
             for shift in row['shifts']:
                 boundary = 'end' if shift == '昼' else 'start'

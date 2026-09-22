@@ -481,8 +481,7 @@ class SharedUsage:
             raise ValueError('invalid_ai_usage_configuration')
         self.path, self.run_id, self.component = Path(path), run_id, component
         self.clock, self.sleep = clock, sleep
-        self.request_limit = (min(request_limit, 1)
-                              if component == 'schedule' and request_limit is not None else request_limit)
+        self.request_limit = request_limit
         self.run_limit = run_limit
         self.deadline, self.create = deadline, create
         self.state, self._lock = None, None

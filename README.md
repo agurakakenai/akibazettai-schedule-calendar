@@ -1146,7 +1146,7 @@ Azure実費は既存定期処理の最初の機会にJST日1回、**前日まで
 
 認証はmain限定OIDCの専用identityとresource groupのCost Management読み取り権限を使い、repo variablesは`AZURE_COST_CLIENT_ID`・`AZURE_COST_TENANT_ID`・`AZURE_COST_SUBSCRIPTION_ID`です。stepの成功フラグではなく、Azure CLIの実ログイン状態でsubscription・tenant・service principalを設定値と照合してから請求APIへ進みます。client secretは不要で、Azure API keyを請求APIに流用しません。`mode=cost-sync`はtrusted mainの明示実行専用で、source/AI clientを作らず同じ日次同期とstate保存だけを行います。通常PR/CIでコードを配信し、承認済み初期額をfresh canonicalへCAS移行してから、このモードで認証・同日cacheを確認します。
 
-本人・半月後に配分枠が残れば、初回の公式childが保持した**同runの未発行raw最大3件**をtransient bufferから再開します。回収runの公式補足は最大1件で、追加のsource GETは行いません。初回の検索・個別取得件数、名簿追加件数、source失敗は集約時に消しません。bufferはrun ID・入力/状態hash・取得metadataを検証し、終了時に削除してcanonical state・recovery・Pagesには含めません。
+本人・半月後に予算と時間が残れば、初回の公式childが保持した**同runの未発行raw最大3件**をtransient bufferから再開します。有限modeでは3件すべてを処理でき、追加のsource GETは行いません。初回の検索・個別取得件数、名簿追加件数、source失敗は集約時に消しません。bufferはrun ID・入力/状態hash・取得metadataを検証し、終了時に削除してcanonical state・recovery・Pagesには含めません。
 
 新規名簿の取得を優先したうえで、既知の未解析queueも共有の未消費AI枠内・最大3件までAI発行前に先行取得できます。これは本人のAI枠を予約する操作ではありません。本人がその枠を使えば余分なrawはcloud run終了時に破棄し、未処理metadataだけを残します。使われなかったrawのGETもsource件数へ計上し、合算run上限・host制限を維持します。枠が尽きてから既知投稿を追加GETすることはありません。
 
@@ -1168,7 +1168,7 @@ Azure実費は既存定期処理の最初の機会にJST日1回、**前日まで
 
 `data/half-month-schedules.json` は本人の**事前の予定**を保存する独立feedです。`collect-half-month-schedules.py` が現在registryのtrusted accountから公開postを探し、元postの作者・日時・mediaを照合して、共通Lunaの半月専用契約で対象期間・日付・昼夜を読み取ります。当日本人の`events/links`や勤務実績へは入れません。長め昼は昼のままとし、勤務時間の補足は独立した`workTiming`へ保存します。店舗・イベント主役や未記載の数値時刻を生成しません。
 
-当日の予定者だけでなく、現在registryのactive／enabled全員を対象にします。厨房区分を維持し、新登録も同じ入口から反映します。本人・半月の両author bindingを照合し、初回bindingは真正な元postのmetadataで確認します。未取得と不一致を区別し、未知accountを推測しません。推計の昇格日・見習い期間で確認済み日付を削除せず、inactiveの過去feedもhistorical identityとして読み続けます。pendingが未探索者の初回一巡を永久に妨げないよう、既存の1search／1post／1AI枠内で巡回します。
+半月は当日の予定者だけでなく、現在registryのactive／enabled全員を対象にします。厨房区分を維持し、新登録も同じ入口から反映します。本人・半月の両author bindingを照合し、初回bindingは真正な元postのmetadataで確認します。未取得と不一致を区別し、未知accountを推測しません。推計の昇格日・見習い期間で確認済み日付を削除せず、inactiveの過去feedもhistorical identityとして読み続けます。1検索／1本文／1AIをrunの終端にせず、有限の対象集合と月予算・host停止・実行時間で巡回します。
 
 前半は1〜15日、後半は16日〜月末です。投稿日や最後の勤務日から対象期間を作らず、本文/画像の対象月・前後半を確認します。年が画像に無い場合は`printedYear: null`を保ち、本文の明示年または元postのJST投稿月±1か月と印字曜日で一意に解決できた年を区別して保存します。不明な期間・日付・昼夜は保留です。15日の後半先行や遅延投稿も同じ契約で扱い、古い表を現在へ読み替えません。複数半月の表は全体を検証してから対象期間へ絞るため、有効な前半が過去になったことだけでは現在の後半を棄却しません。
 
@@ -1176,22 +1176,28 @@ Azure実費は既存定期処理の最初の機会にJST日1回、**前日まで
 
 独立した「予定の出典」リンクは置かず、**確認済み当日本人postがない場合に名前chip（人物別は日付リンク）から予定表の投稿を開けます**。たとえば半月表が夜予定だけでも、別のcurated根拠で昼勤務がある場合は昼の記録を維持し、半月sourceは夜だけに付きます。原source metadata/historyは残し、半月計画を当日の出勤確認へ格上げしません。予定人数と実績人数は別で、CSVや統計モデルを更新しません。
 
-探索の目安は**毎月1日から前半、13日から後半**です。13〜15日は次の後半の未確認者を優先し、公開開始より前の検索をその半月の初回一巡済みとは数えません。開始日に一度だけ処理する方式ではなく、遅い公開や訂正を人物ごとのbounded queueで継続確認します。通常は前回検索から24時間以降、予定者0人の日がある半月は未確認者の優先度を上げて最短6時間です。探索の優先期間と採用可能期間は分離し、早めの投稿も現在・次の半月の検証済み日程なら採用できます。新しい未確認者・現在の公開期間の予定候補を、確認済み人物や古い雑談候補より優先します。人物のqueueが満杯でも優先度の高い新候補を入れられ、入れ替えた旧metadataは履歴へ保全します。0人や未取得を休業・全員欠勤とは扱いません。期間ごとの未検索・候補なし・元post未確認・解析保留・予算待ち等を区別し、失敗した検索を検索済みにしません。
+自動半月取得は**2026-10-01 00:30 JSTから開始**します。毎月1日に当月1〜15日、13日に当月16日〜月末のサイクルを開始し、実行は毎日00:30、1日・13日は06:30と11:30も追加します。9月後半は原典確認済みbootstrapを使い、自動化コードの配備だけで全員再探索しません。UTC候補cronをJSTの実日付で判定し、28/29/30/31日の月末と遅延起動でも対象半月を保持します。
+
+取得・解読が完了した本人×対象半月は、そのサイクルの探索を終了します。毎日全員や完了者の訂正監視を再開しません。未発見だけを後続slotで再探索し、画像取得済みの未解読者は期限内の保存画像から再読します。一部の日だけ読めた結果は人物全体の完了とは扱いません。未検索、検索したページに候補なし、元post未確認、画像取得失敗、本人不明、解読保留、対象期間外、予算待ちは別の理由で保存・reportします。未取得を休み・未提出とは呼びません。
+
+初回v3は本文と全添付画像の文脈から識別と抽出を同じLuna要求で行います。曖昧・部分判読・画像付きの空判定では、同run内で元画の文字領域を余白付きcrop拡大し、領域不明なら重なり付きtileを読みます。変換はローカル処理で新しい画像GETは不要です。同じ入力・variantの発行済み解析を繰り返しません。時間や予算で中断したらstage・理由・次回可否・variant履歴を保存し、時間切れの有限残件だけ公開成功後に自動続行します。
+
+確定表は`schedules`、部分結果は`partialSchedules`に分離します。`reading.days[date]`は曜日・昼夜の未記載/判読不能・qualifier・時刻の由来・画像hash/領域を持ち、転記全文は公開しません。日付だけ読めた予定は`unassigned`へ残して昼夜を作りません。時刻の`basis: explicit`と`qualifier-rule-v1`を分け、明記時刻を優先します。承認済みの「ながめ昼=12–18」「はやめ夜=16–22」「おそめ=夜18–22」以外や「ながめ夜」の矛盾を機械補完しません。おーらすは昼夜であって標準時刻の記載ではありません。本人返信の追加/訂正/取消は親ID・同author・対象日を照合し、その親由来の予定だけへ適用します。
 
 通常の回収runは公式の元post確認後、半月を先に保存してから、その更新済みfeedとmanual予定を当日本人collectorへ渡します。半月は店舗未記載でも日付×昼夜を保存でき、当日本人が店舗を補います。同run検索の返却bytesが既存のin-process cacheにあれば成功receipt付きで再利用します。通常の分離child間にはraw共有を追加せず、同run予約済みの同一検索・本文は再GETせず別の未探索対象へ進みます。未取得は後続runに残し、重複拒否を取得成功にしません。
 
-`HALF_MONTH_SCHEDULE_ENABLED`は既定falseです。互換コード、照合済みsource会計と半月state、承認された初回factsの順で公開し、別承認で有効化します。既存8枠のscheduled/手動`both`に接続し、新cronを追加しません。当日本人の締切は変更せず、18:30以降は公式と半月だけを処理できます。停止しても既存有効feedを消しません。
+`HALF_MONTH_SCHEDULE_ENABLED`は既定falseです。有効化済みでも開始境界前は半月取得を起動しません。半月専用slot／手動`schedule`を本人4slot・公式8slotから分離し、手動`both`は開始後に半月→本人の順で使えます。半月が30分前に必ず完了するとは仮定せず、本人は保存済み予定だけを参照します。停止や予算不足でも既存有効feedを消しません。
 
 | 上限 | 半月有効時の共有範囲 |
 |---|---|
-| AI 16/回収run・月1,000円の暫定予算 | 公式＋本人＋半月。同じrun IDで配分、半月は最大1/run。単日CLIは3/run |
-| source内部batch | 既存の公式・本人最大14・半月元post最大1/run等の処理配分は変更しない。共有台帳では追加のrun回数quotaを課さない |
+| AI月1,000円の暫定予算 | 公式＋本人＋半月の発行前予約と実usage精算。有限modeに固定run回数上限はなく、過去の未精算holdを保持 |
+| source内部batch | 有限の対象集合を進める単位であり、14投稿・半月1投稿などの終端ではない |
 | source独自日quota・午前予約 | 120検索/日・個別80/日、午前60検索/40個別の予約は撤去。大きな固定値への置換はしない |
 | source画像quota | 4/run・8/日の取得quotaは撤去。画像APIの同じpost最大4枚・bytes/pixel制約は維持 |
 
 共有`source-usage.json`は既存日カウンタをbaselineで引き継ぎ、HTTP前の一意予約を保存します。承認済みsource receiptは元baselineを変えず追記し、本人カウンタ・共有台帳・適用receiptを同じtransactionで照合します。native取得では画像をpostと別kindで記録します。manual source receiptのoptionalな`images`は、従来の画像込み個別カウンタ`posts`の内数（`0 <= images <= posts`）として保持し、二重加算しません。同receipt/hashの再適用も重複計上しません。発行後の失敗・中断で消費を取り消さず、同runの同一URLを再GETしません。source独自回数quotaは撤去し、reportの`remaining`は制限なしを`null`で表します（画像取得非対応componentは`images: 0`）。旧台帳の消費はリセットせず、Azure月予算・707円holdも変更しません。
 
-本人回収の順序は当日予定の初回有効出典、当日訂正、残枠で直近の日から過去保留です。当日予定の初回探索では現在の予定表に載る未達者を優先し、新しい公式由来の対象も除外しません。半月の未取得を全activeの当日検索で代用しません。過去回収と12:30 JST前の取得にもsource日容量の半分予約を課しません。対象は引き続き有限で、重複排除・hostアクセス間隔・401/403/429と`Retry-After`・排他・実行時間制限を維持します。内部batchや定期実行の追加・変更はこのsource-policy変更に含めません。
+本人回収の順序は当日半月予定の初回有効出典、当日訂正、残時間で直近の日から公式掲載済みの過去保留です。半月の未取得を全activeの当日検索で代用しません。過去回収と午前の取得にもsource日容量の半分予約を課しません。対象は引き続き有限で、重複排除・hostアクセス間隔・401/403/429と`Retry-After`・排他・実行時間制限を維持します。
 
 公式のbuffer再生とcheckpoint読取は既存pendingの初見・試行時刻・回数を保持し、欠落した記録だけをqueue/cacheから再構成します。非再生対象のpending保全チェックは維持し、失敗runの復旧は保存済み結果・実費を検証して既存lease/CAS経路へ戻します。
 
@@ -1201,7 +1207,9 @@ Azure実費は既存定期処理の最初の機会にJST日1回、**前日まで
 
 画像は元postが持つ`pbs.twimg.com/media/`のJPEG/PNGだけで、redirectは追従しません。timeout35秒、8MiB/枚・12MiB/post、長辺8192px・20MP/枚・40MP/post、総request17MiBまでです。実bytesのtype/寸法を確認し、metadataのoriginal寸法と取得variantの寸法を分けます。必要な全画像のsource/AI枠を先に確認し、不足が分かっていれば部分downloadを始めません。4枚超や途中失敗で完全な表を装いません。
 
-このrepositoryはpublicなので、collector-stateも秘密の保管先ではありません。**原文・画像bytes・data URI・raw model応答はGit、logs、recovery、upload artifactへ残しません。**同runのtransient原文は最大3post、画像は1post分で終了時に削除し、跨runは検証済みmetadata/hash/facts/処理fingerprintだけを再利用します。Pagesはさらにwhitelistでqueue/会計/fingerprintを除外します。本人画像をブラウザーから自動取得・embedする機能は追加しません。
+このrepositoryはpublicなので、collector-stateも秘密の保管先ではありません。**原文・画像bytes・data URI・raw model応答を平文でGit、logs、recovery、artifactへ残しません。**半月の跨run再読だけは、checkout外の期限付きAES-GCM cacheを使用します。32-byte keyはrepo secret `SCHEDULE_EVIDENCE_KEY`から必要なrestore/半月childだけへ渡し、暗号化した`cache.bin`だけを7日artifactとして保持します。各recordの期限を再保存で延長せず、最大64MiB、認証・サイズ・path検証を行います。同repoのmain workflowのartifactだけを選び、失敗runの発行済みvariantも重複AI防止のため保持します。鍵不備やcache不正は明示エラーにし、別URLや別modelで迂回しません。Pagesにはcacheもqueue/会計も含めず、ブラウザーから本人画像を自動取得・embedしません。
+
+合成画像を使った実consumer・共有会計・暗号cacheの連携回帰と、Azure実画像の精度測定は別です。v3の現在の保守的画像予約は1要求354.892565円で、9月の707.289032円holdを含む残予算では発行できない場合があります。予算不足時の実画像精度を「検証済み」とはせず、実行時のfresh ledgerで可否を判定します。月替わりは旧月のholdと履歴を残して新月へ課金し、旧月勤務日を当月へ書き換えません。
 
 保存原典の初回反映も限定data-only manifestで行います。新しい実推論のusageを実JST日に一度だけ精算し、そのcanonical receiptを参照する別manifestで真正な本人・半月だけを適用します。各段階で最新main/state SHA、owner、対象hash、lease/CASを照合し、前段成功・後段失敗を完了扱いしません。画像1件の成功やbounded queueの実装は、全員分の発見済み・全画像の精度保証とは別です。
 
@@ -1217,15 +1225,15 @@ Azure実費は既存定期処理の最初の機会にJST日1回、**前日まで
 
 値を指定した否定は、その値だけを対象にする`excluded`として保持します。「おそめ」の後に「早めではない」と書かれても、無関係な「おそめ」は消しません。時刻の否定と明示語の否定、境界の指定全体の取消`withdrawn`は別です。単なる「通常」や情報なしを全取消へ広げず、取消後に古いラベルへ戻すこともありません。
 
-本人v8と半月v2は既存の1要求へ時間channelを統合し、旧契約は補足未抽出のまま読み込めます。版変更だけで旧negative/sourceを再取得・再解析しません。同postの承認済み再解析は`work-timing-only`に限定し、旧contract/import、同じ原文/画像hash、対象scope、変更前subject/core/timing hashと新しい一意usage receiptを結び付けます。旧events/links・半月の日付と昼夜・旧履歴を変更せず、一般の重複拒否を解除しません。
+本人v8と旧半月v2は既存の1要求へ時間channelを統合し、旧契約は補足未抽出のまま読み込めます。半月v3は上記の判読・根拠・部分結果の契約を使います。版変更だけで旧negative/sourceを再取得・再解析しません。同postの確定済みcoreへの承認済み補足再解析は`work-timing-only`に限定し、旧contract/import、同じ原文/画像hash、対象scope、変更前subject/core/timing hashと新しい一意usage receiptを結び付けます。旧events/links・半月の日付と昼夜・旧履歴を変更せず、一般の重複拒否を解除しません。
 
-wireでは昼終了／夜開始に絞り、本人は最大8 facts、半月は1行最大2 notesです。日付・勤務境界・画像参照の重複を減らし、出力上限は本人2304／半月3840 tokens、共有HTTP応答上限は従来の24000 bytesです。公式・旧半月v1の1200 tokensは変更しません。これは全画像条件での10000TPM適合保証ではなく、未測定の画像条件やservice側の見積もり差は別に扱います。現在値と対象付き否定の集約保存上限512はwire上限とは別で、到達時は旧factsを切り捨てず理由付き保留にします。
+本人v8／旧半月v2のwireでは昼終了／夜開始に絞り、本人は最大8 facts、半月は1行最大2 notesです。この旧契約の出力上限は本人2304／半月3840 tokensです。半月v3の画像判読・転記は別の容量予約で制御します。公式・旧半月v1の1200 tokensは変更しません。これらは全画像条件での10000TPM適合保証ではなく、未測定の画像条件やservice側の見積もり差は別に扱います。現在値と対象付き否定の集約保存上限512はwire上限とは別で、到達時は旧factsを切り捨てず理由付き保留にします。
 
 新v8/v2の実際の解析経路には、`request-capacity.py`による追加の保守的admission guardがあります。実測済みprompt/schemaのhashに固定したprefix予約、JSON escape後の可変本文のUTF-8 byte上界、構造・出力・framingの予約で大入力を発行前に保留し、本文を切り捨てたり、別モデルへfallbackしたりしません。入力6000 bytes／128行は取得・形式の上限であり、すべての組合せの発行を保証するものではありません。guard失敗はusage予約・HTTP発行より前に記録し、既存factsを維持します。profile変更時も再計測なしに発行しません。runtime/CIにtokenizer依存は追加せず、このguardを正確なservice TPM計数や画像token換算とは扱いません。画像込みの固定liveは別の容量確認・承認を必要とし、公式と旧半月v1にはこの新guardを適用しません。
 
 ### 確定済みの同一半月sourceに勤務時間だけを補う
 
-明示的な再解析には、独立した製品契約`half-month-timing-v1`（`tools/half-month-timing.py`）を使えます。`prepare_request()`は保存済みcanonicalとusageを検証し、元sourceのID・作者・本文hash・順序付き画像hash、旧import/receipt、basis、subject/core/timing hashを発行前に照合します。単に呼出し元が渡した表を「確定済み」とは扱いません。`AzureAnalyzer.analyze()`も同じ認可・shared usage・容量guardを通り、既存の`half-month-saved`による`work-timing-only`適用へ接続します。自動collectorの初回・新sourceは従来のv2契約と厳格な暦検証のままで、この限定経路へ自動fallbackしません。
+明示的な再解析には、独立した製品契約`half-month-timing-v1`（`tools/half-month-timing.py`）を使えます。`prepare_request()`は保存済みcanonicalとusageを検証し、元sourceのID・作者・本文hash・順序付き画像hash、旧import/receipt、basis、subject/core/timing hashを発行前に照合します。単に呼出し元が渡した表を「確定済み」とは扱いません。`AzureAnalyzer.analyze()`も同じ認可・shared usage・容量guardを通り、既存の`half-month-saved`による`work-timing-only`適用へ接続します。自動collectorの初回・新sourceは半月v3の判読契約と厳格な暦検証を使い、この限定経路へ自動fallbackしません。
 
 モデルに渡す既存slotの日付・昼夜は、**検証済みの更新可能範囲**だけです。旧補足の答え・goldは渡しません。opaqueな`slotId`はコードの参照IDで、画像に印字された行番号や位置ではありません。モデルは全slotの`workTiming`だけを返し、年・月・曜日・勤務日・昼夜・coreの再出力はできません。コードは元coreの値・配列順・文字列を保持して補足を接続し、未知・重複・欠落slot、別source、改変core、境界越えを拒否します。
 
@@ -1256,17 +1264,19 @@ gh workflow run deploy-pages.yml --ref main -f mode=probe
 gh workflow run deploy-pages.yml --ref main -f mode=collect
 # 本人投稿だけを上限内で確認して保存・公開（公式の取得は増やさない）
 gh workflow run deploy-pages.yml --ref main -f mode=personal
+# 半月の未取得・未解読だけを処理（2026-10-01 JST以後）
+gh workflow run deploy-pages.yml --ref main -f mode=schedule
 # 公式を先に、本人を後に各1回確認して保存・公開
 gh workflow run deploy-pages.yml --ref main -f mode=both
 # 取得はせず、最新の保存済み観測と現在のmainで公開
 gh workflow run deploy-pages.yml --ref main -f mode=deploy
 ```
 
-probeと手動`collect`で実際の取得・保存・Pages配信を確認したうえで、**本番の定期更新はActionsへ移行しました**。ローカル定期taskは無効化し、併用しません。毎日、日本時間の**12:30・13:30・14:30・15:30・17:30・18:30・19:30・20:30の計8回**に実行します。UTCのcronは `30 3-6,8-11 * * *` で、16:30や範囲外の時刻は含めません。GitHub側の混雑などで開始が遅れる場合があり、厳密な時刻の保証はありません。**PCの起動・ログインに依存しません**。
+probeと手動`collect`で実際の取得・保存・Pages配信を確認したうえで、**本番の定期更新はActionsへ移行しました**。ローカル定期taskは無効化し、併用しません。公式は毎日、日本時間の**12:30・13:30・14:30・15:30・17:30・18:30・19:30・20:30の計8回**に実行します。公式のUTC cronは `30 3-6,8-11 * * *` で、16:30は含めません。本人01:00・07:00・10:00・12:00と、半月00:30／1日・13日の06:30・11:30は独立したslotです。半月の追加枠はUTC候補日だけで判定せず、JST予定日が1日・13日かを確認します。GitHub側の混雑などで開始が遅れる場合があり、厳密な時刻の保証はありません。**PCの起動・ログインに依存しません**。
 
-cronとtrusted routingの文字列は維持します。保存ログでは2026-09-08〜12は定義8枠に対し各日2runしか確認できず、昼枠が欠けていました。発火減少の原因は未確定で、単なる遅延と断定しません。回収処理は実際の起動時刻が夜でも勤務対象日を保って処理し、翌run・翌日にも未処理を引き継ぎます。GitHubが定刻・全枠を実行する保証や、日上限で全勤務対象を必ず取得できる保証はありません。
+公式cronと対応するtrusted routingの文字列は維持します。保存ログでは2026-09-08〜12は定義8枠に対し各日2runしか確認できず、昼枠が欠けていました。発火減少の原因は未確定で、単なる遅延と断定しません。回収処理は実際の起動時刻が夜でも勤務対象日を保って処理し、翌run・翌日にも未処理を引き継ぎます。GitHubが定刻・全枠を実行する保証や、月予算内で全勤務対象を必ず取得できる保証はありません。
 
-回収runは上表の同一run配分を使い、個別＋画像の全用途合算20/runと本人＋半月の日上限を守ります。残予算・20分の本人実行時間・lookbackで未実施のものは次回または要確認に残します。Actionsのstep summaryに勤務日ごとの対象数・検索済み・出典あり・解析済み・pending・未検索・経過日・昼only数、半月の一巡状況を出します。公開ジョブの成功は取得完了ではありません。何も取得・解析しなかったrunは確認時刻を進めず、未処理があれば警告を残しつつ確かな既存情報は公開します。
+回収runは同じcanonicalの月予算・host間隔と拒否停止を守り、旧20/runや本人＋半月の日次source回数を終端にしません。時間切れは保存済みの有限集合を公開後に自動続行し、予算・host停止・対象期間外などは理由と次の処理可能時刻を残します。Actionsのstep summaryに勤務日ごとの対象数・検索済み・出典あり・解析済み・pending・未検索・経過日・昼only数、半月の一巡状況を出します。公開ジョブの成功は取得完了ではありません。何も取得・解析しなかったrunは確認時刻を進めず、未処理があれば警告を残しつつ確かな既存情報は公開します。
 
 コード公開と収集公開は同じPages concurrency groupで直列化します。production runは実行開始時の**最新main**をcheckoutし、コードpush時にもstate branchの最新観測を復元します。古いcollector runが古いUIやmain同梱の古い観測へ巻き戻すことを避けます。`GITHUB_TOKEN`のpushで別workflowが起動することには依存しません。
 

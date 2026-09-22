@@ -2,7 +2,7 @@
 
 Only two Yahoo realtime keyword pages and the existing public post fetcher are
 used. Default dates are the last two JST service days (a day starts at 05:00).
-lastSuccessAt means a completed run with both searches and all selected posts
+lastSuccessAt means a completed run with its configured searches and all selected posts
 successfully handled, including no-new/no-results; partial runs do not advance it.
 Exit codes: 0=ok/no-new/no-results, 2=partial, 3=unavailable, 4=local/lock error.
 """
@@ -43,6 +43,15 @@ SEARCH_URLS = tuple(
     'https://search.yahoo.co.jp/realtime/search?'
     + urllib.parse.urlencode({'p': query, 'ei': 'UTF-8'})
     for query in QUERIES)
+
+
+def correction_search_url(date):
+    if type(date) is not dt.date:
+        raise ValueError('invalid_correction_date')
+    query = f'id:{AUTHOR} since:{date.isoformat()} until:{(date + dt.timedelta(days=2)).isoformat()}'
+    return 'https://search.yahoo.co.jp/realtime/search?' + urllib.parse.urlencode({'p': query, 'ei': 'UTF-8'})
+
+
 POST_HOST = 'cdn.syndication.twimg.com'
 ID_RE = re.compile(r'[1-9][0-9]{9,24}\Z')
 URL_RE = re.compile(
@@ -340,7 +349,7 @@ class LimitedResponse:
 
 
 class PublicClient:
-    def __init__(self, clock=utc_now, sleep=time.sleep, monotonic=time.monotonic):
+    def __init__(self, clock=utc_now, sleep=time.sleep, monotonic=time.monotonic, correction_dates=()):
         self.clock = clock
         self.sleep = sleep
         self.monotonic = monotonic
@@ -351,6 +360,11 @@ class PublicClient:
         self.last_request = {}
         self.requests = {'searches': 0, 'posts': 0}
         self.shared_source = None
+        correction_dates = tuple(correction_dates)
+        if len(correction_dates) > 1 or any(type(date) is not dt.date
+                or not 0 <= (service_day(clock()) - date).days < 7 for date in correction_dates):
+            raise ValueError('invalid_correction_date')
+        self.search_urls = (*SEARCH_URLS, *(correction_search_url(date) for date in correction_dates))
         self.importer = load_importer()
         # Reuse fetch unchanged, but capture HTTP safety metadata before it parses
         # the response. Do not replace urllib's process-global urlopen.
@@ -369,7 +383,7 @@ class PublicClient:
         is_post = (parsed.scheme == 'https' and host == POST_HOST
                    and parsed.path == '/tweet-result'
                    and not parsed.username and not parsed.port)
-        if url not in SEARCH_URLS and not is_post:
+        if url not in self.search_urls and not is_post:
             raise FetchFailure('route_refused')
         if self.shared_source is not None:
             cached = source_call(self.shared_source, 'cached', 'posts' if is_post else 'searches', url)
@@ -456,7 +470,7 @@ def matching_id(value, expected):
     return bool(supplied) and all(post_id(item) == expected for item in supplied)
 
 
-def validate_post(tid, value, start, end, now):
+def validate_post(tid, value, start, end, now, *, parents=()):
     if not isinstance(value, dict) or not matching_id(value, tid):
         raise FetchFailure('response_id_mismatch')
     author = value.get('user')
@@ -483,6 +497,33 @@ def validate_post(tid, value, start, end, now):
     head = IMPORTER.norm(text[:120])
     if not any(IMPORTER.norm(word) + 'にゃんこ' in head
                for word, _ in IMPORTER.SHIFT_WORDS):
+        reply_id = value.get('in_reply_to_status_id_str')
+        embedded = value.get('parent')
+        if reply_id is not None and (not isinstance(reply_id, str) or not post_id(reply_id)):
+            raise FetchFailure('invalid_reply_parent')
+        if embedded is not None and not isinstance(embedded, dict):
+            raise FetchFailure('invalid_reply_parent')
+        if isinstance(embedded, dict):
+            embedded_id = post_id(embedded.get('id_str'))
+            if not embedded_id or (reply_id is not None and reply_id != embedded_id):
+                raise FetchFailure('reply_parent_mismatch')
+            parent_author = embedded.get('user', {})
+            if (not isinstance(parent_author, dict) or not matching_id(parent_author, AUTHOR_ID)
+                    or parent_author.get('screen_name') != AUTHOR):
+                return None
+            reply_id = embedded_id
+        parent = next((post for post in parents if post['id'] == reply_id), None)
+        if parent is not None:
+            if (parent['authorId'] != AUTHOR_ID or parent['authorScreenName'] != AUTHOR
+                    or parent['date'] != service_day(created).isoformat()
+                    or timestamp(parent['createdAt']) >= created):
+                raise FetchFailure('reply_scope_mismatch')
+            return {
+                'id': tid, 'url': canonical(tid), 'authorId': AUTHOR_ID,
+                'authorScreenName': AUTHOR, 'createdAt': iso(created), 'date': parent['date'],
+                'shift': parent['shift'], 'storeId': parent['storeId'], 'names': [],
+                'observedAt': iso(now), 'replyTo': parent['id'],
+            }
         return None
     if 'アキバ絶対' not in head:
         raise FetchFailure('missing_store_header')
@@ -536,11 +577,18 @@ def load_snapshot(path):
                     or post['authorScreenName'] != AUTHOR
                     or post['storeId'] not in STORE_IDS.values()
                     or post['shift'] not in ('昼', '夜')
-                    or not isinstance(post['names'], list) or not post['names']
+                    or not isinstance(post['names'], list)
+                    or (not post['names'] and 'replyTo' not in post)
                     or any(not isinstance(name, str) or not name for name in post['names'])
                     or service_day(timestamp(post['createdAt'])).isoformat() != post['date']):
                 raise ValueError
             timestamp(post['observedAt'])
+            if 'replyTo' in post:
+                parent = next((item for item in state['posts'] if item['id'] == post['replyTo']), None)
+                if (parent is None or timestamp(parent['createdAt']) >= timestamp(post['createdAt'])
+                        or any(parent[key] != post[key] for key in
+                               ('date', 'shift', 'storeId', 'authorId', 'authorScreenName'))):
+                    raise ValueError
             if 'notices' in post:
                 analysis_module().validate_notices(
                     post['notices'], analysis_context(), timestamp(post['createdAt']))
@@ -783,7 +831,7 @@ def validate_analysis_buffer(value, state, run_id, now, version_hash=None):
         post = posts[tid]
         day = dt.date.fromisoformat(post['date'])
         try:
-            verified = validate_post(tid, entry['payload'], day, day, now)
+            verified = validate_post(tid, entry['payload'], day, day, now, parents=state['posts'])
             if (verified is None or any(verified[key] != post[key] for key in (
                     'id', 'url', 'authorId', 'authorScreenName', 'createdAt', 'date', 'shift', 'storeId'))
                     or timestamp(entry['fetchedAt']) < timestamp(post['createdAt'])
@@ -887,7 +935,8 @@ class ProcessLock:
 
 
 def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit=None,
-            analyzer=None, saved_payloads=None, source_fetched_at=None, buffered_payloads=None):
+            analyzer=None, saved_payloads=None, source_fetched_at=None, buffered_payloads=None,
+            search_urls=None):
     checked = clock()
     next_state = copy.deepcopy(state)
     analysis = analysis_module() if analyzer is not None else None
@@ -905,6 +954,9 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
     new_posts = []
     cooldowns = {host: timestamp(until) for host, until in state.get('cooldowns', {}).items()}
     blocked_hosts = set()
+    queries = tuple(SEARCH_URLS if search_urls is None else search_urls)
+    if queries != SEARCH_URLS and not (start == end and queries == (correction_search_url(start),)):
+        raise ValueError('invalid_official_search_scope')
 
     def limited(host):
         return host in blocked_hosts or cooldowns.get(host, checked) > clock()
@@ -929,7 +981,7 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
         candidates.update(saved_payloads)
     else:
         client.begin_run()
-    for url in (() if saved_payloads is not None else SEARCH_URLS):
+    for url in (() if saved_payloads is not None else queries):
         host = urllib.parse.urlsplit(url).hostname
         called = False
         try:
@@ -994,7 +1046,8 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
     # New roster facts precede supplemental known-ID work; retry failures within each group.
     eligible.sort(key=lambda tid: (
         tid in present | known | resolved.keys(),
-        tid not in pending, pending.get(tid, {}).get('lastAttemptAt') or '', -int(tid)))
+        tid not in pending, pending.get(tid, {}).get('lastAttemptAt') or '',
+        -service_day(snowflake_time(tid)).toordinal(), int(tid)))
     attempted = fetched = handled = post_issued = 0
     known_prefetch_slots, known_prefetch_attempts, preceding_jobs = None, 0, 0
     host_stopped = limited(POST_HOST)
@@ -1043,7 +1096,7 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
             else:
                 value = saved_payloads[tid]
                 acquired_at = source_fetched_at
-            post = validate_post(tid, value, start, end, clock())
+            post = validate_post(tid, value, start, end, clock(), parents=[*next_state['posts'], *new_posts])
             handled += 1
             pending.pop(tid, None)
             if post is None:
@@ -1118,7 +1171,7 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
     deferred = max(0, len(eligible) - (attempted if saved_payloads is None else handled + len(failures)))
     if source_count == 0 and handled == 0 and saved_payloads is None:
         status = 'unavailable'
-    elif ((saved_payloads is None and source_count != len(SEARCH_URLS))
+    elif ((saved_payloads is None and source_count != len(queries))
           or failures or deferred or pending):
         status = 'partial'
     elif new_posts:
@@ -1147,7 +1200,7 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
         'status': status, 'dateFrom': start.isoformat(), 'dateTo': end.isoformat(),
         'dateBasis': 'JST service day, 05:00 boundary',
         'finishedAt': finished, 'sourceCount': source_count,
-        'sourcePageLimit': len(SEARCH_URLS), 'sources': sources,
+        'sourcePageLimit': len(queries), 'sources': sources,
         'discoveredCount': discovered_count, 'eligibleCount': len(eligible),
         'attemptedCount': attempted, 'fetchedCount': fetched,
         'requests': requests,
@@ -1181,6 +1234,8 @@ def argument_parser():
                         help='inclusive JST 05:00 service days (default: 2)')
     parser.add_argument('--date-from', help='inclusive service date YYYY-MM-DD')
     parser.add_argument('--date-to', help='inclusive service date YYYY-MM-DD')
+    parser.add_argument('--correction-date', type=dt.date.fromisoformat,
+                        help='one bounded official-account correction search for a verified missing-roster scope')
     parser.add_argument('--max-posts', type=int, default=20,
                         help='individual request cap, 1..20 (default: 20)')
     parser.add_argument('--report', type=Path, help='fact-only JSON report; absolute paths allowed')
@@ -1220,6 +1275,10 @@ def write_report(report, destination):
 def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
         clock=utc_now, sleep=time.sleep):
     snapshot = (args.snapshot or snapshot).resolve()
+    if args.correction_date is not None:
+        if (args.watch or args.analyze_saved or args.replay_buffer
+                or not 0 <= (service_day(clock()) - args.correction_date).days < 7):
+            raise ValueError('invalid_correction_date')
     publish = args.publish.resolve() if args.publish else None
     if snapshot.suffix.lower() != '.json' or (publish and publish.suffix.lower() != '.json'):
         raise ValueError('json_snapshot_required')
@@ -1305,7 +1364,8 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
                 source_path, run_id=args.source_run_id, component='official', clock=clock, sleep=sleep,
                 catch_up=args.catch_up))
         if saved_payloads is None and replay_path is None:
-            client = client or PublicClient(clock=clock, sleep=sleep)
+            client = client or PublicClient(clock=clock, sleep=sleep,
+                correction_dates=(args.correction_date,) if args.correction_date is not None else ())
             client.shared_source = shared_source
         while True:
             state = load_snapshot(snapshot)
@@ -1342,6 +1402,8 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
             state['cooldowns'] = dict(limits)
             known = curated_ids(curated)
             start, end = date_range(args, clock())
+            if args.correction_date is not None:
+                start = end = args.correction_date
             with ExitStack() as analysis_lock:
                 analyzer = None
                 if args.analysis_backend == 'azure':
@@ -1381,7 +1443,8 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
                     updated, report, code = collect(
                         state, known, client, start, end, args.max_posts, clock, on_limit=persist_limits,
                         analyzer=analyzer, saved_payloads=saved_payloads,
-                        source_fetched_at=args.source_fetched_at, buffered_payloads=buffered_payloads)
+                        source_fetched_at=args.source_fetched_at, buffered_payloads=buffered_payloads,
+                        search_urls=(correction_search_url(start),) if args.correction_date is not None else None)
                 if analyzer is not None:
                     report['analysisBackend'] = 'azure'
                     report['analysisRequests'] = usage.used

@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import unittest
 from unittest import mock
 
@@ -31,6 +32,92 @@ RUN_ID = '12345-1'
 IDENTITY = {'provider': 'azure_openai', 'endpoint': 'https://offline.openai.azure.com',
             'deployment': 'gpt-5.6-luna', 'model': 'gpt-5.6-luna', 'modelVersion': '2026-07-09'}
 RAW = 'HALF_CLOUD_PRIVATE_RAW_SENTINEL'
+
+
+class HalfMonthCycleAccountingLinksTests(unittest.TestCase):
+    def assert_stdlib_restore(self, fx):
+        repo = legacy.CloudTests(methodName='runTest')
+        self.addCleanup(repo.doCleanups)
+        repo.setUp()
+        repo.seed_branch()
+        fx.opening()
+        values = {
+            cloud.HALF_MONTH: cloud.validate_half_month(fx.snapshot)[0],
+            cloud.SOURCE_USAGE: cloud.validate_source_usage(fx.source_path)[0],
+            cloud.AI_USAGE: cloud.validate_ai_usage(fx.ai_path)[0],
+            cloud.PERSONAL: cloud.validate_personal(fx.personal_path)[0]}
+        repo.bare_commit(values)
+        head = repo.git(repo.remote, 'rev-parse', cloud.REF)
+        script = """
+import importlib.abc, importlib.util, os, socket, sys
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+class NoImageDependencies(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in ('PIL', 'cryptography'):
+            raise AssertionError('image dependency imported during text/restore')
+sys.meta_path.insert(0, NoImageDependencies())
+assert not any(key.startswith('SCHEDULE_EVIDENCE_') for key in os.environ)
+spec = importlib.util.spec_from_file_location('stdlib_cloud', sys.argv[1])
+cloud = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cloud)
+cloud.REMOTE = sys.argv[3]
+cloud.load_collector().analysis_module()
+cloud.load_personal_collector()
+args = SimpleNamespace(mode='restore', output=Path('data') / cloud.SNAPSHOT,
+                       recovery_dir=Path('recovery'))
+with mock.patch.object(socket, 'socket', side_effect=AssertionError('live network forbidden')):
+    result = cloud.orchestrate(args, root=Path(sys.argv[2]))
+assert result['persistenceStatus'] == 'restored'
+assert result['continuationReady'] == 'false'
+print('stdlib restore and text imports OK')
+"""
+        environment = cloud.safe_environment(repo.environment)
+        environment.update(DAILY_GUIDANCE_ENABLED='true', HALF_MONTH_SCHEDULE_ENABLED='true')
+        result = cloud.child_process(
+            [sys.executable, '-I', '-S', '-B', '-X', 'utf8', '-c', script,
+             str(TOOLS / 'cloud-collection.py'), str(repo.root), str(repo.remote)],
+            cwd=repo.root, environment=environment)
+        self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).decode('utf-8'))
+        self.assertIn(b'stdlib restore and text imports OK', result.stdout)
+        self.assertEqual(repo.git(repo.remote, 'rev-parse', cloud.REF), head)
+        for name in values:
+            self.assertEqual((repo.output.parent / name).read_bytes(), repo.remote_json(name)[1])
+
+    def test_actual_reading_batch_requires_every_shared_receipt_on_cloud_restore(self):
+        import test_half_month_cycle as cycle
+        fx = cycle.SharedAccountingCycleTests(methodName='runTest')
+        self.addCleanup(fx.doCleanups)
+        fx.setUp()
+        fx.responses = [
+            cycle.reading_fixture.result(cycle.reading_fixture.row(box=[.1, .1, .3, .3]), complete=False),
+            cycle.reading_fixture.result(), cycle.reading_fixture.result()]
+        report, code = fx.invoke()
+        self.assertEqual((code, report['analysisRequests']), (0, 3))
+        half = cloud.validate_half_month(fx.snapshot)[0]
+        source = cloud.validate_source_usage(fx.source_path)[0]
+        usage = cloud.validate_ai_usage(fx.ai_path)[0]
+        personal = cloud.validate_personal(fx.personal_path)[0]
+        cloud.validate_half_month_links(half, source, usage, personal)
+        self.assertEqual(len(usage['receipts']), 3)
+        self.assertEqual(max(len(row['analysis'].get('readingBatch', []))
+                             for row in half['revisions'].values()), 2)
+        for receipt_id in usage['receipts']:
+            for change in ('missing', 'hash', 'component', 'unfinished'):
+                bad = copy.deepcopy(usage)
+                if change == 'missing':
+                    del bad['receipts'][receipt_id]
+                elif change == 'hash':
+                    bad['receipts'][receipt_id]['requestHash'] = '0' * 64
+                elif change == 'component':
+                    bad['receipts'][receipt_id]['component'] = 'personal'
+                else:
+                    bad['receipts'][receipt_id]['completedAt'] = None
+                with self.subTest(receipt=receipt_id, change=change), self.assertRaisesRegex(
+                        ValueError, 'half_month_usage_missing'):
+                    cloud.validate_half_month_links(half, source, bad, personal)
+        self.assert_stdlib_restore(fx)
 
 
 class HalfMonthCloudTests(unittest.TestCase):
@@ -187,6 +274,17 @@ class HalfMonthCloudTests(unittest.TestCase):
         self.seed(half=False)
         result, phases, _, sources, _, _ = self.scheduled_run(mode='both', official_posts=3)
         self.assertEqual(phases, [('official', 'write'), ('personal', 'source')])
+        self.assertFalse(any(component == 'schedule' for component, _ in sources))
+        self.assertNotIn(cloud.HALF_MONTH, self.fx.remote_names())
+        self.assertEqual(result['persistenceStatus'], 'saved')
+
+    def test_september_created_manual_both_delayed_into_october_never_starts_half(self):
+        self.seed(half=False)
+        self.fx.environment['RUN_CREATED_AT'] = '2026-09-30T15:29:00Z'
+        result, phases, _, sources, _, _ = self.scheduled_run(
+            mode='both', official_posts=3, when=dt.datetime(2026, 10, 2, 0, 30, tzinfo=cloud.JST))
+        self.assertIn(('personal', 'source'), phases)
+        self.assertFalse(any(component == 'schedule' for component, _ in phases))
         self.assertFalse(any(component == 'schedule' for component, _ in sources))
         self.assertNotIn(cloud.HALF_MONTH, self.fx.remote_names())
         self.assertEqual(result['persistenceStatus'], 'saved')

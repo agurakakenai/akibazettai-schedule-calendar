@@ -401,8 +401,26 @@
   function attachWorkTiming(entries, options) {
     return entries.map((entry) => {
       const workTimingNote = resolveWorkTiming({ ...options, name: entry.name });
-      if (!workTimingNote) return entry;
-      return { ...entry, workTimingNote };
+      const planned = options.schedule?.[options.dateKey]?.[options.shift]?.find(row => row.name === entry.name);
+      const readingNote = readingPresentation({ ...entry, halfMonthSources: planned?.halfMonthSources,
+        ...(workTimingNote ? { workTimingNote } : {}) });
+      if (readingNote) {
+        const source = planned.halfMonthSources.slice().sort((a, b) => comparePosts(b, a)).find(row => row.reading);
+        const later = personalPostsForView(options.personal, options.personalEventAdditions).filter(post =>
+          post.date === options.dateKey && (displayAliases(options.insights).get(post.name) ?? post.name) === entry.name &&
+          comparePosts(post, source) > 0);
+        if (later.some(post => post.events.some(event => event.shift === options.shift && event.kind === "absence") ||
+            post.links?.some(link => link.scope === options.shift && ["withdrawn", "conflict"].includes(link.status)))) {
+          readingNote.hours = [];
+        } else {
+          readingNote.hours = readingNote.hours.filter(hour => !later.some(post => post.workTiming?.facts.some(fact =>
+            fact.shift === options.shift && fact.boundary === hour.boundary &&
+            (fact.status !== "excluded" || fact.explicitTime === hour.time ||
+              (fact.qualifier !== null && fact.qualifier === readingNote.qualifier)))));
+        }
+      }
+      return workTimingNote || readingNote ? { ...entry, ...(workTimingNote ? { workTimingNote } : {}),
+        ...(readingNote ? { readingNote } : {}) } : entry;
     });
   }
 
@@ -414,8 +432,11 @@
       validDateKey(time.slice(0, 10)) && Number.isFinite(Date.parse(time));
     const statuses = ["never", "ok", "partial", "unavailable", "no-new", "no-results",
       "paused", "budget-exhausted", "outside-window"];
-    if (!fields(value, ["schemaVersion", "complete", "checkedAt", "lastSuccessAt", "schedules", "lastRun"]) ||
+    if (!fields(value, ["schemaVersion", "complete", "checkedAt", "lastSuccessAt", "schedules", "lastRun",
+      ...(value && Object.hasOwn(value, "partialSchedules") ? ["partialSchedules"] : [])]) ||
         value.schemaVersion !== 1 || value.complete !== false || !Array.isArray(value.schedules) ||
+        (Object.hasOwn(value, "partialSchedules") &&
+          (!Array.isArray(value.partialSchedules) || value.partialSchedules.length > 240)) ||
         !fields(value.lastRun, ["status"]) || !statuses.includes(value.lastRun.status) ||
         [value.checkedAt, value.lastSuccessAt].some((time) => time !== null && !utcTime(time)) ||
         (value.lastSuccessAt && (!value.checkedAt || Date.parse(value.lastSuccessAt) > Date.parse(value.checkedAt)))) {
@@ -426,10 +447,14 @@
     const identities = new Map();
     const handles = new Map();
     const authors = new Map();
-    const known = [...(previous?.schedules ?? []), ...(personal?.posts ?? [])];
-    for (const source of value.schedules) {
+    const known = [...(previous?.schedules ?? []), ...(previous?.partialSchedules ?? []), ...(personal?.posts ?? [])];
+    for (const source of [...value.schedules, ...(value.partialSchedules ?? [])]) {
+      const partial = (value.partialSchedules ?? []).includes(source);
+      const reply = source?.sourceKind === "own-reply";
+      const hasReading = source != null && Object.hasOwn(source, "reading");
       if (!fields(source, ["id", "url", "name", "authorId", "authorScreenName", "createdAt",
-        "observedAt", "sourceKind", "period", "days", ...(Object.hasOwn(source, "workTiming") ? ["workTiming"] : [])]) ||
+        "observedAt", "sourceKind", "period", "days",
+        ...["workTiming", "reading", "replyToId", "replyToAuthorId"].filter(key => source && Object.hasOwn(source, key))]) ||
           typeof source.id !== "string" || !/^[1-9][0-9]{9,24}$/.test(source.id) ||
           typeof source.authorId !== "string" || !/^[1-9][0-9]{0,24}$/.test(source.authorId) ||
           typeof source.authorScreenName !== "string" || !/^[A-Za-z0-9_]{1,15}$/.test(source.authorScreenName) ||
@@ -437,7 +462,10 @@
           typeof source.name !== "string" || !source.name || source.name.trim() !== source.name ||
           /[\u0000-\u001f\u007f\u2028\u2029]/.test(source.name) ||
           (registry ? !registry.member(source.name) : roster && !roster.includes(source.name)) ||
-          source.sourceKind !== "half-month-schedule" ||
+          !["half-month-schedule", "own-reply"].includes(source.sourceKind) ||
+          (reply ? typeof source.replyToId !== "string" || !/^[1-9][0-9]{9,24}$/.test(source.replyToId) ||
+            source.replyToAuthorId !== source.authorId || BigInt(source.replyToId) >= BigInt(source.id)
+            : Object.hasOwn(source, "replyToId") || Object.hasOwn(source, "replyToAuthorId")) ||
           !utcTime(source.createdAt) || !utcTime(source.observedAt) ||
           Date.parse(source.observedAt) < Date.parse(source.createdAt) ||
           Math.abs(Number((BigInt(source.id) >> 22n) + 1288834974657n) - Date.parse(source.createdAt)) >= 2000) {
@@ -476,7 +504,7 @@
       if (period.yearBasis === "post-context" && Math.abs(monthNumber(postDate) - monthNumber(period.from)) > 1) {
         throw new Error("半月予定の対象年が投稿時期と一致しません");
       }
-      const winner = `${canonical}|${period.from}`;
+      const winner = `${canonical}|${period.from}${partial ? `|${source.id}` : ""}`;
       const versions = posts.get(source.id) ?? [];
       if (winners.has(winner) || versions.length >= 2 || versions.some((other) =>
         other.name !== source.name || other.authorId !== source.authorId ||
@@ -493,12 +521,63 @@
       for (const day of source.days) {
         if (!fields(day, ["date", "shifts"]) || !validDateKey(day.date) ||
             day.date < period.from || day.date > period.to || dates.has(day.date) ||
-            !Array.isArray(day.shifts) || day.shifts.length < 1 || day.shifts.length > 2 ||
+            !Array.isArray(day.shifts) || day.shifts.length < (hasReading ? 0 : 1) || day.shifts.length > 2 ||
             day.shifts.some((shift) => !["昼", "夜"].includes(shift)) ||
             new Set(day.shifts).size !== day.shifts.length) {
           throw new Error("半月予定の勤務日・昼夜が不正です");
         }
         dates.add(day.date);
+      }
+      if (hasReading || partial || reply) {
+        const reading = source.reading;
+        const hash = value => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+        if (!fields(reading, ["contract", "complete", "days"]) ||
+            reading.contract !== "half-month-reading-v3" || typeof reading.complete !== "boolean" ||
+            partial !== !reading.complete || (reply && reading.complete) ||
+            !fields(reading.days, [...dates])) throw new Error("半月予定の判読情報が不正です");
+        for (const day of source.days) {
+          const fact = reading.days[day.date];
+          if (!fields(fact, ["weekday", "qualifier", "hours", "evidence", "transcriptionHash", "shiftStatus",
+            ...(reply ? ["operation"] : [])]) || !hash(fact.transcriptionHash) ||
+              (fact.weekday !== null && fact.weekday !== ["日", "月", "火", "水", "木", "金", "土"]
+                [new Date(day.date + "T00:00:00Z").getUTCDay()]) ||
+              ![null, "long", "early", "late", "all_day"].includes(fact.qualifier) ||
+              !["stated", "unstated", "unreadable"].includes(fact.shiftStatus) ||
+              (reply && !["add", "replace", "cancel"].includes(fact.operation)) ||
+              (fact.operation !== "cancel" && Boolean(day.shifts.length) !== (fact.shiftStatus === "stated")) ||
+              (fact.operation === "cancel" && (fact.shiftStatus === "unreadable" ||
+                (day.shifts.length > 0 && fact.shiftStatus !== "stated") || fact.qualifier !== null)) ||
+              (fact.qualifier === "all_day" && day.shifts.length !== 2)) {
+            throw new Error("半月予定の勤務日・判読根拠が不正です");
+          }
+          const hours = fact.hours;
+          const rules = day.shifts.length === 1
+            ? { "long|昼": ["12:00", "18:00"], "early|夜": ["16:00", "22:00"],
+              "late|夜": ["18:00", "22:00"] }[`${fact.qualifier}|${day.shifts[0]}`] : null;
+          if (!hours || typeof hours !== "object" || Array.isArray(hours) ||
+              Object.keys(hours).some(key => !["start", "end"].includes(key)) ||
+              (fact.operation === "cancel" && Object.keys(hours).length)) {
+            throw new Error("半月予定の時刻根拠が不正です");
+          }
+          for (const [key, hour] of Object.entries(hours)) {
+            if (!fields(hour, ["time", "basis"]) || typeof hour.time !== "string" ||
+                !/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(hour.time) ||
+                !["explicit", "qualifier-rule-v1"].includes(hour.basis) ||
+                (hour.basis === "qualifier-rule-v1" && hour.time !== rules?.[key === "end" ? 1 : 0])) {
+              throw new Error("半月予定の時刻根拠が不正です");
+            }
+          }
+          const region = fact.evidence;
+          if (!fields(region, ["imageIndex", "imageHash", "box"]) ||
+              (region.imageIndex !== null && (!Number.isInteger(region.imageIndex) ||
+                region.imageIndex < 0 || region.imageIndex >= 4 || !hash(region.imageHash))) ||
+              (region.imageIndex === null && region.imageHash !== null) ||
+              (region.box !== null && (region.imageIndex === null || !Array.isArray(region.box) ||
+                region.box.length !== 4 || region.box.some(n => typeof n !== "number" || !Number.isFinite(n) || n < 0 || n > 1) ||
+                region.box[0] >= region.box[2] || region.box[1] >= region.box[3]))) {
+            throw new Error("半月予定の画像領域が不正です");
+          }
+        }
       }
       if (Object.hasOwn(source, "workTiming")) {
         validateWorkTiming(source.workTiming, { owner: source, sourceKind: "half-month-schedule",
@@ -508,11 +587,22 @@
     return value;
   }
 
-  function halfMonthProvenance(source) {
+  function halfMonthProvenance(source, key) {
+    const fact = key && source.reading?.days[key];
+    const reading = fact && Object.freeze({
+      ...fact,
+      hours: Object.freeze(Object.fromEntries(Object.entries(fact.hours)
+        .map(([boundary, hour]) => [boundary, Object.freeze({ ...hour })]))),
+      evidence: Object.freeze({ ...fact.evidence,
+        box: fact.evidence.box && Object.freeze([...fact.evidence.box]) })
+    });
     return Object.freeze({
       id: source.id, url: source.url, name: source.name,
       authorId: source.authorId, authorScreenName: source.authorScreenName,
       createdAt: source.createdAt, sourceKind: source.sourceKind,
+      ...(source.sourceKind === "own-reply" ? { replyToId: source.replyToId, replyToAuthorId: source.replyToAuthorId } : {}),
+      ...(reading ? { reading,
+        complete: source.reading.complete } : {}),
       period: Object.freeze({
         from: source.period.from, to: source.period.to,
         printedYear: source.period.printedYear, yearBasis: source.period.yearBasis
@@ -534,18 +624,39 @@
       result[key] = Object.fromEntries(Object.entries(day).map(([shift, entries]) =>
         [shift, entries.filter((entry) => included(entry.name, key)).map((entry) => projection(entry, key))]));
     }
-    const sources = snapshot.schedules.slice().sort((a, b) =>
-      `${a.name}|${a.period.from}`.localeCompare(`${b.name}|${b.period.from}`));
+    const automatic = {};
+    const sources = [...snapshot.schedules, ...(snapshot.partialSchedules ?? []).slice().sort(comparePosts)];
     for (const source of sources) {
-      const provenance = halfMonthProvenance(source);
+      const confirmed = snapshot.schedules.find(row => canonical(row.name) === canonical(source.name) &&
+        row.period.from === source.period.from);
+      if (source.sourceKind === "own-reply" && confirmed && comparePosts(source, confirmed) <= 0) continue;
       for (const day of source.days.slice().sort((a, b) => a.date.localeCompare(b.date))) {
         if (!included(source.name, day.date)) continue;
+        const provenance = halfMonthProvenance(source, day.date);
+        const operation = source.reading?.days[day.date]?.operation;
+        if (operation === "replace" || operation === "cancel") {
+          let matched = false;
+          for (const [shift, entries] of Object.entries(automatic[day.date] ?? {})) {
+            if (operation === "cancel" && day.shifts.length && !day.shifts.includes(shift)) continue;
+            for (const entry of entries.slice()) {
+              if (entry.name !== canonical(source.name)) continue;
+              const remaining = entry.halfMonthSources.filter(proof =>
+                proof.id !== source.replyToId && proof.replyToId !== source.replyToId);
+              if (remaining.length !== entry.halfMonthSources.length) {
+                matched = true;
+                entry.halfMonthSources = remaining;
+                if (!remaining.length) entries.splice(entries.indexOf(entry), 1);
+              }
+            }
+          }
+          if (operation === "cancel" || !matched) continue;
+        }
         const reviewedShifts = SHIFT_NAMES.filter((shift) => manual?.[day.date]?.[shift]?.some((entry) =>
           canonical(entry.name) === canonical(source.name) && entry.halfMonthSources?.some((review) =>
             review.id === source.id && review.confirmation?.method === "source-confirmed")));
-        for (const shift of ["昼", "夜"].filter((item) => day.shifts.includes(item))) {
-          if (reviewedShifts.length && !reviewedShifts.includes(shift)) continue;
-          const entries = (result[day.date] ??= {})[shift] ??= [];
+        for (const shift of day.shifts.length ? day.shifts : ["unassigned"]) {
+          if (shift !== "unassigned" && reviewedShifts.length && !reviewedShifts.includes(shift)) continue;
+          const entries = (automatic[day.date] ??= {})[shift] ??= [];
           let entry = entries.find((item) => item.name === canonical(source.name));
           if (!entry) {
             entry = projection({ name: source.name }, day.date);
@@ -560,7 +671,24 @@
         }
       }
     }
+    for (const [key, day] of Object.entries(automatic)) {
+      for (const [shift, entries] of Object.entries(day)) {
+        const destination = (result[key] ??= {})[shift] ??= [];
+        for (const entry of entries) {
+          const existing = destination.find(row => row.name === entry.name);
+          if (!existing) destination.push(entry);
+          else {
+            existing.halfMonthSources = [...(existing.halfMonthSources ?? []), ...entry.halfMonthSources];
+            if (entry.workTiming) existing.workTiming = entry.workTiming;
+          }
+        }
+      }
+    }
     for (const day of Object.values(result)) {
+      if (day.unassigned) {
+        const assigned = new Set(SHIFT_NAMES.flatMap(shift => day[shift] ?? []).map(entry => entry.name));
+        day.unassigned = day.unassigned.filter(entry => !assigned.has(entry.name));
+      }
       for (const entries of Object.values(day)) {
         for (const entry of entries) {
           if (entry.halfMonthSources) Object.freeze(entry.halfMonthSources);
@@ -647,16 +775,25 @@
       ["昼", "夜"].includes(post.shift) && ["s1", "s2", "s3", "s4"].includes(post.storeId) &&
       Array.isArray(post.names) && post.names.every((name) => typeof name === "string" && name.trim()) &&
       (post.notices === undefined || (Array.isArray(post.notices) && post.notices.every((notice) =>
-        notice && typeof notice.name === "string" && notice.name.trim() && notice.kind === "late" &&
+        notice && typeof notice.name === "string" && notice.name.trim() &&
+        ["late", "absent"].includes(notice.kind) &&
         typeof notice.excerpt === "string" && notice.excerpt.trim() &&
         [...notice.excerpt].length <= 160 && !/[\r\n\u2028\u2029]/.test(notice.excerpt) &&
         (notice.observedAt === undefined || isoTime(notice.observedAt)) &&
-        (notice.time === undefined || /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(notice.time))))) &&
-      (post.names.length > 0 || post.notices?.length > 0);
+        (notice.time === undefined || (notice.kind === "late" && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(notice.time)))))) &&
+      (post.names.length > 0 || post.notices?.length > 0 || typeof post.replyTo === "string");
     for (const time of [value.checkedAt, value.lastSuccessAt]) {
       if (time !== null && !isoTime(time)) throw new Error("自動収集時刻が不正です");
     }
     for (const post of value.posts) {
+      if (post?.replyTo !== undefined) {
+        const parent = value.posts.find(candidate => candidate.id === post.replyTo);
+        if (!parent || Date.parse(parent.createdAt) >= Date.parse(post.createdAt) ||
+            tokyoToday(new Date(Date.parse(post.createdAt) - 5 * 60 * 60 * 1000)) !== post.date ||
+            ["date", "shift", "storeId", "authorId", "authorScreenName"].some(key => parent[key] !== post[key])) {
+          throw new Error("公式返信の対象範囲が不正です");
+        }
+      }
       if (!post || typeof post.id !== "string" || !/^\d{10,25}$/.test(post.id) ||
           ids.has(post.id) || post.url !== `https://x.com/akibazettai/status/${post.id}` ||
           post.authorId !== "822429861218131969" || post.authorScreenName !== "akibazettai" ||
@@ -694,7 +831,7 @@
   }
 
   function observedShift(observations, insights, key, shift, nameCorrections = {}) {
-    const result = { posts: [], byStore: new Map(), byMaid: new Map(), notices: new Map() };
+    const result = { posts: [], byStore: new Map(), byMaid: new Map(), notices: new Map(), cancellations: new Map() };
     // A curated person roster takes precedence; observations are not a second
     // training source and never mutate actual/actualRoster/rotation.
     if (insights?.actualRoster?.[key]?.[shift]) return result;
@@ -729,9 +866,10 @@
           ? postCorrections[notice.name] : null;
         const matchedName = correction?.name ?? notice.name;
         const name = aliases.get(matchedName) ?? matchedName;
-        const previous = result.notices.get(name);
+        const collection = notice.kind === "absent" ? result.cancellations : result.notices;
+        const previous = collection.get(name);
         if (!previous || comparePosts(previous.sources[0], post) < 0) {
-          result.notices.set(name, {
+          collection.set(name, {
             name, storeId: post.storeId, time: notice.time ?? null, excerpt: notice.excerpt,
             sources: [post], trainee: observedTrainee(insights, name, key), conflict: false,
             nameCorrections: correction
@@ -747,6 +885,18 @@
         result.notices.delete(name);
       } else {
         result.byMaid.delete(name);
+        for (const people of result.byStore.values()) people.delete(name);
+      }
+    }
+    for (const [name, cancellation] of result.cancellations) {
+      const laterWork = [...(result.byMaid.get(name)?.sources ?? []),
+        ...(result.notices.get(name)?.sources ?? [])]
+        .some((post) => comparePosts(post, cancellation.sources[0]) > 0);
+      if (laterWork) {
+        result.cancellations.delete(name);
+      } else {
+        result.byMaid.delete(name);
+        result.notices.delete(name);
         for (const people of result.byStore.values()) people.delete(name);
       }
     }
@@ -810,10 +960,15 @@
     const official = observedShift(observations, { ...insights, actualRoster: null },
       dateKey, shift, nameCorrections);
     const notice = official.notices.get(canonical);
+    const cancellations = official.posts.filter((post) => (post.notices ?? []).some((item) => {
+      const corrected = nameCorrections?.[post.id]?.[item.name]?.name ?? item.name;
+      return item.kind === "absent" && (aliases.get(corrected) ?? corrected) === canonical;
+    }));
     const history = [
       ...posts.map((post) => ({ post })),
       ...(official.byMaid.get(canonical)?.sources ?? []).map((post) => ({ post, official: true })),
-      ...(notice?.sources ?? []).map((post) => ({ post, official: true, time: notice.time }))
+      ...(notice?.sources ?? []).map((post) => ({ post, official: true, time: notice.time })),
+      ...cancellations.map((post) => ({ post, official: true, cancelled: true }))
     ].sort((left, right) => comparePosts(left.post, right.post));
     let source = null;
     let absent = false;
@@ -826,6 +981,10 @@
     for (const item of history) {
       const { post } = item;
       if (item.official) {
+        if (item.cancelled) {
+          source = null;
+          held = true;
+        }
         if (source && contradicts(confirmedEvents(source), post.storeId, item.time)) source = null;
         continue;
       }
@@ -861,14 +1020,14 @@
     const post = personalPostLink(options);
     if (post) return { post, kind: "personal" };
     const { insights, dateKey, shift, name } = options;
-    if (!SHIFT_NAMES.includes(shift)) return null;
+    if (!SHIFT_NAMES.includes(shift) && shift !== "unassigned") return null;
     const aliases = displayAliases(insights);
     const canonical = aliases.get(name) ?? name;
     const account = profileHandleFor(insights, canonical);
     // Only use provenance attached to this exact person/date/shift, not a period-wide lookup.
     const source = schedule?.[dateKey]?.[shift]?.find((entry) => entry.name === canonical)
-      ?.halfMonthSources?.find((source) => (aliases.get(source.name) ?? source.name) === canonical &&
-        source.sourceKind === "half-month-schedule" &&
+      ?.halfMonthSources?.slice().sort((a, b) => comparePosts(b, a)).find((source) => (aliases.get(source.name) ?? source.name) === canonical &&
+        ["half-month-schedule", "own-reply"].includes(source.sourceKind) &&
         source.period?.from <= dateKey && dateKey <= source.period?.to &&
         typeof source.id === "string" && /^[1-9][0-9]{9,24}$/.test(source.id) &&
         typeof source.authorScreenName === "string" && /^[A-Za-z0-9_]{1,15}$/.test(source.authorScreenName) &&
@@ -876,7 +1035,41 @@
         (insights?.memberRegistry ? Boolean(insights.memberRegistry.member(source.name)) &&
           typeof source.authorId === "string" && /^[1-9][0-9]{0,24}$/.test(source.authorId)
           : !account || source.authorScreenName.toLowerCase() === account.toLowerCase()));
-    return source ? { post: source, kind: "half-month-schedule" } : null;
+    return source ? { post: source, kind: source.sourceKind } : null;
+  }
+
+  function readingPresentation(entry) {
+    if (entry?.readingNote) return entry.readingNote;
+    const source = entry?.halfMonthSources?.slice().sort((a, b) => comparePosts(b, a))
+      .find(source => source.reading);
+    if (!source) return null;
+    const fact = source.reading;
+    const newer = entry.workTimingNote?.source;
+    if (newer && comparePosts(newer, source) > 0) return null;
+    const hours = ["start", "end"].filter(boundary => fact.hours[boundary]).map(boundary => {
+      const hour = fact.hours[boundary];
+      return { boundary, ...hour,
+        label: `${boundary === "start" ? "開始" : "終了"} ${hour.time}（${hour.basis === "explicit" ? "明記" : "表現から換算"}）` };
+    });
+    return { hours, partial: source.complete === false, qualifier: fact.qualifier };
+  }
+
+  function unassignedRoster({ schedule, dateKey, resolve }) {
+    if (!schedule?.[dateKey]?.unassigned?.length) return [];
+    const resolved = SHIFT_NAMES.map(shift => resolve(dateKey, shift));
+    const assigned = new Set(SHIFT_NAMES.flatMap((shift, index) => [
+      ...(schedule?.[dateKey]?.[shift] ?? []), ...(resolved[index]?.entries ?? [])
+    ]).map(entry => entry.name));
+    return (schedule?.[dateKey]?.unassigned ?? []).filter(entry => {
+      if (assigned.has(entry.name)) return false;
+      const source = entry.halfMonthSources?.slice().sort((a, b) => comparePosts(b, a))[0];
+      return !resolved.some(roll => {
+        const personal = roll?.personal?.byMaid.get(entry.name);
+        const cancellation = roll?.observed?.cancellations?.get(entry.name)?.sources[0];
+        const absence = personal?.absent ? personal.history?.at(-1)?.post : null;
+        return [cancellation, absence].some(post => post && (!source || comparePosts(post, source) >= 0));
+      });
+    });
   }
 
   function observedTrainee(insights, name, key) {
@@ -1064,6 +1257,22 @@
         officialPlacement: !conflict, personalPlacement: false,
         trainee: entry.trainee ?? official.trainee
       });
+    }
+    for (const [name, cancellation] of observed.cancellations) {
+      const person = notices.byMaid.get(name);
+      const ownAbsence = person?.history.filter(({ event }) => event.kind === "absence").at(-1)?.post;
+      if (person?.absent && ownAbsence && comparePosts(ownAbsence, cancellation.sources[0]) > 0) {
+        observed.cancellations.delete(name);
+        continue;
+      }
+      const ownWork = personalPostLink({ personal, insights, observations, dateKey, shift, name,
+        nameCorrections, personalEventAdditions });
+      const laterWork = ownWork && comparePosts(ownWork, cancellation.sources[0]) > 0;
+      if (laterWork) {
+        observed.cancellations.delete(name);
+      } else {
+        entries.delete(name);
+      }
     }
     return { assignment: null, observed, personal: notices, entries: attachWorkTiming([...entries.values()]
       .map((entry) => {
@@ -2810,6 +3019,11 @@
         const resolvedEntry = entries?.find((entry) => entry.name === name);
         const notice = assignment?.recorded ? null : personal?.byMaid.get(name);
         const officialNotice = assignment?.recorded ? null : resolvedEntry?.officialNotice;
+        const officialCancellation = assignment?.recorded ? null : observed?.cancellations?.get(name);
+        if (officialCancellation) {
+          changes.push({ dateKey: key, shift, officialCancellation });
+          continue;
+        }
         if (notice?.absent) {
           changes.push({ dateKey: key, shift, personalNotice: notice });
           continue;
@@ -2867,6 +3081,7 @@
           storeIds: observation?.storeIds ?? (announced ? [storeId] : []),
           sourcePosts: observation?.sources ?? officialNotice?.sources ?? [],
           ...(resolvedEntry?.workTimingNote ? { workTimingNote: resolvedEntry.workTimingNote } : {}),
+          readingNote: readingPresentation(resolvedEntry ?? roll),
           ...(resolvedEntry?.memberReview ? { memberReview: resolvedEntry.memberReview } : {}),
           halfMonthSources: resolvedEntry?.halfMonthSources ??
             schedule?.[key]?.[shift]?.find((entry) => entry.name === name)?.halfMonthSources ?? [],
@@ -2879,6 +3094,12 @@
             ?? null
         });
       }
+      const unassigned = unassignedRoster({ schedule, dateKey: key, resolve }).find(entry => entry.name === name);
+      if (unassigned) stops.push({
+        dateKey: key, shift: "unassigned", storeId: null, storeIds: [], sourcePosts: [],
+        halfMonthSources: unassigned.halfMonthSources, readingNote: readingPresentation(unassigned),
+        settled: false, forecast: false, confirmedOnly: true
+      });
     }
     return { name, stops, changes, guesses: stops.filter((stop) => stop.forecast).length };
   }
@@ -2958,6 +3179,8 @@
       personalPostsForView,
       personalPostLink,
       rosterPostLink,
+      unassignedRoster,
+      readingPresentation,
       resolveShiftRoster,
       validatePersonalShifts,
       validateHalfMonthSchedules,
@@ -3336,6 +3559,48 @@
     return shiftRoster(key, shift).entries.filter((entry) => isVisibleMaid(entry.name));
   }
 
+  function filteredUnassigned(key) {
+    return unassignedRoster({ schedule: effectiveSchedule, dateKey: key, resolve: shiftRoster })
+      .filter(entry => isVisibleMaid(entry.name));
+  }
+
+  function appendReading(target, presentation) {
+    if (!presentation) return;
+    for (const hour of presentation.hours) {
+      const note = document.createElement("span");
+      note.className = "entry-update reading-hours";
+      note.dataset.basis = hour.basis;
+      note.dataset.boundary = hour.boundary;
+      note.textContent = hour.label;
+      target.append(note);
+    }
+    if (presentation.partial) {
+      const note = document.createElement("span");
+      note.className = "entry-update";
+      note.textContent = "一部判読";
+      target.append(note);
+    }
+  }
+
+  function createUnassignedSection(key) {
+    const entries = filteredUnassigned(key);
+    const section = document.createElement("section");
+    section.className = "shift-section unassigned-section";
+    section.dataset.date = key;
+    section.setAttribute("aria-label", `${key} 時間帯未確認の予定`);
+    section.hidden = !entries.length;
+    if (entries.length) {
+      const heading = document.createElement("h4");
+      heading.className = "shift-title";
+      heading.textContent = "時間帯未確認";
+      section.append(heading);
+      appendRosterGroup(section, null, entries, entry => createRosterEntry(entry, key, "unassigned", {
+        evidence: "scheduled", note: "日付のみ確認できる予定です。昼夜・店舗は未確認です。"
+      }));
+    }
+    return section;
+  }
+
   function observationTime(value) {
     return new Intl.DateTimeFormat("ja-JP", {
       timeZone: "Asia/Tokyo", month: "numeric", day: "numeric",
@@ -3370,7 +3635,9 @@
       link.dataset.date = key;
       link.dataset.shift = shift;
       link.title = `${displayName(name)}：${source.kind === "personal"
-        ? "本人の当日投稿を開く" : "予定表の投稿を開く（当日の出勤確認ではありません）"}`;
+        ? "本人の当日投稿を開く" : source.kind === "own-reply"
+          ? "本人の予定追記・訂正の返信を開く（当日の出勤確認ではありません）"
+          : "予定表の投稿を開く（当日の出勤確認ではありません）"}`;
       link.setAttribute("aria-label", link.title);
     }
     return link;
@@ -3408,6 +3675,15 @@
     change.className = "shift-change";
     change.dataset.name = person.name;
     change.textContent = `${prefix}${displayName(person.name)}：${personalNoticeLabel(person)}`;
+    return change;
+  }
+
+  function createOfficialCancellation(person, prefix = "") {
+    const change = document.createElement("p");
+    change.className = "shift-change";
+    change.dataset.name = person.name;
+    change.textContent = `${prefix}${displayName(person.name)}：公式の取消（休み） `;
+    change.append(createObservationLink(person.sources[0], "取消の公式投稿"));
     return change;
   }
 
@@ -3517,6 +3793,7 @@
     item.append(name);
     const timingDescription = workTimingDescription(entry.workTimingNote);
     appendWorkTiming(item, entry.workTimingNote);
+    appendReading(item, readingPresentation(entry));
     const descriptions = note ? [note] : [];
     if (entry.memberReview) {
       const review = document.createElement("span");
@@ -3595,7 +3872,7 @@
   function createRecordedRoster({ type, groups, posts = [] }, key, shift) {
     const visiblePosts = posts.filter((post) => {
       const current = observedShift({ posts: [post] }, insights, key, shift, data.observationNameCorrections);
-      return [...current.byMaid.keys(), ...current.notices.keys()].some(isVisibleMaid);
+      return [...current.byMaid.keys(), ...current.notices.keys(), ...current.cancellations.keys()].some(isVisibleMaid);
     });
     const block = document.createElement("section");
     block.className = groups.some(({ entries }) => entries.some((entry) => isVisibleMaid(entry.name)))
@@ -3710,9 +3987,10 @@
             !shift || link.scope === shift || link.scope === "unspecified") } : {}),
           ...(workTiming !== undefined ? { workTiming: timing(workTiming) } : {})
         })),
-      halfMonth: halfMonthSchedules.schedules
+      halfMonth: [...halfMonthSchedules.schedules, ...(halfMonthSchedules.partialSchedules ?? [])]
         .map((source) => ({
           ...halfMonthProvenance(source),
+          ...(source.reading ? { reading: source.reading } : {}),
           ...(source.workTiming !== undefined ? { workTiming: timing(source.workTiming) } : {}),
           days: source.days.filter((day) => (!key || day.date === key) &&
             (!shift || day.shifts.includes(shift))).map((day) => ({
@@ -3833,11 +4111,14 @@
       const hasUnmatched = !roster.assignment?.recorded && unmatched.length > 0;
       if (hasUnmatched) section.append(createUnmatchedNames(unmatched, key, shift));
       for (const person of roster.personal.byMaid.values()) {
-        if (isVisibleMaid(person.name) && (person.absent || !roster.entries.some((entry) => entry.name === person.name))) {
+        if (isVisibleMaid(person.name) && !roster.observed.cancellations.has(person.name) &&
+            (person.absent || !roster.entries.some((entry) => entry.name === person.name))) {
           section.append(createChangeNotice(person));
         }
       }
-      if (!hasConfirmed && !hasUnmatched && !roster.personal.posts.length) appendEmptyShift(section, roster.entries.length > 0);
+      const cancellations = [...roster.observed.cancellations.values()].filter(person => isVisibleMaid(person.name));
+      for (const person of cancellations) section.append(createOfficialCancellation(person));
+      if (!hasConfirmed && !hasUnmatched && !roster.personal.posts.length && !cancellations.length) appendEmptyShift(section, roster.entries.length > 0);
       return section;
     }
     // 同じ日の昼に誰がどこにいたか。記録があるときだけ、夜の割り振りに使う。
@@ -4153,6 +4434,8 @@
 
     day.append(heading);
     shifts.forEach((shift) => day.append(createShiftSection(key, date, shift)));
+    const unassigned = createUnassignedSection(key);
+    if (!unassigned.hidden) day.append(unassigned);
     return day;
   }
 
@@ -4262,6 +4545,12 @@
       if (previous) elements.dialogContent.replaceChild(section, previous);
       else elements.dialogContent.append(section);
     });
+    const unassigned = createUnassignedSection(key);
+    const previousUnassigned = elements.dialogContent.children[shifts.length];
+    if (unassigned.hidden) {
+      if (previousUnassigned) elements.dialogContent.replaceChildren(...[...elements.dialogContent.children].slice(0, shifts.length));
+    } else if (previousUnassigned) elements.dialogContent.replaceChild(unassigned, previousUnassigned);
+    else elements.dialogContent.append(unassigned);
     elements.dialogContent.scrollTop = 0;
     if (!elements.dayDialog.open) {
       dialogOrigin = origin;
@@ -4353,6 +4642,7 @@
         events.forEach((event) => art.append(createEventArt(event, key)));
         button.append(art);
       } else if (inRange) {
+        const unknown = filteredUnassigned(key).length > 0;
         const hasMembers = shifts.some((shift) => filteredEntries(key, shift).length > 0);
         const hint = document.createElement("span");
         hint.className = hasMembers ? "day-hint has-schedule" : "day-hint";
@@ -4360,8 +4650,10 @@
         const hasObserved = shifts.some((shift) =>
           observedShift(observations, insights, key, shift, data.observationNameCorrections).posts.length > 0);
         const hasPersonal = shifts.some((shift) =>
-          [...shiftRoster(key, shift).personal.byMaid.keys()].some(isVisibleMaid));
-        hint.textContent = hasMembers ? "お給仕" : hasPersonal ? "変更あり" : hasInformation ? "該当なし" : "未確認";
+          [...shiftRoster(key, shift).personal.byMaid.keys(),
+            ...shiftRoster(key, shift).observed.cancellations.keys()].some(isVisibleMaid));
+        hint.textContent = hasMembers ? "お給仕" : unknown ? "時間帯未確認" :
+          hasPersonal ? "変更あり" : hasInformation ? "該当なし" : "未確認";
         if (hasObserved) hint.classList.add("is-observed");
         button.append(hint);
       }
@@ -4458,7 +4750,7 @@
       return total + shifts.reduce(
         (shiftTotal, shift) => shiftTotal + filteredEntries(key, shift).length,
         0
-      );
+      ) + filteredUnassigned(key).length;
     }, 0);
 
     elements.monthTitle.textContent = `${year}年${monthIndex + 1}月`;
@@ -4493,7 +4785,8 @@
           personal: roster.personal,
           entries: roster.entries,
           confirmedOnly,
-          members: [...new Set([...roster.entries.map((entry) => entry.name), ...roster.personal.byMaid.keys()])],
+          members: [...new Set([...roster.entries.map((entry) => entry.name), ...roster.personal.byMaid.keys(),
+            ...roster.observed.cancellations.keys()])],
           assignment: roster.assignment
             ?? (outlook
               ? getShiftAssignment({
@@ -4522,6 +4815,12 @@
             seen.add(name);
             extra.push(name);
           }
+        }
+      }
+      for (const entry of filteredUnassigned(key)) {
+        if (!seen.has(entry.name)) {
+          seen.add(entry.name);
+          extra.push(entry.name);
         }
       }
     }
@@ -4601,7 +4900,10 @@
     plan.stops.forEach((stop) => list.append(createMaidStop(stop, plan.name)));
     block.append(list);
     for (const change of plan.changes) {
-      block.append(createChangeNotice(change.personalNotice, `${change.dateKey} ${change.shift} `));
+      const prefix = `${change.dateKey} ${change.shift} `;
+      block.append(change.officialCancellation
+        ? createOfficialCancellation(change.officialCancellation, prefix)
+        : createChangeNotice(change.personalNotice, prefix));
     }
     return block;
   }
@@ -4617,7 +4919,7 @@
     const [, month, date] = stop.dateKey.split("-").map(Number);
     // 曜日はカレンダーと同じ書き方で添える。「9/3」だけでは何曜日か分からない。
     const weekday = weekdays[new Date(`${stop.dateKey}T00:00:00`).getDay()];
-    when.textContent = `${month}/${date}(${weekday}) ${stop.shift}`;
+    when.textContent = `${month}/${date}(${weekday}) ${stop.shift === "unassigned" ? "時間帯未確認" : stop.shift}`;
     if (when.href) {
       when.setAttribute("aria-label", `${when.textContent} ${when.title}`);
     }
@@ -4629,6 +4931,7 @@
       : stop.storeId ? storeShort(insights, stop.storeId) : "未発表";
     item.append(when, where);
     appendWorkTiming(item, stop.workTimingNote);
+    appendReading(item, stop.readingNote);
     const evidence = document.createElement("span");
     evidence.className = "maid-plan-evidence";
     evidence.textContent = stop.observed ? "記録" : stop.recorded ? "実績"

@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const api = require("../app.js");
 const { test } = require("node:test");
-const { emptyHalfMonthSchedules, halfMonthEvidence } = require("./fixtures/half-month-schedules.js");
+const { emptyHalfMonthSchedules, halfMonthEvidence, readingSource } = require("./fixtures/half-month-schedules.js");
 const context = { window: {} };
 vm.createContext(context);
 for (const file of ["schedule.js", "store-insights.js"]) {
@@ -14,6 +14,66 @@ for (const file of ["schedule.js", "store-insights.js"]) {
 const insights = context.window.STORE_INSIGHTS;
 const schedule = context.window.SCHEDULE_DATA;
 const before = JSON.stringify(insights);
+test("explicit official cancellations are scoped, sourced and reversible", () => {
+  const day = "2026-09-06";
+  const planned = { [day]: { "昼": [{ name: "みりあ" }], "夜": [{ name: "みりあ" }] } };
+  const source = (hour, extra = {}) => {
+    const createdAt = `2026-09-06T0${hour}:00:00Z`;
+    const id = (((BigInt(Date.parse(createdAt)) - 1288834974657n) << 22n) + 1n).toString();
+    return { id, url: `https://x.com/akibazettai/status/${id}`,
+      authorId: "822429861218131969", authorScreenName: "akibazettai",
+      createdAt, observedAt: "2026-09-06T03:00:00Z", date: day, shift: "昼",
+      storeId: "s1", names: ["みりあ"], ...extra };
+  };
+  const original = source(0);
+  const cancelled = source(1, { names: [], replyTo: original.id,
+    notices: [{ name: "みりあ", kind: "absent", excerpt: "みりあ" }] });
+  const feed = posts => ({ schemaVersion: 1, complete: false,
+    checkedAt: "2026-09-06T03:00:00Z", lastSuccessAt: "2026-09-06T03:00:00Z",
+    posts, pending: [], lastRun: { status: "ok" } });
+  const options = { insights: { ...insights, actualRoster: {} }, schedule: planned,
+    roster: ["みりあ"], personal: null, dateKey: day, shift: "昼" };
+  const resolve = (posts, extra = {}) => api.resolveShiftRoster({
+    ...options, observations: api.validateObservations(feed(posts)), ...extra });
+  const held = resolve([source(0, { names: ["あむ"] })]);
+  assert.ok(held.entries.some(entry => entry.name === "みりあ"), "absence from a list is not a cancellation");
+  const stopped = resolve([original, cancelled]);
+  assert.ok(!stopped.entries.some(entry => entry.name === "みりあ"));
+  assert.equal(stopped.observed.cancellations.get("みりあ").sources[0].id, cancelled.id);
+  assert.ok(!resolve([source(1, { notices: cancelled.notices })]).entries.some(entry => entry.name === "みりあ"));
+  assert.throws(() => api.validateObservations(feed([cancelled])));
+  assert.throws(() => api.validateObservations(feed([original, { ...cancelled, shift: "夜" }])));
+  assert.ok(resolve([original, cancelled], { shift: "夜" }).entries.some(entry => entry.name === "みりあ"));
+  const plan = api.maidItinerary({ schedule: planned, name: "みりあ", dates: [day],
+    shifts: ["昼"], resolve: () => stopped });
+  assert.equal(plan.stops.length, 0);
+  assert.equal(plan.changes[0].officialCancellation.sources[0].url, cancelled.url);
+  assert.ok(resolve([original, cancelled, source(2)]).entries.some(entry => entry.name === "みりあ"));
+  const own = { ...source(2), name: "みりあ", authorId: "1180156105181159424",
+    authorScreenName: "miria_zettai", events: [], links: [{ scope: "昼", status: "work" }] };
+  own.url = `https://x.com/miria_zettai/status/${own.id}`;
+  for (const field of ["names", "shift", "storeId"]) delete own[field];
+  const personal = { ...feed([own]) };
+  delete personal.pending;
+  assert.ok(resolve([original, cancelled], { personal }).entries.some(entry => entry.name === "みりあ"));
+  const unspecified = { ...personal, posts: [{ ...own, links: [{ scope: "unspecified", status: "work" }] }] };
+  assert.ok(!resolve([original, cancelled], { personal: unspecified }).entries.some(entry => entry.name === "みりあ"),
+    "an unspecified link does not undo a scoped cancellation");
+  const oldOwn = { ...own, id: original.id, createdAt: original.createdAt,
+    url: `https://x.com/miria_zettai/status/${original.id}` };
+  const linkOptions = { ...options, name: "みりあ", personal: { ...personal, posts: [oldOwn] },
+    observations: api.validateObservations(feed([original, cancelled, source(2)])) };
+  assert.equal(api.personalPostLink(linkOptions), null,
+    "a subsequent official work announcement does not resurrect a pre-cancellation personal link");
+  const ownAbsence = { ...personal, posts: [{ ...own,
+    events: [{ shift: "昼", kind: "absence", excerpt: "お休み" }],
+    links: [{ scope: "昼", status: "withdrawn" }] }] };
+  const finalAbsence = resolve([original, cancelled], { personal: ownAbsence });
+  assert.equal(finalAbsence.observed.cancellations.size, 0);
+  assert.equal(finalAbsence.personal.byMaid.get("みりあ").absent, true);
+  assert.ok(!finalAbsence.entries.some(entry => entry.name === "みりあ"));
+  assert.equal(planned[day]["昼"][0].name, "みりあ");
+});
 const halfDays = [
   ["2026-09-02", "夜"], ["2026-09-05", "昼"], ["2026-09-07", "昼"],
   ["2026-09-10", "夜"], ["2026-09-12", "昼"], ["2026-09-14", "昼"]
@@ -35,6 +95,174 @@ function halfSource(name = "いと", overrides = {}) {
 const halfFeed = (sources = [halfSource()]) => ({
   schemaVersion: 1, complete: false, checkedAt: "2026-09-06T12:00:00Z",
   lastSuccessAt: "2026-09-06T12:00:00Z", schedules: sources, lastRun: { status: "ok" }
+});
+
+test("v3 public reading validates exact fields, partial placement, evidence and hour rules", () => {
+  const day = "2026-09-07";
+  const source = readingSource(halfSource("いと", { days: [{ date: day, shifts: [] }] }));
+  const feed = { ...halfFeed([]), partialSchedules: [source] };
+  assert.ok(api.validateHalfMonthSchedules(feed));
+  assert.ok(api.validateHalfMonthSchedules(halfFeed([readingSource(source, { complete: true })])));
+  const invalid = [
+    value => { value.partialSchedules[0].raw = "private"; },
+    value => { value.partialSchedules[0].reading.complete = true; },
+    value => { value.partialSchedules[0].reading.days[day].transcription = "private"; },
+    value => { value.partialSchedules[0].reading.days[day].transcriptionHash = "broken"; },
+    value => { value.partialSchedules[0].reading.days[day].evidence.imageIndex = 4; },
+    value => { value.partialSchedules[0].reading.days[day].evidence.imageHash = null; },
+    value => { value.partialSchedules[0].reading.days[day].evidence.box = [0.9, 0, 0.2, 1]; },
+    value => { value.partialSchedules[0].reading.days[day].weekday = "火"; },
+    value => { value.partialSchedules[0].reading.days[day].shiftStatus = "stated"; },
+    value => { value.partialSchedules[0].reading.days[day].hours.start = { time: "25:00", basis: "explicit" }; },
+    value => { value.partialSchedules[0].reading.days[day].hours.start = { time: "12:00", basis: "guessed" }; },
+    value => { value.partialSchedules[0].reading.days[day].hours.start = { time: "12:00", basis: "qualifier-rule-v1" }; },
+    value => { value.partialSchedules[0].reading.days[day].operation = "cancel"; },
+    value => { delete value.partialSchedules[0].reading; }
+  ];
+  for (const change of invalid) {
+    const bad = copyOf(feed);
+    change(bad);
+    assert.throws(() => api.validateHalfMonthSchedules(bad), change.toString());
+  }
+  assert.throws(() => api.validateHalfMonthSchedules(halfFeed([source])));
+  for (const reading of [null, false, 0, ""]) {
+    assert.throws(() => api.validateHalfMonthSchedules(halfFeed([{ ...halfSource(), reading }])));
+  }
+  for (const [qualifier, shifts, expected] of [
+    ["long", ["昼"], ["12:00", "18:00"]],
+    ["early", ["夜"], ["16:00", "22:00"]],
+    ["late", ["夜"], ["18:00", "22:00"]]
+  ]) {
+    const timed = readingSource(halfSource("いと", { days: [{ date: day, shifts }] }), { facts: {
+      [day]: { qualifier, hours: {
+        start: { time: expected[0], basis: "qualifier-rule-v1" },
+        end: { time: expected[1], basis: "qualifier-rule-v1" }
+      } }
+    } });
+    assert.ok(api.validateHalfMonthSchedules({ ...halfFeed([]), partialSchedules: [timed] }));
+    timed.reading.days[day].hours.start = { time: "13:15", basis: "explicit" };
+    assert.ok(api.validateHalfMonthSchedules({ ...halfFeed([]), partialSchedules: [timed] }));
+    timed.reading.days[day].hours.end.time = "23:00";
+    assert.throws(() => api.validateHalfMonthSchedules({ ...halfFeed([]), partialSchedules: [timed] }));
+  }
+  const longNight = readingSource(halfSource("いと", { days: [{ date: day, shifts: ["夜"] }] }),
+    { facts: { [day]: { qualifier: "long" } } });
+  assert.ok(api.validateHalfMonthSchedules({ ...halfFeed([]), partialSchedules: [longNight] }));
+  longNight.reading.days[day].hours.end = { time: "22:00", basis: "qualifier-rule-v1" };
+  assert.throws(() => api.validateHalfMonthSchedules({ ...halfFeed([]), partialSchedules: [longNight] }));
+});
+
+test("v3 partials preserve manual and confirmed days; replies amend only their own parent series", () => {
+  const day = "2026-09-07", other = "2026-09-08";
+  const confirmed = readingSource(halfSource("いと", { days: [{ date: day, shifts: ["昼"] }] }), { complete: true });
+  const laterBase = (offset, days) => {
+    const createdAt = new Date(Date.parse(confirmed.createdAt) + offset * 1000).toISOString().replace(".000", "");
+    const id = (((BigInt(Date.parse(createdAt)) - 1288834974657n) << 22n) + 1n).toString();
+    return { ...halfSource(), id, createdAt, url: `https://x.com/${confirmed.authorScreenName}/status/${id}`, days };
+  };
+  const partial = readingSource(laterBase(1, [{ date: day, shifts: [] }, { date: other, shifts: [] }]));
+  const manual = { [day]: { "夜": [{ name: "いと", manual: true }] } };
+  const snapshot = { ...halfFeed([confirmed]), partialSchedules: [partial] };
+  const before = JSON.stringify([snapshot, manual]);
+  const result = api.buildEffectiveSchedule(manual, api.validateHalfMonthSchedules(snapshot));
+  assert.equal(result[day]["昼"][0].name, "いと");
+  assert.equal(result[day]["夜"][0].manual, true);
+  assert.equal(result[day].unassigned.length, 0);
+  assert.equal(result[other].unassigned[0].name, "いと");
+  assert.equal(result[other]["昼"], undefined);
+  assert.ok(Object.isFrozen(result[other].unassigned[0].halfMonthSources[0].reading.evidence.box));
+  assert.equal(JSON.stringify([snapshot, manual]), before);
+  const link = api.rosterPostLink({ schedule: result, dateKey: other, shift: "unassigned", name: "いと" });
+  assert.equal(link.post.url, partial.url);
+  const reply = operation => readingSource({
+    ...laterBase(2, [{ date: day, shifts: operation === "cancel" ? [] : ["夜"] }]),
+    sourceKind: "own-reply", replyToId: confirmed.id, replyToAuthorId: confirmed.authorId
+  }, { operation });
+  for (const operation of ["replace", "cancel"]) {
+    const amendment = reply(operation);
+    const feed = { ...halfFeed([confirmed]), partialSchedules: [amendment] };
+    assert.ok(api.validateHalfMonthSchedules(feed));
+    const effective = api.buildEffectiveSchedule(manual, feed);
+    assert.equal(effective[day]["昼"].length, 0);
+    assert.equal(effective[day]["夜"][0].manual, true, "manual survives the reply");
+    if (operation === "replace") {
+      assert.equal(api.rosterPostLink({ schedule: effective, dateKey: day, shift: "夜", name: "いと" }).post.id,
+        amendment.id);
+    }
+    amendment.replyToAuthorId = "999";
+    assert.throws(() => api.validateHalfMonthSchedules(feed));
+  }
+  const newer = readingSource(laterBase(3, [{ date: day, shifts: ["昼"] }]), { complete: true });
+  for (const operation of ["replace", "cancel"]) {
+    const effective = api.buildEffectiveSchedule({}, { ...halfFeed([newer]), partialSchedules: [reply(operation)] });
+    assert.equal(effective[day]["昼"].length, 1, "old reply cannot remove a new table");
+    assert.equal(effective[day]["夜"], undefined, "stale replacement is not added");
+  }
+  const unrelated = readingSource(laterBase(1, [{ date: day, shifts: ["昼"] }]));
+  const effective = api.buildEffectiveSchedule({}, {
+    ...halfFeed([confirmed]), partialSchedules: [unrelated, reply("cancel")]
+  });
+  assert.deepEqual(effective[day]["昼"][0].halfMonthSources.map(source => source.id), [unrelated.id]);
+  const wrong = reply("cancel");
+  for (const changes of [
+    { replyToId: wrong.id }, { replyToAuthorId: "999" }, { sourceKind: "half-month-schedule" }
+  ]) {
+    assert.throws(() => api.validateHalfMonthSchedules({
+      ...halfFeed([confirmed]), partialSchedules: [{ ...wrong, ...changes }]
+    }));
+  }
+  wrong.reading.days[day].operation = "remove-all";
+  assert.throws(() => api.validateHalfMonthSchedules({ ...halfFeed([confirmed]), partialSchedules: [wrong] }));
+  const secondHalf = readingSource({ ...confirmed,
+    period: { ...confirmed.period, from: "2026-09-16", to: "2026-09-30" },
+    days: [{ date: "2026-09-20", shifts: [] }]
+  });
+  assert.ok(api.validateHalfMonthSchedules({ ...halfFeed([confirmed]), partialSchedules: [secondHalf] }),
+    "one full-month post can contain a confirmed half and a partially read half");
+});
+
+test("v3 date-only follows later personal and official cancellation/return without duplicating a confirmed shift", () => {
+  const day = "2026-09-07";
+  const source = readingSource(halfSource("いと", { days: [{ date: day, shifts: [] }] }));
+  const schedule = api.buildEffectiveSchedule({}, { ...halfFeed([]), partialSchedules: [source] });
+  const own = (hour, kind) => {
+    const createdAt = `2026-09-07T0${hour}:00:00Z`;
+    const id = (((BigInt(Date.parse(createdAt)) - 1288834974657n) << 22n) + 1n).toString();
+    return { id, name: source.name, authorId: source.authorId, authorScreenName: source.authorScreenName,
+      url: `https://x.com/${source.authorScreenName}/status/${id}`, date: day, createdAt,
+      observedAt: "2026-09-07T06:00:00Z",
+      events: [{ shift: "昼", kind, excerpt: "synthetic event" }],
+      links: [{ scope: "昼", status: kind === "absence" ? "withdrawn" : "work" }] };
+  };
+  const feed = posts => ({ schemaVersion: 1, complete: false, checkedAt: null, lastSuccessAt: null,
+    posts, lastRun: { status: "never" } });
+  const options = { schedule, insights: { ...insights, actualRoster: {} }, roster: ["いと"] };
+  const resolve = (personal, observations) => (dateKey, shift) =>
+    api.resolveShiftRoster({ ...options, personal, observations, dateKey, shift });
+  assert.equal(api.unassignedRoster({ schedule, dateKey: day, resolve: resolve(null, null) }).length, 1);
+  const absent = own(1, "absence");
+  assert.equal(api.unassignedRoster({ schedule, dateKey: day, resolve: resolve(feed([absent]), null) }).length, 0);
+  const returned = own(2, "return");
+  const resumed = resolve(feed([absent, returned]), null);
+  assert.equal(api.unassignedRoster({ schedule, dateKey: day, resolve: resumed }).length, 0);
+  const plan = api.maidItinerary({ schedule, dates: [day], shifts: ["昼", "夜"], name: "いと", resolve: resumed });
+  assert.deepEqual(plan.stops.map(stop => stop.shift), ["昼"]);
+  const officialPost = (hour, cancelled) => {
+    const post = own(hour, "return");
+    const result = { id: post.id, createdAt: post.createdAt, observedAt: post.observedAt, date: day,
+      authorId: "822429861218131969", authorScreenName: "akibazettai",
+      url: `https://x.com/akibazettai/status/${post.id}`, shift: "昼", storeId: "s1",
+      names: cancelled ? [] : ["いと"] };
+    if (cancelled) result.notices = [{ name: "いと", kind: "absent", excerpt: "synthetic absence" }];
+    return result;
+  };
+  const cancellation = officialPost(3, true);
+  const cancelledFeed = api.validateObservations({ ...feed([cancellation]), pending: [] });
+  assert.equal(api.unassignedRoster({ schedule, dateKey: day, resolve: resolve(null, cancelledFeed) }).length, 0);
+  const restoredFeed = api.validateObservations({ ...feed([cancellation, officialPost(4, false)]), pending: [] });
+  const restored = resolve(null, restoredFeed);
+  assert.equal(restored(day, "昼").entries.length, 1);
+  assert.equal(api.unassignedRoster({ schedule, dateKey: day, resolve: restored }).length, 0);
 });
 
 function timingSource(post, sourceKind) {

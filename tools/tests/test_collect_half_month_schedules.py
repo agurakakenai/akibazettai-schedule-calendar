@@ -99,13 +99,17 @@ class DiscoveryTests(base.Offline):
     def test_quote_and_reply_use_only_authors_top_level_text_and_photos(self):
         entry = {**base.entry(), 'isQuote': True, 'isReply': True, 'quotedTweet': {'id': 'other'}}
         candidate = collector.discover(base.document(entry), {'あむ': base.TARGET}, base.NOW)[0][0]
-        for field in ('quoted_tweet', 'quoted_status', 'in_reply_to_user_id'):
+        for field in ('quoted_tweet', 'quoted_status'):
             payload = base.payload()
             payload[field] = {'text': 'other author schedule', 'photos': [{'url': 'https://other.invalid'}]}
             source, text, images = collector.validate_post(candidate, payload, base.TARGET, base.NOW)
             self.assertEqual(text, payload['text'])
             self.assertEqual(len(images), 1)
             self.assertNotIn('other.invalid', json.dumps(source))
+        payload = base.payload()
+        payload['in_reply_to_user_id'] = {'text': 'unverified parent'}
+        with self.assertRaisesRegex(ValueError, 'reply_author_mismatch'):
+            collector.validate_post(candidate, payload, base.TARGET, base.NOW)
 
     def test_conflicting_duplicate_and_candidate_cap(self):
         first, other = base.entry(), base.entry()

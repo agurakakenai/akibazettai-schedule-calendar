@@ -179,7 +179,7 @@ def public_projection(state, *, collector=None):
                     or observed < created):
                 raise ValueError
             names = item['names']
-            if (not isinstance(names, list) or not names
+            if (not isinstance(names, list) or (not names and 'replyTo' not in post)
                     or any(not isinstance(name, str) or not NAME_RE.fullmatch(name)
                            or name.startswith('http') or 'にゃんこ' in name
                            or (name not in collector.IMPORTER.CONFIRMED_NAMES
@@ -190,6 +190,14 @@ def public_projection(state, *, collector=None):
             item['createdAt'] = collector.iso(created)
             item['observedAt'] = collector.iso(observed)
             item['names'] = list(names)
+            if 'replyTo' in post:
+                parent = next((row for row in state['posts']
+                               if isinstance(row, dict) and row.get('id') == post['replyTo']), None)
+                if (parent is None or collector.timestamp(parent['createdAt']) >= created
+                        or any(parent[key] != item[key] for key in
+                               ('date', 'shift', 'storeId', 'authorId', 'authorScreenName'))):
+                    raise ValueError
+                item['replyTo'] = post['replyTo']
             if 'notices' in post:
                 notice_fields = ('name', 'kind', 'excerpt', 'time', 'observedAt')
                 notices = [{key: notice[key] for key in notice_fields if key in notice}

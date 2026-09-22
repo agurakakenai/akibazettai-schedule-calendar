@@ -74,6 +74,25 @@ def hours(schedule):
 
 
 class RoutingTests(unittest.TestCase):
+    def test_cache_is_only_requested_for_an_active_half_month_route(self):
+        for event, mode, schedule, created, expected_mode, cache in [
+            ('workflow_dispatch', 'both', '', '2026-09-30T15:29:59Z', 'both', 'false'),
+            ('workflow_dispatch', 'both', '', '2026-09-30T15:30:00Z', 'both', 'true'),
+            ('workflow_dispatch', 'schedule', '', '2026-09-30T15:29:59Z', 'restore', 'false'),
+            ('workflow_dispatch', 'personal', '', '2026-10-01T00:00:00Z', 'personal', 'false'),
+            ('schedule', '', routing.LEGACY_SCHEDULE, '2026-10-01T03:35:00Z', 'collect', 'false'),
+            ('schedule', '', '30 15 * * *', '2026-09-30T15:35:00Z', 'schedule', 'true'),
+            ('schedule', '', '30 21 12,28-31 * *', '2026-10-30T21:35:00Z', 'restore', 'false'),
+        ]:
+            with self.subTest(mode=mode, created=created), mock.patch.dict(os.environ, {
+                    'EVENT_NAME': event, 'REQUESTED_MODE': mode, 'EVENT_SCHEDULE': schedule,
+                    'RUN_CREATED_AT': created, 'HALF_MONTH_SCHEDULE_ENABLED': 'true'},
+                    clear=True), contextlib.redirect_stdout(io.StringIO()) as stream:
+                self.assertEqual(routing.main(), 0)
+                result = json.loads(stream.getvalue())
+                self.assertEqual(result['collectionMode'], expected_mode)
+                self.assertEqual(result['halfMonthCacheRequired'], cache)
+
     def test_current_schedule_and_manual_collect_remain_official_only(self):
         self.assertEqual(routing.collection_mode('schedule', 'both', routing.LEGACY_SCHEDULE), 'collect')
         self.assertEqual(routing.collection_mode('workflow_dispatch', 'collect'), 'collect')
@@ -131,6 +150,18 @@ class RoutingTests(unittest.TestCase):
 
 
 class ProductionWorkflowTests(unittest.TestCase):
+    def test_private_cache_is_encrypted_scoped_and_preserved_on_failure(self):
+        collect = job_block('collect')
+        self.assertIn('steps.route.outputs.halfMonthCacheRequired', collect)
+        self.assertIn('--cache-dir "$RUNNER_TEMP/_private-evidence"', collect)
+        self.assertIn('path: ${{ runner.temp }}/_private-evidence/cache.bin', collect)
+        self.assertIn('retention-days: 7', collect)
+        self.assertIn("if: always() && steps.evidence.outputs.exists == 'true'", collect)
+        self.assertIn("steps.route.outputs.collectionMode == 'schedule'", collect)
+        for name in ('build', 'deploy', 'continue-collection', 'validate', 'probe'):
+            self.assertNotIn('SCHEDULE_EVIDENCE_KEY', job_block(name))
+        self.assertNotIn('path: ${{ runner.temp }}/_private-evidence\n', collect)
+
     def test_dispatch_script_preserves_queued_runs_and_reports_api_failure(self):
         if os.name == 'nt':
             git = shutil.which('git')
@@ -194,10 +225,11 @@ gh() {
 
     def test_personal_slots_are_independent_of_unchanged_official_cron(self):
         enabled = re.findall(r'^\s+- cron: "([^"]+)"$', WORKFLOW, re.M)
-        self.assertEqual(enabled, [routing.LEGACY_SCHEDULE, *routing.slots.PERSONAL_SCHEDULES])
+        self.assertEqual(enabled, [routing.LEGACY_SCHEDULE, *routing.slots.PERSONAL_SCHEDULES,
+                                   *routing.slots.HALF_MONTH_SCHEDULES])
         options = re.search(r'        options:\n(.*?)        default:', WORKFLOW, re.S).group(1)
         self.assertEqual(re.findall(r'          - (\S+)', options),
-                         ['deploy', 'collect', 'personal', 'both', 'apply-saved', 'cost-sync', 'probe'])
+                         ['deploy', 'collect', 'personal', 'both', 'schedule', 'apply-saved', 'cost-sync', 'probe'])
         collect = job_block('collect')
         self.assertIn('EVENT_SCHEDULE: ${{ github.event.schedule }}', collect)
         self.assertIn('          python tools/collection-routing.py', collect)
@@ -220,7 +252,7 @@ gh() {
 
     def test_collection_guard_runs_only_explicit_main_or_scheduled_work(self):
         expression = job_condition('collect')
-        for mode in ('collect', 'personal', 'both', 'apply-saved', 'cost-sync'):
+        for mode in ('collect', 'personal', 'both', 'schedule', 'apply-saved', 'cost-sync'):
             self.assertTrue(evaluate(expression, mode=mode))
         self.assertTrue(evaluate(expression, event='schedule', mode=''))
         for overrides in (

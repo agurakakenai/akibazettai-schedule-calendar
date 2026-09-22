@@ -138,6 +138,29 @@ TIMING_SCHEMA = copy.deepcopy(facts.timing().COMPACT_SCHEMA)
 DAY_SCHEMA['required'].append('workTiming')
 DAY_SCHEMA['properties']['workTiming'] = {
     'type': ['array', 'null'], 'maxItems': 2, 'items': TIMING_SCHEMA}
+reading = _module('schedule-reading.py', 'half_month_reading')
+READING_VERSION = 'half-month-reading-v3'
+READING_MAX_OUTPUT_TOKENS = 8192
+READING_PROMPT = reading.PROMPT + """
+Resolve year in code, not by guessing: preserve printed weekdays, printedYear
+from images, and textYear from the body. Maximum 2 periods and 32 rows total.
+Every image reference and evidence box MUST use ORIGINAL imageMap coordinates,
+not attachment/view coordinates. imageMap explicitly maps each supplied view.
+Read identification and extraction in this ONE response; no preliminary call.
+Only complete a table if all relevant rows are readable. Missing dates, shifts
+or qualifiers make it partial. Multiple original parts cannot confirm a table.
+Each row also requires operation: null for an original table; add, replace or
+cancel ONLY for an explicitly stated addition, change or cancellation in a
+verified own reply. Transcribe that operation's evidence in the same row.
+A single date alone is NOT a correction. Own replies always remain partial.
+For cancellation, keep qualifier and explicit clocks null and workTiming=[]:
+do not carry the cancelled shift's former hours into the amendment.
+""" + PROMPT[PROMPT.index('Each day additionally requires workTiming:'):]
+READING_SCHEMA = reading.schema(SCHEMA)
+READING_DAY_SCHEMA = READING_SCHEMA['properties']['periods']['items']['properties']['days']['items']
+READING_DAY_SCHEMA['required'].append('operation')
+READING_DAY_SCHEMA['properties']['operation'] = {
+    'type': ['string', 'null'], 'enum': ['add', 'replace', 'cancel', None]}
 
 
 def contract_parts(version):
@@ -145,6 +168,8 @@ def contract_parts(version):
         return LEGACY_PROMPT, LEGACY_SCHEMA, LEGACY_MAX_OUTPUT_TOKENS
     if version == VERSION:
         return PROMPT, SCHEMA, MAX_OUTPUT_TOKENS
+    if version == READING_VERSION:
+        return READING_PROMPT, READING_SCHEMA, READING_MAX_OUTPUT_TOKENS
     raise ValueError('invalid_schedule_contract')
 
 
@@ -312,6 +337,90 @@ def prepare_request(source, text, images, *, contract_version=VERSION, request_a
     return messages, proof
 
 
+def _reading_metadata(source, text, images):
+    _validate_request_text(source, text)
+    if not isinstance(images, list) or len(images) > 4 or len(images) != len(source['media']):
+        raise ValueError('schedule_images_incomplete')
+    return [probe_image(image['bytes'], image['mime']) for image in images]
+
+
+def _reading_context(source, text, metadata):
+    context = _request_context(source, text, metadata)
+    if 'replyToId' in source:
+        context.update(replyToId=source['replyToId'], replyToAuthorId=source['replyToAuthorId'])
+    return context
+
+
+def reading_packs(source, text, images, *, stage='original', previous=None, seen=(), full_context=False):
+    """Private local packing; no client, classification call, or original/zoom mixing."""
+    metadata = _reading_metadata(source, text, images)
+    context = _reading_context(source, text, metadata)
+    # The helper accounts for body, imageMap and attachments. Reserve the entire
+    # actual prompt/schema/context envelope again, plus bounded part counters.
+    overhead = len(json.dumps(wire_payload([
+        {'role': 'system', 'content': READING_PROMPT},
+        {'role': 'user', 'content': [{'type': 'text', 'text': json.dumps(context, ensure_ascii=False)}]},
+    ], READING_VERSION)).encode('utf-8')) + 1024
+    if stage == 'original':
+        packs = reading.initial_reading(text, images, request_overhead_bytes=overhead)
+    elif stage in ('detail', 'reread'):
+        packs = reading.reread(text, images, previous, seen=seen, request_overhead_bytes=overhead)
+        if full_context and packs:
+            views = [view for pack in packs for view in pack['images']]
+            views += reading.views(images, seen=seen)
+            packs = reading.pack_attachments(text, views, request_overhead_bytes=overhead)
+    else:
+        raise ValueError('invalid_reading_stage')
+    for pack in packs:
+        prepare_reading_request(source, text, images, pack)
+    return packs
+
+
+def prepare_reading_request(source, text, images, pack):
+    """Deterministic wire hash; pack contains only the views actually submitted."""
+    metadata = _reading_metadata(source, text, images)
+    if (not isinstance(pack, dict) or pack.get('text') != text
+            or type(pack.get('part')) is not int or type(pack.get('parts')) is not int
+            or not 1 <= pack['part'] <= pack['parts'] <= 256
+            or not isinstance(pack.get('images'), list)):
+        raise ValueError('invalid_reading_pack')
+    attachments = pack['images']
+    mapping = [reading._metadata(image) for image in attachments]
+    image_facts([{'bytes': image['bytes'], 'mime': image['mime']} for image in attachments])
+    if mapping != pack.get('imageMap'):
+        raise ValueError('invalid_reading_pack')
+    if len({item['variantId'] for item in mapping}) != len(mapping):
+        raise ValueError('invalid_reading_pack')
+    if len({item['kind'] for item in mapping}) > 1:
+        raise ValueError('invalid_reading_pack')
+    for image in mapping:
+        index = image['originalIndex']
+        if (index >= len(metadata) or image['originalHash'] != metadata[index]['sha256']
+                or image['originalSize'] != [metadata[index]['width'], metadata[index]['height']]):
+            raise ValueError('reading_original_mismatch')
+    if (mapping and mapping[0]['kind'] == 'original' and pack['parts'] == 1
+            and {item['originalIndex'] for item in mapping} != set(range(len(images)))):
+        raise ValueError('schedule_images_incomplete')
+    if images and not mapping:
+        raise ValueError('schedule_images_incomplete')
+    context = _reading_context(source, text, metadata)
+    context.update(imageMap=mapping, part=pack['part'], parts=pack['parts'])
+    content = [{'type': 'text', 'text': json.dumps(context, ensure_ascii=False)}]
+    for image in attachments:
+        content.append({'type': 'image_url', 'image_url': {
+            'url': 'data:' + image['mime'] + ';base64,' + base64.b64encode(image['bytes']).decode('ascii'),
+            'detail': 'high'}})
+    messages = [{'role': 'system', 'content': READING_PROMPT}, {'role': 'user', 'content': content}]
+    serialized = json.dumps(wire_payload(messages, READING_VERSION)).encode('utf-8')
+    if len(serialized) > MAX_REQUEST_BYTES:
+        raise ValueError('azure_input_limit')
+    proof = {'contract': READING_VERSION, 'model': facts.MODEL, 'modelVersion': facts.MODEL_VERSION,
+             'promptHash': facts.digest(READING_PROMPT.encode('utf-8')),
+             'schemaHash': facts.digest(READING_SCHEMA), 'contextHash': facts.digest(context),
+             'requestHash': facts.digest(serialized), 'images': metadata}
+    return messages, proof
+
+
 def _year_candidates(month, printed, text_year, created):
     if printed is not None or text_year is not None:
         if printed is not None and text_year is not None and printed != text_year:
@@ -335,6 +444,12 @@ def validate_clock_text(text, explicit_time):
 
 
 def normalize_result(result, source, text, image_count, allowed_periods=None, *, contract_version=VERSION):
+    return _normalize_result(result, source, text, image_count, allowed_periods,
+                             contract_version=contract_version)
+
+
+def _normalize_result(result, source, text, image_count, allowed_periods=None, *,
+                      contract_version=VERSION, reading_details=None, reading_complete=False):
     """Resolve calendar from source evidence, never the collector's target year."""
     facts.require_keys(result, ('periods',))
     _, schema, _ = contract_parts(contract_version)
@@ -382,7 +497,7 @@ def normalize_result(result, source, text, image_count, allowed_periods=None, *,
             if (type(number) is not int or not 1 <= number <= 31 or number in seen_days
                     or weekday is not None and (not isinstance(weekday, str) or len(weekday) != 1
                                                 or weekday not in WEEKDAYS)
-                    or not isinstance(shifts, list) or not 1 <= len(shifts) <= 2
+                    or not isinstance(shifts, list) or not (0 if reading_details is not None else 1) <= len(shifts) <= 2
                     or any(shift not in ('昼', '夜') for shift in shifts)
                     or len(set(shifts)) != len(shifts)
                     or half == 'first' and number > 15 or half == 'second' and number < 16):
@@ -401,11 +516,13 @@ def normalize_result(result, source, text, image_count, allowed_periods=None, *,
             raise ValueError('schedule_calendar_unresolved')
         year, dates = candidates[0]
         basis = 'printed' if printed is not None else 'text' if text_year is not None else 'post-context'
-        groups, notes = {}, {}
+        groups, notes, details = {}, {}, {}
         for row, date in zip(rows, dates):
             first, last = facts.half_period(date)
             groups.setdefault((first, last), []).append(
                 {'date': date.isoformat(), 'shifts': [shift for shift in ('昼', '夜') if shift in row['shifts']]})
+            if reading_details is not None:
+                details.setdefault((first, last), {})[date.isoformat()] = reading_details[id(row)]
             if contract_version == VERSION:
                 values = row['workTiming']
                 if values is not None and (not isinstance(values, list) or len(values) > 2):
@@ -432,6 +549,12 @@ def normalize_result(result, source, text, image_count, allowed_periods=None, *,
             if notes.get((first, last)):
                 schedule['workTiming'] = facts.timing().bind(
                     notes[(first, last)], source, 'half-month-schedule')
+            if reading_details is not None:
+                schedule['reading'] = {'contract': READING_VERSION, 'complete': reading_complete,
+                                       'days': details[(first, last)]}
+                if 'replyToId' in source:
+                    schedule.update(sourceKind='own-reply', replyToId=source['replyToId'],
+                                    replyToAuthorId=source['replyToAuthorId'])
             facts.validate_schedule(schedule)
             output.append(schedule)
     if len(output) > 2:
@@ -443,13 +566,149 @@ def normalize_result(result, source, text, image_count, allowed_periods=None, *,
     return output
 
 
+def _reading_operation(row, reply):
+    operation = row['operation']
+    if not reply:
+        if operation is not None:
+            raise ValueError('invalid_reading_operation')
+        return
+    words = {'add': r'追加|増や|追加出勤|\badd(?:ed|ition)?\b',
+             'replace': r'変更|訂正|修正|\b(?:change[ds]?|replace[ds]?|correction)\b',
+             'cancel': r'キャンセル|取り消[しす]|取消|お休み|休みます|出勤しません|\bcancel(?:led|ed)?\b'}
+    transcription = unicodedata.normalize('NFKC', row['transcription'])
+    if (operation not in words or not re.search(words[operation], transcription, re.IGNORECASE)
+            or re.search(r'(?:追加|変更|訂正|修正|キャンセル|取消)(?:は)?'
+                         r'(?:なし|しない|しません|ではない|ありません|ない)'
+                         r'|\b(?:not|no|never)\s+(?:add\w*|chang\w*|replac\w*|cancel\w*)',
+                         transcription, re.IGNORECASE)):
+        raise ValueError('ungrounded_reading_operation')
+
+
+def normalize_reading(result, source, text, image_count, allowed_periods=None, *, image_metadata=None):
+    """Preserve useful dates without promoting partial evidence to a complete table."""
+    facts.validate_source(source)
+    facts.require_keys(result, ('periods', 'classification', 'complete'))
+    if (result['classification'] not in ('schedule', 'non_schedule', 'uncertain')
+            or type(result['complete']) is not bool
+            or result['periods'] is not None and (
+                not isinstance(result['periods'], list) or len(result['periods']) > 2)
+            or type(image_count) is not int or not 0 <= image_count <= 4
+            or image_metadata is not None and (
+                not isinstance(image_metadata, list) or len(image_metadata) != image_count)):
+        raise ValueError('invalid_schedule_reading')
+    if result['classification'] == 'non_schedule' and result['periods']:
+        raise ValueError('contradictory_schedule_reading')
+    reply = 'replyToId' in source
+    complete = (not reply and result['complete'] and result['classification'] != 'uncertain'
+                and result['periods'] is not None)
+    clean, details, total = [], {}, 0
+    for period in result['periods'] or []:
+        facts.require_keys(period, PERIOD_SCHEMA['required'])
+        if period['days'] is not None and not isinstance(period['days'], list):
+            raise ValueError('invalid_schedule_days')
+        total += len(period['days'] or [])
+        if len(period['days'] or []) > 31 or total > 32:
+            raise ValueError('invalid_schedule_days')
+        if period['month'] is None or period['half'] is None or not period['days']:
+            complete = False
+            continue
+        rows = []
+        for row in period['days']:
+            facts.require_keys(row, READING_DAY_SCHEMA['required'])
+            if row['day'] is None:
+                complete = False
+                continue
+            shifts = row['shifts']
+            if shifts is not None and (
+                    not isinstance(shifts, list) or len(shifts) > 2
+                    or any(shift not in ('昼', '夜') for shift in shifts)
+                    or len(set(shifts)) != len(shifts)):
+                raise ValueError('invalid_schedule_day')
+            hours = reading.validate_evidence(row, image_count, text)
+            for field in ('explicitStart', 'explicitEnd'):
+                if row[field] is not None:
+                    validate_clock_text(row['transcription'], row[field])
+            _reading_operation(row, reply)
+            normalized = {key: row[key] for key in DAY_SCHEMA['required']}
+            normalized['shifts'] = hours.pop('shifts')
+            qualifier = row['qualifier']
+            if shifts is None:
+                complete = False
+                normalized['shifts'] = []
+                hours = {key: value for key, value in hours.items() if value['basis'] == 'explicit'}
+                # The raw reading remains private; unknown shifts cannot assert all-day.
+                if qualifier == 'all_day':
+                    qualifier = None
+            elif qualifier == 'all_day':
+                normalized['shifts'] = ['昼', '夜']
+            evidence = copy.deepcopy(row['evidence'])
+            index = evidence['imageIndex']
+            evidence['imageHash'] = None
+            if index is not None:
+                if not isinstance(period['imageIndexes'], list) or index not in period['imageIndexes']:
+                    raise ValueError('invalid_reading_image')
+                if image_metadata is None:
+                    raise ValueError('reading_image_metadata_required')
+                evidence['imageHash'] = image_metadata[index]['sha256']
+                facts.valid_hash(evidence['imageHash'])
+            timing = normalized['workTiming']
+            if timing is not None:
+                if not isinstance(timing, list) or len(timing) > 2:
+                    raise ValueError('invalid_schedule_work_timing')
+                for item in timing:
+                    if isinstance(item, dict) and item.get('time') is not None:
+                        validate_clock_text(row['transcription'], item['time'])
+            detail = {'weekday': row['weekday'], 'qualifier': qualifier, 'hours': hours,
+                      'evidence': evidence, 'transcriptionHash': facts.digest(row['transcription'].encode('utf-8')),
+                      'shiftStatus': ('unreadable' if shifts is None else
+                                      'stated' if normalized['shifts'] else 'unstated')}
+            if reply:
+                detail['operation'] = row['operation']
+            details[id(normalized)] = detail
+            rows.append(normalized)
+        if rows:
+            clean.append({**period, 'days': rows})
+        else:
+            complete = False
+    complete = complete and not reading.needs_reread(result, text)
+    schedules = _normalize_result({'periods': clean}, source, text, image_count, allowed_periods,
+                                  reading_details=details, reading_complete=complete)
+    return schedules, complete
+
+
+def _normalize_reading_pack(result, source, text, images, allowed_periods, pack, proof):
+    schedules, complete = normalize_reading(result, source, text, len(images), allowed_periods,
+                                            image_metadata=proof['images'])
+    supplied = {image['originalIndex'] for image in pack['images']}
+    for period in result['periods'] or []:
+        if any(index not in supplied for index in period['imageIndexes']):
+            raise ValueError('reading_unsupplied_image')
+    if pack['parts'] > 1 or any(not reading.covers_original(pack['images'], index)
+                                for index in range(len(images))):
+        complete = False
+        for schedule in schedules:
+            schedule['reading']['complete'] = False
+    return schedules, complete
+
+
 def saved_result(source, text, images, result, *, now, receipt_id, allowed_periods=None,
-                 contract_version=VERSION):
+                 contract_version=VERSION, pack=None):
     """Data-only API0 normalization. Caller must verify canonical usage/import receipt."""
-    messages, proof = prepare_request(source, text, images, contract_version=contract_version)
+    if contract_version == READING_VERSION:
+        if pack is None:
+            packs = reading_packs(source, text, images)
+            if len(packs) != 1:
+                raise ValueError('reading_pack_required')
+            pack = packs[0]
+        messages, proof = prepare_reading_request(source, text, images, pack)
+        schedules, _ = _normalize_reading_pack(result, source, text, images, allowed_periods, pack, proof)
+    else:
+        if pack is not None:
+            raise ValueError('invalid_reading_pack')
+        messages, proof = prepare_request(source, text, images, contract_version=contract_version)
+        schedules = normalize_result(result, source, text, len(images), allowed_periods,
+                                     contract_version=contract_version)
     del messages
-    schedules = normalize_result(result, source, text, len(images), allowed_periods,
-                                 contract_version=contract_version)
     proof.update(resultHash=facts.digest(result), receiptId=receipt_id, analyzedAt=facts.stamp(now))
     facts.validate_analysis(proof)
     return schedules, proof
@@ -462,6 +721,7 @@ class AzureAnalyzer:
         self.usage, self.clock, self.used = usage, clock, 0
         self.registry_guard = registry_guard
         self.request_attempt = 0
+        self.last_reading = None
         self.client = client or transport.AzureOpenAI(environment or {}, on_http_failure=usage.http_failure, usage=usage)
 
     def check(self):
@@ -469,6 +729,56 @@ class AzureAnalyzer:
         if self.used >= 1:
             raise AnalysisFailure('azure_budget_exhausted')
         self.usage.check()
+
+    def analyze_reading(self, source, text, images, allowed_periods, on_issued, *, pack):
+        """One reserved v3 request; the finite collector owns cross-pack admission."""
+        self.last_reading = None
+        check_registry(self.registry_guard, source['name'])
+        self.usage.check()
+        messages, proof = prepare_reading_request(source, text, images, pack)
+        key = proof['requestHash']
+        budget = transport.request_budget(messages, READING_SCHEMA, name='half_month_schedule',
+                                           max_completion_tokens=READING_MAX_OUTPUT_TOKENS)
+        try:
+            check_registry(self.registry_guard, source['name'])
+            self.usage.check()
+            self.usage.reserve(key, self.client.identity, request=budget)
+        except BaseException:
+            messages.clear()
+            raise
+        try:
+            check_registry(self.registry_guard, source['name'])
+            on_issued(key)
+            check_registry(self.registry_guard, source['name'])
+            self.usage.issued(key)
+            check_registry(self.registry_guard, source['name'])
+            self.used += 1
+            result = self.client.structured(messages, READING_SCHEMA, name='half_month_schedule',
+                                            max_completion_tokens=READING_MAX_OUTPUT_TOKENS)
+            self.last_reading = result
+            try:
+                schedules, complete = _normalize_reading_pack(
+                    result, source, text, images, allowed_periods, pack, proof)
+                proof.update(resultHash=facts.digest(result),
+                             receiptId=facts.digest(('schedule:' + key).encode()),
+                             analyzedAt=facts.stamp(self.clock()))
+                facts.validate_analysis(proof)
+            except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
+                raise AnalysisFailure('azure_invalid_output') from None
+            self.usage.finish(key, 'events' if schedules else 'no_event' if complete else 'azure_pending')
+            return schedules, proof, result
+        except Exception as exc:
+            reason = getattr(exc, 'reason', 'azure_interrupted')
+            if reason not in ('azure_pending', 'azure_invalid_output', 'azure_refused', 'azure_timeout',
+                              'azure_network_error', 'azure_http_error', 'azure_rate_limited',
+                              'azure_auth_stopped', 'azure_interrupted', 'azure_input_limit',
+                              'azure_ungrounded', 'azure_model_mismatch', 'azure_deadline',
+                              'azure_budget_exhausted', 'azure_backoff'):
+                reason = 'azure_interrupted'
+            self.usage.finish(key, reason)
+            raise
+        finally:
+            messages.clear()
 
     def analyze(self, source, text, images, allowed_periods, on_issued):
         self.check()

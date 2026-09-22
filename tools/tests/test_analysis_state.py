@@ -261,7 +261,7 @@ class UsageTests(unittest.TestCase):
                          {'run': 3, 'day': 3, 'remaining': 0})
         self.assertEqual(self.sleeps, [60, 60])
 
-    def test_schedule_is_third_shared_component_with_one_per_run_and_success_dedup(self):
+    def test_schedule_respects_explicit_one_request_allocation_and_success_dedup(self):
         with self.shared('official') as ledger:
             self.completed(ledger, 'official')
         with self.shared('personal') as ledger:
@@ -269,18 +269,27 @@ class UsageTests(unittest.TestCase):
         for reason in ('schedule', 'not_schedule'):
             with self.subTest(reason=reason):
                 run_id = 'run-1' if reason == 'schedule' else 'run-2'
-                with self.shared('schedule', run_id=run_id) as ledger:
+                with self.shared('schedule', run_id=run_id, request_limit=1) as ledger:
                     key = self.completed(ledger, reason, reason)
                     with self.assertRaisesRegex(usage.UsageFailure, 'azure_already_analyzed'):
                         ledger.reserve(key, IDENTITY)
                     with self.assertRaisesRegex(usage.UsageFailure, 'azure_budget_exhausted'):
                         ledger.reserve(digest(reason + ':second'), IDENTITY)
-                with self.shared('schedule', run_id=run_id) as ledger:
+                with self.shared('schedule', run_id=run_id, request_limit=1) as ledger:
                     with self.assertRaisesRegex(usage.UsageFailure, 'azure_budget_exhausted'):
                         ledger.check()
         self.assertEqual(usage.usage_counts(usage.load_state(self.path), 'run-1', self.clock),
                          {'run': 3, 'day': 4, 'remaining': 0})
         self.assertEqual(self.sleeps, [60, 60, 60])
+
+    def test_schedule_does_not_clamp_explicit_reread_allocation_to_one(self):
+        with self.shared('schedule', request_limit=2) as ledger:
+            self.completed(ledger, 'original', 'schedule')
+            self.completed(ledger, 'detail', 'schedule')
+            with self.assertRaisesRegex(usage.UsageFailure, 'azure_budget_exhausted'):
+                ledger.reserve(digest('third'), IDENTITY)
+        self.assertEqual(len(usage.load_state(self.path)['receipts']), 2)
+        self.assertEqual(self.sleeps, [60])
 
     def test_schedule_success_requires_issued_and_shared_forty_day_counts_imports(self):
         state = usage.load_state(self.path)
