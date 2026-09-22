@@ -191,13 +191,13 @@ function shiftsFor(name) {
     assert.equal(JSON.stringify(data.schedule[date]), JSON.stringify(day),
       `${date}: the original manual data must remain unchanged`);
   }
-  assert.equal(new Set(plans.map(plan => plan.source.name)).size, 35);
-  assert.equal(plans.length, 36);
-  assert.equal(plans.reduce((total, plan) => total + plan.days.length, 0), 222);
+  assert.equal(new Set(plans.map(plan => plan.source.name)).size, 36);
+  assert.equal(plans.length, 37);
+  assert.equal(plans.reduce((total, plan) => total + plan.days.length, 0), 230);
   assert.equal(plans.reduce((total, plan) =>
-    total + plan.days.reduce((count, day) => count + day.shifts.length, 0), 0), 257);
+    total + plan.days.reduce((count, day) => count + day.shifts.length, 0), 0), 265);
   const registry = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "data", "members.json"), "utf8"));
-  const excluded = ["ちま", "まこっちゃん", "うる", "みりん", "けだま"];
+  const excluded = ["まこっちゃん", "うる", "みりん", "けだま"];
   for (const plan of plans) {
     const source = plan.source;
     const member = registry.members.find(member => member.canonicalName === source.name);
@@ -240,6 +240,11 @@ function shiftsFor(name) {
   assert.ok(plans.find(plan => plan.source.name === "える").days.every(day => !day.qualifier));
   assert.equal(plans.find(plan => plan.source.name === "はぴる").days.length, 6);
   const hinari = plans.find(plan => plan.source.name === "ひなり");
+  const chima = plans.find(plan => plan.source.name === "ちま");
+  assert.equal(chima.source.id, "2098796207346975066");
+  assert.deepEqual(Array.from(chima.days, day => [day.date.slice(8), day.shifts.join("")]),
+    ["16", "17", "20", "21", "24", "25", "26", "30"].map(day => [day, "昼"]));
+  assert.ok(chima.days.every(day => !day.explicitStart && !day.explicitEnd && !day.derivedHours));
   assert.deepEqual(JSON.parse(JSON.stringify(hinari.days.map(day => [
     day.date.slice(8), day.shifts.join(""), day.qualifier ?? day.unmappedQualifier ?? null
   ]))), [
