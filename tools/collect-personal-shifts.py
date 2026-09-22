@@ -623,8 +623,16 @@ def select_targets(schedule, insights, accounts, date, state, observations=None,
             person['shifts'].add(shift)
         person['origins'].add(origin)
 
+    reviewed_shifts = {}
+    for shift, rows in schedule.get('schedule', {}).get(day, {}).items():
+        for row in rows:
+            if any(source.get('confirmation', {}).get('method') == 'source-confirmed'
+                   for source in row.get('halfMonthSources', [])):
+                reviewed_shifts.setdefault(canonical(row['name']), set()).add(shift)
     for name, target in state['originalTargets'].get(day, {}).items():
         for shift in target['shifts']:
+            if canonical(name) in reviewed_shifts and shift not in reviewed_shifts[canonical(name)]:
+                continue
             include(name, shift, 'original')
     for shift in ('昼', '夜'):
         for person in schedule.get('schedule', {}).get(day, {}).get(shift, []):

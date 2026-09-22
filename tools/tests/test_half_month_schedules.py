@@ -449,6 +449,21 @@ class StateTests(Offline):
         for prohibited in ('bodyHash', 'payloadHash', 'requestHash', 'data:image', 'media', 'receiptId', 'revisions'):
             self.assertNotIn(prohibited, public)
 
+    def test_reviewed_day_corrects_same_source_without_erasing_other_evidence(self):
+        state = facts.empty_state()
+        verified, schedules, analysis = normalized()
+        facts.apply_revision(state, schedules, verified, analysis)
+        manual = {'2026-09-02': {'昼': [{'name': 'あむ', 'halfMonthSources': [{
+            'id': verified['id'], 'confirmation': {'method': 'source-confirmed'}}]}]}}
+        before = copy.deepcopy(state)
+        merged = facts.effective_schedule(manual, facts.public_state(state))
+        self.assertEqual(merged['2026-09-02'].get('夜', []), [])
+        self.assertEqual(state, before)
+        self.assertEqual(merged['2026-09-10']['夜'][0]['name'], 'あむ')
+        manual['2026-09-02']['昼'][0]['halfMonthSources'][0]['id'] = 'unrelated'
+        merged = facts.effective_schedule(manual, facts.public_state(state))
+        self.assertEqual(merged['2026-09-02']['夜'][0]['name'], 'あむ')
+
     def test_new_complete_replaces_only_auto_old_arrival_cannot_win(self):
         state = facts.empty_state()
         old_source, old, old_analysis = normalized()

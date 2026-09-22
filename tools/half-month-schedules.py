@@ -1028,7 +1028,15 @@ def effective_schedule(manual_schedule_dict, feed, *, registry=None):
             'id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt',
             'observedAt', 'sourceKind', 'period')}
         for item in schedule['days']:
+            reviewed_shifts = {
+                shift for shift, rows in (manual_schedule_dict or {}).get(item['date'], {}).items()
+                if any(row['name'] == schedule['name'] and any(
+                    review.get('id') == schedule['id']
+                    and review.get('confirmation', {}).get('method') == 'source-confirmed'
+                    for review in row.get('halfMonthSources', [])) for row in rows)}
             for shift in item['shifts']:
+                if reviewed_shifts and shift not in reviewed_shifts:
+                    continue
                 rows = result.setdefault(item['date'], {}).setdefault(shift, [])
                 person = next((row for row in rows if row['name'] == schedule['name']), None)
                 if person is None:

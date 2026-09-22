@@ -540,7 +540,11 @@
       const provenance = halfMonthProvenance(source);
       for (const day of source.days.slice().sort((a, b) => a.date.localeCompare(b.date))) {
         if (!included(source.name, day.date)) continue;
+        const reviewedShifts = SHIFT_NAMES.filter((shift) => manual?.[day.date]?.[shift]?.some((entry) =>
+          canonical(entry.name) === canonical(source.name) && entry.halfMonthSources?.some((review) =>
+            review.id === source.id && review.confirmation?.method === "source-confirmed")));
         for (const shift of ["昼", "夜"].filter((item) => day.shifts.includes(item))) {
+          if (reviewedShifts.length && !reviewedShifts.includes(shift)) continue;
           const entries = (result[day.date] ??= {})[shift] ??= [];
           let entry = entries.find((item) => item.name === canonical(source.name));
           if (!entry) {
