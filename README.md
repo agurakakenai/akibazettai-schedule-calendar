@@ -1156,6 +1156,10 @@ Azure実費は既存定期処理の最初の機会にJST日1回、**前日まで
 
 ### 本人の半月予定表
 
+2026年9月後半は、保存された本人原文・原画像を照合した35名・221人日（257人shift）を、`data/schedule.js` の `sourceConfirmedPlans` から既存manual予定へ人・日・shift単位で統合しています。これは**原典確認済みの手動投入**であり、Azure自動解析の成功数には含めません。投稿ID・本人author・確認時刻・原資料hash・本人返信の親IDを残し、原文全文・原画像・私的pathは配信しません。もなかは利用者が確認した `monaka1_zettai` へ訂正し、旧誤登録handleは再割当を防ぐreserved扱いです。
+
+確認済み当日投稿のリンクを優先し、なければ各日shiftの原予定投稿へリンクします。`explicitStart` / `explicitEnd` は原典の数値だけ、語だけの「ながめ／はやめ／おそめ」は別の `derivedHours` と `qualifier` に保存し、`workTiming.explicitTime` を補完しません。数値がある場合は数値を優先します。すくいの9/26・27・29だけは、利用者承認により数字の日付を採り曜日不一致を記録しました。厨房4名（まこっちゃん・うる・みりん・けだま）は資料未発見、ちまは保存資料が前半のみのため後半へ投入していません。空予定・休み・全員取得完了を意味しません。公式実績・取消・既存本人投稿・canonical会計は変更せず、予定追加だけで勤務店舗や実績を作りません。
+
 `data/half-month-schedules.json` は本人の**事前の予定**を保存する独立feedです。`collect-half-month-schedules.py` が現在registryのtrusted accountから公開postを探し、元postの作者・日時・mediaを照合して、共通Lunaの半月専用契約で対象期間・日付・昼夜を読み取ります。当日本人の`events/links`や勤務実績へは入れません。長め昼は昼のままとし、勤務時間の補足は独立した`workTiming`へ保存します。店舗・イベント主役や未記載の数値時刻を生成しません。
 
 当日の予定者だけでなく、現在registryのactive／enabled全員を対象にします。厨房区分を維持し、新登録も同じ入口から反映します。本人・半月の両author bindingを照合し、初回bindingは真正な元postのmetadataで確認します。未取得と不一致を区別し、未知accountを推測しません。推計の昇格日・見習い期間で確認済み日付を削除せず、inactiveの過去feedもhistorical identityとして読み続けます。pendingが未探索者の初回一巡を永久に妨げないよう、既存の1search／1post／1AI枠内で巡回します。

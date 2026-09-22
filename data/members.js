@@ -269,7 +269,7 @@ window.MEMBER_REGISTRY = {
       "officialListing": "listed",
       "orderBefore": null,
       "role": "normal",
-      "xProfileUrl": "https://x.com/monaka_zettai"
+      "xProfileUrl": "https://x.com/monaka1_zettai"
     },
     {
       "aliases": [],
