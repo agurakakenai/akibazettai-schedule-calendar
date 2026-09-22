@@ -6,6 +6,9 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -128,6 +131,50 @@ class RoutingTests(unittest.TestCase):
 
 
 class ProductionWorkflowTests(unittest.TestCase):
+    def test_dispatch_script_preserves_queued_runs_and_reports_api_failure(self):
+        if os.name == 'nt':
+            git = shutil.which('git')
+            bash = Path(git).parent.parent / 'bin' / 'bash.exe' if git else None
+            if bash is None or not bash.is_file():
+                self.skipTest('Git Bash is unavailable')
+        else:
+            bash = shutil.which('bash')
+            if not bash:
+                self.skipTest('Bash is unavailable')
+        block = job_block('continue-collection')
+        raw = block.split('        run: |\n', 1)[1]
+        script = '\n'.join(line[10:] for line in raw.splitlines() if line.startswith('          '))
+        mock_gh = '''
+gh() {
+  case "$*" in
+    *"--method POST"*) echo dispatched >> "$DISPATCH_LOG"; return "$POST_CODE";;
+    *"status=queued"*) printf '%s\\n' "$QUEUED"; return "$GET_CODE";;
+    *) echo 0; return "$GET_CODE";;
+  esac
+}
+'''
+        for queued, get_code, post_code, expected_calls, success in [
+                ('0', '0', '0', 1, True), ('1', '0', '0', 0, True),
+                ('0', '1', '0', 0, False), ('0', '0', '1', 1, False)]:
+            with self.subTest(queued=queued, get=get_code, post=post_code), \
+                    tempfile.TemporaryDirectory() as folder:
+                result = subprocess.run(
+                    [str(bash), '--noprofile', '--norc', '-e', '-o', 'pipefail', '-s'],
+                    input=mock_gh + script, text=True, capture_output=True, cwd=folder, timeout=15,
+                    env={**os.environ, 'CHECKPOINT_SHA': 'a' * 40, 'CONTINUATION_MODE': 'personal',
+                         'GITHUB_REPOSITORY': REPOSITORY, 'GITHUB_RUN_ID': '12345',
+                         'GITHUB_STEP_SUMMARY': 'summary.txt', 'DISPATCH_LOG': 'dispatch.txt',
+                         'QUEUED': queued, 'GET_CODE': get_code, 'POST_CODE': post_code,
+                         'BASH_ENV': ''},
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                self.assertEqual(result.returncode == 0, success, result.stderr)
+                log = Path(folder) / 'dispatch.txt'
+                calls = log.read_text().splitlines() if log.exists() else []
+                self.assertEqual(len(calls), expected_calls)
+                if queued == '1':
+                    self.assertIn('checkpoint ' + 'a' * 40 + ' is retained',
+                                  (Path(folder) / 'summary.txt').read_text())
+
     def test_azure_backend_and_credentials_exclude_saved_restore_and_build(self):
         collect = job_block('collect')
         for name in ('PERSONAL_ANALYSIS_BACKEND', 'AZURE_OPENAI_API_KEY',
