@@ -1554,6 +1554,96 @@ class CloudTests(unittest.TestCase):
         self.bare_commit({cloud.AI_USAGE: usage})
         restored(False)
 
+    def test_intervening_deploy_official_and_other_component_preserve_checkpoint_and_reject_stale_cas(self):
+        module, clock = self.finite_personal_fixture()
+        self.personal_slot()
+        with mock.patch.object(cloud, 'invoke_personal_collector', side_effect=self.checkpoint_child(module)):
+            first = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                      collector=collector, personal=module)
+        checkpoint = self.remote_json(cloud.PERSONAL)[1]
+        self.args.mode = 'restore'
+        self.environment['GITHUB_EVENT_NAME'] = 'push'
+        restored = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                     collector=collector, personal=module)
+        self.assertEqual(restored['stateCommit'], first['stateCommit'])
+        self.assertEqual(restored['continuationReady'], 'true')
+        self.assertEqual(restored['continuationMode'], 'personal')
+        self.assertEqual(self.remote_json(cloud.PERSONAL)[1], checkpoint)
+
+        self.args.mode = 'collect'
+        self.environment.update(GITHUB_EVENT_NAME='schedule', GITHUB_RUN_ID='12346',
+                                COLLECTION_KIND='official')
+        event = json.loads(self.event_path.read_bytes())
+        event['schedule'] = cloud.DAILY_SCHEDULE
+        self.event_path.write_text(json.dumps(event), encoding='utf-8')
+        def official(root, state, report, environment):
+            snapshot = collector.load_snapshot(state / cloud.SNAPSHOT)
+            snapshot['checkedAt'] = collector.iso(clock[0])
+            snapshot['lastRun'] = {'status': 'no-new', 'dateFrom': '2026-09-30', 'dateTo': '2026-09-30',
+                                   'requests': {'searches': 0, 'posts': 0}}
+            collector.atomic_json(state / cloud.SNAPSHOT, snapshot)
+            collector.atomic_json(report, {'component': 'official', 'status': 'no-new', 'exitCode': 0,
+                                           'requests': snapshot['lastRun']['requests']})
+            return 0
+        with mock.patch.object(cloud, 'invoke_collector', side_effect=official) as official_call, \
+                mock.patch.object(cloud, 'invoke_personal_collector') as personal_call, \
+                mock.patch.object(cloud, 'invoke_half_month_collector') as half_call:
+            official_result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                               collector=collector, personal=module)
+            official_call.assert_called_once()
+            personal_call.assert_not_called()
+            half_call.assert_not_called()
+        self.assertEqual(official_result['continuationReady'], 'false')
+        self.assertNotEqual(official_result['stateCommit'], restored['stateCommit'])
+        self.assertEqual(self.remote_json(cloud.PERSONAL)[1], checkpoint)
+        self.args.mode = 'restore'
+        published = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                      collector=collector, personal=module)
+        self.assertEqual(published['stateCommit'], official_result['stateCommit'])
+        self.assertEqual(published['continuationReady'], 'true')
+
+        self.environment.update(GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_RUN_ID='12347')
+        self.personal_mode('cost-sync')
+        with mock.patch.object(cloud, 'invoke_collector') as official_call, \
+                mock.patch.object(cloud, 'invoke_personal_collector') as personal_call, \
+                mock.patch.object(cloud, 'invoke_half_month_collector') as half_call:
+            other = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                      collector=collector, personal=module)
+            for unused in (official_call, personal_call, half_call):
+                unused.assert_not_called()
+        self.assertEqual(self.remote_json(cloud.PERSONAL)[1], checkpoint)
+        self.assertNotEqual(other['stateCommit'], published['stateCommit'])
+        self.personal_mode('personal')
+        self.environment.update(GITHUB_RUN_ID='12348', CONTINUATION_STATE=published['stateCommit'])
+        with mock.patch.object(cloud.StateRepository, 'persist') as persist, \
+                mock.patch.object(cloud, 'invoke_personal_collector') as child, \
+                mock.patch.object(cloud.load_analysis_state().costs, 'sync') as sync:
+            stale = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                      collector=collector, personal=module)
+            for unused in (persist, child, sync):
+                unused.assert_not_called()
+        self.assertEqual(stale['collectionStatus'], 'stale-continuation')
+        self.assertEqual(stale['continuationReady'], 'false')
+        self.assertEqual(stale['stateCommit'], other['stateCommit'])
+        self.assertEqual(self.remote_json(cloud.PERSONAL)[1], checkpoint)
+        self.assertEqual(self.git(self.remote, 'rev-parse', cloud.REF).decode().strip(), other['stateCommit'])
+
+        self.args.mode = 'restore'
+        latest = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                   collector=collector, personal=module)
+        self.assertEqual(latest['continuationReady'], 'true')
+        self.personal_mode(latest['continuationMode'])
+        self.environment['CONTINUATION_STATE'] = latest['stateCommit']
+        with mock.patch.object(cloud, 'invoke_personal_collector',
+                               side_effect=self.checkpoint_child(module, reason='complete')):
+            finished = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                         collector=collector, personal=module)
+        self.assertEqual(finished['continuationReady'], 'false')
+        progress = self.remote_json(cloud.PERSONAL)[0]['recovery']
+        self.assertEqual(progress['chainId'], '12345-1')
+        self.assertEqual(progress['serviceDate'], '2026-09-30')
+        self.assertEqual(progress['searches'], [])
+
     def test_finite_checkpoint_failed_cas_never_emits_ready_and_preserves_recovery(self):
         module, _ = self.finite_personal_fixture()
         self.personal_slot()
