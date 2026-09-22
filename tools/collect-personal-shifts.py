@@ -63,8 +63,6 @@ class InfrastructureFailure(RuntimeError):
 SEARCH_HOST = 'search.yahoo.co.jp'
 POST_HOST = official.POST_HOST
 SOURCE_LIMITS = official.source_module()
-DAILY_LIMITS = {'searches': SOURCE_LIMITS.DAY_SEARCH_LIMIT,
-                'posts': SOURCE_LIMITS.DAY_INDIVIDUAL_LIMIT}
 PILOT_BUDGETS = {'2026-09-06': {'searches': 7, 'posts': 2}}
 MAX_BODY = 4_000_000
 STATUSES = {'never', 'ok', 'partial', 'unavailable', 'no-new', 'no-results',
@@ -1251,9 +1249,9 @@ class DurableHttp:
         return bool(active) and (self.post_target is None or target_for_name(active, self.post_target) is not None)
 
     def source_paused(self, kind):
-        return (SOURCE_LIMITS.paused_for(self.state, kind) is not None
+        return (SOURCE_LIMITS.paused_for(self.state, kind, self.clock()) is not None
                 or self.shared_source is not None
-                and SOURCE_LIMITS.paused_for(self.shared_source.state, kind) is not None)
+                and SOURCE_LIMITS.paused_for(self.shared_source.state, kind, self.clock()) is not None)
 
     def fully_paused(self):
         return all(self.source_paused(kind) for kind in ('searches', 'posts'))
@@ -1266,25 +1264,10 @@ class DurableHttp:
         self.cooldowns = official.load_transport(self.http_state)
         if host in self.cooldowns and official.timestamp(self.cooldowns[host]) > self.clock():
             raise Failure('shared_host_cooldown', retry_at=official.timestamp(self.cooldowns[host]))
-        accounting_day = calendar_day(self.clock()).isoformat()
         if self.shared_source is None:
-            budget = self.state['budgets'].setdefault(accounting_day, {'searches': 0, 'posts': 0})
-        else:
-            budget = self.state['budgets'].get(accounting_day, {'searches': 0, 'posts': 0})
-        if self.used[kind] >= self.caps[kind] or budget[kind] >= DAILY_LIMITS[kind]:
+            self.state['budgets'].setdefault(calendar_day(self.clock()).isoformat(), {'searches': 0, 'posts': 0})
+        if self.used[kind] >= self.caps[kind]:
             raise Failure('budget_exhausted')
-        local = self.clock().astimezone(JST)
-        if self.catch_up and (self.date < local.date() or local.time() < dt.time(12, 30)):
-            spent = budget[kind]
-            if self.shared_source is not None:
-                counts = self.shared_source.counts()
-                kinds = ('searches',) if kind == 'searches' else ('posts', 'images')
-                spent = sum(counts['day'][component][item]
-                            for component in ('personal', 'schedule') for item in kinds)
-                if kind == 'posts':
-                    spent += counts['historicalImages']
-            if spent >= DAILY_LIMITS[kind] // 2:
-                raise Failure('current_day_reserved')
         previous = official.timestamp(self.state['lastRequests'][host]) if host in self.state['lastRequests'] else self.started
         self.sleep(max(0, 12 - (self.clock() - previous).total_seconds()))
         self.check_window(target_name)
@@ -1573,7 +1556,7 @@ def update_coverage(state, targets, date, now, *, scheduled=False, search_limit=
             row['reason'] = pending_reason
         elif failed_source:
             row['reason'] = failed_source['reason']
-        elif any(SOURCE_LIMITS.paused_for(state, kind) for kind in ('searches', 'posts')):
+        elif any(SOURCE_LIMITS.paused_for(state, kind, now) for kind in ('searches', 'posts')):
             row['reason'] = 'paused'
         elif name not in active:
             row['reason'] = 'outside_window'

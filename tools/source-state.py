@@ -26,8 +26,6 @@ COMPONENTS = ('official', 'personal', 'schedule')
 HOSTS = ('search.yahoo.co.jp', 'cdn.syndication.twimg.com', 'pbs.twimg.com')
 HOST_KIND = dict(zip(HOSTS, KINDS))
 JST = usage.JST
-DAY_SEARCH_LIMIT = usage.SOURCE_DAY_SEARCH_LIMIT
-DAY_INDIVIDUAL_LIMIT = usage.SOURCE_DAY_INDIVIDUAL_LIMIT
 
 
 class SourceFailure(Exception):
@@ -165,29 +163,44 @@ def _imports(value):
     usage.validate_state(state)
 
 
-def host_pauses(state):
-    """Read legacy host-tagged stops without clearing their durable evidence."""
-    result = {}
+def _host_pause_candidates(state):
     for pause in (state.get('baseline', {}).get('paused'), state.get('paused'),
                   *state.get('hostStops', {}).values()):
         if pause is not None:
-            result.setdefault(pause['host'], dict(pause))
-    for item in state.get('receipts', {}).values():
+            yield pause
+    # Legacy personal receipts are not source transport receipts.
+    for item in state.get('receipts', {}).values() if 'baseline' in state else ():
         if item['status'] == 'failed' and (item['httpStatus'] in (401, 403, 429)
                 or item['httpStatus'] is not None and 300 <= item['httpStatus'] < 400):
             host = item['host']
-            result.setdefault(host, {
+            yield {
                 'host': host, 'at': item['completedAt'],
                 'reason': 'rate_limited' if item['httpStatus'] == 429 else 'access_denied',
                 'httpStatus': item['httpStatus'],
-                'retryAt': state['cooldowns'].get(host, item['completedAt'])})
+                'retryAt': state['cooldowns'].get(host, item['completedAt'])}
+
+
+def host_pauses(state):
+    """Read legacy host-tagged stops without clearing their durable evidence."""
+    result = {}
+    for pause in _host_pause_candidates(state):
+        result.setdefault(pause['host'], dict(pause))
     return result
 
 
-def paused_for(state, kind):
+def paused_for(state, kind, now=None):
     if kind not in KINDS:
         raise ValueError('invalid_source_request')
-    return host_pauses(state).get(HOSTS[KINDS.index(kind)])
+    now = usage._now(now if now is not None else dt.datetime.now(dt.timezone.utc))
+    host = HOSTS[KINDS.index(kind)]
+    candidates = [pause for pause in _host_pause_candidates(state) if pause['host'] == host]
+    for pause in sorted(candidates, key=lambda value: usage._time(value['at']), reverse=True):
+        retry = usage._time(pause['retryAt'])
+        if (pause.get('httpStatus') not in (403, 429)
+                or pause['reason'] not in ('access_denied', 'rate_limited')
+                or retry <= usage._time(pause['at']) or now < retry):
+            return dict(pause)
+    return None
 
 
 def _images(value):
@@ -314,40 +327,8 @@ def validate_state(state):
             if any(record['budgetBefore'][kind] < original[kind]
                    or record['budgetAfter'][kind] > totals[day][kind] for kind in ('searches', 'posts')):
                 raise ValueError
-        _validate_limits(state)
     except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
         raise ValueError('invalid_source_usage') from None
-
-
-def _validate_limits(state):
-    runs, days = {}, {}
-    for receipt in state['receipts'].values():
-        run = runs.setdefault(receipt['runId'], {name: _zero() for name in COMPONENTS})
-        run[receipt['component']][receipt['kind']] += 1
-        if receipt['component'] != 'official':
-            daily = days.setdefault(receipt['date'], {name: _zero() for name in ('personal', 'schedule')})
-            daily[receipt['component']][receipt['kind']] += 1
-    for run in runs.values():
-        if (run['official']['searches'] > 2
-                or sum(row['searches'] for row in run.values()) > 17
-                or run['personal']['searches'] + run['schedule']['searches'] > 15
-                or run['schedule']['searches'] > 1
-                or sum(row['posts'] + row['images'] for row in run.values()) > 20
-                or run['personal']['posts'] > 14 or run['personal']['images'] > 0
-                or run['schedule']['posts'] > 1 or run['schedule']['images'] > 4):
-            raise ValueError
-    for day, daily in days.items():
-        # Late approved history cannot invalidate already-spent native requests.
-        # check() uses the full imported totals to block any further reservation.
-        baseline = state['baseline']['personalBudgets'].get(day, _zero())
-        images = sum(item['images'] for item in state['baseline']['historicalImages']
-                     if item['date'] == day)
-        searches = sum(row['searches'] for row in daily.values())
-        individual = sum(row['posts'] + row['images'] for row in daily.values())
-        if (searches and searches + baseline['searches'] > DAY_SEARCH_LIMIT
-                or individual and individual + baseline['posts'] + images > DAY_INDIVIDUAL_LIMIT
-                or daily['schedule']['images'] and daily['schedule']['images'] + images > 8):
-            raise ValueError
 
 
 def _all_source_imports(state):
@@ -547,41 +528,18 @@ def usage_counts(state, run_id, now, component='schedule', *, catch_up=False):
             run[item['component']][item['kind']] += 1
         if item['date'] == day:
             daily[item['component']][item['kind']] += 1
-    shared_searches = sum(run[name]['searches'] for name in ('personal', 'schedule'))
-    all_searches = sum(item['searches'] for item in run.values())
-    individual = sum(item['posts'] + item['images'] for item in run.values())
-    day_searches = sum(daily[name]['searches'] for name in ('personal', 'schedule'))
-    day_individual = historical + sum(daily[name]['posts'] + daily[name]['images']
-                                      for name in ('personal', 'schedule'))
-    search_left = [(17 if catch_up else 5) - all_searches]
-    individual_left = [20 - individual]
-    if component == 'official':
-        search_left.append(2 - run['official']['searches'])
-    else:
-        search_left.extend(((15 if catch_up else 3) - shared_searches, DAY_SEARCH_LIMIT - day_searches))
-        individual_left.append(DAY_INDIVIDUAL_LIMIT - day_individual)
-        if (local_now.hour, local_now.minute) < (12, 30):
-            search_left.append(DAY_SEARCH_LIMIT // 2 - day_searches)
-            individual_left.append(DAY_INDIVIDUAL_LIMIT // 2 - day_individual)
-    posts_left, images_left = list(individual_left), list(individual_left)
-    if component == 'personal':
-        posts_left.append((14 if catch_up else 3) - run['personal']['posts'])
-        images_left.append(0)
-    elif component == 'schedule':
-        search_left.append(1 - run['schedule']['searches'])
-        posts_left.append(1 - run['schedule']['posts'])
-        images_left.extend((4 - run['schedule']['images'],
-                            8 - daily['schedule']['images'] - historical))
-    else:
-        images_left.append(0)
+    imported_images = sum(record['receipt'].get('images', 0)
+                          for record in _all_source_imports(state).values()
+                          if record['receipt']['date'] == day)
     return {'runId': run_id, 'date': day, 'component': component,
             'run': run, 'day': daily, 'historicalImages': historical,
+            'importedImagesIncludedInPosts': imported_images,
             'issued': {name: {kind: sum(
                 item['runId'] == run_id and item['component'] == name
                 and item['kind'] == kind and item['issuedAt'] is not None
                 for item in state['receipts'].values()) for kind in KINDS} for name in COMPONENTS},
-            'remaining': {'searches': max(0, min(search_left)),
-                          'posts': max(0, min(posts_left)), 'images': max(0, min(images_left))}}
+            'remaining': {'searches': None, 'posts': None,
+                          'images': None if component == 'schedule' else 0}}
 
 
 def already_requested(state, run_id, kind, url):
@@ -760,10 +718,10 @@ class SharedSource:
         if kind not in KINDS or type(count) is not int or count < 1:
             raise ValueError('invalid_source_request')
         self._legacy()
-        if paused_for(self.state, kind) is not None:
+        if paused_for(self.state, kind, self.clock()) is not None:
             raise SourceFailure('source_paused')
-        if self.report()['remaining'][kind] < count:
-            raise SourceFailure('source_budget_exhausted')
+        if kind == 'images' and self.component != 'schedule':
+            raise SourceFailure('source_kind_not_enabled')
 
     def reserve(self, kind, url):
         self._require()
@@ -811,7 +769,7 @@ class SharedSource:
         if (item['status'] != 'reserved' or now < usage._time(item['reservedAt'])
                 or now.astimezone(JST).date().isoformat() != item['date']):
             raise SourceFailure('source_interrupted')
-        if paused_for(self.state, item['kind']) is not None:
+        if paused_for(self.state, item['kind'], now) is not None:
             raise SourceFailure('source_paused')
         until = self.state['cooldowns'].get(item['host'])
         if until is not None and usage._time(until) > now:

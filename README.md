@@ -1094,7 +1094,7 @@ privateの`coverage`と`searchHistory`は、対象の由来、確認済みaccoun
 
 ローカルの単発CLIは既存のPythonとNodeを使い、`--snapshot` に非公開の永続JSON、`--http-state` に公式と共用するsidecarを明示します。`--publish` は公開用JSONの追加出力です。本人CLIの`--dry-run`は**公開mirror更新だけを抑止**し、通信予算・停止状態と検証済みの本人factsはprivate snapshotへ保存します（公式CLIのdry-runとは保存範囲が異なります）。取得を試すだけでも通信と永続stateの変更があるため、稼働中のcloudと同時には実行しません。
 
-本人用の取得が403・429・アクセス拒否等を受けた場合は、残りの同host要求を止め、共有の`Retry-After`とhost単位のpauseを永続化します。**時間が過ぎただけで拒否されたhostを勝手に再開しません。**旧`paused`のhost付き記録・cooldown・失敗receiptも保持したまま読み、別hostの検索・本文取得は巻き添えにしません。複数hostの拒否は`hostStops`で保全し、HTTP直前にも照合します。別クエリ・UA・proxyで迂回しません。AIの認証/model等のglobal停止は別に維持します。本人側の候補不足・意味不明・予算待ち・取得不能は本人componentの状態として表示し、正常な公式観測を空にしません。保存・leaseの障害は従来どおりfail-closedです。
+本人用の取得が403・429・アクセス拒否等を受けた場合は、残りの同host要求を止め、共有の`Retry-After`とhost単位のpauseを永続化します。**期限付き403/429（`access_denied` / `rate_limited`）は期限経過後に通常の必要GETを許可し、新たな拒否では再停止します。**401・認証停止・期限なし・不明理由の停止は自動解除しません。旧`paused`のhost付き記録・cooldown・失敗receiptは消さず、summaryでは停止証跡と現在有効な停止を区別します。別hostの検索・本文取得は巻き添えにせず、複数hostの拒否は`hostStops`で保全し、HTTP直前にも照合します。別クエリ・UA・proxyで迂回しません。AIの認証/model等のglobal停止は別に維持します。本人側の候補不足・意味不明・予算待ち・取得不能は本人componentの状態として表示し、正常な公式観測を空にしません。保存・leaseの障害は従来どおりfail-closedです。
 
 本文全文は恒久保存せず、作者・投稿ID・日時・出典、時間帯ごとの抽出イベントと必要な短い引用、最小のscope付きリンク判定だけを保持します。公開用JSONでは内部の予算、pending/resolved、pause詳細、HTTP制限、coverage、適用receiptを除外します。ブラウザーは同じサイトのJSONを読むだけで、本人検索を実行しません。
 
@@ -1126,7 +1126,7 @@ Actionsでは手動`personal` / `both`と、有効化された当日案内の公
 
 公式補足と本人本文v8は共通Luna transportを使い、用途別prompt/schemaを分けます。下記の半月予定表は独立した画像用途で、本人v8の本文契約へ画像を混ぜません。10時からの巡回や新cronは追加しません。取得・本人確認・型・出典・原投稿順の履歴はコードの責務です。公式の未発行補足だけは別のbounded queueへ残し、次枠のAI容量がある場合に既知IDをsource上限内で確認できます。全既知投稿の編集巡回ではなく、拒否・失敗済みの再推論や結果合わせの再取得はしません。
 
-**AIはJST暦月1,000円の暫定アプリ予算（税抜）で発行前に停止**します。移行済み共有台帳では日40回の停止を月予算へ置き換えます。cloudの回収runは同一run IDのまま最大16回（通常枠は本人最大14・半月1・公式補足1）、単日CLIは3回/run、半月は1回/runです。公式の実績取得を先行し、公式補足の推論は本人の未処理・半月の後へ回します。予算がなくても未検索の勤務対象を検索してmetadataを保存できますが、本文は解析容量を確認してから取得します。実AI間隔60秒以上、HTTPの即時retry0、429の`Retry-After`と永続pause、sourceの検索・本文・画像上限は維持します。成功済み原文／解析結果は再取得・再推論しません。
+**AIはJST暦月1,000円の暫定アプリ予算（税抜）で発行前に停止**します。移行済み共有台帳では日40回の停止を月予算へ置き換えます。cloudの回収runは同一run IDのまま最大16回（通常枠は本人最大14・半月1・公式補足1）、単日CLIは3回/run、半月は1回/runです。公式の実績取得を先行し、公式補足の推論は本人の未処理・半月の後へ回します。予算がなくても未検索の勤務対象を検索してmetadataを保存できますが、本文は解析容量を確認してから取得します。実AI間隔60秒以上、HTTPの即時retry0、429の`Retry-After`とAIの永続pause、sourceのhost間隔・拒否停止は維持します。source独自回数quotaの撤去はAI予算や画像API制約の緩和ではありません。成功済み原文／解析結果は再取得・再推論しません。
 
 金額は既存`ai-usage.json`の同じlock・cloud lease/CASに保存し、micro-JPY整数で切り上げます。公式・本人・半月・保存画像の時刻補足はすべて同じ予約を通り、HTTP直前にidentity・送信payload hash・実日・残額を再照合します。本文はschema/metadataを含むescaped送信bytesと既存512-token framing reserve、画像は確認済みモデル入力最大922,000 tokens、出力は実際の`max_completion_tokens`から予約します。完了時は入力・cache read/write・出力のusageで予約を精算し、タイムアウト・欠損・不正usageでは最大予約額を保持します。旧台帳は読めますが、月会計なしの実HTTPは許可しません。未知のmodel/version・入力種別・未会計を0円扱いしません。
 
@@ -1181,14 +1181,13 @@ Azure実費は既存定期処理の最初の機会にJST日1回、**前日まで
 | 上限 | 半月有効時の共有範囲 |
 |---|---|
 | AI 16/回収run・月1,000円の暫定予算 | 公式＋本人＋半月。同じrun IDで配分、半月は最大1/run。単日CLIは3/run |
-| 検索17/回収run | 公式2＋本人/半月合算15（本人最大14、半月1）。単日CLIの合算5は維持 |
-| 個別post＋画像20/run | 全用途合算。半月は元post最大1/run |
-| 検索120/日・post＋画像80/日 | 当日本人＋半月の合算。公式へ新しい日上限を課すものではない |
-| 画像4/run・8/日 | 同じpostの最大4枚。画像はpostと別kindで記録 |
+| source内部batch | 既存の公式・本人最大14・半月元post最大1/run等の処理配分は変更しない。共有台帳では追加のrun回数quotaを課さない |
+| source独自日quota・午前予約 | 120検索/日・個別80/日、午前60検索/40個別の予約は撤去。大きな固定値への置換はしない |
+| source画像quota | 4/run・8/日の取得quotaは撤去。画像APIの同じpost最大4枚・bytes/pixel制約は維持 |
 
-共有`source-usage.json`は既存日予算をbaselineで引き継ぎ、HTTP前の一意予約を保存します。承認済みsource receiptは元baselineを変えず追記し、本人予算・共有台帳・適用receiptを同じtransactionで照合します。画像を個別postとして偽装せず、既存importを重複計上しません。発行後の失敗・中断で消費を取り消さず、同runの同一URLを再GETしません。日上限は本人＋半月120検索・個別＋画像80（2026-09-13に60/40から明示改定）、半月画像8です。旧台帳の消費はリセットしません。
+共有`source-usage.json`は既存日カウンタをbaselineで引き継ぎ、HTTP前の一意予約を保存します。承認済みsource receiptは元baselineを変えず追記し、本人カウンタ・共有台帳・適用receiptを同じtransactionで照合します。native取得では画像をpostと別kindで記録します。manual source receiptのoptionalな`images`は、従来の画像込み個別カウンタ`posts`の内数（`0 <= images <= posts`）として保持し、二重加算しません。同receipt/hashの再適用も重複計上しません。発行後の失敗・中断で消費を取り消さず、同runの同一URLを再GETしません。source独自回数quotaは撤去し、reportの`remaining`は制限なしを`null`で表します（画像取得非対応componentは`images: 0`）。旧台帳の消費はリセットせず、Azure月予算・707円holdも変更しません。
 
-本人回収の順序は当日予定の初回有効出典、当日訂正、残枠で直近の日から過去保留です。当日予定の初回探索では現在の予定表に載る未達者を優先し、新しい公式由来の対象も除外しません。半月の未取得を全activeの当日検索で代用しません。過去回収と12:30 JST前の取得には日容量の半分までしか使わず、残る60検索・40個別を日中の初回確認・訂正に残します。12:30前の予約は共通source入口で本人・半月の両方へ適用し、半月画像の一括capacity確認も同じ残量を使います。これは同じ実日・共有台帳の取得前判定であり、別枠や新runで消費を隠すものではありません。外部429/Retry-After、run内負荷、間隔は変更しません。
+本人回収の順序は当日予定の初回有効出典、当日訂正、残枠で直近の日から過去保留です。当日予定の初回探索では現在の予定表に載る未達者を優先し、新しい公式由来の対象も除外しません。半月の未取得を全activeの当日検索で代用しません。過去回収と12:30 JST前の取得にもsource日容量の半分予約を課しません。対象は引き続き有限で、重複排除・hostアクセス間隔・401/403/429と`Retry-After`・排他・実行時間制限を維持します。内部batchや定期実行の追加・変更はこのsource-policy変更に含めません。
 
 公式のbuffer再生とcheckpoint読取は既存pendingの初見・試行時刻・回数を保持し、欠落した記録だけをqueue/cacheから再構成します。非再生対象のpending保全チェックは維持し、失敗runの復旧は保存済み結果・実費を検証して既存lease/CAS経路へ戻します。
 
@@ -1281,7 +1280,7 @@ HTTPの前にleaseをremoteへ保存します。収集後、成功・部分失�
 
 手動の過去日処理は、取得済みのprivate原文を`--analyze-saved --date <対象日>`で解析し、実時計・共有AI台帳は実行日のまま使います。定時取得の当日限定・締切は解除しません。未登録の過去postを適用する場合に限り、`personalAmendments[].amendment.operation="manual-saved-post"`を明示できます。v8のsearch由来metadata、解析日より前の対象日、空subjectのCAS、登録名簿・両author binding・対象日の勤務根拠、**先に精算された実使用receipt**が必要です。既知postの通常経路は変えず、最大3件・owner/lease・idempotencyの既存適用経路を使います。本文やmodel応答はmanifestへ入れず、有効な抽出結果と出典hashだけを渡します。
 
-公式差分の1件は`{expectedPostHash, amendment:{schemaVersion:1,id,source,notices}}`です。期待hashは保存済みpost全体をUTF-8・`ensure_ascii=False`・キー順・余白なしJSONにしたSHA256です。`source`は既存の`url/authorId/authorScreenName/createdAt`と、`fetchedAt/bodyHash/analyzedAt/analysisReceiptHash`だけを持ちます。noticeの`observedAt`は`fetchedAt`と一致させ、解析時刻は公開しません。AI receiptは`{receiptId,date,counts:{requests},modelBreakdown:[{model,kind,count}],sourceHash}`、source receiptは`{receiptId,date,searches,posts,sourceHash}`です。いずれもID/hashはSHA256、日付は加算先のJST暦日で、source receiptの加算前後カウンタも非公開台帳へ保持します。
+公式差分の1件は`{expectedPostHash, amendment:{schemaVersion:1,id,source,notices}}`です。期待hashは保存済みpost全体をUTF-8・`ensure_ascii=False`・キー順・余白なしJSONにしたSHA256です。`source`は既存の`url/authorId/authorScreenName/createdAt`と、`fetchedAt/bodyHash/analyzedAt/analysisReceiptHash`だけを持ちます。noticeの`observedAt`は`fetchedAt`と一致させ、解析時刻は公開しません。AI receiptは`{receiptId,date,counts:{requests},modelBreakdown:[{model,kind,count}],sourceHash}`、source receiptは`{receiptId,date,searches,posts,sourceHash}`とoptionalな`images`（`posts`の内数）です。source回数は非負整数で、`searches + posts > 0`を要求しますが日quotaでは制限しません。いずれもID/hashはSHA256、日付は加算先のJST暦日で、source receiptの加算前後カウンタも非公開台帳へ保持します。
 
 保存適用の`source.bodyHash`は、無改変で凍結した保存raw JSON文字列のUTF-8 SHA256を参照するprovenanceです。一方、producerの`officialAnalysis.cache.bodyHash`は`payload.text`そのもののUTF-8 SHA256で、別の値・用途です。保存適用はrawを再計算できないため承認時に照合し、このprovenanceを本文cacheのhashへ付け替えたり、既存cacheを書き換えたりしません。
 

@@ -1155,8 +1155,7 @@ def read_saved_manifest(environment):
                     and 1 <= len(receipt['modelBreakdown']) <= 8)
         for receipt in value['sourceReceipts']:
             require(isinstance(receipt, dict))
-            integer(receipt.get('searches'), 0, load_analysis_state().SOURCE_DAY_SEARCH_LIMIT)
-            integer(receipt.get('posts'), 0, load_analysis_state().SOURCE_DAY_INDIVIDUAL_LIMIT)
+            load_analysis_state()._validate_source_import(receipt)
     except (OSError, ValueError, TypeError, KeyError, RecursionError):
         raise CloudError('invalid_saved_manifest') from None
     return value
@@ -1559,10 +1558,10 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 environment['PERSONAL_ANALYSIS_BACKEND'] = 'azure'
             if enabled and collect_official:
                 source_paused = has_source and all(
-                    load_source_state().paused_for(source_usage_state, kind)
+                    load_source_state().paused_for(source_usage_state, kind, collector.utc_now())
                     for kind in ('searches', 'posts'))
                 personal_paused = personal_state is not None and all(
-                    load_source_state().paused_for(personal_state, kind)
+                    load_source_state().paused_for(personal_state, kind, collector.utc_now())
                     for kind in ('searches', 'posts'))
                 personal_active = collect_personal and not personal_paused and not source_paused
                 if catch_up:
@@ -1664,12 +1663,9 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                     if not allocation['personal']:
                         environment['CLOUD_COLLECTION_PERSONAL_POSTS'] = '0'
                     elif collect_half_month:
-                        source_report = load_source_state().usage_counts(
-                            validate_source_usage(collected / SOURCE_USAGE)[0],
-                            environment['CLOUD_COLLECTION_RUN_ID'], collector.utc_now(), 'personal', catch_up=True)
                         environment['CLOUD_COLLECTION_PERSONAL_POSTS'] = str(min(
                             int(environment.get('CLOUD_COLLECTION_PERSONAL_POSTS', '14')),
-                            allocation['personal'], source_report['remaining']['posts']))
+                            allocation['personal']))
                 elif (collect_half_month and not half_month_state.get('paused')
                         and not personal_deadline_near(collector.utc_now(), scheduled=scheduled)):
                     environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = str(
@@ -1772,6 +1768,9 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
             stops = source_module.host_pauses(source_state)
             result['sourceHealth'] = {
                 'hostStops': list(stops.values()),
+                'activeHostStops': [pause for kind in source_module.KINDS
+                                    if (pause := source_module.paused_for(
+                                        source_state, kind, collector.utc_now())) is not None],
                 'requests': source_module.usage_counts(
                     source_state, environment['CLOUD_COLLECTION_RUN_ID'], collector.utc_now(),
                     'personal', catch_up=catch_up)['issued'],
@@ -1827,6 +1826,7 @@ def emit(result, environment):
     health = result.get('sourceHealth')
     if health:
         lines = ['## Source transport health (deployment success is not acquisition success)\n']
+        active_stops = health['activeHostStops']
         for component, prefix in (('personal', 'personal'), ('schedule', 'halfMonth')):
             counts = health['requests'][component]
             lines.append(f"\n{component}: status={result.get(prefix + 'CollectionStatus', 'not-run')}; "
@@ -1834,15 +1834,20 @@ def emit(result, environment):
                          f"search/post/image={counts['searches']}/{counts['posts']}/{counts['images']}; "
                          f"last successful acquisition={health[prefix + 'LastSuccessAt'] or 'never'}; "
                          f"pending={health[prefix + 'Pending']}.\n")
-        for stop in health['hostStops']:
-            lines.append(f"\nPersistent host stop: {stop['host']}; since {stop['at']}; "
+        for stop in active_stops:
+            lines.append(f"\nActive host stop: {stop['host']}; since {stop['at']}; "
                          f"reason={stop['reason']}; HTTP={stop.get('httpStatus', 'unknown')}; "
-                         f"retry boundary={stop['retryAt']} (expiry does not clear the denial). "
+                         f"retry boundary={stop['retryAt']}. "
                          "Other independent hosts remain eligible.\n")
+        for stop in health['hostStops']:
+            if not any(active['host'] == stop['host'] for active in active_stops):
+                lines.append(f"\nExpired host stop evidence retained: {stop['host']}; since {stop['at']}; "
+                             f"HTTP={stop.get('httpStatus', 'unknown')}; retry boundary={stop['retryAt']}. "
+                             "Ordinary necessary GETs are eligible; a new denial stops the host again.\n")
         if environment.get('GITHUB_STEP_SUMMARY'):
             with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
                 target.writelines(lines)
-        if health['hostStops'] or any(
+        if active_stops or any(
                 not sum(health['requests'][component].values()) and health[prefix + 'Pending']
                 for component, prefix in (('personal', 'personal'), ('schedule', 'halfMonth'))):
             print('::warning::Source acquisition stopped or made zero requests with pending work; '
