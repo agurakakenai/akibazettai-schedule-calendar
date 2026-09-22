@@ -1358,10 +1358,10 @@ def validate_personal_continuation(state, acquisition):
 def restored_personal_continuation(personal, usage, source, now, collector):
     progress = (personal or {}).get('recovery')
     mode = progress.get('mode', 'personal') if progress else 'personal'
+    # The producer saves time_limit only after progress; later runs may replace lastRun.
     if (not progress or usage is None or source is None
             or progress['reason'] != 'time_limit'
-            or not (progress['searches'] or progress['postIds'])
-            or not sum(personal['lastRun'].get('requests', {}).values())):
+            or not (progress['searches'] or progress['postIds'])):
         return mode, False
     ledger = load_analysis_state()
     if (usage['paused'] or usage['retryAt'] is not None and collector.timestamp(usage['retryAt']) > now

@@ -1533,6 +1533,10 @@ class CloudTests(unittest.TestCase):
         restored(False)
         state = copy.deepcopy(original)
         state['lastRun']['requests'] = {'searches': 0, 'posts': 0}
+        state['lastRun']['status'] = 'no-results'
+        self.bare_commit({cloud.PERSONAL: state})
+        restored(True)
+        state['recovery']['reason'] = 'no_progress'
         self.bare_commit({cloud.PERSONAL: state})
         restored(False)
         usage = self.remote_json(cloud.AI_USAGE)[0]
