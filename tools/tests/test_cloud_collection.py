@@ -1554,7 +1554,8 @@ class CloudTests(unittest.TestCase):
         restored(False)
         clock[0] += dt.timedelta(hours=2)
         restored(True)
-        usage['money']['opening']['2026-09']['amountMicroJPY'] = 1_000_000_000
+        usage['money']['opening']['2026-09']['amountMicroJPY'] = (
+            cloud.load_analysis_state().costs.effective_limit(clock[0]))
         self.bare_commit({cloud.AI_USAGE: usage})
         restored(False)
 
