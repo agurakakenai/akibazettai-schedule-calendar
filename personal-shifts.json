@@ -14557,16 +14557,17 @@
     },
     "2026-09-24": {
       "posts": 34,
-      "searches": 58
+      "searches": 59
     }
   },
-  "checkedAt": "2026-09-24T06:03:24.711646Z",
+  "checkedAt": "2026-09-24T07:55:56.718158Z",
   "collectionSlots": [
     "personal:2026-09-23T10:00+09:00",
     "personal:2026-09-23T12:00+09:00",
     "personal:2026-09-24T01:00+09:00",
     "personal:2026-09-24T07:00+09:00",
-    "personal:2026-09-24T10:00+09:00"
+    "personal:2026-09-24T10:00+09:00",
+    "personal:2026-09-24T12:00+09:00"
   ],
   "complete": false,
   "coverage": {
@@ -20715,7 +20716,7 @@
         ],
         "postIds": [],
         "reason": "no_candidate_in_checked_pages",
-        "searchedAt": "2026-09-24T05:55:48.209488Z",
+        "searchedAt": "2026-09-24T07:55:59.079886Z",
         "shifts": [
           "夜"
         ]
@@ -21016,111 +21017,36 @@
   },
   "lastRequests": {
     "cdn.syndication.twimg.com": "2026-09-24T06:02:24.515043Z",
-    "search.yahoo.co.jp": "2026-09-24T06:03:24.992151Z"
+    "search.yahoo.co.jp": "2026-09-24T07:55:56.961213Z"
   },
   "lastRun": {
     "activeTargetCount": 46,
-    "attemptedCount": 7,
+    "attemptedCount": 0,
     "complete": false,
     "date": "2026-09-24",
     "dateBasis": "JST calendar date, 00:00 boundary",
     "deferredCount": 5,
-    "failures": [
-      {
-        "id": "2102055847509811426",
-        "reason": "azure_ungrounded"
-      }
-    ],
-    "finishedAt": "2026-09-24T06:03:26.523676Z",
-    "newEventCount": 4,
-    "newPostCount": 4,
+    "failures": [],
+    "finishedAt": "2026-09-24T07:55:59.427847Z",
+    "newEventCount": 0,
+    "newPostCount": 0,
     "pendingCount": 328,
     "requests": {
-      "posts": 7,
-      "searches": 15
+      "posts": 0,
+      "searches": 1
     },
-    "sourceCount": 15,
+    "sourceCount": 1,
     "sources": [
       {
         "candidateCount": 9,
         "status": "ok",
         "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Anono_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 4,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Acheru2_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 2,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Aamu_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 1,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Akirari_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 1,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Aarata_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 4,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Ahinari_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 1,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Ayume1_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 4,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Achima_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 2,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Amonaka1_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 4,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Achoko_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 2,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Ashachi_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 4,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Aakubi_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 7,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Ararako_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 1,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Atsubomi_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 1,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Auru_zettai&ei=UTF-8"
       }
     ],
     "status": "partial",
     "targetCount": 46
   },
-  "lastSuccessAt": "2026-09-24T06:03:26.467878Z",
+  "lastSuccessAt": "2026-09-24T07:55:59.107618Z",
   "originalTargets": {
     "2026-09-06": {
       "あくび": {
@@ -30739,7 +30665,7 @@
     }
   ],
   "recovery": {
-    "chainId": "35962090095-1",
+    "chainId": "35972287307-1",
     "mode": "personal",
     "nextAt": null,
     "postIds": [],
@@ -38344,7 +38270,7 @@
         "handle": "tsubomi_zettai"
       },
       "のの": {
-        "attemptedAt": "2026-09-24T05:55:48.209488Z",
+        "attemptedAt": "2026-09-24T07:55:59.079886Z",
         "handle": "nono_zettai"
       },
       "ひなり": {
