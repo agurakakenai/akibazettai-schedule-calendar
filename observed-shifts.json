@@ -1,25 +1,23 @@
 {
-  "checkedAt": "2026-09-28T10:01:29Z",
+  "checkedAt": "2026-09-28T18:12:57Z",
   "complete": false,
-  "cooldowns": {
-    "pbs.twimg.com": "2026-09-16T09:59:18.283293Z"
-  },
+  "cooldowns": {},
   "lastRun": {
-    "attemptedCount": 4,
+    "attemptedCount": 0,
     "complete": false,
     "dateBasis": "JST service day, 05:00 boundary",
     "dateFrom": "2026-09-27",
     "dateTo": "2026-09-28",
     "deferredCount": 0,
-    "discoveredCount": 41,
-    "eligibleCount": 4,
+    "discoveredCount": 39,
+    "eligibleCount": 0,
     "failures": [],
-    "fetchedCount": 4,
-    "finishedAt": "2026-09-28T10:03:38Z",
+    "fetchedCount": 0,
+    "finishedAt": "2026-09-28T18:13:01Z",
     "lastSuccessMeaning": "Both searches and every selected post handled without failure or deferral",
     "maxPosts": 20,
-    "newNameCount": 16,
-    "newPostCount": 3,
+    "newNameCount": 0,
+    "newPostCount": 0,
     "pendingCount": 20,
     "pendingOutsideRangeCount": 20,
     "rejected": [
@@ -198,19 +196,15 @@
       {
         "id": "2097883444034596954",
         "reason": "outside_date_range"
-      },
-      {
-        "id": "2104393237066834212",
-        "reason": "not_shift_post"
       }
     ],
     "requests": {
-      "posts": 4,
+      "posts": 0,
       "searches": 2
     },
     "skippedCuratedCount": 0,
-    "skippedObservedCount": 5,
-    "skippedResolvedCount": 1,
+    "skippedObservedCount": 8,
+    "skippedResolvedCount": 2,
     "sourceCount": 2,
     "sourcePageLimit": 2,
     "sources": [
@@ -220,7 +214,7 @@
         "url": "https://search.yahoo.co.jp/realtime/search?p=%E3%82%A2%E3%82%AD%E3%83%90%E7%B5%B6%E5%AF%BE%E9%A0%98%E5%9F%9F&ei=UTF-8"
       },
       {
-        "candidateCount": 25,
+        "candidateCount": 23,
         "status": "ok",
         "url": "https://search.yahoo.co.jp/realtime/search?p=%E3%81%B2%E3%82%8B%E3%81%AB%E3%82%83%E3%82%93%E3%81%93&ei=UTF-8"
       }
