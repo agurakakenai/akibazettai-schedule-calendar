@@ -1,38 +1,25 @@
 {
-  "checkedAt": "2026-09-29T10:00:24Z",
+  "checkedAt": "2026-09-29T16:34:38Z",
   "complete": false,
-  "cooldowns": {
-    "pbs.twimg.com": "2026-09-16T09:59:18.283293Z"
-  },
+  "cooldowns": {},
   "lastRun": {
-    "attemptedCount": 5,
+    "attemptedCount": 1,
     "complete": false,
     "dateBasis": "JST service day, 05:00 boundary",
     "dateFrom": "2026-09-28",
     "dateTo": "2026-09-29",
     "deferredCount": 0,
-    "discoveredCount": 39,
-    "eligibleCount": 5,
-    "failures": [
-      {
-        "id": "2104771135569269182",
-        "reason": "azure_edit_metadata",
-        "url": "https://x.com/akibazettai/status/2104771135569269182"
-      },
-      {
-        "id": "2104784664473002191",
-        "reason": "azure_edit_metadata",
-        "url": "https://x.com/akibazettai/status/2104784664473002191"
-      }
-    ],
-    "fetchedCount": 5,
-    "finishedAt": "2026-09-29T10:01:35Z",
+    "discoveredCount": 37,
+    "eligibleCount": 1,
+    "failures": [],
+    "fetchedCount": 1,
+    "finishedAt": "2026-09-29T16:34:46Z",
     "lastSuccessMeaning": "Both searches and every selected post handled without failure or deferral",
     "maxPosts": 20,
-    "newNameCount": 23,
-    "newPostCount": 4,
+    "newNameCount": 4,
+    "newPostCount": 1,
     "pendingCount": 22,
-    "pendingOutsideRangeCount": 20,
+    "pendingOutsideRangeCount": 22,
     "rejected": [
       {
         "id": "2104155002218659952",
@@ -88,18 +75,6 @@
       },
       {
         "id": "2103668239599575446",
-        "reason": "outside_date_range"
-      },
-      {
-        "id": "2103443398917280116",
-        "reason": "outside_date_range"
-      },
-      {
-        "id": "2103433475097608530",
-        "reason": "outside_date_range"
-      },
-      {
-        "id": "2103414101464830272",
         "reason": "outside_date_range"
       },
       {
@@ -213,24 +188,20 @@
       {
         "id": "2097883444034596954",
         "reason": "outside_date_range"
-      },
-      {
-        "id": "2104756814940434537",
-        "reason": "not_shift_post"
       }
     ],
     "requests": {
-      "posts": 5,
+      "posts": 1,
       "searches": 2
     },
     "skippedCuratedCount": 0,
-    "skippedObservedCount": 3,
-    "skippedResolvedCount": 1,
+    "skippedObservedCount": 5,
+    "skippedResolvedCount": 2,
     "sourceCount": 2,
     "sourcePageLimit": 2,
     "sources": [
       {
-        "candidateCount": 26,
+        "candidateCount": 24,
         "status": "ok",
         "url": "https://search.yahoo.co.jp/realtime/search?p=%E3%82%A2%E3%82%AD%E3%83%90%E7%B5%B6%E5%AF%BE%E9%A0%98%E5%9F%9F&ei=UTF-8"
       },
@@ -1084,6 +1055,16 @@
         "postId": "2097974770402984156",
         "reason": "no_event",
         "versionHash": "8475ffd64a25d8d1e858e0169e6f70feb3f66c5e5449d23548b94501813bebb5"
+      },
+      "f24b830e66613b6ebda90691d62d7ca81ec66448dbea35eeed310e92a74f5b01": {
+        "at": "2026-09-29T16:34:43.625922Z",
+        "bodyHash": "1f277f546ec0faa7475d20ded8f60750fb8505940efbff10d2b57a9f57337b1f",
+        "createdAt": "2026-09-29T10:16:28Z",
+        "fetchedAt": "2026-09-29T16:34:43.622876Z",
+        "notices": [],
+        "postId": "2104877964525699541",
+        "reason": "no_event",
+        "versionHash": "ec86d6443faf164198208e05bc7b9bb83db03cdba2326b130a7a7df50e95a8e6"
       },
       "febc6290d63fe5063444d5b0ab81ff6417c55a05d566efc408586d62ec95e9cf": {
         "at": "2026-09-27T09:25:02.225880Z",
@@ -3604,6 +3585,23 @@
       "shift": "夜",
       "storeId": "s1",
       "url": "https://x.com/akibazettai/status/2104871238426575337"
+    },
+    {
+      "authorId": "822429861218131969",
+      "authorScreenName": "akibazettai",
+      "createdAt": "2026-09-29T10:16:28Z",
+      "date": "2026-09-29",
+      "id": "2104877964525699541",
+      "names": [
+        "かなた",
+        "あくび",
+        "ちょこ",
+        "まこと"
+      ],
+      "observedAt": "2026-09-29T16:34:43Z",
+      "shift": "夜",
+      "storeId": "s2",
+      "url": "https://x.com/akibazettai/status/2104877964525699541"
     }
   ],
   "resolved": [
