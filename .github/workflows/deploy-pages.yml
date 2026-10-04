@@ -117,7 +117,7 @@ jobs:
           echo "RUN_CREATED_AT=$RUN_CREATED_AT" >> "$GITHUB_ENV"
       - name: Install declared image collection dependencies
         if: steps.route.outputs.halfMonthCacheRequired == 'true'
-        run: python -m pip install --disable-pip-version-check -r tools/requirements-collection.txt
+        uses: ./.github/actions/collector-python
       - name: Restore encrypted schedule evidence outside the checkout
         if: steps.route.outputs.halfMonthCacheRequired == 'true'
         env:

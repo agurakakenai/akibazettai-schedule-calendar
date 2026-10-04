@@ -1,0 +1,15 @@
+name: Collector Python
+description: >-
+  Isolated virtual environment with the declared collection dependencies,
+  verified with the same -I -B flags the collector children use.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        python -m venv "$RUNNER_TEMP/collector-venv"
+        "$RUNNER_TEMP/collector-venv/bin/python" -m pip install --disable-pip-version-check -r tools/requirements-collection.txt
+        # Children run as `python -I -B`, which ignores the user site and PYTHON* variables.
+        # Prove the exact interpreter and flags can import the image and cache dependencies.
+        "$RUNNER_TEMP/collector-venv/bin/python" -I -B -c "import PIL.Image, cryptography.hazmat.primitives.ciphers.aead"
+        echo "$RUNNER_TEMP/collector-venv/bin" >> "$GITHUB_PATH"

@@ -180,6 +180,50 @@ class CycleIsolationTests(IsolationBase):
                 with self.assertRaises(type(error)):
                     self.run_cycle()
 
+    def test_missing_dependency_stops_without_holding_or_blaming_the_candidate(self):
+        self.inject('image', ModuleNotFoundError("No module named 'PIL'"))
+        with self.assertRaises(ModuleNotFoundError):
+            self.run_cycle()
+        for row in self.state['readings'].values():
+            self.assertNotEqual(row['stage'], 'held')
+            self.assertNotIn('failure', row)
+
+    def test_reply_to_another_account_is_dropped_not_an_identity_verdict(self):
+        reply = str(int(self.first_id) + 5)
+        entry = base.entry(suffix=6)
+        self.documents[base.TARGET['handle']] = base.document(base.entry(), entry)
+        payload = base.payload(suffix=6, photos=0)
+        payload.update(in_reply_to_status_id_str=str(int(self.first_id) - 9),
+                       in_reply_to_user_id_str='1234567890123',
+                       parent={'id_str': str(int(self.first_id) - 9),
+                               'user': {'id_str': '1234567890123', 'screen_name': 'someone_else'}})
+        self.payloads[entry['id']] = payload
+        report, _ = self.run_cycle()
+        self.assertNotIn(entry['id'], {item['id'] for item in self.state['pending']})
+        history = [row for row in self.state['candidateHistory'].values() if row['candidate']['id'] == entry['id']]
+        self.assertEqual([row['reason'] for row in history], ['not_schedule'])
+        self.assertNotIn('identity_unknown', report['reasons'])
+        self.assertEqual({row['name'] for row in self.state['schedules']}, {'あむ', '新人'})
+        self.assertEqual(report['diagnostics'], [])
+        posts = list(self.gets['posts'])
+        self.now += dt.timedelta(days=1)
+        self.reopen()
+        self.run_cycle()
+        self.assertEqual(self.gets['posts'].count(entry['id']), posts.count(entry['id']))
+        facts.validate_state(self.state)
+
+    def test_reason_token_detail_is_kept_but_messages_are_not(self):
+        self.inject('image', collector.Failure('network_error'))
+        report, _ = self.run_cycle()
+        row = next(item for item in report['diagnostics'] if item['postId'] == self.first_id)
+        self.assertEqual((row['reason'], row['detail']), ('image_fetch_failed', 'network_error'))
+        self.setUp()
+        self.inject('image', ValueError('Expecting value: line 1 private-detail'))
+        report, _ = self.run_cycle()
+        row = next(item for item in report['diagnostics'] if item['postId'] == self.first_id)
+        self.assertNotIn('detail', row)
+        self.assertNotIn('private-detail', json.dumps(report))
+
     def test_main_reports_storage_faults_as_4_and_other_crashes_as_1(self):
         argv = ['--snapshot', 'unused.json', '--source-state', 'source.json',
                 '--personal-snapshot', 'personal.json', '--http-state', 'http.json',
