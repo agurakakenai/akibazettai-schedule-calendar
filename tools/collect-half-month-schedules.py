@@ -1318,6 +1318,20 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
     for progress in state['readings'].values():
         if progress['sourceId'] in stale:
             progress.update(stage='held', reason='stale_candidate', nextAt=None)
+    # A missing module is a runner/environment fault, not a property of the source. Once the
+    # environment is fixed, release such delays/holds so the source is read on this run (paid
+    # requests stay deduplicated by the usage ledger and the encrypted cache).
+    environment_faults = {'ImportError', 'ModuleNotFoundError'}
+    for progress in state['readings'].values():
+        failure = progress.get('failure')
+        if failure and failure.get('exceptionClass') in environment_faults:
+            if progress['stage'] == 'held':
+                progress['stage'] = failure['stage'] if failure['stage'] in ('fetch', 'original', 'detail') else 'fetch'
+            progress.pop('failure')
+            progress.update(reason='reading_pending', nextAt=None)
+            for item in state['pending']:
+                if item['id'] == progress['sourceId']:
+                    item['nextAttemptAt'] = None
     counts = {'searches': 0, 'posts': 0, 'images': 0, 'analysis': 0}
     stop, changed, errors = False, False, []
     failures = {}
@@ -1347,7 +1361,12 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                     _set_reason(state, name, discovery, 'image_cache_unconfigured')
             errors.append('image_cache_unconfigured')
         else:
-            for position, name in enumerate(current['names']):
+            # Start where the previous run stopped, then wrap around: otherwise the same early
+            # names' pending work can consume every run's time and later names are never reached.
+            start = min(initial_cursor, len(current['names']))
+            order = [*range(start, len(current['names'])), *range(0, start)]
+            for position in order:
+                name = current['names'][position]
                 reply_waiting = any(item['name'] == name and item.get('replyCandidate')
                                     for item in state['pending'])
                 if name not in targets or confirmed(name) and not reply_waiting:
@@ -1598,7 +1617,9 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
     current.update(ready=bool('time_limit' in errors and remaining and progressed),
                    reason='time_limit' if 'time_limit' in errors else
                    'waiting' if errors or remaining or unresolved else 'complete',
-                   nextAt=min(next_times) if next_times else None)
+                   # A past check time means "eligible now", never a stale date in the checkpoint.
+                   nextAt=min((value for value in next_times if facts.timestamp(value) > clock()),
+                              default=None))
     outcome = ('budget-exhausted' if 'budget_wait' in errors else 'partial' if errors or remaining or unresolved
                else 'ok' if changed else 'no-new')
     state['lastRun'] = {'status': outcome}

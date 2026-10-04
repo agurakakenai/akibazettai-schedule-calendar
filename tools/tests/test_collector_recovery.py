@@ -379,6 +379,20 @@ class HalfMonthRecoveryTests(unittest.TestCase):
         source = self.fx.remote_json(hcloud.SOURCE_USAGE)[0]
         self.assertEqual(source['receipts'], self.h.source_state['receipts'])
 
+    def test_image_host_stop_alone_does_not_freeze_text_continuation(self):
+        state = {'collection': {
+            'chainId': '12345-1', 'names': ['あむ'], 'periods': [['2026-10-01', '2026-10-15']],
+            'reason': 'time_limit', 'ready': True, 'cursor': 0, 'nextAt': None}, 'pending': [], 'readings': {}}
+        now = dt.datetime(2026, 10, 4, 15, 40, tzinfo=dt.timezone.utc)
+        for host, expected in (('pbs.twimg.com', True), ('search.yahoo.co.jp', False),
+                               ('cdn.syndication.twimg.com', False)):
+            with self.subTest(host=host):
+                source = copy.deepcopy(self.h.source_state)
+                source['paused'] = {'host': host, 'reason': 'access_denied', 'httpStatus': 403,
+                                    'at': '2026-10-04T15:35:18Z', 'retryAt': '2026-10-04T16:35:18Z'}
+                self.assertEqual(hcloud.restored_half_month_continuation(
+                    state, self.h.usage, source, now, hcollector), expected)
+
     def test_in_flight_request_is_never_self_released(self):
         self.seed('processing')
         with self.assertRaisesRegex(hcloud.CloudError, 'half_month_local_failure'):
