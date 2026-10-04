@@ -15,7 +15,12 @@ collectionCode, stateCommit, sourceCodeSHA, stateSource, persistenceStatus.
 officialCollectionStatus/Code and personalCollectionStatus/Code describe each
 component separately. Paused/budget/unavailable components still publish saved
 facts; storage/process/completion-attestation failures retain the remote lease.
-Never automatically expire or clear a lease, including on a rerun of the same job.
+Never automatically expire or clear another run's lease, including on a rerun of
+the same job. A run releases its own lease after a component child failure only
+for an unexpected crash (exit 1) with no in-flight source/AI receipt, and only
+when every saved fact file and shared ledger passes the ordinary validators and
+cross-links; reported storage/ledger faults (exit 4), timeouts, signals,
+unverifiable state and integrity faults keep the lease.
 The permanent state-owner.json marker is mandatory on every existing state
 branch. Missing/mismatched markers are never adopted automatically. Only the
 fixed collector-state ref is allowed, and it must not be the remote default.
@@ -181,6 +186,105 @@ def child_process(argv, *, cwd, environment, timeout=180):
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
 
 
+SAFE_REASON = re.compile(r'[a-z_]{1,64}\Z')
+SAFE_CLASS = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,63}\Z')
+SAFE_LOCATION = re.compile(r'[A-Za-z0-9_.-]{1,64}\.py:[A-Za-z_<>][A-Za-z0-9_<>]{0,63}:[0-9]{1,6}\Z')
+SAFE_STAGE = re.compile(r'[a-z_]{1,32}\Z')
+COMPONENTS = ('official', 'personal', 'schedule')
+
+
+def child_failure_facts(process, component):
+    """Reduce a failed child's stdout/stderr to allowlisted, content-free facts.
+
+    Exception messages, local paths, URLs, source text and secrets are dropped:
+    only a fixed reason token, exception class name and tools/ frame survive.
+    """
+    code = process.returncode
+    facts = {'component': component, 'exitCode': code if type(code) is int and -255 <= code <= 255 else None}
+    def text(value):
+        return value.decode('utf-8', 'replace') if isinstance(value, bytes) else ''
+    lines = [line for line in text(process.stdout).splitlines() if line.strip()]
+    value = None
+    if lines:
+        try:
+            value = json.loads(lines[-1])
+        except (ValueError, RecursionError):
+            value = None
+    if isinstance(value, dict):
+        for key, pattern in (('reason', SAFE_REASON), ('exceptionClass', SAFE_CLASS),
+                             ('location', SAFE_LOCATION)):
+            if isinstance(value.get(key), str) and pattern.fullmatch(value[key]):
+                facts[key] = value[key]
+    if 'exceptionClass' not in facts:
+        # An uncaught traceback: keep only the final class name and last tools/ frame.
+        error = text(process.stderr)
+        frames = [(Path(name).name, line, function) for name, line, function in re.findall(
+                      r'File "([^"\r\n]{1,4096})", line ([0-9]{1,6}), in ([A-Za-z_<>][A-Za-z0-9_<>]{0,63})', error)
+                  if Path(name).parent.name == 'tools']
+        if frames:
+            location = '{}:{}:{}'.format(frames[-1][0], frames[-1][2], frames[-1][1])
+            if SAFE_LOCATION.fullmatch(location):
+                facts.setdefault('location', location)
+        tail = error.strip().splitlines()[-1] if error.strip() else ''
+        match = re.match(r'([A-Za-z_][A-Za-z0-9_.]{0,255})(?::|\Z)', tail)
+        if match and SAFE_CLASS.fullmatch(match.group(1).rsplit('.', 1)[-1]):
+            facts['exceptionClass'] = match.group(1).rsplit('.', 1)[-1]
+    return facts
+
+
+def record_child_failure(process, report, component):
+    if process.returncode not in (0, 2, 3):
+        try:
+            report.with_name(report.stem + '.child.json').write_text(
+                json.dumps(child_failure_facts(process, component)), encoding='utf-8')
+        except OSError:
+            pass
+
+
+def child_failure(report, component, code):
+    facts = {'component': component, 'exitCode': code if type(code) is int else None}
+    path = report.with_name(report.stem + '.child.json')
+    try:
+        value = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
+    except (OSError, ValueError, UnicodeError, RecursionError):
+        value = {}
+    if isinstance(value, dict):
+        for key, pattern in (('reason', SAFE_REASON), ('exceptionClass', SAFE_CLASS),
+                             ('location', SAFE_LOCATION)):
+            if isinstance(value.get(key), str) and pattern.fullmatch(value[key]):
+                facts[key] = value[key]
+    return facts
+
+
+def unexpected_failures(report, component):
+    rows = report.get('unexpectedFailures', []) if isinstance(report, dict) else []
+    require(isinstance(rows, list), component + '_report_invalid')
+    result = []
+    for row in rows[:20]:
+        require(isinstance(row, dict) and set(row) <= {'id', 'stage', 'exceptionClass', 'location'},
+                component + '_report_invalid')
+        safe = {'component': component}
+        if 'id' in row:
+            require(isinstance(row['id'], str) and bool(re.fullmatch(r'[1-9][0-9]{0,24}', row['id'])),
+                    component + '_report_invalid')
+            safe['id'] = row['id']
+        for key, pattern in (('stage', SAFE_STAGE), ('exceptionClass', SAFE_CLASS),
+                             ('location', SAFE_LOCATION)):
+            if key in row:
+                require(isinstance(row[key], str) and bool(pattern.fullmatch(row[key])),
+                        component + '_report_invalid')
+                safe[key] = row[key]
+        result.append(safe)
+    return result
+
+
+class ComponentFailure(CloudError):
+    """A failure whose child state could not be verified; the lease is retained."""
+    def __init__(self, reason, diagnostics):
+        super().__init__(reason)
+        self.diagnostics = diagnostics
+
+
 def no_duplicate_keys(pairs):
     value = {}
     for key, child in pairs:
@@ -307,7 +411,7 @@ def validate_snapshot(path, collector):
     for source in run.get('sources', []):
         keys(source, ('url', 'status', 'candidateCount', 'reason', 'httpStatus', 'retryAt'),
              ('url', 'status'))
-        require(source['url'] in collector.SEARCH_URLS and source['status'] in ('ok', 'failed'))
+        require(official_search_url(source['url'], run, collector) and source['status'] in ('ok', 'failed'))
         if 'candidateCount' in source:
             integer(source['candidateCount'])
         validate_failure(source, collector)
@@ -321,6 +425,40 @@ def validate_snapshot(path, collector):
                 require(failure['url'] == collector.canonical(failure['id']))
             validate_failure(failure, collector)
     return state, raw
+
+
+def official_search_url(url, run, collector):
+    if url in collector.SEARCH_URLS:
+        return True
+    # A bounded single-service-day official-account correction search.
+    try:
+        day = dt.date.fromisoformat(run['dateFrom'])
+    except (TypeError, ValueError):
+        return False
+    return run['dateFrom'] == run['dateTo'] and url == collector.correction_search_url(day)
+
+
+CORRECTION_DATES = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}(?:,[0-9]{4}-[0-9]{2}-[0-9]{2}){0,2}\Z')
+
+
+def official_correction_dates(value, mode, scheduled, collector):
+    """At most three explicit manual backfill days within the collector's 7-day window."""
+    value = (value or '').strip()
+    if not value:
+        return []
+    require(mode == 'collect' and not scheduled and bool(CORRECTION_DATES.fullmatch(value)),
+            'invalid_official_correction_dates')
+    today = collector.service_day(collector.utc_now())
+    dates = []
+    for text in value.split(','):
+        try:
+            day = dt.date.fromisoformat(text)
+        except ValueError:
+            raise CloudError('invalid_official_correction_dates') from None
+        require(day.isoformat() == text and day not in dates and 0 <= (today - day).days < 7,
+                'invalid_official_correction_dates')
+        dates.append(day)
+    return sorted(dates)
 
 
 def validate_transport(path, collector):
@@ -855,18 +993,21 @@ def save_recovery(source, destination, collector, *, include_personal=False, per
     require(not invalid, 'recovery_state_invalid')
 
 
-def invoke_collector(root, state, report, environment):
+def invoke_collector(root, state, report, environment, correction_date=None):
     azure = environment.get('CLOUD_COLLECTION_OFFICIAL_AZURE') == 'true'
     argv = [sys.executable, '-I', '-B', str(root / 'tools' / 'collect-shifts.py'),
             '--once', '--days', '2', '--max-posts', '20',
             '--snapshot', str(state / SNAPSHOT), '--report', str(report)]
+    if correction_date is not None:
+        require(type(correction_date) is dt.date, 'invalid_official_correction_dates')
+        argv.extend(['--correction-date', correction_date.isoformat()])
     argv.extend(source_arguments(state, environment))
     if azure:
         argv.extend(['--analysis-backend', 'azure',
                      *analysis_arguments(state, environment, allow_zero=True)])
         buffer_mode = environment.get('CLOUD_COLLECTION_BUFFER_MODE', '')
         require(buffer_mode in ('', 'write', 'replay'), 'invalid_analysis_buffer_mode')
-        if buffer_mode:
+        if buffer_mode and correction_date is None:
             path = analysis_buffer_path(root, state)
             argv.extend(['--analysis-buffer' if buffer_mode == 'write' else '--replay-buffer',
                          str(path)])
@@ -875,7 +1016,9 @@ def invoke_collector(root, state, report, environment):
             argv, cwd=root, environment=safe_environment(environment, azure=azure), timeout=1200)
     except (OSError, subprocess.SubprocessError):
         raise CloudError('collector_process_failed') from None
-    # The report/stdout/stderr may contain local paths and process IDs.
+    # The report/stdout/stderr may contain local paths and process IDs; only an
+    # allowlisted failure summary is retained.
+    record_child_failure(process, report, 'official')
     return process.returncode
 
 
@@ -916,6 +1059,7 @@ def invoke_personal_collector(root, state, report, environment):
             timeout=1500 if catch_up else 600)
     except (OSError, subprocess.SubprocessError):
         raise CloudError('personal_process_failed') from None
+    record_child_failure(process, report, 'personal')
     return process.returncode
 
 
@@ -961,6 +1105,7 @@ def invoke_half_month_collector(root, state, report, environment):
             argv, cwd=root, environment=child_environment, timeout=1500 if finite else 900)
     except (OSError, subprocess.SubprocessError):
         raise CloudError('half_month_process_failed') from None
+    record_child_failure(process, report, 'schedule')
     return process.returncode
 
 
@@ -1357,7 +1502,12 @@ def half_month_diagnostics(report):
               'httpStatus', 'retryAt', 'stage', 'nextStage', 'reason')
     stages = ('source', 'cache', 'fetch', 'original', 'detail', 'held', 'done')
     for row in rows:
-        keys(row, fields, fields)
+        keys(row, (*fields, 'exceptionClass', 'location'), fields)
+        require(('exceptionClass' not in row or isinstance(row['exceptionClass'], str)
+                 and bool(SAFE_CLASS.fullmatch(row['exceptionClass'])))
+                and ('location' not in row or isinstance(row['location'], str)
+                     and bool(SAFE_LOCATION.fullmatch(row['location']))),
+                'invalid_half_month_diagnostics')
         facts.post_identifier(row['postId'])
         require(isinstance(row['name'], str) and bool(facts.NAME.fullmatch(row['name']))
                 and isinstance(row['postUrl'], str)
@@ -1483,6 +1633,9 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
     if writing:
         trusted_context(environment)
         require_manual_personal(args.mode, environment)
+    correction_dates = (official_correction_dates(
+        environment.get('OFFICIAL_CORRECTION_DATES', ''), args.mode, scheduled, collector)
+        if writing else [])
     manifest = read_saved_manifest(environment) if applying else None
     output, recovery = checked_paths(root, args.output, args.recovery_dir)
     collector = collector or load_collector()
@@ -1628,6 +1781,16 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
             'COLLECTION_DATE', collector.utc_now().astimezone(JST).date().isoformat())
         if half_continuing:
             collect_official = False
+            if half_progress.get('reason') == 'processing' and not expected:
+                # The previous run never finalised this cohort (it crashed). Its issued
+                # requests stay in the ledger under the old run ID; this run resumes the
+                # same saved names/periods/cursor under its own accounting identity so a
+                # result that was lost before caching is re-acquired once, not looped.
+                result['halfMonthRebasedFrom'] = half_progress['chainId']
+                half_progress['chainId'] = environment['GITHUB_RUN_ID'] + '-' + environment['GITHUB_RUN_ATTEMPT']
+                collector.atomic_json(state_dir / HALF_MONTH, half_month_state)
+                half_month_state, _ = validate_half_month(state_dir / HALF_MONTH)
+                half_progress = half_month_state['collection']
             environment['COLLECTION_DATE'] = half_progress.get(
                 'serviceDate', half_progress['periods'][0][0])
             environment['CLOUD_COLLECTION_HALF_RESUME'] = 'true'
@@ -1788,14 +1951,80 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 environment['CLOUD_COLLECTION_ANALYSIS_LIMIT'] = str(official_limit)
                 if collect_personal:
                     environment['CLOUD_COLLECTION_BUFFER_MODE'] = 'write'
+
+            def unfinished_requests():
+                # An in-flight receipt means the HTTP/AI outcome is unknown: never self-release.
+                run_id = environment.get('CLOUD_COLLECTION_RUN_ID', '')
+                for name in (SOURCE_USAGE, AI_USAGE):
+                    path = collected / name
+                    if not path.is_file():
+                        continue
+                    try:
+                        receipts = json.loads(path.read_text(encoding='utf-8')).get('receipts', {})
+                    except (OSError, ValueError, UnicodeError, RecursionError, AttributeError):
+                        return True
+                    if not isinstance(receipts, dict) or any(
+                            not isinstance(item, dict) or item.get('runId') == run_id
+                            and item.get('completedAt') is None for item in receipts.values()):
+                        return True
+                return False
+
+            def contain(component, reason, report_path, code):
+                # Release-on-failure is allowed only for an unexpected crash (exit 1, not a
+                # collector-reported storage/ledger fault = 4, timeout or signal), with no
+                # in-flight request, and when every saved fact file and shared ledger still
+                # passes the validators/links used for an ordinary save.
+                failure = child_failure(report_path, component, code)
+                if code != 1 or unfinished_requests():
+                    raise ComponentFailure(reason, [failure])
+                checked = work / ('contained-' + uuid.uuid4().hex[:16])
+                try:
+                    checked.mkdir()
+                    copy_pair(collected, checked, collector, **bundle)
+                except (CloudError, ValueError, TypeError, KeyError, OverflowError, OSError):
+                    raise ComponentFailure(reason, [failure]) from None
+                finally:
+                    remove_tree(checked)
+                result.setdefault('componentFailures', []).append(failure)
+                return failure
+
+            for day in (correction_dates if collect_official else ()):
+                report_path = work / ('official-correction-' + day.isoformat() + '.json')
+                code = invoke_collector(root, collected, report_path, environment, correction_date=day)
+                entry = {'date': day.isoformat()}
+                if code not in (0, 2, 3):
+                    contain('official', 'collector_local_failure', report_path, code)
+                    entry['status'] = 'unavailable'
+                else:
+                    corrected, _ = validate_snapshot(collected / SNAPSHOT, collector)
+                    run = corrected['lastRun']
+                    require(run['status'] != 'never'
+                            and code == {'partial': 2, 'unavailable': 3}.get(run['status'], 0)
+                            and run['dateFrom'] == run['dateTo'] == day.isoformat(),
+                            'official_correction_status_mismatch')
+                    report = validate_completion(report_path, run['status'], code, 'official')
+                    requests = report.get('requests')
+                    require(isinstance(requests, dict), 'official_source_report_missing')
+                    integer(requests.get('searches'), 0, 1)
+                    integer(requests.get('posts'), 0, 20)
+                    result.setdefault('unexpectedFailures', []).extend(unexpected_failures(report, 'official'))
+                    entry.update(status=run['status'], searches=requests['searches'], posts=requests['posts'],
+                                 newPosts=run.get('newPostCount', 0))
+                result.setdefault('officialCorrections', []).append(entry)
+            official_failed = False
             if collect_official:
                 code = invoke_collector(root, collected, work / 'official-report.json', environment)
-                require(code in (0, 2, 3), 'collector_local_failure')
+                if code not in (0, 2, 3):
+                    contain('official', 'collector_local_failure', work / 'official-report.json', code)
+                    official_failed = True
+                    result.update(officialCollectionStatus='unavailable', officialCollectionCode=3)
+            if collect_official and not official_failed:
                 canonical, _ = validate_snapshot(collected / SNAPSHOT, collector)
                 status = canonical['lastRun']['status']
                 require(status != 'never' and code == {'partial': 2, 'unavailable': 3}.get(status, 0),
                         'collector_status_mismatch')
                 report = validate_completion(work / 'official-report.json', status, code, 'official')
+                result.setdefault('unexpectedFailures', []).extend(unexpected_failures(report, 'official'))
                 requests = report.get('requests')
                 require(isinstance(requests, dict), 'official_source_report_missing')
                 integer(requests.get('searches'), 0, 2)
@@ -1820,7 +2049,12 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                     environment['CLOUD_COLLECTION_HALF_ALLOCATION'] = '0' if allocation['schedule'] == 0 else '1'
                 code = invoke_half_month_collector(
                     root, collected, work / 'half-month-report.json', environment)
-                require(code in (0, 2, 3), 'half_month_local_failure')
+                if code not in (0, 2, 3):
+                    contain('schedule', 'half_month_local_failure', work / 'half-month-report.json', code)
+                    half_month_state, _ = validate_half_month(collected / HALF_MONTH)
+                    result.update(halfMonthCollectionStatus='unavailable', halfMonthCollectionCode=3)
+                    result['halfMonthContinuation'] = half_month_state.get('collection')
+                    return
                 half_month_state, _ = validate_half_month(collected / HALF_MONTH)
                 status = half_month_state['lastRun']['status']
                 require(status in ('ok', 'partial', 'unavailable', 'no-new', 'no-results',
@@ -1919,7 +2153,12 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 collector.atomic_json(work / 'personal-seed.json', personal.public_state(personal_state))
                 code = invoke_personal_collector(
                     root, collected, work / 'personal-report.json', environment)
-                require(code in (0, 2, 3), 'personal_local_failure')
+                personal_failed = code not in (0, 2, 3)
+                if personal_failed:
+                    contain('personal', 'personal_local_failure', work / 'personal-report.json', code)
+                    personal_state, _ = validate_personal(collected / PERSONAL, personal)
+                    result.update(personalCollectionStatus='unavailable', personalCollectionCode=3)
+            if collect_personal and not personal_failed:
                 personal_state, _ = validate_personal(collected / PERSONAL, personal)
                 status = personal_state['lastRun']['status']
                 require(status in ('ok', 'partial', 'unavailable', 'no-new', 'no-results',
@@ -1929,6 +2168,7 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                                  2 if status in ('partial', 'budget-exhausted') else 0),
                         'personal_status_mismatch')
                 personal_report = validate_personal_completion(work / 'personal-report.json', status, code)
+                result.setdefault('unexpectedFailures', []).extend(unexpected_failures(personal_report, 'personal'))
                 if 'acquisition' in personal_report:
                     validate_personal_continuation(personal_state, personal_report['acquisition'])
                     result['acquisition'] = personal_report['acquisition']
@@ -2164,11 +2404,58 @@ def emit(result, environment):
             lines.append(f"\n- {row['name']}: <{row['postUrl']}>; imageIndex={row['imageIndex']}; "
                          f"failedAt={row['failedAt']}; host={row['host']}; HTTP={row['httpStatus']}; "
                          f"retryAt={row['retryAt']}; stage={row['stage']}; "
-                         f"nextStage={row['nextStage']}; reason={row['reason']}.\n")
+                         f"nextStage={row['nextStage']}; reason={row['reason']}"
+                         + ''.join(f'; {key}={row[key]}' for key in ('exceptionClass', 'location') if key in row)
+                         + '.\n')
         with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
             target.writelines(lines)
     if acquisition and not acquisition['complete']:
         print('::warning::Personal collection remains incomplete; see work-date coverage in the job summary.')
+    failures = [row for row in result.get('componentFailures', []) if isinstance(row, dict)]
+    unexpected = [row for row in result.get('unexpectedFailures', []) if isinstance(row, dict)]
+    unexpected += [{'component': 'schedule', 'id': row['postId'], 'stage': row['stage'],
+                    **{key: row[key] for key in ('exceptionClass', 'location') if key in row}}
+                   for row in result.get('halfMonthDiagnostics', [])
+                   if row.get('reason') == 'candidate_unexpected_error']
+
+    def safe_row(row):
+        parts = []
+        for key, pattern in (('component', SAFE_STAGE), ('id', re.compile(r'[1-9][0-9]{0,24}\Z')),
+                             ('stage', SAFE_STAGE), ('exitCode', None), ('reason', SAFE_REASON),
+                             ('exceptionClass', SAFE_CLASS), ('location', SAFE_LOCATION)):
+            value = row.get(key)
+            if key == 'exitCode' and type(value) is int:
+                parts.append(f'{key}={value}')
+            elif isinstance(value, str) and pattern is not None and pattern.fullmatch(value):
+                parts.append(f'{key}={value}')
+        return '; '.join(parts)
+
+    corrections = result.get('officialCorrections', [])
+    if environment.get('GITHUB_STEP_SUMMARY') and (failures or unexpected or corrections
+                                                   or result.get('halfMonthRebasedFrom')):
+        lines = ['\n## Component isolation (content-free diagnostics)\n',
+                 'Only exception class names and tools/ frames are shown; messages, paths and source text are not.\n']
+        for row in failures:
+            lines.append(f"\n- Component failure contained after full state validation: {safe_row(row)}.\n")
+        for row in unexpected:
+            lines.append(f"\n- Candidate isolated: {safe_row(row)}.\n")
+        for row in corrections:
+            lines.append('\n- Official correction backfill ' + '; '.join(
+                f'{key}={row[key]}' for key in ('date', 'status', 'searches', 'posts', 'newPosts')
+                if key in row and re.fullmatch(r'[0-9a-z-]{1,16}', str(row[key]))) + '.\n')
+        if isinstance(result.get('halfMonthRebasedFrom'), str) and re.fullmatch(
+                r'[0-9]{1,20}-[0-9]{1,20}', result['halfMonthRebasedFrom']):
+            lines.append(f"\n- Interrupted half-month cohort {result['halfMonthRebasedFrom']} resumed under this run's accounting ID.\n")
+        with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
+            target.writelines(lines)
+    for row in failures:
+        print('::error::Collector component failed and was contained; ' + safe_row(row))
+    for row in unexpected:
+        print('::warning::Collector candidate isolated after an unexpected error; ' + safe_row(row))
+    components = sorted({row['component'] for row in failures + unexpected
+                         if row.get('component') in COMPONENTS})
+    result['attention'] = 'true' if (components or result.get('collectionStatus') == 'failed') else 'false'
+    result['failedComponents'] = '-'.join(components)
     output = environment.get('GITHUB_OUTPUT')
     if output:
         # Only fixed names and single-line values; no report/paths/token payloads.
@@ -2177,7 +2464,7 @@ def emit(result, environment):
                    'officialCollectionStatus', 'officialCollectionCode',
                    'personalCollectionStatus', 'personalCollectionCode', 'personalStateSource',
                    'halfMonthCollectionStatus', 'halfMonthCollectionCode',
-                   'reason', 'continuationReady', 'continuationMode')
+                   'reason', 'continuationReady', 'continuationMode', 'attention', 'failedComponents')
         lines = []
         for key in allowed:
             if key in result:
@@ -2206,6 +2493,8 @@ def main(argv=None):
             reason = 'local_or_validation_failure'
         result = {'collectionStatus': 'failed', 'persistenceStatus': 'failed',
                   'reason': reason, 'recoveryInstructions': RECOVERY}
+        if isinstance(exc, ComponentFailure):
+            result['componentFailures'] = exc.diagnostics
         try:
             emit(result, os.environ)
         except (OSError, ValueError, CloudError):

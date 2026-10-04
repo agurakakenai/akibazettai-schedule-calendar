@@ -46,6 +46,7 @@ azure = _module('schedule-azure.py', 'half_month_azure')
 official = _module('collect-shifts.py', 'half_month_official')
 personal = _module('collect-personal-shifts.py', 'half_month_personal')
 yahoo = _module('yahoo-search.py', 'half_month_yahoo')
+failure_facts = _module('failure-facts.py', 'half_month_failure_facts')
 members = facts.member_registry()
 source_safety = official.source_module()
 Failure = official.FetchFailure
@@ -1214,8 +1215,20 @@ def read_evidence(state, source, text, images, analyzer, periods, cache, clock, 
 
 
 def _cycle_failure(exc, now):
+    # Ledger/storage integrity faults still stop the run; HTTP-level OSErrors keep
+    # their historical candidate retry semantics.
+    if failure_facts.fatal(exc, storage_errors=False):
+        raise exc
     reason = getattr(exc, 'reason', str(exc) if isinstance(exc, ValueError) else None)
     retry = getattr(exc, 'retry_at', None)
+    if isinstance(retry, str):
+        # Shared source/AI ledgers report ISO strings; never let the handler itself escape.
+        try:
+            retry = facts.timestamp(retry)
+        except ValueError:
+            retry = None
+    elif not (isinstance(retry, dt.datetime) and retry.tzinfo is not None):
+        retry = None
     if reason in ('time_limit', 'azure_deadline'):
         return 'time_limit', now + dt.timedelta(minutes=1), True
     if reason and 'budget' in reason:
@@ -1229,7 +1242,8 @@ def _cycle_failure(exc, now):
         return 'paused', retry or now + dt.timedelta(hours=1), False
     if reason is not None or isinstance(exc, OSError):
         return 'reading_pending', retry or now + dt.timedelta(hours=6), False
-    raise exc
+    # A reason-less defect is isolated to this candidate instead of ending the cycle.
+    return failure_facts.UNEXPECTED_REASON, now + dt.timedelta(hours=6), False
 
 
 def _cycle_service_day(value):
@@ -1485,6 +1499,12 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                     if progress is not None and failure_host is None and failure_stage != 'cache':
                         failure_stage = progress['stage']
                     reason, next_at, stop = _cycle_failure(exc, clock())
+                    unexpected = reason == failure_facts.UNEXPECTED_REASON
+                    if (unexpected and progress is not None and progress.get('failure')
+                            and progress['failure']['reason'] == reason):
+                        # One automatic retry only; a repeated defect is held, not looped.
+                        next_at = None
+                        progress['stage'] = 'held'
                     if (isinstance(exc, ValueError) and reason == 'reading_pending'
                             and progress is not None and progress['stage'] != 'fetch'):
                         reason, next_at = 'reading_uncertain', None
@@ -1517,6 +1537,8 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                             'nextStage': progress['stage'] if progress is not None else
                             'held' if reason in ('image_cache_expired', 'image_cache_invalid') else 'source',
                             'reason': reason}
+                        if unexpected:
+                            failure.update(failure_facts.exception_facts(exc))
                         failures[selected['id']] = failure
                         if progress is not None:
                             progress['failure'] = failure
@@ -1806,10 +1828,14 @@ def main(argv=None):
                 'invalid_schedule_service_date', 'schedule_service_date_requires_cycle',
                 'invalid_schedule_runtime'}
         reason = str(exc) if isinstance(exc, ValueError) and str(exc) in safe else 'schedule_infrastructure_failed'
+        # Storage/ledger faults are reported as 4 so the orchestrator never self-releases them.
+        code = 4 if failure_facts.fatal(exc) or reason in failure_facts.FATAL_REASONS else 1
+        if code == 4 and reason == 'schedule_infrastructure_failed':
+            reason = 'schedule_storage_failed'
         print(json.dumps({'completed': False, 'component': 'schedule', 'status': 'unavailable',
-                          'collectionStatus': 'unavailable', 'exitCode': 1,
-                          'reason': reason}))
-        return 1
+                          'collectionStatus': 'unavailable', 'exitCode': code,
+                          'reason': reason, **failure_facts.exception_facts(exc)}))
+        return code
 
 
 if __name__ == '__main__':

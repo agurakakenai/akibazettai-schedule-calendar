@@ -75,6 +75,10 @@ def load_importer():
 
 
 IMPORTER = load_importer()
+_FAILURE_SPEC = importlib.util.spec_from_file_location(
+    'official_failure_facts', ROOT / 'tools' / 'failure-facts.py')
+failure_facts = importlib.util.module_from_spec(_FAILURE_SPEC)
+_FAILURE_SPEC.loader.exec_module(failure_facts)
 
 
 @functools.lru_cache(maxsize=1)
@@ -950,6 +954,7 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
                if item['id'] not in present | known | resolved.keys()
                or item['reason'].startswith('azure_')}
     sources, candidates, failures, rejected = [], set(), [], []
+    unexpected_failures = []
     search_attempted = 0
     new_posts = []
     cooldowns = {host: timestamp(until) for host, until in state.get('cooldowns', {}).items()}
@@ -998,6 +1003,11 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
                 search_attempted -= 1
             remember_limit(host, exc)
             sources.append({'url': url, 'status': 'failed', **exc.facts()})
+        except Exception as exc:
+            if failure_facts.fatal(exc):
+                raise
+            sources.append({'url': url, 'status': 'failed', 'reason': failure_facts.UNEXPECTED_REASON})
+            unexpected_failures.append({'stage': 'search', **failure_facts.exception_facts(exc)})
     discovered_count = len(candidates)
     if saved_payloads is None:
         candidates.update(pending)
@@ -1153,6 +1163,14 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
             failures.append({'id': tid, 'url': canonical(tid), **exc.facts()})
             if exc.status in (403, 429) or exc.reason == 'host_rate_limited':
                 host_stopped = True
+        except Exception as exc:
+            if failure_facts.fatal(exc):
+                raise
+            # A defect in one post must not discard the other official rosters.
+            item['reason'] = failure_facts.UNEXPECTED_REASON
+            pending[tid] = item
+            failures.append({'id': tid, 'url': canonical(tid), 'reason': failure_facts.UNEXPECTED_REASON})
+            unexpected_failures.append({'id': tid, 'stage': 'post', **failure_facts.exception_facts(exc)})
     for tid, value, post, acquired_at, item in analysis_jobs:
         try:
             notices, reason, key = analyzer.parse(value, post, acquired_at)
@@ -1217,7 +1235,7 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
     report = {'schemaVersion': 1, 'checkedAt': next_state['checkedAt'],
               'lastSuccessAt': next_state['lastSuccessAt'],
               **next_state['lastRun'], 'newFacts': new_posts,
-              'pending': next_state['pending'],
+              'pending': next_state['pending'], 'unexpectedFailures': unexpected_failures,
               'component': 'official', 'exitCode': {'partial': 2, 'unavailable': 3}.get(status, 0)}
     if analyzer is not None:
         report['analysisDeferredCount'] = len(analyzer.state['queue'])
@@ -1500,7 +1518,8 @@ def main(argv=None):
         reason = 'local_io_error' if isinstance(exc, OSError) else str(exc)
         if not re.fullmatch(r'[a-z_]+', reason):
             reason = 'invalid_local_data'
-        print(json.dumps({'status': 'unavailable', 'reason': reason, 'exitCode': 4}))
+        print(json.dumps({'status': 'unavailable', 'reason': reason, 'exitCode': 4,
+                          **failure_facts.exception_facts(exc)}))
         return 4
 
 

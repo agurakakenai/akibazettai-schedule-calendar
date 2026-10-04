@@ -1272,6 +1272,8 @@ gh workflow run deploy-pages.yml --ref main -f mode=schedule
 gh workflow run deploy-pages.yml --ref main -f mode=both
 # 取得はせず、最新の保存済み観測と現在のmainで公開
 gh workflow run deploy-pages.yml --ref main -f mode=deploy
+# 停止等で取りこぼした公式の過去日を、各日1検索だけ一度回収（collectのみ・最大3日・7日以内）
+gh workflow run deploy-pages.yml --ref main -f mode=collect -f official_correction_dates=2026-10-01,2026-10-02
 ```
 
 probeと手動`collect`で実際の取得・保存・Pages配信を確認したうえで、**本番の定期更新はActionsへ移行しました**。ローカル定期taskは無効化し、併用しません。公式は毎日、日本時間の**12:30・13:30・14:30・15:30・17:30・18:30・19:30・20:30の計8回**に実行します。公式のUTC cronは `30 3-6,8-11 * * *` で、16:30は含めません。本人01:00・07:00・10:00・12:00と、半月00:30／1日・13日の06:30・11:30は独立したslotです。半月の追加枠はUTC候補日だけで判定せず、JST予定日が1日・13日かを確認します。GitHub側の混雑などで開始が遅れる場合があり、厳密な時刻の保証はありません。**PCの起動・ログインに依存しません**。
@@ -1285,6 +1287,14 @@ probeと手動`collect`で実際の取得・保存・Pages配信を確認した�
 `collector-state` branchは**data専用**です。公式観測・本人イベントのsnapshot、pending、resolved、本人の予算・pause、共有通信制限sidecar、共有`ai-usage.json`、恒久の`state-owner.json`、収集中の`lease.json`だけを保存し、そのbranchのコードを実行しません。本人snapshotがない既存stateは互換コードで読み、コード公開前にstateだけを移行しません。main/default/code branchの誤指定、所有marker欠落、予期しないファイル、non-fast-forwardを拒否します。force pushはしません。
 
 HTTPの前にleaseをremoteへ保存します。収集後、成功・部分失敗・取得不能のどれでも保存できた事実と通信制限を永続化し、同じcommitでleaseを消します。remote保存が失敗した場合はleaseを残し、次runはHTTPを始めず停止します。部分失敗でも有効な保存済み観測を配信できますが、**Pages構築成功と収集完全成功は別**です。`collectionStatus` / `collectionCode`とUIの更新状態で区別します。
+
+公式・本人・半月の各collectorは、理由の付かない想定外例外を**その候補だけ**に閉じ込めます（`candidate_unexpected_error`）。他の人・投稿・検索は同じrunで続行し、発行済みのsource/AI requestは再発行しません。半月は同じ候補の自動再試行を1回だけ行い、2回目は`held`で止めます。台帳の保存失敗・ledger不正・メモリ不足・ローカルI/O障害は従来どおりcomponentを止めます。
+
+子collectorが想定外の例外で異常終了した場合（終了コード1）は、このrunのsource/AI receiptに結果未確定（reserved/issued）が無く、そのrunが持つ公式・本人・半月・共有HTTP/source/AI台帳の全ファイルが通常保存と同じ検証・相互リンクに通る場合に限り、そのcomponentを`unavailable`として保存し、**自分のlease**を同じcommitで外します。collectorが自ら報告したI/O・台帳保存の障害（終了コード4）、timeout・signal、検証できない状態、他runのleaseは自動解除しません（従来どおり停止・手動回復）。子の出力からは、固定の理由token・例外クラス名・`tools/`内の関数名と行番号だけをjob summaryと注釈へ残します。例外メッセージ・本文・画像・URL・private path・秘密は出しません。
+
+半月の有限cohortが`reason=processing`のまま残っている場合（前runが確定前に終了した場合）、次runは保存済みの対象者・期間・cursorを維持したまま、**自分の会計run ID**で再開します。旧runの発行済みreceiptは台帳に残り、同じrun内で同じURLを再取得することはありません。cacheへ保存する前に失われた画像だけを新しいrunで1回取り直します。
+
+失敗・包含・候補隔離・deploy失敗は、Issue「Collector needs attention」1件を作成または本文更新して知らせます（重複作成しません）。その後に公式・本人・半月の収集から公開まで正常に終わったrunで自動的にcloseします。Issueには固定tokenとrunのURLだけを書き、ログや本文は転記しません。
 
 #### 承認済み保存根拠の適用
 

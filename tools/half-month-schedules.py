@@ -36,7 +36,7 @@ REASONS = {
     'image_cache_unconfigured', 'image_cache_expired', 'reading_pending', 'reading_uncertain',
     'reading_partial', 'reading_outside_period', 'time_limit', 'image_fetch_failed',
     'source_not_found', 'identity_unknown',
-    'image_cache_invalid',
+    'image_cache_invalid', 'candidate_unexpected_error',
 }
 PUBLIC_FIELDS = {'schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt', 'schedules', 'lastRun'}
 PRIVATE_FIELDS = {'identityBindings', 'revisions', 'sources', 'pending', 'coverage', 'receipts',
@@ -1076,8 +1076,19 @@ def validate_collection_state(value):
                 raise ValueError('invalid_reading_variants')
             if 'failure' in record:
                 failure = record['failure']
+                optional = tuple(key for key in ('exceptionClass', 'location')
+                                 if isinstance(failure, dict) and key in failure)
                 require_keys(failure, ('name', 'postId', 'postUrl', 'imageIndex', 'failedAt',
-                                       'host', 'httpStatus', 'retryAt', 'stage', 'nextStage', 'reason'))
+                                       'host', 'httpStatus', 'retryAt', 'stage', 'nextStage', 'reason',
+                                       *optional))
+                if ('exceptionClass' in failure and not (
+                        isinstance(failure['exceptionClass'], str)
+                        and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}', failure['exceptionClass']))
+                        or 'location' in failure and not (
+                            isinstance(failure['location'], str) and re.fullmatch(
+                                r'[A-Za-z0-9_.-]{1,64}\.py:[A-Za-z_<>][A-Za-z0-9_<>]{0,63}:[0-9]{1,6}',
+                                failure['location']))):
+                    raise ValueError('invalid_reading_failure')
                 stages = ('source', 'cache', 'fetch', 'original', 'detail', 'held', 'done')
                 if (not isinstance(failure['name'], str) or not NAME.fullmatch(failure['name'])
                         or failure['postId'] != record['sourceId']
