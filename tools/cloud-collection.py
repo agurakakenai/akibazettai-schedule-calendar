@@ -430,12 +430,12 @@ def validate_snapshot(path, collector):
 def official_search_url(url, run, collector):
     if url in collector.SEARCH_URLS:
         return True
-    # A bounded single-service-day official-account correction search.
+    # A bounded official-account timeline search; the service-day window is local.
     try:
-        day = dt.date.fromisoformat(run['dateFrom'])
+        start, end = dt.date.fromisoformat(run['dateFrom']), dt.date.fromisoformat(run['dateTo'])
     except (TypeError, ValueError):
         return False
-    return run['dateFrom'] == run['dateTo'] and url == collector.correction_search_url(day)
+    return start <= end and (end - start).days < 7 and url == collector.correction_search_url()
 
 
 CORRECTION_DATES = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}(?:,[0-9]{4}-[0-9]{2}-[0-9]{2}){0,2}\Z')
@@ -993,14 +993,17 @@ def save_recovery(source, destination, collector, *, include_personal=False, per
     require(not invalid, 'recovery_state_invalid')
 
 
-def invoke_collector(root, state, report, environment, correction_date=None):
+def invoke_collector(root, state, report, environment, correction_date=None, correction_to=None):
     azure = environment.get('CLOUD_COLLECTION_OFFICIAL_AZURE') == 'true'
     argv = [sys.executable, '-I', '-B', str(root / 'tools' / 'collect-shifts.py'),
             '--once', '--days', '2', '--max-posts', '20',
             '--snapshot', str(state / SNAPSHOT), '--report', str(report)]
     if correction_date is not None:
-        require(type(correction_date) is dt.date, 'invalid_official_correction_dates')
+        require(type(correction_date) is dt.date and (correction_to is None or type(correction_to) is dt.date),
+                'invalid_official_correction_dates')
         argv.extend(['--correction-date', correction_date.isoformat()])
+        if correction_to is not None:
+            argv.extend(['--correction-to', correction_to.isoformat()])
     argv.extend(source_arguments(state, environment))
     if azure:
         argv.extend(['--analysis-backend', 'azure',
@@ -1502,11 +1505,13 @@ def half_month_diagnostics(report):
               'httpStatus', 'retryAt', 'stage', 'nextStage', 'reason')
     stages = ('source', 'cache', 'fetch', 'original', 'detail', 'held', 'done')
     for row in rows:
-        keys(row, (*fields, 'exceptionClass', 'location'), fields)
+        keys(row, (*fields, 'exceptionClass', 'location', 'detail'), fields)
         require(('exceptionClass' not in row or isinstance(row['exceptionClass'], str)
                  and bool(SAFE_CLASS.fullmatch(row['exceptionClass'])))
                 and ('location' not in row or isinstance(row['location'], str)
-                     and bool(SAFE_LOCATION.fullmatch(row['location']))),
+                     and bool(SAFE_LOCATION.fullmatch(row['location'])))
+                and ('detail' not in row or isinstance(row['detail'], str)
+                     and bool(SAFE_REASON.fullmatch(row['detail']))),
                 'invalid_half_month_diagnostics')
         facts.post_identifier(row['postId'])
         require(isinstance(row['name'], str) and bool(facts.NAME.fullmatch(row['name']))
@@ -1587,6 +1592,21 @@ def restored_half_month_continuation(state, usage, source, now, collector):
         return False
     source_module = load_source_state()
     return not any(source_module.paused_for(source, kind, now) for kind in source_module.KINDS)
+
+
+def half_month_dependencies(root, environment):
+    """Children run as `python -I -B`; prove that exact interpreter sees the image/cache deps.
+
+    Checked before any lease or HTTP so a missing install never strands a run or a candidate.
+    """
+    try:
+        process = child_process(
+            [sys.executable, '-I', '-B', '-c',
+             'import PIL.Image, cryptography.hazmat.primitives.ciphers.aead'],
+            cwd=root, environment=safe_environment(environment), timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        raise CloudError('half_month_dependencies_missing') from None
+    require(process.returncode == 0, 'half_month_dependencies_missing')
 
 
 def half_month_cache_environment(environment, root):
@@ -1781,13 +1801,15 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
             'COLLECTION_DATE', collector.utc_now().astimezone(JST).date().isoformat())
         if half_continuing:
             collect_official = False
-            if half_progress.get('reason') == 'processing' and not expected:
-                # The previous run never finalised this cohort (it crashed). Its issued
-                # requests stay in the ledger under the old run ID; this run resumes the
-                # same saved names/periods/cursor under its own accounting identity so a
-                # result that was lost before caching is re-acquired once, not looped.
+            current_run = environment['GITHUB_RUN_ID'] + '-' + environment['GITHUB_RUN_ATTEMPT']
+            if half_progress['chainId'] != current_run:
+                # Resume the saved names/periods/cursor under this run's own accounting ID.
+                # Earlier receipts stay in the ledger; searches, posts and AI stay deduplicated
+                # by state, the encrypted cache and request hashes, while a result lost before
+                # caching (e.g. a crashed image read) can be re-acquired once instead of being
+                # refused forever as already issued under the old run ID.
                 result['halfMonthRebasedFrom'] = half_progress['chainId']
-                half_progress['chainId'] = environment['GITHUB_RUN_ID'] + '-' + environment['GITHUB_RUN_ATTEMPT']
+                half_progress['chainId'] = current_run
                 collector.atomic_json(state_dir / HALF_MONTH, half_month_state)
                 half_month_state, _ = validate_half_month(state_dir / HALF_MONTH)
                 half_progress = half_month_state['collection']
@@ -1804,6 +1826,7 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 'missing_half_month_state')
         if collect_half_month:
             half_month_cache_environment(environment, root)
+            half_month_dependencies(root, environment)
             environment.setdefault('COLLECTION_DATE', collector.utc_now().astimezone(JST).date().isoformat())
         if slot and args.mode == 'personal':
             require(finite_personal, 'personal_slot_requires_shared_accounting')
@@ -1988,19 +2011,23 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 result.setdefault('componentFailures', []).append(failure)
                 return failure
 
-            for day in (correction_dates if collect_official else ()):
-                report_path = work / ('official-correction-' + day.isoformat() + '.json')
-                code = invoke_collector(root, collected, report_path, environment, correction_date=day)
-                entry = {'date': day.isoformat()}
+            if correction_dates and collect_official:
+                # One timeline search covers every requested day (a repeated identical URL would be
+                # refused as already issued); posts are kept only inside the local service-day window.
+                first, last = correction_dates[0], correction_dates[-1]
+                report_path = work / 'official-correction.json'
+                code = invoke_collector(root, collected, report_path, environment,
+                                        correction_date=first, correction_to=last)
+                summary = {'from': first.isoformat(), 'to': last.isoformat()}
                 if code not in (0, 2, 3):
                     contain('official', 'collector_local_failure', report_path, code)
-                    entry['status'] = 'unavailable'
+                    summary['status'] = 'unavailable'
                 else:
                     corrected, _ = validate_snapshot(collected / SNAPSHOT, collector)
                     run = corrected['lastRun']
                     require(run['status'] != 'never'
                             and code == {'partial': 2, 'unavailable': 3}.get(run['status'], 0)
-                            and run['dateFrom'] == run['dateTo'] == day.isoformat(),
+                            and (run['dateFrom'], run['dateTo']) == (first.isoformat(), last.isoformat()),
                             'official_correction_status_mismatch')
                     report = validate_completion(report_path, run['status'], code, 'official')
                     requests = report.get('requests')
@@ -2008,9 +2035,22 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                     integer(requests.get('searches'), 0, 1)
                     integer(requests.get('posts'), 0, 20)
                     result.setdefault('unexpectedFailures', []).extend(unexpected_failures(report, 'official'))
-                    entry.update(status=run['status'], searches=requests['searches'], posts=requests['posts'],
-                                 newPosts=run.get('newPostCount', 0))
-                result.setdefault('officialCorrections', []).append(entry)
+                    summary.update(status=run['status'], searches=requests['searches'], posts=requests['posts'],
+                                   discovered=run.get('discoveredCount', 0), newPosts=run.get('newPostCount', 0))
+                result['officialCorrectionSearch'] = summary
+                saved, _ = validate_snapshot(collected / SNAPSHOT, collector)
+                for day in correction_dates:
+                    rosters = [post for post in saved['posts'] if post['date'] == day.isoformat()
+                               and not post.get('replyTo')]
+                    notices = sum(len(post.get('notices', [])) for post in saved['posts']
+                                  if post['date'] == day.isoformat())
+                    # No roster found is "not confirmed", never "no official post that day".
+                    result.setdefault('officialCorrections', []).append({
+                        'date': day.isoformat(),
+                        'status': 'confirmed' if rosters else 'unconfirmed',
+                        'day': len({post['storeId'] for post in rosters if post['shift'] == '昼'}),
+                        'night': len({post['storeId'] for post in rosters if post['shift'] == '夜'}),
+                        'notices': notices})
             official_failed = False
             if collect_official:
                 code = invoke_collector(root, collected, work / 'official-report.json', environment)
@@ -2405,7 +2445,7 @@ def emit(result, environment):
                          f"failedAt={row['failedAt']}; host={row['host']}; HTTP={row['httpStatus']}; "
                          f"retryAt={row['retryAt']}; stage={row['stage']}; "
                          f"nextStage={row['nextStage']}; reason={row['reason']}"
-                         + ''.join(f'; {key}={row[key]}' for key in ('exceptionClass', 'location') if key in row)
+                         + ''.join(f'; {key}={row[key]}' for key in ('detail', 'exceptionClass', 'location') if key in row)
                          + '.\n')
         with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
             target.writelines(lines)
@@ -2441,8 +2481,13 @@ def emit(result, environment):
             lines.append(f"\n- Candidate isolated: {safe_row(row)}.\n")
         for row in corrections:
             lines.append('\n- Official correction backfill ' + '; '.join(
-                f'{key}={row[key]}' for key in ('date', 'status', 'searches', 'posts', 'newPosts')
+                f'{key}={row[key]}' for key in ('date', 'status', 'day', 'night', 'notices')
                 if key in row and re.fullmatch(r'[0-9a-z-]{1,16}', str(row[key]))) + '.\n')
+        search = result.get('officialCorrectionSearch')
+        if isinstance(search, dict):
+            lines.append('\n- Official correction search ' + '; '.join(
+                f'{key}={search[key]}' for key in ('from', 'to', 'status', 'searches', 'discovered', 'posts', 'newPosts')
+                if key in search and re.fullmatch(r'[0-9a-z-]{1,16}', str(search[key]))) + '.\n')
         if isinstance(result.get('halfMonthRebasedFrom'), str) and re.fullmatch(
                 r'[0-9]{1,20}-[0-9]{1,20}', result['halfMonthRebasedFrom']):
             lines.append(f"\n- Interrupted half-month cohort {result['halfMonthRebasedFrom']} resumed under this run's accounting ID.\n")

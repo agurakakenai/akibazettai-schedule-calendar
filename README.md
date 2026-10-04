@@ -1272,7 +1272,9 @@ gh workflow run deploy-pages.yml --ref main -f mode=schedule
 gh workflow run deploy-pages.yml --ref main -f mode=both
 # 取得はせず、最新の保存済み観測と現在のmainで公開
 gh workflow run deploy-pages.yml --ref main -f mode=deploy
-# 停止等で取りこぼした公式の過去日を、各日1検索だけ一度回収（collectのみ・最大3日・7日以内）
+# 停止等で取りこぼした公式の過去日を一度回収（collectのみ・最大3日・7日以内）。
+# Yahooリアルタイム検索はsince:/until:に対応しないため、公式アカウントのtimelineを1回だけ検索し、
+# 営業日（JST 05:00境界）の範囲外のpostはローカルで除外します。0件は「投稿なし」ではなく「未確認」です。
 gh workflow run deploy-pages.yml --ref main -f mode=collect -f official_correction_dates=2026-10-01,2026-10-02
 ```
 
@@ -1292,7 +1294,11 @@ HTTPの前にleaseをremoteへ保存します。収集後、成功・部分失�
 
 子collectorが想定外の例外で異常終了した場合（終了コード1）は、このrunのsource/AI receiptに結果未確定（reserved/issued）が無く、そのrunが持つ公式・本人・半月・共有HTTP/source/AI台帳の全ファイルが通常保存と同じ検証・相互リンクに通る場合に限り、そのcomponentを`unavailable`として保存し、**自分のlease**を同じcommitで外します。collectorが自ら報告したI/O・台帳保存の障害（終了コード4）、timeout・signal、検証できない状態、他runのleaseは自動解除しません（従来どおり停止・手動回復）。子の出力からは、固定の理由token・例外クラス名・`tools/`内の関数名と行番号だけをjob summaryと注釈へ残します。例外メッセージ・本文・画像・URL・private path・秘密は出しません。
 
-半月の有限cohortが`reason=processing`のまま残っている場合（前runが確定前に終了した場合）、次runは保存済みの対象者・期間・cursorを維持したまま、**自分の会計run ID**で再開します。旧runの発行済みreceiptは台帳に残り、同じrun内で同じURLを再取得することはありません。cacheへ保存する前に失われた画像だけを新しいrunで1回取り直します。
+半月の有限cohortを別のGitHub runで再開するときは、保存済みの対象者・期間・cursorを維持したまま、**そのrun自身の会計run ID**で再開します。旧runの発行済みreceiptは台帳に残ります。検索・本文は保存state、画像は暗号cache、AIはrequest hashで重複を防ぐため、同じrunで同じURLを再取得したり、AIを二重発行したりはしません。cacheへ保存する前に失われた画像（例：読取中のcrash）だけを新しいrunで1回取り直します。
+
+本人が他アカウント宛てに送った返信は、本人性の問題ではなく半月予定表のsourceではないものとして、その候補だけを`not_schedule`で終了します（毎runの再取得や人物単位の`identity_unknown`にはしません）。失敗診断には、`network_error`や`timestamp_mismatch`のようなコード定義の理由token（`detail`）だけを追加で残します。
+
+画像・暗号cacheの依存（Pillow・cryptography）は、`.github/actions/collector-python`の専用venvへinstallし、子と同じ`python -I -B`でimportできることを収集前に検証してから、そのPythonで復元・収集を実行します。PR検証（validate-site）も同じvenvを使います。user siteの許可やPYTHONPATHの注入は行いません。orchestratorも半月を実行する前（lease前）に同じ確認を行い、失敗したらHTTPやleaseを始めずに停止します。依存が見つからない`ImportError`は候補の問題として数えず、cycleを止めます（候補をheldにしません）。
 
 失敗・包含・候補隔離・deploy失敗は、Issue「Collector needs attention」1件を作成または本文更新して知らせます（重複作成しません）。その後に公式・本人・半月の収集から公開まで正常に終わったrunで自動的にcloseします。Issueには固定tokenとrunのURLだけを書き、ログや本文は転記しません。
 

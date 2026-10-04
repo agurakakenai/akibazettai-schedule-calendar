@@ -3004,7 +3004,9 @@ class CloudTests(unittest.TestCase):
         saved = self.remote_json(cloud.HALF_MONTH)[0]
         self.assertEqual(saved['collection']['periods'], [['2026-10-01', '2026-10-15']])
         self.assertEqual(saved['collection']['serviceDate'], '2026-10-01')
-        self.assertEqual(saved['collection']['chainId'], '12345-1')
+        # A later GitHub run resumes the same cohort under its own accounting ID.
+        self.assertEqual(saved['collection']['chainId'], '12346-1')
+        self.assertEqual(done['halfMonthRebasedFrom'], '12345-1')
         self.assertEqual(saved['collectionSlots'], ['2026-09-30T15:30:00Z', '2026-10-31T15:30:00Z'])
         self.half_slot('2026-11-01T00:30:00+09:00')
         del self.environment['SCHEDULE_EVIDENCE_KEY']
@@ -3222,7 +3224,9 @@ class CloudTests(unittest.TestCase):
                                        collector=collector, personal=module)
         self.assertEqual(result['continuationReady'], 'false')
         saved = self.remote_json(cloud.HALF_MONTH)[0]
-        self.assertEqual(saved['collection'], {**progress, 'reason': 'waiting', 'ready': False})
+        # The saved cohort resumes under this run's accounting ID; scope and cursor are unchanged.
+        self.assertEqual(saved['collection'], {**progress, 'chainId': '12345-1', 'reason': 'waiting', 'ready': False})
+        self.assertEqual(result['halfMonthRebasedFrom'], '12344-1')
         self.assertTrue(cloud.unfinished_half_month(saved))
 
     def test_zero_official_allocation_keeps_scarce_deadline_slot_for_personal(self):

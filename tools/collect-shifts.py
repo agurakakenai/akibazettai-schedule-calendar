@@ -45,11 +45,17 @@ SEARCH_URLS = tuple(
     for query in QUERIES)
 
 
-def correction_search_url(date):
-    if type(date) is not dt.date:
+def correction_search_url(date=None):
+    """The official account's own timeline search.
+
+    Yahoo realtime search ignores since:/until: (a dated query always returns zero
+    results), so the service-day window is applied locally to each post's
+    createdAt/snowflake instead. The optional date is only type-checked.
+    """
+    if date is not None and type(date) is not dt.date:
         raise ValueError('invalid_correction_date')
-    query = f'id:{AUTHOR} since:{date.isoformat()} until:{(date + dt.timedelta(days=2)).isoformat()}'
-    return 'https://search.yahoo.co.jp/realtime/search?' + urllib.parse.urlencode({'p': query, 'ei': 'UTF-8'})
+    return 'https://search.yahoo.co.jp/realtime/search?' + urllib.parse.urlencode(
+        {'p': f'id:{AUTHOR}', 'ei': 'UTF-8'})
 
 
 POST_HOST = 'cdn.syndication.twimg.com'
@@ -960,7 +966,8 @@ def collect(state, known, client, start, end, max_posts, clock=utc_now, on_limit
     cooldowns = {host: timestamp(until) for host, until in state.get('cooldowns', {}).items()}
     blocked_hosts = set()
     queries = tuple(SEARCH_URLS if search_urls is None else search_urls)
-    if queries != SEARCH_URLS and not (start == end and queries == (correction_search_url(start),)):
+    if queries != SEARCH_URLS and not (start <= end and (end - start).days < 7
+                                       and queries == (correction_search_url(),)):
         raise ValueError('invalid_official_search_scope')
 
     def limited(host):
@@ -1254,6 +1261,8 @@ def argument_parser():
     parser.add_argument('--date-to', help='inclusive service date YYYY-MM-DD')
     parser.add_argument('--correction-date', type=dt.date.fromisoformat,
                         help='one bounded official-account correction search for a verified missing-roster scope')
+    parser.add_argument('--correction-to', type=dt.date.fromisoformat,
+                        help='inclusive last service day for the same single correction search')
     parser.add_argument('--max-posts', type=int, default=20,
                         help='individual request cap, 1..20 (default: 20)')
     parser.add_argument('--report', type=Path, help='fact-only JSON report; absolute paths allowed')
@@ -1293,9 +1302,14 @@ def write_report(report, destination):
 def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
         clock=utc_now, sleep=time.sleep):
     snapshot = (args.snapshot or snapshot).resolve()
+    correction_to = getattr(args, 'correction_to', None)
+    if correction_to is not None and args.correction_date is None:
+        raise ValueError('invalid_correction_date')
     if args.correction_date is not None:
-        if (args.watch or args.analyze_saved or args.replay_buffer
-                or not 0 <= (service_day(clock()) - args.correction_date).days < 7):
+        last = correction_to or args.correction_date
+        if (args.watch or args.analyze_saved or args.replay_buffer or last < args.correction_date
+                or not 0 <= (service_day(clock()) - args.correction_date).days < 7
+                or not 0 <= (service_day(clock()) - last).days < 7):
             raise ValueError('invalid_correction_date')
     publish = args.publish.resolve() if args.publish else None
     if snapshot.suffix.lower() != '.json' or (publish and publish.suffix.lower() != '.json'):
@@ -1421,7 +1435,7 @@ def run(args, snapshot=SNAPSHOT, curated=CURATED, client=None,
             known = curated_ids(curated)
             start, end = date_range(args, clock())
             if args.correction_date is not None:
-                start = end = args.correction_date
+                start, end = args.correction_date, correction_to or args.correction_date
             with ExitStack() as analysis_lock:
                 analyzer = None
                 if args.analysis_backend == 'azure':

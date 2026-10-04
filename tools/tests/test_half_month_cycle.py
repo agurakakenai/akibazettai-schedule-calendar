@@ -212,7 +212,7 @@ class CycleTests(unittest.TestCase):
             'name': 'あむ', 'postId': base.post_id(), 'postUrl': facts.public_url('amu_zettai', base.post_id()),
             'imageIndex': 1, 'failedAt': facts.stamp(self.now), 'host': 'pbs.twimg.com',
             'httpStatus': None, 'retryAt': facts.stamp(self.now + dt.timedelta(hours=6)),
-            'stage': 'fetch', 'nextStage': 'fetch', 'reason': 'image_fetch_failed'})
+            'stage': 'fetch', 'nextStage': 'fetch', 'reason': 'image_fetch_failed', 'detail': 'network_error'})
         self.assertNotIn('https://pbs.twimg.com', json.dumps(report['diagnostics']))
         self.assertNotIn('readings', facts.public_state(self.state))
         bad = copy.deepcopy(self.state)
@@ -325,7 +325,11 @@ class CycleTests(unittest.TestCase):
         payload.update(in_reply_to_status_id_str=base.post_id(base.CREATED - dt.timedelta(days=1)),
                        in_reply_to_user_id_str='12345')
         report, _ = self.run_cycle()
-        self.assertEqual(report['reasons'], ['identity_unknown'])
+        # A verified author's reply to another account is not a schedule source: it is dropped
+        # for that candidate, not recorded as an identity failure of the person.
+        self.assertNotIn('identity_unknown', report['reasons'])
+        self.assertEqual([row['reason'] for row in self.state['candidateHistory'].values()
+                          if row['candidate']['id'] == base.post_id()], ['not_schedule'])
         self.assertEqual(len(self.gets['posts']), 1)
         self.assertEqual(self.usage.calls, 0)
 

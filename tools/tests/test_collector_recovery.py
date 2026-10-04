@@ -152,13 +152,15 @@ class OfficialCloudRecoveryTests(unittest.TestCase):
         self.addCleanup(clock.stop)
 
     def offline(self, client, *, code=None, child=None, corrupt=False, calls=None):
-        def invoke(root, state, report, environment, correction_date=None):
+        def invoke(root, state, report, environment, correction_date=None, correction_to=None):
             argv = ['--once', '--days', '2', '--max-posts', '20',
                     '--snapshot', str(state / cloud.SNAPSHOT), '--report', str(report)]
             if correction_date is not None:
                 argv += ['--correction-date', correction_date.isoformat()]
+            if correction_to is not None:
+                argv += ['--correction-to', correction_to.isoformat()]
             if calls is not None:
-                calls.append(correction_date)
+                calls.append((correction_date, correction_to))
             with contextlib.redirect_stdout(io.StringIO()):
                 result = collector.run(collector.argument_parser().parse_args(argv),
                                        curated=self.fx.root / 'tools' / 'data' / 'shifts.csv',
@@ -209,13 +211,14 @@ class OfficialCloudRecoveryTests(unittest.TestCase):
         self.assertEqual(caught.exception.diagnostics[0]['reason'], 'local_io_error')
         self.assertIn(cloud.LEASE, self.fx.remote_names())
 
-    def test_bounded_correction_backfill_runs_once_per_day_before_normal_collection(self):
+    def test_bounded_correction_backfill_is_one_timeline_search_filtered_locally(self):
         day_ids = {dt.date(2026, 9, 3): legacy.make_id('2026-09-03T09:00:00Z'),
                    dt.date(2026, 9, 4): legacy.make_id('2026-09-04T09:00:00Z')}
+        outside = legacy.make_id('2026-09-01T09:00:00Z')
         searches = []
 
         def client(day):
-            ids = (day_ids[day],) if day else (legacy.TID,)
+            ids = (*day_ids.values(), outside) if day else (legacy.TID,)
             value = legacy.OfflineClient(ids=ids)
             original = value.search
             value.search = lambda url: (searches.append(url), original(url))[1]
@@ -223,14 +226,35 @@ class OfficialCloudRecoveryTests(unittest.TestCase):
         calls = []
         self.fx.environment['OFFICIAL_CORRECTION_DATES'] = '2026-09-04,2026-09-03'
         result = self.run_cloud(self.offline(client, calls=calls))
-        self.assertEqual(calls, [dt.date(2026, 9, 3), dt.date(2026, 9, 4), None])
-        self.assertEqual([row['date'] for row in result['officialCorrections']], ['2026-09-03', '2026-09-04'])
-        self.assertEqual({row['searches'] for row in result['officialCorrections']}, {1})
-        self.assertEqual(searches[:2], [collector.correction_search_url(day) for day in sorted(day_ids)])
+        self.assertEqual(calls, [(dt.date(2026, 9, 3), dt.date(2026, 9, 4)), (None, None)])
+        self.assertEqual(searches[0], collector.correction_search_url())
+        self.assertNotIn('since', searches[0])
+        self.assertNotIn('until', searches[0])
+        self.assertEqual(result['officialCorrectionSearch']['searches'], 1)
+        self.assertEqual([(row['date'], row['status']) for row in result['officialCorrections']],
+                         [('2026-09-03', 'confirmed'), ('2026-09-04', 'confirmed')])
         posts = {post['id']: post['date'] for post in self.fx.remote_json(cloud.SNAPSHOT)[0]['posts']}
         self.assertEqual(posts, {day_ids[dt.date(2026, 9, 3)]: '2026-09-03',
                                  day_ids[dt.date(2026, 9, 4)]: '2026-09-04', legacy.TID: '2026-09-05'})
+        self.assertNotIn(outside, posts)
         self.assertNotIn(cloud.LEASE, self.fx.remote_names())
+
+    def test_zero_match_is_unconfirmed_never_an_empty_day(self):
+        self.fx.environment['OFFICIAL_CORRECTION_DATES'] = '2026-09-03'
+        result = self.run_cloud(self.offline(lambda day: legacy.OfflineClient(ids=() if day else (legacy.TID,))))
+        self.assertEqual(result['officialCorrectionSearch']['discovered'], 0)
+        self.assertEqual(result['officialCorrections'], [{'date': '2026-09-03', 'status': 'unconfirmed',
+                                                          'day': 0, 'night': 0, 'notices': 0}])
+
+    def test_collector_correction_query_has_no_date_operators(self):
+        url = collector.correction_search_url(dt.date(2026, 10, 1))
+        self.assertEqual(url, collector.correction_search_url())
+        query = collector.urllib.parse.parse_qs(collector.urllib.parse.urlsplit(url).query)['p'][0]
+        self.assertEqual(query, 'id:akibazettai')
+        with self.assertRaisesRegex(ValueError, 'invalid_official_search_scope'):
+            collector.collect(collector.empty_snapshot(), set(), legacy.OfflineClient(),
+                              dt.date(2026, 8, 20), dt.date(2026, 9, 5), 20, clock=lambda: legacy.NOW,
+                              search_urls=(url,))
 
     def test_correction_dates_are_manual_collect_only_and_bounded(self):
         for value, mode, scheduled in (
@@ -315,11 +339,34 @@ class HalfMonthRecoveryTests(unittest.TestCase):
                          ('12345-1', ['あむ'], [['2026-10-01', '2026-10-15']], 0))
         self.assertNotIn(hcloud.LEASE, self.fx.remote_names())
 
-    def test_finalised_cohort_keeps_its_chain_id(self):
+    def test_every_resumed_cohort_uses_this_runs_accounting_id(self):
         self.seed('waiting')
         result, seen = self.run_half()
-        self.assertEqual(seen, [('36771120722-1', '36771120722-1', 'true', '36771120722-1')])
-        self.assertNotIn('halfMonthRebasedFrom', result)
+        self.assertEqual(seen, [('12345-1', '12345-1', 'true', '12345-1')])
+        self.assertEqual(result['halfMonthRebasedFrom'], '36771120722-1')
+
+    def test_missing_isolated_dependency_stops_before_lease_or_child(self):
+        self.seed('processing')
+        head = self.fx.git(self.fx.remote, 'rev-parse', hcloud.REF)
+        with mock.patch.object(hcloud, 'half_month_dependencies',
+                               side_effect=hcloud.CloudError('half_month_dependencies_missing')), \
+                self.assertRaisesRegex(hcloud.CloudError, 'half_month_dependencies_missing'):
+            self.run_half()
+        self.assertEqual(self.fx.git(self.fx.remote, 'rev-parse', hcloud.REF), head)
+        self.assertNotIn(hcloud.LEASE, self.fx.remote_names())
+
+    def test_dependency_probe_uses_the_childrens_isolated_flags(self):
+        calls = []
+
+        def record(argv, **kwargs):
+            calls.append(argv)
+            return SimpleNamespace(returncode=1, stdout=b'', stderr=b'ModuleNotFoundError')
+        with mock.patch.object(hcloud, 'child_process', side_effect=record), \
+                self.assertRaisesRegex(hcloud.CloudError, 'half_month_dependencies_missing'):
+            hcloud.half_month_dependencies(self.fx.root, {})
+        self.assertEqual(calls[0][1:3], ['-I', '-B'])
+        self.assertIn('PIL.Image', calls[0][-1])
+        self.assertIn('cryptography', calls[0][-1])
 
     def test_validated_half_child_crash_releases_lease_and_stays_resumable(self):
         self.seed('processing')
@@ -378,6 +425,23 @@ class AlertWorkflowTests(unittest.TestCase):
                      'failed_components: ${{ steps.collection.outputs.failedComponents }}',
                      'OFFICIAL_CORRECTION_DATES: ${{ inputs.official_correction_dates }}'):
             self.assertIn(line, collect)
+
+    def test_children_and_ci_use_the_same_isolated_venv(self):
+        root = routing_fixture.ROOT / '.github' / 'actions'
+        action = (root / 'collector-python' / 'action.yml').read_text(encoding='utf-8')
+        self.assertIn('python -m venv "$RUNNER_TEMP/collector-venv"', action)
+        self.assertIn('-I -B -c "import PIL.Image, cryptography', action)
+        self.assertIn('>> "$GITHUB_PATH"', action)
+        for forbidden in ('--user', 'PYTHONPATH', 'PYTHONUSERBASE', 'ENABLE_USER_SITE', 'sudo'):
+            self.assertNotIn(forbidden, action)
+        validate = (root / 'validate-site' / 'action.yml').read_text(encoding='utf-8')
+        self.assertIn('uses: ./.github/actions/collector-python', validate)
+        self.assertNotIn('pip install', validate)
+        collect = routing_fixture.job_block('collect')
+        install = collect.split('- name: Install declared image collection dependencies', 1)[1].split('- name:', 1)[0]
+        self.assertIn("steps.route.outputs.halfMonthCacheRequired == 'true'", install)
+        self.assertIn('uses: ./.github/actions/collector-python', install)
+        self.assertNotIn('pip install', routing_fixture.WORKFLOW)
 
     def test_single_issue_is_created_updated_closed_and_untrusted_tokens_dropped(self):
         bash = self.bash()

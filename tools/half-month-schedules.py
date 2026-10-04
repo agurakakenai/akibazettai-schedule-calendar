@@ -1076,7 +1076,7 @@ def validate_collection_state(value):
                 raise ValueError('invalid_reading_variants')
             if 'failure' in record:
                 failure = record['failure']
-                optional = tuple(key for key in ('exceptionClass', 'location')
+                optional = tuple(key for key in ('exceptionClass', 'location', 'detail')
                                  if isinstance(failure, dict) and key in failure)
                 require_keys(failure, ('name', 'postId', 'postUrl', 'imageIndex', 'failedAt',
                                        'host', 'httpStatus', 'retryAt', 'stage', 'nextStage', 'reason',
@@ -1084,6 +1084,9 @@ def validate_collection_state(value):
                 if ('exceptionClass' in failure and not (
                         isinstance(failure['exceptionClass'], str)
                         and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}', failure['exceptionClass']))
+                        or 'detail' in failure and not (
+                            isinstance(failure['detail'], str)
+                            and re.fullmatch(r'[a-z_]{1,64}', failure['detail']))
                         or 'location' in failure and not (
                             isinstance(failure['location'], str) and re.fullmatch(
                                 r'[A-Za-z0-9_.-]{1,64}\.py:[A-Za-z_<>][A-Za-z0-9_<>]{0,63}:[0-9]{1,6}',

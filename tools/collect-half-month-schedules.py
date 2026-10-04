@@ -237,8 +237,12 @@ def validate_post(candidate, payload, target, now, binding=None, *, payload_hash
         if (not parent_ids or not parent_authors
                 or any(official.post_id(value) != official.post_id(parent_ids[0]) for value in parent_ids)
                 or not official.post_id(parent_ids[0])
-                or any(author_id(value) != uid for value in parent_authors)):
+                or any(author_id(value) is None or author_id(value) != author_id(parent_authors[0])
+                       for value in parent_authors)):
             raise ValueError('reply_author_mismatch')
+        if author_id(parent_authors[0]) != uid:
+            # A verified author's conversation reply to another account: not a schedule source.
+            raise ValueError('reply_to_other_account')
         parent_id = official.post_id(parent_ids[0])
         parent = parent_payload or payload.get('parent')
         if (not isinstance(parent, dict) or not official.matching_id(parent, parent_id)
@@ -1216,8 +1220,9 @@ def read_evidence(state, source, text, images, analyzer, periods, cache, clock, 
 
 def _cycle_failure(exc, now):
     # Ledger/storage integrity faults still stop the run; HTTP-level OSErrors keep
-    # their historical candidate retry semantics.
-    if failure_facts.fatal(exc, storage_errors=False):
+    # their historical candidate retry semantics. A missing module is an environment
+    # fault, never a property of the candidate: stop without holding anyone.
+    if isinstance(exc, ImportError) or failure_facts.fatal(exc, storage_errors=False):
         raise exc
     reason = getattr(exc, 'reason', str(exc) if isinstance(exc, ValueError) else None)
     retry = getattr(exc, 'retry_at', None)
@@ -1328,6 +1333,13 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
         if not allowed():
             raise Failure('time_limit')
 
+    def drop_not_schedule(candidate):
+        # Terminal for this candidate only: no retry loop and no identity verdict on the person.
+        state['pending'] = [item for item in state['pending'] if item['id'] != candidate['id']]
+        state['candidateHistory'][facts.candidate_key(candidate)] = {
+            'candidate': dict(candidate), 'reason': 'not_schedule', 'checkedAt': facts.stamp(clock())}
+        save()
+
     try:
         if cache is None:
             for name in current['names']:
@@ -1434,15 +1446,28 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                             parent_id = payload.get('in_reply_to_status_id_str', payload.get('in_reply_to_status_id'))
                             if parent_id is not None and payload.get('parent') is None:
                                 reply_author = payload.get('in_reply_to_user_id_str', payload.get('in_reply_to_user_id'))
+                                if (official.post_id(parent_id) and author_id(reply_author) is not None
+                                        and author_id(reply_author) != selected['authorId']
+                                        and matching_author(payload.get('user', {}), selected['authorId'])):
+                                    del payload
+                                    drop_not_schedule(selected)
+                                    continue
                                 if (not official.post_id(parent_id) or author_id(reply_author) != selected['authorId']
                                         or not matching_author(payload.get('user', {}), selected['authorId'])):
                                     raise ValueError('reply_parent_unverified')
                                 source.check('posts')
                                 counts['posts'] += 1
                                 parent, _ = client.post(str(parent_id))
-                            verified, text, urls = validate_post(
-                                selected, payload, targets[name], clock(), bindings.get(name),
-                                payload_hash=payload_hash, parent_payload=parent)
+                            try:
+                                verified, text, urls = validate_post(
+                                    selected, payload, targets[name], clock(), bindings.get(name),
+                                    payload_hash=payload_hash, parent_payload=parent)
+                            except ValueError as exc:
+                                if str(exc) != 'reply_to_other_account':
+                                    raise
+                                del payload, parent
+                                drop_not_schedule(selected)
+                                continue
                             del payload, parent
                             key = facts.source_key(verified)
                             images = []
@@ -1539,6 +1564,11 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                             'reason': reason}
                         if unexpected:
                             failure.update(failure_facts.exception_facts(exc))
+                        detail = failure_facts.reason_of(exc)
+                        if (isinstance(detail, str) and detail != reason
+                                and re.fullmatch(r'[a-z_]{1,64}', detail)):
+                            # A code-defined token only (e.g. timestamp_mismatch); never a message.
+                            failure['detail'] = detail
                         failures[selected['id']] = failure
                         if progress is not None:
                             progress['failure'] = failure
