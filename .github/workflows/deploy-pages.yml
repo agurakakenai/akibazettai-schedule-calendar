@@ -37,6 +37,10 @@ on:
         description: Saved checkpoint SHA from a successfully published finite collection chain
         type: string
         default: ""
+      official_correction_dates:
+        description: "collect only: up to 3 official service days YYYY-MM-DD,... within the last 7 days to backfill once"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -87,6 +91,9 @@ jobs:
       continuation_ready: ${{ steps.collection.outputs.continuationReady }}
       state_commit: ${{ steps.collection.outputs.stateCommit }}
       continuation_mode: ${{ steps.collection.outputs.continuationMode }}
+      attention: ${{ steps.collection.outputs.attention }}
+      failed_components: ${{ steps.collection.outputs.failedComponents }}
+      failure_reason: ${{ steps.collection.outputs.reason }}
     steps:
       # A queued collector must use current code, not the old triggering commit.
       - name: Check out current production code
@@ -148,6 +155,7 @@ jobs:
           COLLECTION_SLOT_ID: ${{ steps.route.outputs.collectionSlotId }}
           COLLECTION_DATE: ${{ steps.route.outputs.collectionDate }}
           CONTINUATION_STATE: ${{ inputs.continuation_state }}
+          OFFICIAL_CORRECTION_DATES: ${{ inputs.official_correction_dates }}
           DAILY_GUIDANCE_ENABLED: ${{ vars.DAILY_GUIDANCE_ENABLED || 'false' }}
           APPLY_SAVED_MANIFEST: ${{ inputs.saved_manifest }}
           HALF_MONTH_SCHEDULE_ENABLED: ${{ vars.HALF_MONTH_SCHEDULE_ENABLED || 'false' }}
@@ -287,3 +295,63 @@ jobs:
           gh api --method POST repos/agurakakenai/akibazettai-schedule-calendar/actions/workflows/deploy-pages.yml/dispatches \
             -f ref=main -f "inputs[mode]=$CONTINUATION_MODE" -f "inputs[continuation_state]=$CHECKPOINT_SHA"
           echo "Continuation requested for published checkpoint $CHECKPOINT_SHA." >> "$GITHUB_STEP_SUMMARY"
+
+  notify:
+    name: Keep one collector alert issue current
+    needs: [collect, build, deploy]
+    if: >-
+      always() && !cancelled() &&
+      github.repository == 'agurakakenai/akibazettai-schedule-calendar' &&
+      github.ref == 'refs/heads/main' && github.event_name != 'pull_request' &&
+      inputs.mode != 'probe'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Create, update or close the single alert issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EVENT: ${{ github.event_name }}
+          COLLECT: ${{ needs.collect.result }}
+          BUILD: ${{ needs.build.result }}
+          DEPLOY: ${{ needs.deploy.result }}
+          ATTENTION: ${{ needs.collect.outputs.attention }}
+          REASON: ${{ needs.collect.outputs.failure_reason }}
+          COMPONENTS: ${{ needs.collect.outputs.failed_components }}
+        run: |
+          # Only fixed tokens reach the issue; never logs, messages, paths or data.
+          for NAME in COLLECT BUILD DEPLOY; do
+            [[ "${!NAME}" =~ ^(success|failure|cancelled|skipped)$ ]] || printf -v "$NAME" '%s' unknown
+          done
+          [[ "$REASON" =~ ^[a-z_]{1,64}$ ]] || REASON=none
+          [[ "$COMPONENTS" =~ ^[a-z-]{1,64}$ ]] || COMPONENTS=none
+          [[ "$EVENT" =~ ^[a-z_]{1,32}$ ]] || EVENT=unknown
+          TITLE="Collector needs attention"
+          NUMBER="$(gh issue list --state open --search "\"$TITLE\" in:title" --json number,title \
+            --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")"
+          FAILED=false
+          if [[ "$COLLECT" == failure || "$BUILD" == failure || "$DEPLOY" == failure || "$ATTENTION" == true ]]; then
+            FAILED=true
+          fi
+          if [[ "$FAILED" == true ]]; then
+            BODY="$(printf '%s\n' \
+              'The collector or publication needs attention. This issue is updated in place; it is closed after a fully successful collection run.' \
+              '' \
+              "- Latest affected run: $RUN_URL" \
+              "- Updated (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              "- Event: $EVENT" \
+              "- Jobs: collect=$COLLECT, build=$BUILD, deploy=$DEPLOY" \
+              "- Collector reason: $REASON" \
+              "- Contained or isolated components: $COMPONENTS" \
+              '' \
+              'If the reason is unresolved_lease or a component failure was not contained, follow README "保存失敗時の回復". Details are in the run job summary.')"
+            if [[ -n "$NUMBER" ]]; then
+              gh issue edit "$NUMBER" --body "$BODY"
+            else
+              gh issue create --title "$TITLE" --body "$BODY"
+            fi
+          elif [[ -n "$NUMBER" && "$COLLECT" == success && "$BUILD" == success && "$DEPLOY" == success ]]; then
+            gh issue close "$NUMBER" --comment "Recovered: a later collection run saved and published normally ($RUN_URL)."
+          fi

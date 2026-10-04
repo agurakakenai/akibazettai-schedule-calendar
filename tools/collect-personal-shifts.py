@@ -48,6 +48,10 @@ REGISTRY_SPEC = importlib.util.spec_from_file_location(
     'personal_member_registry', ROOT / 'tools' / 'member-registry.py')
 members = importlib.util.module_from_spec(REGISTRY_SPEC)
 REGISTRY_SPEC.loader.exec_module(members)
+FAILURE_SPEC = importlib.util.spec_from_file_location(
+    'personal_failure_facts', ROOT / 'tools' / 'failure-facts.py')
+failure_facts = importlib.util.module_from_spec(FAILURE_SPEC)
+FAILURE_SPEC.loader.exec_module(failure_facts)
 UTC, JST = official.UTC, official.JST
 Failure = official.FetchFailure
 
@@ -1698,6 +1702,7 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
     initial_requests = sum(durable.used.values())
     state['checkedAt'] = stamp(clock())
     sources, failures, new_posts = [], [], []
+    unexpected_failures = []
     resolved = {item['id'] for item in state['resolved']} | {post['id'] for post in state['posts']}
     pending = {item['id']: item for item in state['pending']
                if item['id'] not in resolved or item['reason'].startswith('azure_')
@@ -1772,6 +1777,13 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
             if isinstance(exc, RegistryFailure) or exc.reason in ('budget_exhausted', 'current_day_reserved', 'outside_window', 'shared_host_cooldown',
                               'source_budget_exhausted', 'source_paused', 'source_host_cooldown') or durable.source_paused('searches'):
                 break
+        except Exception as exc:
+            if isinstance(exc, InfrastructureFailure) or failure_facts.fatal(exc):
+                raise
+            # A defect in one search result page must not stop the other people.
+            sources.append({'url': url, 'status': 'failed', 'reason': failure_facts.UNEXPECTED_REASON})
+            failures.append({'reason': failure_facts.UNEXPECTED_REASON})
+            unexpected_failures.append({'stage': 'search', **failure_facts.exception_facts(exc)})
         finally:
             if durable.used['searches'] > before:
                 durable.searched_handles.add(targets[name]['handle'].casefold())
@@ -1976,6 +1988,14 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
             failures.append({'id': item['id'], **facts})
             if exc.reason in ('budget_exhausted', 'current_day_reserved', 'shared_host_cooldown', 'outside_window'):
                 deferred += 1
+        except Exception as exc:
+            if isinstance(exc, InfrastructureFailure) or failure_facts.fatal(exc):
+                raise
+            # Isolate a reason-less defect to this post; attempts already bound retries.
+            item['reason'] = failure_facts.UNEXPECTED_REASON
+            failures.append({'id': item['id'], 'reason': failure_facts.UNEXPECTED_REASON})
+            unexpected_failures.append({'id': item['id'], 'stage': 'post',
+                                        **failure_facts.exception_facts(exc)})
         finally:
             durable.post_target = None
             if durable.progress is not None and (
@@ -2025,7 +2045,8 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
         state['checkedAt'] = previous_checked
     durable.save()
     return {'component': 'personal', **state['lastRun'], 'budgets': state['budgets'],
-            'paused': state['paused'], 'coverage': coverage}, (3 if status in ('paused', 'unavailable')
+            'paused': state['paused'], 'coverage': coverage,
+            'unexpectedFailures': unexpected_failures}, (3 if status in ('paused', 'unavailable')
                                       else 2 if status in ('partial', 'budget-exhausted') else 0)
 
 
@@ -2211,7 +2232,9 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
                         'posts': len(progress['postIds']), 'nextAt': progress['nextAt'],
                         'ready': reason == 'time_limit', 'progressed': progressed, 'initialTasks': work_before}
     durable.save()
-    return {'component': 'personal', **state['lastRun'], 'acquisition': {
+    return {'component': 'personal', **state['lastRun'],
+            'unexpectedFailures': [item for report in reports for item in report.get('unexpectedFailures', [])],
+            'acquisition': {
         'lookbackDays': RECOVERY_DAYS, 'days': summaries, 'pendingBefore': pending_before,
         'expired': expired,
         'supplemental': supplemental,
@@ -2434,7 +2457,7 @@ def main(argv=None):
         if not re.fullmatch(r'[a-z_]+', reason):
             reason = 'invalid_local_data'
         print(json.dumps({'component': 'personal', 'status': 'unavailable',
-                          'reason': reason, 'exitCode': 4}))
+                          'reason': reason, 'exitCode': 4, **failure_facts.exception_facts(exc)}))
         return 4
 
 
