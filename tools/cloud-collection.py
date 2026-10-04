@@ -1591,7 +1591,9 @@ def restored_half_month_continuation(state, usage, source, now, collector):
             or load_analysis_state().usage_counts(usage, progress['chainId'], now, None)['remaining'] == 0):
         return False
     source_module = load_source_state()
-    return not any(source_module.paused_for(source, kind, now) for kind in source_module.KINDS)
+    # An image-host stop alone must not freeze the remaining names' searches and posts; image
+    # work for those candidates is paused per candidate and cannot by itself reach time_limit.
+    return not any(source_module.paused_for(source, kind, now) for kind in ('searches', 'posts'))
 
 
 def half_month_dependencies(root, environment):

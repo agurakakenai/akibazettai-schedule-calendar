@@ -1298,7 +1298,9 @@ HTTPの前にleaseをremoteへ保存します。収集後、成功・部分失�
 
 本人が他アカウント宛てに送った返信は、本人性の問題ではなく半月予定表のsourceではないものとして、その候補だけを`not_schedule`で終了します（毎runの再取得や人物単位の`identity_unknown`にはしません）。失敗診断には、`network_error`や`timestamp_mismatch`のようなコード定義の理由token（`detail`）だけを追加で残します。
 
-画像・暗号cacheの依存（Pillow・cryptography）は、`.github/actions/collector-python`の専用venvへinstallし、子と同じ`python -I -B`でimportできることを収集前に検証してから、そのPythonで復元・収集を実行します。PR検証（validate-site）も同じvenvを使います。user siteの許可やPYTHONPATHの注入は行いません。orchestratorも半月を実行する前（lease前）に同じ確認を行い、失敗したらHTTPやleaseを始めずに停止します。依存が見つからない`ImportError`は候補の問題として数えず、cycleを止めます（候補をheldにしません）。
+画像・暗号cacheの依存（Pillow・cryptography）は、`.github/actions/collector-python`の専用venvへinstallし、子と同じ`python -I -B`でimportできることを収集前に検証してから、そのPythonで復元・収集を実行します。PR検証（validate-site）も同じvenvを使います。user siteの許可やPYTHONPATHの注入は行いません。orchestratorも半月を実行する前（lease前）に同じ確認を行い、失敗したらHTTPやleaseを始めずに停止します。依存が見つからない`ImportError`は候補の問題として数えず、cycleを止めます（候補をheldにしません）。過去に`ModuleNotFoundError`/`ImportError`で記録された遅延・保留は、次のcycleで解除して読み直します（発行済みのsource/AIは台帳・暗号cacheで重複しません）。
+
+再開したcycleは、前回止まった位置（cursor）の人から処理し、最後に名簿の先頭へ戻ります。先頭の人たちのpending作業で毎回時間を使い切り、後半の人へ届かない状態を避けるためです。checkpointの`nextAt`は未来の時刻だけを使い、過去の確認時刻は「今すぐ処理可能」として扱います。画像hostだけが停止している間も、検索・本文で進められる作業があれば継続を起動します（画像作業は候補ごとに保留され、それ自体ではtime_limitに達しません）。
 
 失敗・包含・候補隔離・deploy失敗は、Issue「Collector needs attention」1件を作成または本文更新して知らせます（重複作成しません）。その後に公式・本人・半月の収集から公開まで正常に終わったrunで自動的にcloseします。Issueには固定tokenとrunのURLだけを書き、ログや本文は転記しません。
 

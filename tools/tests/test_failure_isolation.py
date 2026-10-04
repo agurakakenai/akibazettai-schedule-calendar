@@ -242,6 +242,76 @@ class CycleIsolationTests(IsolationBase):
                 self.assertNotIn('private-detail', output.call_args.args[0])
 
 
+class ResumeOrderTests(IsolationBase):
+    def ordered_client(self, calls, deadline_handle=None):
+        factory = cycle.CycleTests.client.__get__(self)
+
+        def client():
+            value = factory()
+            for kind in ('search', 'post', 'image'):
+                normal = getattr(value, kind).side_effect
+
+                def wrapped(arg, kind=kind, normal=normal):
+                    if kind == 'search' and arg == deadline_handle:
+                        raise collector.Failure('time_limit')
+                    calls.append((kind, arg))
+                    return normal(arg)
+                getattr(value, kind).side_effect = wrapped
+            return value
+        return client
+
+    def test_resume_starts_at_cursor_before_earlier_names_pending_work(self):
+        calls = []
+        # あむ's first reading stays unresolved, so she keeps actionable pending work.
+        self.model.structured.return_value = {'classification': 'uncertain', 'complete': False, 'periods': []}
+        self.client = self.ordered_client(calls, deadline_handle='new_member')
+        self.run_cycle()
+        self.assertEqual(self.state['collection']['cursor'], 1)
+        self.assertEqual(self.state['collection']['reason'], 'time_limit')
+        later = base.entry(suffix=3)
+        self.payloads[later['id']] = base.payload(suffix=3)
+        candidates, _ = collector.discover(base.document(later), {'あむ': base.TARGET}, self.now, {},
+                                           registry=self.registry)
+        collector.enqueue(self.state, candidates, self.now)
+        calls.clear()
+        self.model.structured.return_value = reading_fixture.result()
+        self.now += dt.timedelta(minutes=5)
+        self.reopen()
+        self.client = self.ordered_client(calls)
+        self.run_cycle(resume=True)
+        self.assertEqual(calls[0], ('search', 'new_member'))
+        self.assertLess(calls.index(('search', 'new_member')), calls.index(('post', later['id'])))
+
+    def test_past_check_times_never_become_a_stale_checkpoint_next_at(self):
+        self.documents['new_member'] = base.document()
+        self.run_cycle()
+        row = self.state['coverage']['2026-09-01']['新人']
+        self.assertFalse(row['confirmedIds'])
+        row['nextCheckAt'] = facts.stamp(base.NOW - dt.timedelta(days=10))
+        calls = []
+        self.reopen()
+        self.client = self.ordered_client(calls, deadline_handle='new_member')
+        report, _ = self.run_cycle(resume=True)
+        next_at = report['continuation']['nextAt']
+        self.assertTrue(next_at is None or facts.timestamp(next_at) > self.now, next_at)
+
+    def test_environment_fault_delay_is_released_once_the_dependency_exists(self):
+        self.inject = CycleIsolationTests.inject.__get__(self)
+        self.inject('image', TypeError('first defect'))
+        self.run_cycle()
+        reading = self.reading()
+        reading['failure']['exceptionClass'] = 'ModuleNotFoundError'
+        reading['stage'] = 'held'
+        self.reopen()
+        self.client = cycle.CycleTests.client.__get__(self)
+        calls = self.usage.calls
+        report, _ = self.run_cycle(resume=True)
+        self.assertEqual(self.reading()['stage'], 'done')
+        self.assertNotIn('failure', self.reading())
+        self.assertEqual(self.usage.calls, calls + 1)
+        self.assertEqual(len(set(self.usage.requests)), len(self.usage.requests))
+
+
 class RealTransportRetakeTests(IsolationBase):
     """Real SourceClient + SharedSource ledger, JPEG bytes and the encrypted cache."""
 
