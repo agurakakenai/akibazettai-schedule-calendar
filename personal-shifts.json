@@ -12972,6 +12972,26 @@
         "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
         "workTiming": []
       },
+      "707f53eafee23afac4dd8bdf8db1eb2ff6dbf77920ddab48a94e8d1eca0f3724": {
+        "at": "2026-10-06T07:03:41.966286Z",
+        "bodyHash": "293605d5f7c1013b95014acd8fec459aa97a5cf64c27b877b2725af5d23c60fa",
+        "channels": {
+          "events": "none",
+          "links": "none",
+          "workTiming": "none"
+        },
+        "events": [],
+        "links": [],
+        "postId": "2107294446803140704",
+        "reason": "no_event",
+        "serviceDates": {
+          "events": [],
+          "links": [],
+          "workTiming": []
+        },
+        "versionHash": "257a90ce8bb68e3a0c1221ac86f100efc113004558b1da35f0249223782175e5",
+        "workTiming": []
+      },
       "7096ce26e23154c07d37b1cbdf2024dcf3159740782893a6a695ac5a7523d8d4": {
         "at": "2026-09-28T21:52:49.994734Z",
         "bodyHash": "28618aa248740cc71e681bd06c8dd3d95ecf363a687b6eea94a6526b593f9614",
@@ -30151,11 +30171,11 @@
       "searches": 34
     },
     "2026-10-06": {
-      "posts": 38,
-      "searches": 26
+      "posts": 39,
+      "searches": 27
     }
   },
-  "checkedAt": "2026-10-06T02:08:04.974550Z",
+  "checkedAt": "2026-10-06T07:03:37.750421Z",
   "collectionSlots": [
     "personal:2026-09-23T10:00+09:00",
     "personal:2026-09-23T12:00+09:00",
@@ -30190,7 +30210,8 @@
     "personal:2026-10-05T10:00+09:00",
     "personal:2026-10-05T12:00+09:00",
     "personal:2026-10-06T01:00+09:00",
-    "personal:2026-10-06T07:00+09:00"
+    "personal:2026-10-06T07:00+09:00",
+    "personal:2026-10-06T10:00+09:00"
   ],
   "complete": false,
   "coverage": {
@@ -40237,7 +40258,7 @@
           "2107287259796197873"
         ],
         "reason": "verified_post_available",
-        "searchedAt": "2026-10-06T02:07:40.934760Z",
+        "searchedAt": "2026-10-06T07:03:40.387993Z",
         "shifts": [
           "昼"
         ]
@@ -40303,7 +40324,7 @@
     "こい": {
       "authorId": "1832320712545333248",
       "authorScreenName": "koi_zettai",
-      "verifiedAt": "2026-10-06T02:07:45.756285Z"
+      "verifiedAt": "2026-10-06T07:03:44.940285Z"
     },
     "こえび": {
       "authorId": "1966141137833664513",
@@ -40442,8 +40463,8 @@
     }
   },
   "lastRequests": {
-    "cdn.syndication.twimg.com": "2026-10-06T02:07:41.824146Z",
-    "search.yahoo.co.jp": "2026-10-06T02:08:14.696775Z"
+    "cdn.syndication.twimg.com": "2026-10-06T07:03:41.261416Z",
+    "search.yahoo.co.jp": "2026-10-06T07:03:38.263895Z"
   },
   "lastRun": {
     "activeTargetCount": 23,
@@ -40452,47 +40473,27 @@
     "date": "2026-10-06",
     "dateBasis": "JST calendar date, 00:00 boundary",
     "deferredCount": 6,
-    "failures": [
-      {
-        "id": "2104984930531045877",
-        "reason": "azure_ungrounded"
-      }
-    ],
-    "finishedAt": "2026-10-06T02:08:17.357258Z",
-    "newEventCount": 1,
-    "newPostCount": 1,
+    "failures": [],
+    "finishedAt": "2026-10-06T07:03:45.627797Z",
+    "newEventCount": 0,
+    "newPostCount": 0,
     "pendingCount": 433,
     "requests": {
       "posts": 1,
-      "searches": 4
+      "searches": 1
     },
-    "sourceCount": 4,
+    "sourceCount": 1,
     "sources": [
       {
-        "candidateCount": 1,
+        "candidateCount": 2,
         "status": "ok",
         "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Akoi_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 0,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Akedama_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 0,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Asukui_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 3,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Akanata2_zettai&ei=UTF-8"
       }
     ],
     "status": "partial",
     "targetCount": 23
   },
-  "lastSuccessAt": "2026-10-06T02:08:04.887535Z",
+  "lastSuccessAt": "2026-10-06T07:03:45.006730Z",
   "originalTargets": {
     "2026-09-06": {
       "あくび": {
@@ -55722,7 +55723,7 @@
     }
   ],
   "recovery": {
-    "chainId": "37402583793-1",
+    "chainId": "37427284853-1",
     "mode": "personal",
     "nextAt": null,
     "postIds": [],
@@ -66043,6 +66044,14 @@
       "reason": "events",
       "resolvedAt": "2026-10-06T02:07:45.756375Z",
       "url": "https://x.com/koi_zettai/status/2107287259796197873"
+    },
+    {
+      "date": "2026-10-06",
+      "id": "2107294446803140704",
+      "name": "こい",
+      "reason": "no_event",
+      "resolvedAt": "2026-10-06T07:03:44.940379Z",
+      "url": "https://x.com/koi_zettai/status/2107294446803140704"
     }
   ],
   "savedPersonalImports": {
@@ -69019,7 +69028,7 @@
     },
     "2026-10-06": {
       "こい": {
-        "attemptedAt": "2026-10-06T02:07:40.934760Z",
+        "attemptedAt": "2026-10-06T07:03:40.387993Z",
         "handle": "koi_zettai"
       }
     }
