@@ -1107,7 +1107,7 @@
       "reason": "not_schedule"
     }
   },
-  "checkedAt": "2026-10-05T22:07:19.325010Z",
+  "checkedAt": "2026-10-06T20:26:56.283141Z",
   "collection": {
     "chainId": "37526447306-1",
     "cursor": 40,
@@ -1154,7 +1154,7 @@
       "ららこ",
       "るるか"
     ],
-    "nextAt": "2026-10-05T23:06:21.263880Z",
+    "nextAt": "2026-10-31T15:00:00Z",
     "periods": [
       [
         "2026-10-01",
@@ -1167,7 +1167,8 @@
   },
   "collectionSlots": [
     "2026-10-04T15:30:00Z",
-    "2026-10-05T15:30:00Z"
+    "2026-10-05T15:30:00Z",
+    "2026-10-06T15:30:00Z"
   ],
   "complete": false,
   "coverage": {
@@ -2386,7 +2387,7 @@
         "lastSearchedAt": "2026-09-30T20:14:09.755568Z",
         "name": "あくび",
         "nextCheckAt": "2026-10-01T02:14:09.755568Z",
-        "reason": "paused",
+        "reason": "budget_wait",
         "to": "2026-10-15"
       },
       "あむ": {
@@ -2401,7 +2402,7 @@
         "handle": "amu_zettai",
         "lastSearchedAt": "2026-10-04T14:19:57.427083Z",
         "name": "あむ",
-        "nextCheckAt": "2026-10-06T04:06:23.209574Z",
+        "nextCheckAt": "2026-10-04T20:19:57.427083Z",
         "reason": "source_failed",
         "to": "2026-10-15"
       },
@@ -2426,7 +2427,7 @@
         "handle": "arata_zettai",
         "lastSearchedAt": "2026-10-04T14:21:05.348160Z",
         "name": "あらた",
-        "nextCheckAt": "2026-10-06T04:06:35.880422Z",
+        "nextCheckAt": "2026-10-04T20:21:05.348160Z",
         "reason": "source_failed",
         "to": "2026-10-15"
       },
@@ -2843,7 +2844,7 @@
         "handle": "piano1_zettai",
         "lastSearchedAt": "2026-10-04T16:41:52.137871Z",
         "name": "ぴあの",
-        "nextCheckAt": "2026-10-06T04:06:50.302096Z",
+        "nextCheckAt": "2026-10-04T22:41:52.137871Z",
         "reason": "source_failed",
         "to": "2026-10-15"
       },
@@ -2874,7 +2875,7 @@
         "handle": "mahiro1_zettai",
         "lastSearchedAt": "2026-09-22T14:06:09.093252Z",
         "name": "まひろ",
-        "nextCheckAt": "2026-10-06T04:07:03.004290Z",
+        "nextCheckAt": "2026-09-22T20:06:09.093252Z",
         "reason": "source_failed",
         "to": "2026-10-15"
       },
@@ -2927,7 +2928,7 @@
         "handle": "miria_zettai",
         "lastSearchedAt": "2026-10-04T18:44:45.378791Z",
         "name": "みりあ",
-        "nextCheckAt": "2026-10-06T04:07:15.677208Z",
+        "nextCheckAt": "2026-10-05T00:44:45.378791Z",
         "reason": "source_failed",
         "to": "2026-10-15"
       },
@@ -3917,7 +3918,7 @@
     }
   },
   "lastRun": {
-    "status": "partial"
+    "status": "budget-exhausted"
   },
   "lastSuccessAt": "2026-10-04T18:57:24.888808Z",
   "partialSchedules": [
@@ -4143,7 +4144,7 @@
       "id": "2104944568135561355",
       "lastAttemptAt": null,
       "name": "あくび",
-      "nextAttemptAt": "2026-10-05T23:06:21.263880Z",
+      "nextAttemptAt": "2026-10-31T15:00:00Z",
       "priority": 0,
       "searchCreatedAt": "2026-09-29T14:41:07Z",
       "url": "https://x.com/akubi_zettai/status/2104944568135561355"
@@ -5968,23 +5969,23 @@
       "attemptedVariants": [],
       "cacheKey": "4f837b10cc1ecfda12304913d48f1ca9fe506f25a2ac8606b87e42e2f0218aca",
       "failure": {
-        "detail": "shared_host_cooldown",
-        "failedAt": "2026-10-05T22:06:21.382278Z",
-        "host": "pbs.twimg.com",
-        "httpStatus": 403,
-        "imageIndex": 0,
+        "detail": "azure_budget_exhausted",
+        "failedAt": "2026-10-06T20:26:56.241927Z",
+        "host": null,
+        "httpStatus": null,
+        "imageIndex": null,
         "name": "あくび",
-        "nextStage": "fetch",
+        "nextStage": "original",
         "postId": "2104944568135561355",
         "postUrl": "https://x.com/akubi_zettai/status/2104944568135561355",
-        "reason": "paused",
-        "retryAt": "2026-10-05T23:06:21.263880Z",
-        "stage": "fetch"
+        "reason": "budget_wait",
+        "retryAt": "2026-10-31T15:00:00Z",
+        "stage": "original"
       },
-      "nextAt": "2026-10-05T23:06:21.263880Z",
-      "reason": "paused",
+      "nextAt": "2026-10-31T15:00:00Z",
+      "reason": "budget_wait",
       "sourceId": "2104944568135561355",
-      "stage": "fetch"
+      "stage": "original"
     },
     "50638ae7d29665ce650710899fa50551838abffbfd63831af82ea08ca660e099": {
       "attemptedVariants": [],
