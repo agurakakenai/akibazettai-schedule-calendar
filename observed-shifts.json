@@ -1,32 +1,24 @@
 {
-  "checkedAt": "2026-10-06T10:36:25Z",
+  "checkedAt": "2026-10-06T17:20:08Z",
   "complete": false,
-  "cooldowns": {
-    "pbs.twimg.com": "2026-10-05T23:06:21.263880Z"
-  },
+  "cooldowns": {},
   "lastRun": {
-    "attemptedCount": 5,
+    "attemptedCount": 1,
     "complete": false,
     "dateBasis": "JST service day, 05:00 boundary",
     "dateFrom": "2026-10-05",
     "dateTo": "2026-10-06",
     "deferredCount": 0,
-    "discoveredCount": 37,
-    "eligibleCount": 5,
-    "failures": [
-      {
-        "id": "2107413494014611648",
-        "reason": "azure_budget_exhausted",
-        "url": "https://x.com/akibazettai/status/2107413494014611648"
-      }
-    ],
-    "fetchedCount": 5,
-    "finishedAt": "2026-10-06T10:38:34Z",
+    "discoveredCount": 35,
+    "eligibleCount": 1,
+    "failures": [],
+    "fetchedCount": 1,
+    "finishedAt": "2026-10-06T17:20:15Z",
     "lastSuccessMeaning": "Both searches and every selected post handled without failure or deferral",
     "maxPosts": 20,
-    "newNameCount": 25,
-    "newPostCount": 4,
-    "pendingCount": 33,
+    "newNameCount": 0,
+    "newPostCount": 0,
+    "pendingCount": 32,
     "pendingOutsideRangeCount": 32,
     "rejected": [
       {
@@ -138,14 +130,6 @@
         "reason": "outside_date_range"
       },
       {
-        "id": "2103682208896884982",
-        "reason": "outside_date_range"
-      },
-      {
-        "id": "2103681442765316466",
-        "reason": "outside_date_range"
-      },
-      {
         "id": "2102233569586483366",
         "reason": "outside_date_range"
       },
@@ -208,19 +192,15 @@
       {
         "id": "2097883444034596954",
         "reason": "outside_date_range"
-      },
-      {
-        "id": "2107298559251153398",
-        "reason": "not_shift_post"
       }
     ],
     "requests": {
-      "posts": 5,
+      "posts": 1,
       "searches": 2
     },
     "skippedCuratedCount": 0,
-    "skippedObservedCount": 3,
-    "skippedResolvedCount": 1,
+    "skippedObservedCount": 6,
+    "skippedResolvedCount": 2,
     "sourceCount": 2,
     "sourcePageLimit": 2,
     "sources": [
@@ -230,7 +210,7 @@
         "url": "https://search.yahoo.co.jp/realtime/search?p=%E3%82%A2%E3%82%AD%E3%83%90%E7%B5%B6%E5%AF%BE%E9%A0%98%E5%9F%9F&ei=UTF-8"
       },
       {
-        "candidateCount": 25,
+        "candidateCount": 23,
         "status": "ok",
         "url": "https://search.yahoo.co.jp/realtime/search?p=%E3%81%B2%E3%82%8B%E3%81%AB%E3%82%83%E3%82%93%E3%81%93&ei=UTF-8"
       }
@@ -317,6 +297,16 @@
         "fetchedAt": "2026-09-26T08:45:41.802613Z",
         "notices": [],
         "postId": "2103682208896884982",
+        "reason": "no_event",
+        "versionHash": "ec86d6443faf164198208e05bc7b9bb83db03cdba2326b130a7a7df50e95a8e6"
+      },
+      "1e4959f3ced53e32312b7ee7c72d721c0ae2232dfa93cf17ac4e2e83a43cbeac": {
+        "at": "2026-10-06T17:20:12.823406Z",
+        "bodyHash": "a814b311d81fb111ca9f87ce1c43ba2df634754af518ee05fccd3b5347b99c94",
+        "createdAt": "2026-10-06T10:11:45Z",
+        "fetchedAt": "2026-10-06T17:20:12.812265Z",
+        "notices": [],
+        "postId": "2107413494014611648",
         "reason": "no_event",
         "versionHash": "ec86d6443faf164198208e05bc7b9bb83db03cdba2326b130a7a7df50e95a8e6"
       },
@@ -1504,12 +1494,6 @@
         "createdAt": "2026-10-04T09:52:37Z",
         "fetchedAt": "2026-10-04T13:26:39.733725Z",
         "reason": "azure_budget_exhausted"
-      },
-      "2107413494014611648": {
-        "bodyHash": "a814b311d81fb111ca9f87ce1c43ba2df634754af518ee05fccd3b5347b99c94",
-        "createdAt": "2026-10-06T10:11:45Z",
-        "fetchedAt": "2026-10-06T10:38:34.028462Z",
-        "reason": "azure_budget_exhausted"
       }
     },
     "receipts": {
@@ -1779,14 +1763,6 @@
       "lastAttemptAt": "2026-10-04T13:26:39Z",
       "reason": "azure_budget_exhausted",
       "url": "https://x.com/akibazettai/status/2106683901737668862"
-    },
-    {
-      "attempts": 1,
-      "firstSeenAt": "2026-10-06T10:36:25Z",
-      "id": "2107413494014611648",
-      "lastAttemptAt": "2026-10-06T10:38:33Z",
-      "reason": "azure_budget_exhausted",
-      "url": "https://x.com/akibazettai/status/2107413494014611648"
     }
   ],
   "posts": [
