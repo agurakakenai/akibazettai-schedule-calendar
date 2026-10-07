@@ -31443,7 +31443,8 @@
     "personal:2026-10-06T12:00+09:00",
     "personal:2026-10-07T01:00+09:00",
     "personal:2026-10-07T07:00+09:00",
-    "personal:2026-10-07T10:00+09:00"
+    "personal:2026-10-07T10:00+09:00",
+    "personal:2026-10-07T12:00+09:00"
   ],
   "complete": false,
   "coverage": {
@@ -42055,27 +42056,16 @@
     "dateBasis": "JST calendar date, 00:00 boundary",
     "deferredCount": 4,
     "failures": [],
-    "finishedAt": "2026-10-07T06:45:31.275997Z",
+    "finishedAt": "2026-10-07T09:58:57.246685Z",
     "newEventCount": 0,
     "newPostCount": 0,
     "pendingCount": 455,
     "requests": {
       "posts": 0,
-      "searches": 2
+      "searches": 0
     },
-    "sourceCount": 2,
-    "sources": [
-      {
-        "candidateCount": 0,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Akedama_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 0,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Asukui_zettai&ei=UTF-8"
-      }
-    ],
+    "sourceCount": 0,
+    "sources": [],
     "status": "partial",
     "targetCount": 23
   },
@@ -57923,7 +57913,7 @@
     }
   ],
   "recovery": {
-    "chainId": "37583221777-1",
+    "chainId": "37604263289-1",
     "mode": "personal",
     "nextAt": null,
     "postIds": [],
