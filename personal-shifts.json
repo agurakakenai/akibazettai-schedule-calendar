@@ -33282,7 +33282,8 @@
     "personal:2026-10-07T10:00+09:00",
     "personal:2026-10-07T12:00+09:00",
     "personal:2026-10-08T01:00+09:00",
-    "personal:2026-10-08T07:00+09:00"
+    "personal:2026-10-08T07:00+09:00",
+    "personal:2026-10-08T10:00+09:00"
   ],
   "complete": false,
   "coverage": {
@@ -44277,67 +44278,17 @@
     "date": "2026-10-08",
     "dateBasis": "JST calendar date, 00:00 boundary",
     "deferredCount": 4,
-    "failures": [
-      {
-        "id": "2106533298654827003",
-        "reason": "azure_ungrounded"
-      },
-      {
-        "id": "2106399674156659061",
-        "reason": "azure_ungrounded"
-      }
-    ],
-    "finishedAt": "2026-10-08T01:39:04.999626Z",
+    "failures": [],
+    "finishedAt": "2026-10-08T06:53:50.539942Z",
     "newEventCount": 0,
     "newPostCount": 0,
     "pendingCount": 466,
     "requests": {
       "posts": 0,
-      "searches": 8
+      "searches": 0
     },
-    "sourceCount": 8,
-    "sources": [
-      {
-        "candidateCount": 4,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Ahikari_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 4,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Amiria_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 0,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Aakubi_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 3,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Achisato_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 8,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Acheru2_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 0,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Amirin_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 2,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Auru_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 5,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Aemi_zettai&ei=UTF-8"
-      }
-    ],
+    "sourceCount": 0,
+    "sources": [],
     "status": "partial",
     "targetCount": 25
   },
@@ -60621,7 +60572,7 @@
     }
   ],
   "recovery": {
-    "chainId": "37713832036-1",
+    "chainId": "37740139868-1",
     "mode": "personal",
     "nextAt": null,
     "postIds": [],
