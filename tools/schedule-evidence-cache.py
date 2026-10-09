@@ -311,6 +311,30 @@ class EvidenceCache:
         self._save(candidate)
         self.records = copy.deepcopy(candidate)
 
+    def recreate_unissued(self, key, source, text, *, reading, audit):
+        """Replace only an expired record after the collector proves no AI was issued."""
+        _digest(key)
+        old = self.records.get(key)
+        now = _now(self.clock)
+        if old is None or _timestamp(old['expiresAt']) > now:
+            raise ValueError('evidence_recovery_not_expired')
+        if old['value']['source'].get('id') != source.get('id') or old['value']['source'].get(
+                'authorId') != source.get('authorId'):
+            raise ValueError('evidence_recovery_identity_mismatch')
+        if reading.get('stage') != 'fetch' or reading.get('issued') or reading.get('results'):
+            raise ValueError('evidence_recovery_issued')
+        if not isinstance(text, str) or len(text.encode('utf-8')) > 6000:
+            raise ValueError('reading_text_limit')
+        value = copy.deepcopy(reading)
+        value['recoveryAudit'] = {**audit, 'previousExpiresAt': old['expiresAt']}
+        candidate = copy.deepcopy(self.records)
+        candidate[key] = {
+            'expiresAt': (now + TTL).isoformat(),
+            'value': {'source': source, 'text': text, 'images': [],
+                      'reading': value, 'variants': [], 'seen': []}}
+        self._save(candidate)
+        self.records = copy.deepcopy(candidate)
+
     def _save(self, records):
         atomic_write(self.path, _encode_blob(records, self.cipher))
 

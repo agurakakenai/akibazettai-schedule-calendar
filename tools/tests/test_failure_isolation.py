@@ -295,6 +295,14 @@ class ResumeOrderTests(IsolationBase):
         next_at = report['continuation']['nextAt']
         self.assertTrue(next_at is None or facts.timestamp(next_at) > self.now, next_at)
 
+    def test_time_limited_checkpoint_is_immediately_resumable(self):
+        calls = []
+        self.client = self.ordered_client(calls, deadline_handle='new_member')
+        report, _ = self.run_cycle()
+        continuation = report['continuation']
+        self.assertEqual((continuation['reason'], continuation['ready']), ('time_limit', True))
+        self.assertIsNone(continuation['nextAt'])
+
     def test_environment_fault_delay_is_released_once_the_dependency_exists(self):
         self.inject = CycleIsolationTests.inject.__get__(self)
         self.inject('image', TypeError('first defect'))
@@ -309,6 +317,20 @@ class ResumeOrderTests(IsolationBase):
         self.assertEqual(self.reading()['stage'], 'done')
         self.assertNotIn('failure', self.reading())
         self.assertEqual(self.usage.calls, calls + 1)
+        self.assertEqual(len(set(self.usage.requests)), len(self.usage.requests))
+
+    def test_budget_wait_is_rechecked_before_the_old_month_boundary(self):
+        self.registry['members'] = self.registry['members'][:1]
+        self.usage.limit = 1
+        self.model.structured.side_effect = [reading_fixture.result(complete=False),
+                                           reading_fixture.result()]
+        self.run_cycle()
+        self.assertEqual(self.state['collection']['reason'], 'waiting')
+        self.assertEqual(self.reading()['reason'], 'budget_wait')
+        self.usage.limit = 10
+        self.reopen()
+        self.run_cycle(resume=True)
+        self.assertEqual({row['name'] for row in self.state['schedules']}, {'あむ'})
         self.assertEqual(len(set(self.usage.requests)), len(self.usage.requests))
 
 
@@ -413,6 +435,127 @@ class RealTransportRetakeTests(IsolationBase):
         self.assertEqual(self.usage.calls, 2)
         self.assertEqual(len(set(self.usage.requests)), 2)
         self.assertEqual(report['diagnostics'], [])
+
+
+class ExpiredUnissuedRecoveryTests(unittest.TestCase):
+    setUp_base = RealTransportRetakeTests.setUp
+    setUp_cycle = cycle.CycleTests.setUp
+    client = cycle.CycleTests.client
+    run_cycle = cycle.CycleTests.run_cycle
+    reopen = cycle.CycleTests.reopen
+    reading = IsolationBase.reading
+    response = RealTransportRetakeTests.response
+    opener = RealTransportRetakeTests.opener
+    run_real = RealTransportRetakeTests.run_real
+
+    def setUp(self):
+        # Use the same real source ledger, SourceClient, JPEG and encrypted cache.
+        IsolationBase.setUp(self)
+        from PIL import Image
+        buffer = io.BytesIO()
+        Image.new('RGB', (900, 1200), 'white').save(buffer, format='JPEG')
+        self.real_jpeg = buffer.getvalue()
+        self.registry['members'] = self.registry['members'][:1]
+        self.ledger = collector._module('source-state.py', 'expired_recovery_source')
+        self.ai = collector._module('analysis-state.py', 'expired_recovery_ai')
+        self.ledger_path = Path(self.temp.name) / 'source.json'
+        self.ledger.atomic_json(self.ledger_path, self.ledger.baseline_state(
+            {'budgets': {}, 'paused': None}, source_hash=facts.digest(b'expired-baseline'), at=base.NOW))
+        self.usage.state = self.ai.empty_state()
+        self.payloads[self.first_id] = base.payload(mime='jpg')
+        self.http = {'searches': 0, 'posts': 0, 'images': 0}
+        self.run_real('101-1', fail_put=True)
+        self.assertEqual(self.usage.calls, 0)
+        self.before = self.ledger.load_state(self.ledger_path)
+        self.now += dt.timedelta(days=8)
+        self.reopen()
+
+    def test_unissued_expiry_reacquires_once_under_new_run_and_preserves_receipts(self):
+        # Production restore has already discarded expired plaintext; recovery must
+        # work from the authenticated identity tombstone and canonical/ledger proof.
+        key = self.reading()['cacheKey']
+        self.cache.records[key]['value'] = {
+            'source': {'id': self.first_id, 'authorId': base.AUTHOR},
+            'text': '', 'images': [], 'reading': None, 'variants': [], 'seen': []}
+        self.cache.save()
+        self.reopen()
+        report, receipts = self.run_real('202-1', resume=True, cycle_id='101-1')
+        self.assertEqual(self.http, {'searches': 1, 'posts': 2, 'images': 2})
+        self.assertEqual(self.reading()['stage'], 'done')
+        self.assertEqual(self.usage.calls, 1)
+        self.assertEqual({key: receipts[key] for key in self.before['receipts']},
+                         self.before['receipts'])
+        audit = self.cache.get(self.reading()['cacheKey'])['reading']['recoveryAudit']
+        self.assertEqual((audit['runId'], audit['previousRunId']), ('202-1', '101-1'))
+        self.assertEqual(audit['previousFailure']['reason'], 'candidate_unexpected_error')
+        self.assertEqual(report['diagnostics'], [])
+        before = dict(self.http)
+        self.run_real('202-1', resume=True, cycle_id='101-1')
+        self.assertEqual(self.http, before)
+        self.assertEqual(self.usage.calls, 1)
+
+    def test_any_ai_reservation_in_original_run_refuses_reget_and_reanalysis(self):
+        path = Path(self.temp.name) / 'ai.json'
+        self.ai.atomic_json(path, self.ai.empty_state())
+        with self.ai.SharedUsage(path, run_id='101-1', component='schedule',
+                                  clock=self.clock, sleep=lambda _: None) as shared:
+            shared.reserve('a' * 64, {
+                'provider': 'azure_openai', 'endpoint': 'https://offline.openai.azure.com',
+                'deployment': facts.MODEL, 'model': facts.MODEL, 'modelVersion': facts.MODEL_VERSION})
+            shared.issued('a' * 64)
+            shared.finish('a' * 64, 'azure_interrupted')
+            self.usage.state = copy.deepcopy(shared.state)
+        before = dict(self.http)
+        report, receipts = self.run_real('202-1', resume=True, cycle_id='101-1')
+        self.assertEqual((self.http, self.usage.calls), (before, 0))
+        self.assertEqual(receipts, self.before['receipts'])
+        self.assertEqual((self.reading()['stage'], self.reading()['reason']), ('held', 'image_cache_expired'))
+        self.assertEqual(report['reasons'], ['image_cache_expired'])
+
+    def test_same_accounting_run_refuses_expired_reacquisition(self):
+        before = dict(self.http)
+        self.run_real('101-1', resume=True, cycle_id='101-1')
+        self.assertEqual((self.http, self.usage.calls), (before, 0))
+        self.assertEqual(self.reading()['stage'], 'held')
+
+    def test_incomplete_source_receipt_cannot_authorize_reacquisition(self):
+        ledger = self.ledger.load_state(self.ledger_path)
+        for receipt in ledger['receipts'].values():
+            if receipt['kind'] == 'posts':
+                receipt.update(status='issued', completedAt=None)
+        self.ledger.atomic_json(self.ledger_path, ledger)
+        before = dict(self.http)
+        self.run_real('202-1', resume=True, cycle_id='101-1')
+        self.assertEqual((self.http, self.usage.calls), (before, 0))
+        self.assertEqual(self.reading()['stage'], 'held')
+
+    def test_image_403_after_reacquisition_preserves_host_stop_and_old_receipts(self):
+        opener = self.opener
+
+        def denied():
+            value = opener()
+            get = value.open.side_effect
+
+            def response(request, timeout):
+                if 'pbs.twimg.com' in request.full_url:
+                    self.http['images'] += 1
+                    result = self.response(b'', 'image/jpeg')
+                    result.getcode.return_value = 403
+                    return result
+                return get(request, timeout)
+            value.open.side_effect = response
+            return value
+        self.opener = denied
+        report, receipts = self.run_real('202-1', resume=True, cycle_id='101-1')
+        saved = self.ledger.load_state(self.ledger_path)
+        self.assertEqual(saved['paused']['httpStatus'], 403)
+        self.assertGreater(facts.timestamp(saved['paused']['retryAt']), self.now)
+        self.assertEqual({key: receipts[key] for key in self.before['receipts']}, self.before['receipts'])
+        self.assertEqual(self.usage.calls, 0)
+        self.assertEqual(self.reading()['reason'], 'paused')
+        before = dict(self.http)
+        self.run_real('202-1', resume=True, cycle_id='101-1')
+        self.assertEqual(self.http, before)
 
 
 if __name__ == '__main__':

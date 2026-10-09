@@ -739,8 +739,12 @@ class SharedAccountingCycleTests(unittest.TestCase):
             self.assertIsNotNone(active['issuedAt'])
             self.assertIsNone(active['completedAt'])
             self.assertEqual(active['money']['payloadHash'], facts.digest(request.data))
-            self.assertEqual((active['money']['inputCeiling'], active['money']['outputCeiling']),
-                             (922000, azure.READING_MAX_OUTPUT_TOKENS))
+            # Image requests reserve from their actual images (audited basis), not the whole window.
+            self.assertIn('imageBasis', active['money'])
+            self.assertLess(active['money']['inputCeiling'], 922000)
+            self.assertEqual(active['money']['outputCeiling'], azure.READING_MAX_OUTPUT_TOKENS)
+            self.ledger.costs.validate_request({key: active['money'][key] for key in (
+                'payloadHash', 'inputCeiling', 'outputCeiling', 'imageInput', 'imageBasis')})
             self.assertEqual(wire['model'], 'gpt-5.6-luna')
             content = wire['messages'][1]['content']
             attachments = [part for part in content if part['type'] == 'image_url']
@@ -817,7 +821,9 @@ class SharedAccountingCycleTests(unittest.TestCase):
         self.assertEqual(self.http_calls, before)
 
     def test_current_month_707_hold_is_not_bypassed_to_force_image_admission(self):
-        opening = self.opening()
+        # The hold is never erased; an image request is refused only when its own audited
+        # reservation does not fit what remains (here 1 JPY left).
+        opening = self.opening(999_000_000)
         report, _ = self.invoke()
         self.assertEqual(report['reasons'], ['budget_wait'])
         self.assertEqual(self.wires, [])
@@ -825,10 +831,21 @@ class SharedAccountingCycleTests(unittest.TestCase):
         self.assertEqual(state['receipts'], {})
         self.assertEqual(state['money']['opening'], opening)
         balance = self.ledger.costs.balance(state, self.now)
-        self.assertEqual(balance['openingProvisionalMicroJPY'], 707_000_000)
-        self.assertEqual(balance['availableMicroJPY'], 293_000_000)
+        self.assertEqual(balance['openingProvisionalMicroJPY'], 999_000_000)
+        self.assertEqual(balance['availableMicroJPY'], 1_000_000)
         self.assertEqual(self.ledger.costs.LIMIT, 1_000_000_000)
         self.assertEqual(next(iter(facts.read_state(self.snapshot)['readings'].values()))['stage'], 'original')
+
+    def test_707_hold_stays_while_an_audited_image_reservation_fits_the_remainder(self):
+        opening = self.opening()
+        report, code = self.invoke()
+        self.assertEqual((code, report['analysisRequests']), (0, 2))
+        state = self.ledger.load_state(self.ai_path)
+        self.assertEqual(state['money']['opening'], opening)
+        balance = self.ledger.costs.balance(state, self.now)
+        self.assertEqual(balance['openingProvisionalMicroJPY'], 707_000_000)
+        self.assertEqual(balance['reservedMicroJPY'], 0)
+        self.assertTrue(all(row['money']['usageStatus'] == 'settled' for row in state['receipts'].values()))
 
     def test_actual_crop_and_tile_packs_are_not_stopped_after_first_or_second_call(self):
         self.responses = [

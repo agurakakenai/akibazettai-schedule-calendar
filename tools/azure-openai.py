@@ -2,12 +2,22 @@
 
 Callers own task-specific prompts/schemas, provenance, budgets and durable state.
 """
+import base64
+import binascii
 import http.client
 import hashlib
+import importlib.util
 import json
+from pathlib import Path
 import re
+import struct
 import urllib.error
 import urllib.request
+
+
+_COST_SPEC = importlib.util.spec_from_file_location('luna_image_costs', Path(__file__).with_name('ai-budget.py'))
+costs = importlib.util.module_from_spec(_COST_SPEC)
+_COST_SPEC.loader.exec_module(costs)
 
 
 MODEL_NAME = 'gpt-5.6-luna'
@@ -59,10 +69,46 @@ def request_payload(messages, schema, *, name, max_completion_tokens):
                 'name': name, 'strict': True, 'schema': schema}}}
 
 
+def image_dimensions(url):
+    """Width and height from a data: URI's PNG/JPEG header, or None when not determinable."""
+    if not isinstance(url, str):
+        return None
+    match = re.fullmatch(r'data:image/(?:png|jpeg);base64,([A-Za-z0-9+/=]+)', url)
+    if not match:
+        return None
+    try:
+        raw = base64.b64decode(match.group(1), validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if raw[:8] == b'\x89PNG\r\n\x1a\n' and len(raw) >= 24 and raw[12:16] == b'IHDR':
+        width, height = struct.unpack('>II', raw[16:24])
+        return (width, height) if width and height else None
+    if raw[:2] != b'\xff\xd8':
+        return None
+    index = 2
+    while index + 4 <= len(raw):
+        if raw[index] != 0xFF:
+            return None
+        marker = raw[index + 1]
+        if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+            index += 2
+            continue
+        length = struct.unpack('>H', raw[index + 2:index + 4])[0]
+        if length < 2:
+            return None
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            if index + 9 > len(raw):
+                return None
+            height, width = struct.unpack('>HH', raw[index + 5:index + 9])
+            return (width, height) if width and height else None
+        index += 2 + length
+    return None
+
+
 def request_budget(messages, schema, *, name, max_completion_tokens):
     if type(max_completion_tokens) is not int or not 1 <= max_completion_tokens <= 128000:
         raise AzureFailure('azure_input_limit')
-    images = False
+    images = []
     if not isinstance(messages, list):
         raise AzureFailure('azure_input_limit')
     for message in messages:
@@ -72,16 +118,39 @@ def request_budget(messages, schema, *, name, max_completion_tokens):
             for part in message['content']:
                 if not isinstance(part, dict) or part.get('type') not in ('text', 'image_url'):
                     raise AzureFailure('azure_input_limit')
-                images = images or part['type'] == 'image_url'
+                if part['type'] == 'image_url':
+                    if not isinstance(part.get('image_url'), dict):
+                        raise AzureFailure('azure_input_limit')
+                    images.append(part)
     raw = json.dumps(request_payload(messages, schema, name=name,
                                      max_completion_tokens=max_completion_tokens)).encode('utf-8')
-    # Escaped full wire text bounds byte-tokenization, including the schema and
-    # metadata, plus the existing conservative 512-token framing reserve.
-    bound = MAX_INPUT_TOKENS if images else len(raw) + 512
-    if bound > MAX_INPUT_TOKENS:
-        raise AzureFailure('azure_input_limit')
-    return {'payloadHash': hashlib.sha256(raw).hexdigest(), 'inputCeiling': bound,
-            'outputCeiling': max_completion_tokens, 'imageInput': images}
+    result = {'payloadHash': hashlib.sha256(raw).hexdigest(), 'outputCeiling': max_completion_tokens,
+              'imageInput': bool(images)}
+    if not images:
+        # Escaped full wire text bounds byte-tokenization, including the schema and
+        # metadata, plus the existing conservative 512-token framing reserve.
+        bound = len(raw) + 512
+        if bound > MAX_INPUT_TOKENS:
+            raise AzureFailure('azure_input_limit')
+        return {**result, 'inputCeiling': bound}
+    sizes = [image_dimensions((part.get('image_url') or {}).get('url')) for part in images]
+    if (None in sizes or len(sizes) > costs.MAX_BASIS_IMAGES
+            or any(max(size) > 65535 for size in sizes)):
+        # Unreadable images keep the legacy whole-window reservation.
+        return {**result, 'inputCeiling': MAX_INPUT_TOKENS}
+    # The text bound excludes the base64 image bytes (billed as image tokens, not as text).
+    stripped = [{**message, 'content': [
+        {'type': 'image_url', 'image_url': {**part['image_url'], 'url': ''}}
+        if part.get('type') == 'image_url' else part for part in message['content']]}
+        if isinstance(message['content'], list) else message for message in messages]
+    text_bound = len(json.dumps(request_payload(stripped, schema, name=name,
+                                                max_completion_tokens=max_completion_tokens)).encode('utf-8')) + 512
+    basis = {'version': costs.IMAGE_BASIS_VERSION, 'textBound': text_bound,
+             'images': [{'width': width, 'height': height,
+                         'tokens': costs.image_token_bound(width, height)} for width, height in sizes],
+             'safetyFactor': costs.IMAGE_SAFETY_FACTOR, 'fixedTokens': costs.IMAGE_FIXED_TOKENS}
+    bound = costs.image_input_ceiling(text_bound, [image['tokens'] for image in basis['images']])
+    return {**result, 'inputCeiling': bound, 'imageBasis': basis}
 
 
 class AzureOpenAI:
