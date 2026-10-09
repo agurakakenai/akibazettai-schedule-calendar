@@ -359,7 +359,8 @@ class BudgetTests(unittest.TestCase):
                     if case == 'timeout':
                         self.opener.open.side_effect = TimeoutError()
                     elif case == 'usage-missing':
-                        del envelope['usage']['prompt_tokens_details']['cache_write_tokens']
+                        # A billed count itself is absent: the full reservation stays held.
+                        del envelope['usage']['total_tokens']
                     else:
                         envelope['choices'][0]['message']['refusal'] = 'refused'
                     self.reply(envelope)
@@ -413,6 +414,36 @@ class BudgetTests(unittest.TestCase):
         self.assertLessEqual(settled['chargedMicroJPY'], settled['reservedMicroJPY'])
         with self.assertRaises(money.UsageInconsistent):
             money.settle(charge, self.envelope(prompt=200, cached=80, written=801))
+
+    def test_missing_cache_details_settle_at_the_conservative_bound_not_the_full_hold(self):
+        charge = money.reservation(base.IDENTITY, self.request)
+        worst = money.cost(charge['model'], charge['modelVersion'], 200, 0, 800, 20)
+        for remove in (('cache_write_tokens',), ('cached_tokens',), ('cached_tokens', 'cache_write_tokens'), None):
+            with self.subTest(remove=remove):
+                envelope = self.envelope(prompt=200, cached=0, written=800, output=20)
+                if remove is None:
+                    del envelope['usage']['prompt_tokens_details']
+                else:
+                    for key in remove:
+                        del envelope['usage']['prompt_tokens_details'][key]
+                settled = money.settle(charge, envelope)
+                self.assertEqual(settled['usageStatus'], 'settled')
+                self.assertEqual(settled['usage']['cachedRead'], 0)
+                self.assertEqual(settled['usage']['cachedWrite'], 800)
+                # Never below the real worst case for the billed tokens, far below the hold.
+                self.assertEqual(settled['chargedMicroJPY'], worst)
+                self.assertLess(settled['chargedMicroJPY'], charge['reservedMicroJPY'])
+        for field in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
+            with self.subTest(field=field):
+                envelope = self.envelope(prompt=200, cached=0, written=800, output=20)
+                del envelope['usage'][field]
+                with self.assertRaises(money.UsageMissing):
+                    money.settle(charge, envelope)
+        with self.assertRaises(money.UsageInconsistent):
+            envelope = self.envelope(prompt=200, cached=0, written=800, output=20)
+            del envelope['usage']['prompt_tokens_details']['cache_write_tokens']
+            envelope['usage']['total_tokens'] = 221
+            money.settle(charge, envelope)
 
     def test_usage_above_reservation_stops_further_issuance_even_if_optional_usage_is_missing(self):
         with self.shared() as usage:

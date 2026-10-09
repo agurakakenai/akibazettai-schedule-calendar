@@ -34,6 +34,11 @@ PRICES = {
 INPUT_MAX = 922_000
 OUTPUT_MAX = 128_000
 MAX_CACHE_WRITES = 4
+# Image requests reserve from their actual images instead of the model's whole input window.
+IMAGE_BASIS_VERSION = 'image-bound-v1'
+IMAGE_SAFETY_FACTOR = 2
+IMAGE_FIXED_TOKENS = 2048
+MAX_BASIS_IMAGES = 8
 RESOURCE_ID = ('/subscriptions/eb1d1a6f-a4b6-4c6f-885d-5ef15ed3bb64'
                '/resourceGroups/rg-akibazettai-ai/providers/Microsoft.CognitiveServices'
                '/accounts/aoai-akibazettai-nano')
@@ -96,14 +101,56 @@ def ceiling(model, version, input_tokens, output_tokens):
     return cost(model, version, input_tokens, 0, input_tokens * MAX_CACHE_WRITES, output_tokens)
 
 
+def image_token_bound(width, height):
+    """Upper bound for one high-detail image, from its actual pixel size.
+
+    The larger of the published 512px-tile formula (fit within 2048px, deliberately without
+    the further 768px shortest-side reduction) and the 32px-patch formula (1536-patch cap,
+    1.62 multiplier), so a model using either scheme stays under the bound.
+    """
+    integer(width, 1)
+    integer(height, 1)
+    require(max(width, height) <= 65535)
+    longest = max(width, height)
+    fit_w = width if longest <= 2048 else (width * 2048 + longest - 1) // longest
+    fit_h = height if longest <= 2048 else (height * 2048 + longest - 1) // longest
+    tiles = ((fit_w + 511) // 512) * ((fit_h + 511) // 512)
+    patches = min(((width + 31) // 32) * ((height + 31) // 32), 1536)
+    return max(170 * tiles + 85, (patches * 162 + 99) // 100)
+
+
+def image_input_ceiling(text_bound, image_tokens):
+    return min(INPUT_MAX, text_bound + IMAGE_SAFETY_FACTOR * sum(image_tokens) + IMAGE_FIXED_TOKENS)
+
+
+def validate_image_basis(value, input_ceiling):
+    keys(value, ('version', 'textBound', 'images', 'safetyFactor', 'fixedTokens'))
+    require(value['version'] == IMAGE_BASIS_VERSION and value['safetyFactor'] == IMAGE_SAFETY_FACTOR
+            and value['fixedTokens'] == IMAGE_FIXED_TOKENS)
+    integer(value['textBound'], 1)
+    require(isinstance(value['images'], list) and 1 <= len(value['images']) <= MAX_BASIS_IMAGES)
+    for image in value['images']:
+        keys(image, ('width', 'height', 'tokens'))
+        integer(image['tokens'], 1)
+        require(image['tokens'] == image_token_bound(image['width'], image['height']))
+    require(input_ceiling == image_input_ceiling(value['textBound'], [image['tokens'] for image in value['images']]))
+
+
 def validate_request(value):
-    keys(value, ('payloadHash', 'inputCeiling', 'outputCeiling', 'imageInput'))
+    require(isinstance(value, dict))
+    keys(value, ('payloadHash', 'inputCeiling', 'outputCeiling', 'imageInput',
+                 *(('imageBasis',) if 'imageBasis' in value else ())))
     require(isinstance(value['payloadHash'], str) and HASH.fullmatch(value['payloadHash']))
     integer(value['inputCeiling'], 1)
     integer(value['outputCeiling'], 1)
     require(value['inputCeiling'] <= INPUT_MAX and value['outputCeiling'] <= OUTPUT_MAX
-            and type(value['imageInput']) is bool
-            and (not value['imageInput'] or value['inputCeiling'] == INPUT_MAX))
+            and type(value['imageInput']) is bool)
+    if 'imageBasis' in value:
+        require(value['imageInput'])
+        validate_image_basis(value['imageBasis'], value['inputCeiling'])
+    else:
+        # Legacy image requests (and any unreadable image) keep the whole model input window.
+        require(not value['imageInput'] or value['inputCeiling'] == INPUT_MAX)
 
 
 def reservation(identity, request):
@@ -115,10 +162,11 @@ def reservation(identity, request):
 
 
 def validate_charge(value):
-    keys(value, ('payloadHash', 'inputCeiling', 'outputCeiling', 'imageInput', 'priceVersion',
+    request_fields = ('payloadHash', 'inputCeiling', 'outputCeiling', 'imageInput',
+                      *(('imageBasis',) if isinstance(value, dict) and 'imageBasis' in value else ()))
+    keys(value, (*request_fields, 'priceVersion',
                  'model', 'modelVersion', 'reservedMicroJPY', 'usage', 'chargedMicroJPY', 'usageStatus'))
-    validate_request({key: value[key] for key in
-                      ('payloadHash', 'inputCeiling', 'outputCeiling', 'imageInput')})
+    validate_request({key: value[key] for key in request_fields})
     require(value['priceVersion'] == PRICE_VERSION)
     require(value['reservedMicroJPY'] == ceiling(
         value['model'], value['modelVersion'], value['inputCeiling'], value['outputCeiling']))
@@ -178,8 +226,15 @@ def settle(charge, envelope):
     if total is not None and tokens['input'] is not None and tokens['output'] is not None:
         if total != tokens['input'] + tokens['output']:
             raise UsageInconsistent()
-    if total is None or any(value is None for value in tokens.values()):
+    if total is None or tokens['input'] is None or tokens['output'] is None:
         raise UsageMissing()
+    # Image responses can omit the cache detail fields while the billed token counts are present.
+    # Bound them conservatively instead of holding the whole reservation: no cache-read discount,
+    # and the largest possible additive cache write already used for the reservation itself.
+    if tokens['cachedRead'] is None:
+        tokens['cachedRead'] = 0
+    if tokens['cachedWrite'] is None:
+        tokens['cachedWrite'] = MAX_CACHE_WRITES * tokens['input']
     result = {**charge, 'usage': tokens, 'chargedMicroJPY': cost(
         charge['model'], charge['modelVersion'], tokens['input'],
         tokens['cachedRead'], tokens['cachedWrite'], tokens['output']), 'usageStatus': 'settled'}

@@ -1134,9 +1134,9 @@ Actionsでは手動`personal` / `both`と、有効化された当日案内の公
 
 2026年9月はユーザー承認により、**9月23日08:48 JST以後から10月1日00:00 JST未満だけ、月の有効上限を1,500円**にします。保存台帳の既定上限1,000円や実消費・未精算予約は変更せず、共通の残額計算・発行前予約・精算・運用summaryに同じ月別policyを適用します。承認前時刻のreplayと10月以後は1,000円、追加500円の繰越はありません。これは画像検証や残実装を再開する指示ではなく、707.289032円の未精算holdも解除しません。
 
-金額は既存`ai-usage.json`の同じlock・cloud lease/CASに保存し、micro-JPY整数で切り上げます。公式・本人・半月・保存画像の時刻補足はすべて同じ予約を通り、HTTP直前にidentity・送信payload hash・実日・残額を再照合します。本文はschema/metadataを含むescaped送信bytesと既存512-token framing reserve、画像は確認済みモデル入力最大922,000 tokens、出力は実際の`max_completion_tokens`から予約します。完了時は入力・cache read/write・出力のusageで予約を精算し、タイムアウト・欠損・不正usageでは最大予約額を保持します。旧台帳は読めますが、月会計なしの実HTTPは許可しません。未知のmodel/version・入力種別・未会計を0円扱いしません。
+金額は既存`ai-usage.json`の同じlock・cloud lease/CASに保存し、micro-JPY整数で切り上げます。公式・本人・半月・保存画像の時刻補足はすべて同じ予約を通り、HTTP直前にidentity・送信payload hash・実日・残額を再照合します。本文はschema/metadataを含むescaped送信bytesと既存512-token framing reserve、出力は実際の`max_completion_tokens`から予約します。画像を含むrequestは、送信する実際の各画像（`data:`のPNG/JPEGヘッダから読んだ幅・高さ）から上限を算出します。各画像はhigh detailの512pxタイル式（2048px以内へ縮小、768pxへの追加縮小はかけない）と32pxパッチ式（1536上限・1.62倍）の大きい方を採り、画像分を2倍＋固定2048 tokens、これに画像bytesを除いた本文の上限を加えます。算出根拠（版・本文上限・各画像の寸法とtoken・係数・固定値）は`imageBasis`としてreceiptへ保存し、台帳の検証で同じ式から再計算します。画像を読めない場合は従来どおりモデル入力最大922,000 tokensです。cache writeの加算（入力の4倍）の計算方式は変えません。完了時は入力・cache read/write・出力のusageで予約を精算し、タイムアウト・欠損・不正usageでは最大予約額を保持します。旧台帳は読めますが、月会計なしの実HTTPは許可しません。未知のmodel/version・入力種別・未会計を0円扱いしません。
 
-`cache_write_tokens`等のusage項目欠落は`usage_missing`として金額未確定を記録し、最大予約を保持したまま正常な本文・根拠の検証を続けます。会計値の欠落だけで勤務告知を捨てません。tokenが予約上限を超える等の重大な不整合は`usage_inconsistent`として本文採用と後続発行を停止し、運用summaryへ明示します。これらはモデルno_eventや本文grounding失敗とは別の状態です。
+請求される`prompt_tokens`・`completion_tokens`・`total_tokens`のいずれかが欠落した場合は`usage_missing`として金額未確定を記録し、最大予約を保持したまま正常な本文・根拠の検証を続けます。画像入力の応答などでキャッシュ詳細（`prompt_tokens_details`の`cached_tokens`／`cache_write_tokens`）だけが欠ける場合は、請求tokenがそろっていれば、キャッシュ割引なし（read 0）・加算書込みは予約と同じ上限（入力の4倍）として保守的に精算し、請求を少なく見積もりません（2026-10-05までの画像読取り4件は、この規則の導入前にusage_missingとして保持されています）。会計値の欠落だけで勤務告知を捨てません。tokenが予約上限を超える等の重大な不整合は`usage_inconsistent`として本文採用と後続発行を停止し、運用summaryへ明示します。これらはモデルno_eventや本文grounding失敗とは別の状態です。
 
 価格基準は`tools/ai-budget.py`の2026-09-13 Azure Retail Japan East GlobalStandard **JPY参考価格**です。Lunaは高いLongCo側とcache write加算側で保守計算し、[公式の最大4回のcache writes](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/prompt-caching#breakpoint-limits)を入力全体の4回分として予約します。read/write対象が互いに重複しないとは仮定しません。USD固定換算や1回の平均単価ではありません。ただしRetailの非USD価格は参考値で、契約請求・税・反映遅延まで含む**実請求1,000円の完全保証ではありません**。対象はこのアプリのAzure AI従量利用料で、Actions・他サービス・別deploymentを手動利用した費用の上限を設定するものではありません。
 
@@ -1211,7 +1211,7 @@ Azure実費は既存定期処理の最初の機会にJST日1回、**前日まで
 
 このrepositoryはpublicなので、collector-stateも秘密の保管先ではありません。**原文・画像bytes・data URI・raw model応答を平文でGit、logs、recovery、artifactへ残しません。**半月の跨run再読だけは、checkout外の期限付きAES-GCM cacheを使用します。32-byte keyはrepo secret `SCHEDULE_EVIDENCE_KEY`から必要なrestore/半月childだけへ渡し、暗号化した`cache.bin`だけを7日artifactとして保持します。各recordの期限を再保存で延長せず、最大64MiB、認証・サイズ・path検証を行います。同repoのmain workflowのartifactだけを選び、失敗runの発行済みvariantも重複AI防止のため保持します。鍵不備やcache不正は明示エラーにし、別URLや別modelで迂回しません。Pagesにはcacheもqueue/会計も含めず、ブラウザーから本人画像を自動取得・embedしません。
 
-合成画像を使った実consumer・共有会計・暗号cacheの連携回帰と、Azure実画像の精度測定は別です。v3の現在の保守的画像予約は1要求354.892565円で、9月の707.289032円holdを含む残予算では発行できない場合があります。予算不足時の実画像精度を「検証済み」とはせず、実行時のfresh ledgerで可否を判定します。月替わりは旧月のholdと履歴を残して新月へ課金し、旧月勤務日を当月へ書き換えません。
+合成画像を使った実consumer・共有会計・暗号cacheの連携回帰と、Azure実画像の精度測定は別です。v3の画像予約は、この変更の公開以後、実際の画像から算出した上限（例：1536×2048を4枚で約13.5円）です。公開前の画像読取り4件（9月707.289032円・10月709.785130円）は、旧方式の1要求約354.9円の予約がusage_missingのまま保持されており、削除・精算していません。別途、9/28の本人HTTP失敗の5.104996円も予約を維持します。予算不足時の実画像精度を「検証済み」とはせず、実行時のfresh ledgerで可否を判定します。月替わりは旧月のholdと履歴を残して新月へ課金し、旧月勤務日を当月へ書き換えません。
 
 保存原典の初回反映も限定data-only manifestで行います。新しい実推論のusageを実JST日に一度だけ精算し、そのcanonical receiptを参照する別manifestで真正な本人・半月だけを適用します。各段階で最新main/state SHA、owner、対象hash、lease/CASを照合し、前段成功・後段失敗を完了扱いしません。画像1件の成功やbounded queueの実装は、全員分の発見済み・全画像の精度保証とは別です。
 
@@ -1300,7 +1300,9 @@ HTTPの前にleaseをremoteへ保存します。収集後、成功・部分失�
 
 画像・暗号cacheの依存（Pillow・cryptography）は、`.github/actions/collector-python`の専用venvへinstallし、子と同じ`python -I -B`でimportできることを収集前に検証してから、そのPythonで復元・収集を実行します。PR検証（validate-site）も同じvenvを使います。user siteの許可やPYTHONPATHの注入は行いません。orchestratorも半月を実行する前（lease前）に同じ確認を行い、失敗したらHTTPやleaseを始めずに停止します。依存が見つからない`ImportError`は候補の問題として数えず、cycleを止めます（候補をheldにしません）。過去に`ModuleNotFoundError`/`ImportError`で記録された遅延・保留は、次のcycleで解除して読み直します（発行済みのsource/AIは台帳・暗号cacheで重複しません）。
 
-再開したcycleは、前回止まった位置（cursor）の人から処理し、最後に名簿の先頭へ戻ります。先頭の人たちのpending作業で毎回時間を使い切り、後半の人へ届かない状態を避けるためです。checkpointの`nextAt`は未来の時刻だけを使い、過去の確認時刻は「今すぐ処理可能」として扱います。画像hostだけが停止している間も、検索・本文で進められる作業があれば継続を起動します（画像作業は候補ごとに保留され、それ自体ではtime_limitに達しません）。
+再開したcycleは、前回止まった位置（cursor）の人から処理し、最後に名簿の先頭へ戻ります。先頭の人たちのpending作業で毎回時間を使い切り、後半の人へ届かない状態を避けるためです。time_limitで`ready=true`のcheckpointは`nextAt`を空にして公開直後に続行できます。それ以外は未来の時刻だけを使い、過去の確認時刻は「今すぐ処理可能」として扱います。画像hostだけが停止している間も、検索・本文で進められる作業があれば継続を起動します（画像作業は候補ごとに保留され、それ自体ではtime_limitに達しません）。
+
+新しいrunでは`budget_wait`を実入力の予約額で再判定し、旧予約方式の月末待機だけで除外しません。期限切れcacheの再取得は、canonicalの未発行記録・空のattemptedVariants/issued/seen・共有source台帳の成功済み本文receipt（request hashと完了時刻）・その元runにschedule AI予約がないことをすべて確認できた候補に限定します。元runと異なるrun IDで、通常のURL・間隔・cooldownを守って本文と画像を1回取得し、同じsource keyであることを照合します。元receiptとholdは変更せず、元cacheの期限・failure・再取得runとpayload hashを暗号cacheの監査記録へ保持します。本人性やAI未発行の証明ができない候補、発行済みAI候補はheldを維持し、再GET・再AIしません。
 
 失敗・包含・候補隔離・deploy失敗は、Issue「Collector needs attention」1件を作成または本文更新して知らせます（重複作成しません）。その後に公式・本人・半月の収集から公開まで正常に終わったrunで自動的にcloseします。Issueには固定tokenとrunのURLだけを書き、ログや本文は転記しません。
 

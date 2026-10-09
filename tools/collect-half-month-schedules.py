@@ -1258,6 +1258,46 @@ def _cycle_service_day(value):
         raise ValueError('invalid_schedule_service_date') from None
 
 
+def expired_unissued_receipt(state, progress, cache, source, analyzer, now):
+    """Fail closed unless canonical state and the shared ledgers prove an unissued source.
+
+    A reservation is saved before on_issued persists the cache and source request hash;
+    usage.issued comes afterwards. Require the original post's accounting run to have no
+    schedule AI reservation at all, as well as no candidate-level issued markers.
+    """
+    key = progress['cacheKey']
+    record = state['sources'].get(key)
+    cached = cache.records.get(key)
+    if not record or not cached or dt.datetime.fromisoformat(cached['expiresAt']) > now:
+        return None
+    reading = cached['value'].get('reading') or {}
+    if (record['status'] != 'pending' or record['requestHash'] is not None
+            or progress['attemptedVariants'] or reading.get('issued') or reading.get('results')
+            or cached['value'].get('seen') or progress['stage'] not in ('fetch', 'original', 'held')
+            or progress['stage'] == 'held' and progress['reason'] != 'image_cache_expired'):
+        return None
+    verified = record['source']
+    if (cached['value']['source'].get('id') != verified['id']
+            or cached['value']['source'].get('authorId') != verified['authorId']):
+        return None
+    request_hash, _ = source_safety.request_identity(
+        'posts', f'https://{POST_HOST}/tweet-result?id={verified["id"]}&lang=ja&token=a')
+    receipts = [item for item in source.state['receipts'].values()
+                if item['component'] == 'schedule' and item['kind'] == 'posts'
+                and item['requestHash'] == request_hash
+                and item['status'] == 'ok' and item['httpStatus'] == 200
+                and item['issuedAt'] and item['completedAt']
+                and abs((facts.timestamp(item['completedAt']) -
+                         facts.timestamp(verified['observedAt'])).total_seconds()) < 5]
+    if len(receipts) != 1 or receipts[0]['runId'] == source.run_id:
+        return None
+    usage = analyzer.usage.state
+    if any(item['component'] == 'schedule' and item['runId'] == receipts[0]['runId']
+           for item in usage['receipts'].values()):
+        return None
+    return receipts[0]
+
+
 def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, save, registry=None,
                   existing_bindings=None, registry_guard=None, cache=None, runtime_seconds=1110,
                   resume=False, cycle_id=None, service_date=None):
@@ -1328,6 +1368,14 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
             if progress['stage'] == 'held':
                 progress['stage'] = failure['stage'] if failure['stage'] in ('fetch', 'original', 'detail') else 'fetch'
             progress.pop('failure')
+            progress.update(reason='reading_pending', nextAt=None)
+            for item in state['pending']:
+                if item['id'] == progress['sourceId']:
+                    item['nextAttemptAt'] = None
+        elif progress['reason'] == 'budget_wait' and progress['stage'] not in ('held', 'done'):
+            # Recheck the actual reservation on a new run: an approved estimate change or
+            # reconciliation can restore capacity before the stored month-boundary wait.
+            # SharedUsage still reserves before HTTP and rejects duplicate request hashes.
             progress.update(reason='reading_pending', nextAt=None)
             for item in state['pending']:
                 if item['id'] == progress['sourceId']:
@@ -1409,10 +1457,12 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                         guard(client, name)
                         if confirmed(name) and not selected.get('replyCandidate'):
                             continue
-                        if selected['nextAttemptAt'] and facts.timestamp(selected['nextAttemptAt']) > clock():
-                            continue
                         known = [(key, record) for key, record in state['readings'].items()
                                  if record['sourceId'] == selected['id']]
+                        if known and known[0][1]['reason'] == 'budget_wait':
+                            selected['nextAttemptAt'] = None
+                        if selected['nextAttemptAt'] and facts.timestamp(selected['nextAttemptAt']) > clock():
+                            continue
                         if not known:
                             cached_keys = cache.find_source(selected['id'], selected['authorId'])
                             if len(cached_keys) > 1:
@@ -1434,6 +1484,38 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                                 state['readings'][key] = progress
                                 known = [(key, progress)]
                         progress = known[0][1] if known else None
+                        if progress is not None and progress['stage'] != 'done' and (
+                                progress['stage'] != 'held' or progress['reason'] == 'image_cache_expired'):
+                            cached = cache.records.get(progress['cacheKey'])
+                            if cached and dt.datetime.fromisoformat(cached['expiresAt']) <= clock():
+                                failure_stage, failure_host = 'cache', None
+                                receipt = expired_unissued_receipt(
+                                    state, progress, cache, source, analyzer, clock())
+                                if receipt is None:
+                                    raise ValueError('evidence_cache_expired')
+                                old_source = state['sources'][progress['cacheKey']]['source']
+                                guard(client, name)
+                                source.check('posts')
+                                counts['posts'] += 1
+                                payload, payload_hash = client.post(selected['id'])
+                                verified, text, urls = validate_post(
+                                    selected, payload, targets[name], clock(), bindings.get(name),
+                                    payload_hash=payload_hash)
+                                del payload
+                                if facts.source_key(verified) != progress['cacheKey']:
+                                    raise ValueError('evidence_recovery_identity_mismatch')
+                                audit = {'runId': source.run_id, 'reacquiredAt': facts.stamp(clock()),
+                                         'postRequestHash': receipt['requestHash'],
+                                         'previousRunId': receipt['runId'],
+                                         'payloadHash': payload_hash,
+                                         'previousFailure': copy.deepcopy(progress.get('failure'))}
+                                cache.recreate_unissued(
+                                    progress['cacheKey'], old_source, text,
+                                    reading={'stage': 'fetch', 'urls': urls, 'issued': [],
+                                             'results': [], 'packs': []}, audit=audit)
+                                progress.update(stage='fetch', reason='reading_pending', nextAt=None)
+                                selected['nextAttemptAt'] = None
+                                save()
                         if progress and (progress['stage'] in ('done', 'held')
                                          or progress['nextAt'] and facts.timestamp(progress['nextAt']) > clock()):
                             continue
@@ -1614,12 +1696,14 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                    and not any(item['name'] == name for item in state['pending'])]
     remaining = bool(pending_progress or current['cursor'] < len(current['names']))
     progressed = any(counts.values()) or changed or current['cursor'] > initial_cursor
-    current.update(ready=bool('time_limit' in errors and remaining and progressed),
+    ready = bool('time_limit' in errors and remaining and progressed)
+    current.update(ready=ready,
                    reason='time_limit' if 'time_limit' in errors else
                    'waiting' if errors or remaining or unresolved else 'complete',
-                   # A past check time means "eligible now", never a stale date in the checkpoint.
-                   nextAt=min((value for value in next_times if facts.timestamp(value) > clock()),
-                              default=None))
+                   # A time-limited checkpoint is resumable at once (the build decides within
+                   # seconds); otherwise only a future check time is kept, never a stale one.
+                   nextAt=None if ready else min(
+                       (value for value in next_times if facts.timestamp(value) > clock()), default=None))
     outcome = ('budget-exhausted' if 'budget_wait' in errors else 'partial' if errors or remaining or unresolved
                else 'ok' if changed else 'no-new')
     state['lastRun'] = {'status': outcome}
