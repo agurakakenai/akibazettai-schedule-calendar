@@ -38025,10 +38025,10 @@
     },
     "2026-10-11": {
       "posts": 118,
-      "searches": 39
+      "searches": 40
     }
   },
-  "checkedAt": "2026-10-11T06:46:45.842916Z",
+  "checkedAt": "2026-10-11T09:46:38.860389Z",
   "collectionSlots": [
     "personal:2026-09-23T10:00+09:00",
     "personal:2026-09-23T12:00+09:00",
@@ -38084,7 +38084,8 @@
     "personal:2026-10-10T12:00+09:00",
     "personal:2026-10-11T01:00+09:00",
     "personal:2026-10-11T07:00+09:00",
-    "personal:2026-10-11T10:00+09:00"
+    "personal:2026-10-11T10:00+09:00",
+    "personal:2026-10-11T12:00+09:00"
   ],
   "complete": false,
   "coverage": {
@@ -49919,7 +49920,7 @@
           "2108935595942699502"
         ],
         "reason": "azure_pending",
-        "searchedAt": "2026-10-11T06:41:31.989251Z",
+        "searchedAt": "2026-10-11T09:46:42.495819Z",
         "shifts": [
           "昼",
           "夜"
@@ -50131,11 +50132,11 @@
   },
   "lastRequests": {
     "cdn.syndication.twimg.com": "2026-10-11T06:43:38.861639Z",
-    "search.yahoo.co.jp": "2026-10-11T06:46:55.721451Z"
+    "search.yahoo.co.jp": "2026-10-11T09:46:39.502964Z"
   },
   "lastRun": {
     "activeTargetCount": 25,
-    "attemptedCount": 4,
+    "attemptedCount": 0,
     "complete": false,
     "date": "2026-10-11",
     "dateBasis": "JST calendar date, 00:00 boundary",
@@ -50144,90 +50145,22 @@
       {
         "id": "2109150021027520885",
         "reason": "azure_pending"
-      },
-      {
-        "id": "2107497561926078839",
-        "reason": "azure_ungrounded"
-      },
-      {
-        "id": "2107182318259773472",
-        "reason": "azure_ungrounded"
       }
     ],
-    "finishedAt": "2026-10-11T06:46:57.625120Z",
+    "finishedAt": "2026-10-11T09:46:43.419011Z",
     "newEventCount": 0,
     "newPostCount": 0,
     "pendingCount": 497,
     "requests": {
-      "posts": 4,
-      "searches": 13
+      "posts": 0,
+      "searches": 1
     },
-    "sourceCount": 13,
+    "sourceCount": 1,
     "sources": [
       {
         "candidateCount": 6,
         "status": "ok",
         "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Aito_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 11,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Acheru2_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 5,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Aeru_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 7,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Anemuri_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 3,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Ahinari_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 5,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Akanata2_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 1,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Amirin_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 3,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Aemi_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 2,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Aarata_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 1,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Achiyu_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 1,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Akirari_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 1,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Anyana_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 1,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Ahikari_zettai&ei=UTF-8"
       }
     ],
     "status": "partial",
@@ -67929,7 +67862,7 @@
     }
   ],
   "recovery": {
-    "chainId": "38118860028-1",
+    "chainId": "38129557895-1",
     "mode": "personal",
     "nextAt": null,
     "postIds": [],
@@ -84315,7 +84248,7 @@
     },
     "2026-10-11": {
       "いと": {
-        "attemptedAt": "2026-10-11T06:41:31.989251Z",
+        "attemptedAt": "2026-10-11T09:46:42.495819Z",
         "handle": "ito_zettai"
       }
     }
