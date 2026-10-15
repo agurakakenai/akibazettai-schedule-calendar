@@ -43915,10 +43915,10 @@
     },
     "2026-10-15": {
       "posts": 77,
-      "searches": 36
+      "searches": 42
     }
   },
-  "checkedAt": "2026-10-15T05:30:25.235652Z",
+  "checkedAt": "2026-10-15T08:05:06.371014Z",
   "collectionSlots": [
     "personal:2026-09-23T10:00+09:00",
     "personal:2026-09-23T12:00+09:00",
@@ -43990,7 +43990,8 @@
     "personal:2026-10-14T12:00+09:00",
     "personal:2026-10-15T01:00+09:00",
     "personal:2026-10-15T07:00+09:00",
-    "personal:2026-10-15T10:00+09:00"
+    "personal:2026-10-15T10:00+09:00",
+    "personal:2026-10-15T12:00+09:00"
   ],
   "complete": false,
   "coverage": {
@@ -55085,7 +55086,7 @@
         ],
         "postIds": [],
         "reason": "no_candidate_in_checked_pages",
-        "searchedAt": "2026-10-14T05:41:12.867281Z",
+        "searchedAt": "2026-10-15T08:05:42.611668Z",
         "shifts": [
           "昼"
         ]
@@ -55100,7 +55101,7 @@
         ],
         "postIds": [],
         "reason": "analyzed_no_link",
-        "searchedAt": "2026-10-14T05:41:25.265514Z",
+        "searchedAt": "2026-10-15T08:05:54.944482Z",
         "shifts": [
           "昼",
           "夜"
@@ -55118,7 +55119,7 @@
           "2108458885870973008"
         ],
         "reason": "verified_annotation_available",
-        "searchedAt": "2026-10-14T05:40:48.222036Z",
+        "searchedAt": "2026-10-15T08:05:17.816782Z",
         "shifts": [
           "昼"
         ]
@@ -55328,7 +55329,7 @@
         ],
         "postIds": [],
         "reason": "no_candidate_in_checked_pages",
-        "searchedAt": "2026-10-14T05:41:00.792718Z",
+        "searchedAt": "2026-10-15T08:05:30.466924Z",
         "shifts": [
           "夜"
         ]
@@ -57257,7 +57258,7 @@
           "2110385262253752462"
         ],
         "reason": "verified_post_available",
-        "searchedAt": "2026-10-15T05:26:36.767376Z",
+        "searchedAt": "2026-10-15T08:05:05.607141Z",
         "shifts": [
           "夜"
         ]
@@ -57279,7 +57280,7 @@
           "2110385139012571535"
         ],
         "reason": "verified_post_available",
-        "searchedAt": "2026-10-15T05:26:24.310044Z",
+        "searchedAt": "2026-10-15T08:04:53.708566Z",
         "shifts": [
           "夜"
         ]
@@ -57490,30 +57491,25 @@
   },
   "lastRequests": {
     "cdn.syndication.twimg.com": "2026-10-15T05:27:43.752966Z",
-    "search.yahoo.co.jp": "2026-10-15T05:30:35.824939Z"
+    "search.yahoo.co.jp": "2026-10-15T08:05:53.114449Z"
   },
   "lastRun": {
     "activeTargetCount": 31,
-    "attemptedCount": 3,
+    "attemptedCount": 0,
     "complete": false,
     "date": "2026-10-15",
     "dateBasis": "JST calendar date, 00:00 boundary",
     "deferredCount": 3,
-    "failures": [
-      {
-        "id": "2109645622488055855",
-        "reason": "azure_ungrounded"
-      }
-    ],
-    "finishedAt": "2026-10-15T05:30:38.194546Z",
+    "failures": [],
+    "finishedAt": "2026-10-15T08:05:55.131842Z",
     "newEventCount": 0,
     "newPostCount": 0,
     "pendingCount": 613,
     "requests": {
-      "posts": 3,
-      "searches": 12
+      "posts": 0,
+      "searches": 6
     },
-    "sourceCount": 12,
+    "sourceCount": 6,
     "sources": [
       {
         "candidateCount": 5,
@@ -57526,14 +57522,9 @@
         "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Aakubi_zettai&ei=UTF-8"
       },
       {
-        "candidateCount": 4,
+        "candidateCount": 5,
         "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Achima_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 3,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Auru_zettai&ei=UTF-8"
+        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Aeru_zettai&ei=UTF-8"
       },
       {
         "candidateCount": 5,
@@ -57541,45 +57532,20 @@
         "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Amirin_zettai&ei=UTF-8"
       },
       {
-        "candidateCount": 5,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Akirari_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 3,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Amakoto2_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 16,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Akedama_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 3,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Amiria_zettai&ei=UTF-8"
-      },
-      {
         "candidateCount": 2,
         "status": "ok",
         "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Aarata_zettai&ei=UTF-8"
       },
       {
-        "candidateCount": 1,
+        "candidateCount": 3,
         "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Ahikari_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 10,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Acheru2_zettai&ei=UTF-8"
+        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Auru_zettai&ei=UTF-8"
       }
     ],
     "status": "partial",
     "targetCount": 31
   },
-  "lastSuccessAt": "2026-10-15T05:30:37.947608Z",
+  "lastSuccessAt": "2026-10-15T08:05:55.027144Z",
   "originalTargets": {
     "2026-09-06": {
       "あくび": {
@@ -78033,7 +77999,7 @@
     }
   ],
   "recovery": {
-    "chainId": "38686753626-1",
+    "chainId": "38703080187-1",
     "mode": "personal",
     "nextAt": null,
     "postIds": [],
@@ -96354,15 +96320,15 @@
         "handle": "amu_zettai"
       },
       "あらた": {
-        "attemptedAt": "2026-10-14T05:41:12.867281Z",
+        "attemptedAt": "2026-10-15T08:05:42.611668Z",
         "handle": "arata_zettai"
       },
       "うる": {
-        "attemptedAt": "2026-10-14T05:41:25.265514Z",
+        "attemptedAt": "2026-10-15T08:05:54.944482Z",
         "handle": "uru_zettai"
       },
       "える": {
-        "attemptedAt": "2026-10-14T05:40:48.222036Z",
+        "attemptedAt": "2026-10-15T08:05:17.816782Z",
         "handle": "eru_zettai"
       },
       "こい": {
@@ -96398,7 +96364,7 @@
         "handle": "miria_zettai"
       },
       "みりん": {
-        "attemptedAt": "2026-10-14T05:41:00.792718Z",
+        "attemptedAt": "2026-10-15T08:05:30.466924Z",
         "handle": "mirin_zettai"
       }
     },
@@ -96778,11 +96744,11 @@
     },
     "2026-10-15": {
       "あくび": {
-        "attemptedAt": "2026-10-15T05:26:36.767376Z",
+        "attemptedAt": "2026-10-15T08:05:05.607141Z",
         "handle": "akubi_zettai"
       },
       "いと": {
-        "attemptedAt": "2026-10-15T05:26:24.310044Z",
+        "attemptedAt": "2026-10-15T08:04:53.708566Z",
         "handle": "ito_zettai"
       }
     }
