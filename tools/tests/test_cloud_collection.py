@@ -265,6 +265,7 @@ class CloudTests(unittest.TestCase):
              '-c', 'commit.gpgSign=false', '-c', 'core.autocrlf=false',
              '-c', 'core.longpaths=true',
              '-c', 'core.hooksPath=' + str(self.base / 'disabled-hooks'),
+             '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'gc.autoDetach=false',
              '-c', 'init.templateDir=', *args], cwd=cwd,
             environment=cloud.safe_environment(os.environ))
         if result.returncode:
@@ -2935,17 +2936,21 @@ class CloudTests(unittest.TestCase):
         def invoke(root, state, report, environment):
             snapshot = cloud.validate_half_month(state / cloud.HALF_MONTH)[0]
             previous = snapshot.get('collection')
-            if previous and cloud.unfinished_half_month(snapshot):
+            resuming = bool(previous and cloud.unfinished_half_month(snapshot, collector.utc_now()))
+            if resuming:
                 self.assertEqual(environment['CLOUD_COLLECTION_HALF_RESUME'], 'true')
                 self.assertEqual(environment['CLOUD_COLLECTION_HALF_CYCLE_ID'], previous['chainId'])
                 self.assertEqual(environment['COLLECTION_DATE'], previous['serviceDate'])
                 self.assertEqual(environment['CLOUD_COLLECTION_RUN_ID'], previous['chainId'])
             else:
                 self.assertNotIn('CLOUD_COLLECTION_HALF_RESUME', environment)
-            progress = previous or {
+            facts = cloud.load_half_month_state()
+            service = dt.date.fromisoformat(environment['COLLECTION_DATE'])
+            progress = previous if resuming else {
                 'chainId': environment['CLOUD_COLLECTION_RUN_ID'], 'names': ['あむ', 'こい'],
-                'periods': [['2026-10-01', '2026-10-15']], 'cursor': 0, 'nextAt': None,
-                'reason': 'processing', 'ready': False}
+                'periods': [list(period) for period in facts.discovery_periods(service)],
+                'cursor': 0, 'nextAt': None, 'reason': 'processing', 'ready': False,
+                'serviceDate': service.isoformat()}
             progress.update(cursor=2 if complete else 1, ready=not complete,
                             reason='complete' if complete else 'time_limit')
             snapshot.update(collection=progress, lastRun={'status': 'no-new' if complete else 'partial'})
@@ -3002,11 +3007,12 @@ class CloudTests(unittest.TestCase):
                              collector=collector, personal=module)
         self.assertEqual(done['continuationReady'], 'false')
         saved = self.remote_json(cloud.HALF_MONTH)[0]
-        self.assertEqual(saved['collection']['periods'], [['2026-10-01', '2026-10-15']])
-        self.assertEqual(saved['collection']['serviceDate'], '2026-10-01')
-        # A later GitHub run resumes the same cohort under its own accounting ID.
+        # The October cohort no longer covers November: a new daily cycle owns today's periods
+        # instead of resuming (and freezing discovery on) the old scope.
+        self.assertEqual(saved['collection']['periods'], [['2026-11-01', '2026-11-15']])
+        self.assertEqual(saved['collection']['serviceDate'], '2026-11-01')
         self.assertEqual(saved['collection']['chainId'], '12346-1')
-        self.assertEqual(done['halfMonthRebasedFrom'], '12345-1')
+        self.assertNotIn('halfMonthRebasedFrom', done)
         self.assertEqual(saved['collectionSlots'], ['2026-09-30T15:30:00Z', '2026-10-31T15:30:00Z'])
         self.half_slot('2026-11-01T00:30:00+09:00')
         del self.environment['SCHEDULE_EVIDENCE_KEY']
@@ -3175,7 +3181,8 @@ class CloudTests(unittest.TestCase):
         state = cloud.load_half_month_state().empty_state()
         state['collection'] = progress
         self.bare_commit({cloud.HALF_MONTH: state})
-        clock[0] = dt.datetime(2026, 11, 1, 0, 30, tzinfo=cloud.JST)
+        # 10/12 is still inside the saved cohort's periods, so the half cycle resumes.
+        clock[0] = dt.datetime(2026, 10, 12, 0, 30, tzinfo=cloud.JST)
         self.personal_mode('both')
         calls = []
         half_child = self.half_cycle_child(complete=True)
@@ -3184,10 +3191,10 @@ class CloudTests(unittest.TestCase):
             return half_child(*args)
         def personal(root, state, report, environment):
             calls.append('personal')
-            self.assertEqual(environment['COLLECTION_DATE'], '2026-11-01')
+            self.assertEqual(environment['COLLECTION_DATE'], '2026-10-12')
             self.assertEqual(environment['CLOUD_COLLECTION_RUN_ID'], '12345-1')
             snapshot = module.read_state(state / cloud.PERSONAL)
-            snapshot['lastRun'] = {'status': 'no-new', 'date': '2026-11-01',
+            snapshot['lastRun'] = {'status': 'no-new', 'date': '2026-10-12',
                                    'finishedAt': collector.iso(clock[0]), 'complete': False,
                                    'requests': {'searches': 0, 'posts': 0}, 'pendingCount': 0}
             collector.atomic_json(state / cloud.PERSONAL, snapshot)

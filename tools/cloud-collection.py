@@ -803,6 +803,9 @@ class StateRepository:
             '-c', 'credential.interactive=false', '-c', 'core.hooksPath=' + str(self.path / 'no-hooks'),
             '-c', 'init.templateDir=', '-c', 'core.autocrlf=false', '-c', 'core.longpaths=true',
             '-c', 'core.attributesFile=' + os.devnull, '-c', 'commit.gpgSign=false',
+            # A disposable work repository: no detached auto gc/maintenance may still be writing
+            # (e.g. maintenance.lock, objects) while the run removes its work directory.
+            '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'gc.autoDetach=false',
             '-c', 'user.name=github-actions[bot]',
             '-c', 'user.email=41898282+github-actions[bot]@users.noreply.github.com',
             '-c', 'http.followRedirects=false', *args]
@@ -1571,19 +1574,35 @@ def restored_personal_continuation(personal, usage, source, now, collector):
     return mode, True
 
 
-def unfinished_half_month(state):
+def half_month_cohort_current(state, now):
+    """Whether the saved cohort's periods still include every period discovered today."""
     progress = (state or {}).get('collection')
     if not progress:
+        return False
+    facts = load_half_month_state()
+    today = now.astimezone(JST).date()
+    saved = {tuple(period) for period in progress['periods']}
+    return set(facts.discovery_periods(today)) <= saved
+
+
+def unfinished_half_month(state, now=None):
+    progress = (state or {}).get('collection')
+    if not progress:
+        return False
+    if now is not None and not half_month_cohort_current(state, now):
+        # Never freeze discovery on an old scope: a new daily cycle owns today's periods.
         return False
     pending = {item['id'] for item in state['pending'] if item['name'] in progress['names']}
     return (progress.get('cursor', 0) < len(progress['names'])
             or any(row['sourceId'] in pending and row['stage'] not in ('done', 'held')
-                   for row in state.get('readings', {}).values()))
+                   for row in state.get('readings', {}).values())
+            # A rebased chain can keep cursor == len(names) while searches/candidates remain.
+            or progress.get('ready') is True and progress.get('reason') == 'time_limit')
 
 
 def restored_half_month_continuation(state, usage, source, now, collector):
     progress = (state or {}).get('collection')
-    if (not progress or not unfinished_half_month(state) or not progress['ready']
+    if (not progress or not unfinished_half_month(state, now) or not progress['ready']
             or progress['reason'] != 'time_limit' or usage is None or source is None):
         return False
     if (progress.get('nextAt') and collector.timestamp(progress['nextAt']) > now
@@ -1783,7 +1802,13 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
             enabled or personal_backend == 'azure')
         continuing = bool(finite_personal and progress and (progress['searches'] or progress['postIds']))
         half_progress = (half_month_state or {}).get('collection')
-        half_continuing = collect_half_month and unfinished_half_month(half_month_state)
+        half_continuing = collect_half_month and unfinished_half_month(half_month_state, collector.utc_now())
+        if (expected and args.mode in ('both', 'schedule') and not continuing and half_progress
+                and not half_month_cohort_current(half_month_state, collector.utc_now())):
+            # The checkpoint's cohort ended with its periods; the next scheduled cycle starts anew.
+            result.update(collectionStatus='stale-continuation', collectionCode=0, persistenceStatus='unchanged')
+            copy_pair(state_dir, output.parent, collector, **bundle)
+            return result
         if expected:
             require((args.mode != 'schedule' and continuing and progress['reason'] == 'time_limit')
                     or (args.mode in ('both', 'schedule') and half_continuing

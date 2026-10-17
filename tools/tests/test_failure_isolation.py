@@ -260,14 +260,14 @@ class ResumeOrderTests(IsolationBase):
             return value
         return client
 
-    def test_resume_starts_at_cursor_before_earlier_names_pending_work(self):
+    def test_resume_searches_unsearched_names_before_earlier_names_pending_work(self):
         calls = []
         # あむ's first reading stays unresolved, so she keeps actionable pending work.
         self.model.structured.return_value = {'classification': 'uncertain', 'complete': False, 'periods': []}
         self.client = self.ordered_client(calls, deadline_handle='new_member')
         self.run_cycle()
-        self.assertEqual(self.state['collection']['cursor'], 1)
         self.assertEqual(self.state['collection']['reason'], 'time_limit')
+        self.assertTrue(self.state['collection']['ready'])
         later = base.entry(suffix=3)
         self.payloads[later['id']] = base.payload(suffix=3)
         candidates, _ = collector.discover(base.document(later), {'あむ': base.TARGET}, self.now, {},
@@ -281,6 +281,7 @@ class ResumeOrderTests(IsolationBase):
         self.run_cycle(resume=True)
         self.assertEqual(calls[0], ('search', 'new_member'))
         self.assertLess(calls.index(('search', 'new_member')), calls.index(('post', later['id'])))
+        self.assertEqual(calls.count(('search', 'amu_zettai')), 0, 'six-hour window: no repeated search')
 
     def test_past_check_times_never_become_a_stale_checkpoint_next_at(self):
         self.documents['new_member'] = base.document()

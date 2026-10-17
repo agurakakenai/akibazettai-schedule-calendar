@@ -551,7 +551,10 @@ class CycleTests(unittest.TestCase):
                          ('cache', 'held', 'image_cache_expired'))
         self.assertIsNone(diagnostic['host'])
         self.assertIsNone(diagnostic['imageIndex'])
-        self.assertEqual(self.gets, before)
+        # The expired first-half source is never fetched again, but the held candidate no
+        # longer blocks discovery of the newly discovered second half (9/16-30) on 9/14.
+        self.assertEqual((self.gets['posts'], self.gets['images']), (before['posts'], before['images']))
+        self.assertEqual(self.gets['searches'], before['searches'] + ['amu_zettai'])
         self.assertEqual(self.usage.calls, 1)
 
     def test_mixed_archive_pruning_preserves_canonical_expiry_and_never_refetches(self):
@@ -578,12 +581,17 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(report['reasons'], ['image_cache_expired'])
         self.assertEqual(self.state['readings'][old_key]['reason'], 'image_cache_expired')
         self.assertEqual(self.state['readings'][old_key]['stage'], 'held')
-        self.assertEqual(self.gets, before)
+        source_gets = lambda: (self.gets['posts'], self.gets['images'])
+        self.assertEqual(source_gets(), (before['posts'], before['images']))
+        # One second-half (9/16-30) search on 9/14; the expired source itself is never refetched.
+        self.assertEqual(self.gets['searches'], before['searches'] + ['amu_zettai'])
         self.assertEqual(self.usage.calls, 1)
         self.reopen()
         self.run_cycle()
         self.assertEqual(self.state['readings'][old_key]['reason'], 'image_cache_expired')
-        self.assertEqual(self.gets, before)
+        self.assertEqual(source_gets(), (before['posts'], before['images']))
+        self.assertEqual(self.gets['searches'], before['searches'] + ['amu_zettai'],
+                         'the six-hour check window prevents a repeated search')
         self.assertEqual(self.usage.calls, 1)
         self.state = facts.empty_state()
         self.state['pending'] = collector.discover(
@@ -591,7 +599,8 @@ class CycleTests(unittest.TestCase):
         self.reopen()
         report, _ = self.run_cycle()
         self.assertEqual(report['reasons'], ['image_cache_expired'])
-        self.assertEqual(self.gets, before, 'snapshot lag must not refetch an expired source')
+        self.assertEqual(source_gets(), (before['posts'], before['images']),
+                         'snapshot lag must not refetch an expired source')
         self.assertEqual(self.usage.calls, 1)
 
     def test_all_expired_restore_holds_old_source_but_allows_new_member_cycle(self):
@@ -632,7 +641,8 @@ class CycleTests(unittest.TestCase):
         report, _ = self.run_cycle(cycle_id='2002-1')
         self.assertIn('image_cache_expired', report['reasons'])
         self.assertEqual(report['analysisRequests'], 1, 'only the new member may issue AI')
-        self.assertEqual(self.gets['searches'][len(before['searches']):], [handle])
+        # あむ's held first-half source does not block her second-half (9/16-30) search.
+        self.assertEqual(self.gets['searches'][len(before['searches']):], ['amu_zettai', handle])
         self.assertEqual(self.gets['posts'][len(before['posts']):], [entry['id']])
         self.assertEqual(len(self.gets['images']) - len(before['images']), 1)
         self.assertEqual(self.state['readings'][old_key]['reason'], 'image_cache_expired')
