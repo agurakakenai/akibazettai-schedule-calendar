@@ -42,6 +42,11 @@ def _module(filename, name):
 
 
 facts = _module('half-month-schedules.py', 'half_month_facts')
+# Deterministic checks of one fetched post body: re-fetching cannot change the outcome.
+TERMINAL_POST_REASONS = frozenset({
+    'photo_owner_mismatch', 'photo_metadata_mismatch', 'incomplete_photo_metadata',
+    'invalid_photo_metadata', 'invalid_photo_dimensions', 'non_photo_media',
+    'quoted_or_reply', 'obsolete_or_invalid_edit'})
 azure = _module('schedule-azure.py', 'half_month_azure')
 official = _module('collect-shifts.py', 'half_month_official')
 personal = _module('collect-personal-shifts.py', 'half_month_personal')
@@ -1346,7 +1351,14 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
     periods = sorted(set(facts.target_periods(anchor)) | set(discovery))
     refresh_coverage(state, reasons, started, manual, registry=registry,
                      terminal_confirmed=True, periods=periods)
-    candidate_since = facts.candidate_start(anchor)
+    # A resumed cohort keeps its saved scope, but the real JST date decides which of its
+    # periods are still open. One day of grace lets a delayed slot or a continuation that
+    # crosses midnight finish the half that has just ended. A candidate created before
+    # candidate_start(reference) can only describe ended periods, so it is retired without
+    # HTTP or AI.
+    reference = started.astimezone(facts.JST).date() - dt.timedelta(days=1)
+    candidate_since = max(facts.candidate_start(anchor), facts.candidate_start(reference))
+    open_periods = [tuple(period) for period in discovery if facts.day(period[1]) >= reference]
     current.setdefault('cursor', 0)
     current.setdefault('nextAt', None)
     initial_cursor = current['cursor']
@@ -1354,6 +1366,11 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
     stale = {item['id'] for item in state['pending'] if item['name'] in targets
              and facts.timestamp(item['searchCreatedAt']).astimezone(facts.JST).date()
              < candidate_since}
+    for item in state['pending']:
+        if item['id'] in stale:
+            # Remember the retirement so a later search cannot re-enqueue the same candidate.
+            state['candidateHistory'].setdefault(facts.candidate_key(item), {
+                'candidate': dict(item), 'reason': 'stale_candidate', 'checkedAt': facts.stamp(started)})
     state['pending'] = [item for item in state['pending'] if item['id'] not in stale]
     for progress in state['readings'].values():
         if progress['sourceId'] in stale:
@@ -1395,12 +1412,43 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
         if not allowed():
             raise Failure('time_limit')
 
-    def drop_not_schedule(candidate):
+    def drop_not_schedule(candidate, reason='not_schedule'):
         # Terminal for this candidate only: no retry loop and no identity verdict on the person.
         state['pending'] = [item for item in state['pending'] if item['id'] != candidate['id']]
         state['candidateHistory'][facts.candidate_key(candidate)] = {
-            'candidate': dict(candidate), 'reason': 'not_schedule', 'checkedAt': facts.stamp(clock())}
+            'candidate': dict(candidate), 'reason': reason, 'checkedAt': facts.stamp(clock())}
         save()
+
+    def created(item):
+        return facts.timestamp(item['searchCreatedAt']).astimezone(facts.JST).date()
+
+    def relevant(item):
+        # Published on or after an open period's publication start (1st/13th).
+        return any(created(item) >= facts.publication_start(period) for period in open_periods)
+
+    def waiting(item):
+        rows = [record for record in state['readings'].values() if record['sourceId'] == item['id']]
+        return not rows or rows[0]['stage'] not in ('held', 'done')
+
+    def due_periods(name):
+        """Open, unconfirmed periods whose check is due and no queued candidate may cover."""
+        result = []
+        for period in open_periods:
+            row = state['coverage'][period[0]][name]
+            if row['confirmedIds'] or (row['nextCheckAt'] is not None
+                                       and facts.timestamp(row['nextCheckAt']) > clock()):
+                continue
+            if any(item['name'] == name and created(item) >= facts.publication_start(period)
+                   for item in state['pending']):
+                continue
+            result.append(period)
+        return result
+
+    def actionable(item):
+        return waiting(item) and (item['nextAttemptAt'] is None
+                                  or facts.timestamp(item['nextAttemptAt']) <= clock())
+
+    searched = set()
 
     try:
         if cache is None:
@@ -1411,14 +1459,26 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
         else:
             # Start where the previous run stopped, then wrap around: otherwise the same early
             # names' pending work can consume every run's time and later names are never reached.
+            # Open-period searches go first, then candidates that may describe an open period,
+            # and only then remaining work for already-ended periods.
             start = min(initial_cursor, len(current['names']))
             order = [*range(start, len(current['names'])), *range(0, start)]
-            for position in order:
+            plan = [(phase, position) for phase in ('search', 'open', 'rest') for position in order]
+            for phase, position in plan:
+                # Applying a reading revision can replace the collection mapping; never write to a stale copy.
+                current = state['collection']
                 name = current['names'][position]
                 reply_waiting = any(item['name'] == name and item.get('replyCandidate')
                                     for item in state['pending'])
                 if name not in targets or confirmed(name) and not reply_waiting:
                     current['cursor'] = max(current['cursor'], position + 1)
+                    continue
+                if phase == 'search' and (name in searched or not due_periods(name)):
+                    continue
+                if phase != 'search' and not any(item['name'] == name and relevant(item) == (phase == 'open')
+                                                 for item in state['pending']):
+                    if phase == 'rest':
+                        current['cursor'] = max(current['cursor'], position + 1)
                     continue
                 client = client_factory()
                 client.chunk_images = True
@@ -1426,13 +1486,13 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                 failure_stage, failure_host, failure_image = 'source', None, None
                 try:
                     guard(client, name)
-                    pending = [item for item in state['pending'] if item['name'] == name]
-                    if not pending and position >= current['cursor']:
-                        due = any(not state['coverage'][start][name]['confirmedIds'] and (
-                            state['coverage'][start][name]['nextCheckAt'] is None
-                            or facts.timestamp(state['coverage'][start][name]['nextCheckAt']) <= clock())
-                                  for start, _ in discovery)
+                    pending = ([] if phase == 'search' else
+                               [item for item in state['pending']
+                                if item['name'] == name and relevant(item) == (phase == 'open')])
+                    if phase == 'search':
+                        due = due_periods(name)
                         if due:
+                            searched.add(name)
                             source.check('searches')
                             counts['searches'] += 1
                             document = client.search(targets[name]['handle'])
@@ -1442,15 +1502,13 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                                 candidate_since=candidate_since)
                             del document
                             dropped = enqueue(state, candidates, clock(), analyzer)
-                            for start, _ in discovery:
+                            for start, _ in due:
                                 row = state['coverage'][start][name]
-                                if not row['confirmedIds']:
-                                    row.update(lastSearchedAt=facts.stamp(clock()),
-                                               nextCheckAt=facts.stamp(clock() + dt.timedelta(hours=6)),
-                                               reason='queue_limit' if name in dropped else 'candidate_limit' if truncated else
-                                               'post_unverified' if candidates else 'source_not_found')
+                                row.update(lastSearchedAt=facts.stamp(clock()),
+                                           nextCheckAt=facts.stamp(clock() + dt.timedelta(hours=6)),
+                                           reason='queue_limit' if name in dropped else 'candidate_limit' if truncated else
+                                           'post_unverified' if candidates else 'source_not_found')
                             save()
-                            pending = [item for item in state['pending'] if item['name'] == name]
                     for selected in sorted(pending, key=lambda item: (item['priority'], -int(item['id']))):
                         progress = None
                         failure_stage, failure_host, failure_image = 'source', POST_HOST, None
@@ -1564,10 +1622,21 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                                     selected, payload, targets[name], clock(), bindings.get(name),
                                     payload_hash=payload_hash, parent_payload=parent)
                             except ValueError as exc:
-                                if str(exc) != 'reply_to_other_account':
+                                if str(exc) != 'reply_to_other_account' and str(exc) not in TERMINAL_POST_REASONS:
                                     raise
                                 del payload, parent
-                                drop_not_schedule(selected)
+                                if str(exc) == 'reply_to_other_account':
+                                    drop_not_schedule(selected)
+                                else:
+                                    # The same post body always fails this check: end the candidate
+                                    # instead of re-fetching it every run (the receipt stays recorded).
+                                    drop_not_schedule(selected, 'permanent_failure')
+                                    failures[selected['id']] = {
+                                        'name': name, 'postId': selected['id'], 'postUrl': selected['url'],
+                                        'imageIndex': None, 'failedAt': facts.stamp(clock()),
+                                        'host': POST_HOST, 'httpStatus': None, 'retryAt': None,
+                                        'stage': 'source', 'nextStage': 'held',
+                                        'reason': 'permanent_failure', 'detail': str(exc)}
                                 continue
                             del payload, parent
                             key = facts.source_key(verified)
@@ -1619,8 +1688,9 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                                          terminal_confirmed=True, periods=periods)
                         save()
                         client.close()
-                    current = state['collection']
-                    current['cursor'] = max(current['cursor'], position + 1)
+                    if phase == 'rest':
+                        current = state['collection']
+                        current['cursor'] = max(current['cursor'], position + 1)
                 except Exception as exc:
                     if progress is not None and failure_host is None and failure_stage != 'cache':
                         failure_stage = progress['stage']
@@ -1665,7 +1735,7 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                             'reason': reason}
                         if unexpected:
                             failure.update(failure_facts.exception_facts(exc))
-                        detail = failure_facts.reason_of(exc)
+                        detail = getattr(exc, 'detail', None) or failure_facts.reason_of(exc)
                         if (isinstance(detail, str) and detail != reason
                                 and re.fullmatch(r'[a-z_]{1,64}', detail)):
                             # A code-defined token only (e.g. timestamp_mismatch); never a message.
@@ -1675,8 +1745,9 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                             progress['failure'] = failure
                     if stop:
                         break
-                    current = state['collection']
-                    current['cursor'] = max(current['cursor'], position + 1)
+                    if phase == 'rest':
+                        current = state['collection']
+                        current['cursor'] = max(current['cursor'], position + 1)
                 finally:
                     client.close()
                     save()
@@ -1691,10 +1762,17 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                   and (name not in targets or not confirmed(name))]
     next_times = [row['nextAt'] for row in pending_progress if row['nextAt']]
     next_times += [state['coverage'][start][name]['nextCheckAt'] for name in current['names'] if name in targets
-                   for start, _ in discovery if not state['coverage'][start][name]['confirmedIds']
+                   for start, _ in open_periods if not state['coverage'][start][name]['confirmedIds']
                    and state['coverage'][start][name]['nextCheckAt']
                    and not any(item['name'] == name for item in state['pending'])]
-    remaining = bool(pending_progress or current['cursor'] < len(current['names']))
+    # Work that is possible right now: a due open-period search or an actionable candidate. A
+    # rebased chain keeps cursor == len(names), so the cursor alone cannot mean "nothing left".
+    open_work = cache is not None and any(
+        name in targets and not confirmed(name)
+        and (due_periods(name) or any(item['name'] == name and actionable(item) for item in state['pending']))
+        for name in current['names'])
+    remaining = bool(pending_progress or current['cursor'] < len(current['names'])
+                     or 'time_limit' in errors and open_work)
     progressed = any(counts.values()) or changed or current['cursor'] > initial_cursor
     ready = bool('time_limit' in errors and remaining and progressed)
     current.update(ready=ready,

@@ -62,6 +62,30 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise AzureFailure('azure_http_error')
 
 
+def error_code_token(raw):
+    """A code-defined token from an Azure 4xx error body, e.g. azure_invalid_image_format.
+
+    Only error.code (or error.type) is read; messages, params and the body are discarded.
+    Anything that is not a short identifier is ignored rather than sanitized into text.
+    """
+    if not isinstance(raw, (bytes, bytearray)) or not raw or len(raw) > 4096:
+        return None
+    try:
+        value = strict_json(bytes(raw))
+    except (ValueError, UnicodeError, RecursionError):
+        return None
+    error = value.get('error') if isinstance(value, dict) else None
+    if not isinstance(error, dict):
+        return None
+    for key in ('code', 'type'):
+        code = error.get(key)
+        if isinstance(code, str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_.-]{0,47}', code):
+            token = 'azure_' + re.sub(r'[^a-z]+', '_', code.lower()).strip('_')
+            if re.fullmatch(r'azure_[a-z_]{1,58}', token):
+                return token
+    return None
+
+
 def request_payload(messages, schema, *, name, max_completion_tokens):
     return {'model': DEPLOYMENT, 'reasoning_effort': 'none',
             'max_completion_tokens': max_completion_tokens, 'messages': messages,
@@ -169,9 +193,12 @@ class AzureOpenAI:
         self.usage = usage
         self.opener = opener or urllib.request.build_opener(NoRedirect())
 
-    def fail_http(self, status, retry_after):
+    def fail_http(self, status, retry_after, *, detail=None):
         self.on_http_failure(status, retry_after)
-        raise AzureFailure('azure_http_error', status)
+        failure = AzureFailure('azure_http_error', status)
+        if detail is not None:
+            failure.detail = detail
+        raise failure
 
     def structured(self, messages, schema, *, name, max_completion_tokens):
         payload = request_payload(messages, schema, name=name, max_completion_tokens=max_completion_tokens)
@@ -191,8 +218,14 @@ class AzureOpenAI:
                     raise AzureFailure('azure_invalid_output')
         except urllib.error.HTTPError as exc:
             status, retry = exc.code, exc.headers.get('Retry-After') if exc.headers else None
+            detail = None
+            if 400 <= status <= 499:
+                try:
+                    detail = error_code_token(exc.read(4097))
+                except (OSError, http.client.HTTPException, ValueError):
+                    detail = None
             exc.close()
-            self.fail_http(status, retry)
+            self.fail_http(status, retry, detail=detail)
         except TimeoutError:
             raise AzureFailure('azure_timeout') from None
         except (OSError, http.client.HTTPException):
