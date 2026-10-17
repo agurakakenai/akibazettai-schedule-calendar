@@ -48458,10 +48458,10 @@
     },
     "2026-10-18": {
       "posts": 36,
-      "searches": 16
+      "searches": 17
     }
   },
-  "checkedAt": "2026-10-17T18:45:48.920463Z",
+  "checkedAt": "2026-10-17T18:49:01.122976Z",
   "collectionSlots": [
     "personal:2026-09-23T10:00+09:00",
     "personal:2026-09-23T12:00+09:00",
@@ -60855,7 +60855,7 @@
         ],
         "postIds": [],
         "reason": "azure_ungrounded",
-        "searchedAt": "2026-10-16T07:59:22.287275Z",
+        "searchedAt": "2026-10-17T18:49:05.047538Z",
         "shifts": [
           "夜"
         ]
@@ -63162,40 +63162,35 @@
   },
   "lastRequests": {
     "cdn.syndication.twimg.com": "2026-10-17T18:44:49.150530Z",
-    "search.yahoo.co.jp": "2026-10-17T18:46:02.309049Z"
+    "search.yahoo.co.jp": "2026-10-17T18:49:02.031056Z"
   },
   "lastRun": {
     "activeTargetCount": 34,
-    "attemptedCount": 19,
+    "attemptedCount": 0,
     "complete": false,
     "date": "2026-10-18",
     "dateBasis": "JST calendar date, 00:00 boundary",
     "deferredCount": 20,
     "failures": [
       {
-        "id": "2111111926545858928",
-        "reason": "azure_pending"
+        "id": "2109645622488055855",
+        "reason": "azure_ungrounded"
       }
     ],
-    "finishedAt": "2026-10-17T18:46:04.972947Z",
-    "newEventCount": 6,
-    "newPostCount": 8,
+    "finishedAt": "2026-10-17T18:49:05.433803Z",
+    "newEventCount": 0,
+    "newPostCount": 0,
     "pendingCount": 697,
     "requests": {
-      "posts": 19,
-      "searches": 2
+      "posts": 0,
+      "searches": 1
     },
-    "sourceCount": 2,
+    "sourceCount": 1,
     "sources": [
       {
-        "candidateCount": 3,
+        "candidateCount": 5,
         "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Achima_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 4,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Amirin_zettai&ei=UTF-8"
+        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Akirari_zettai&ei=UTF-8"
       }
     ],
     "status": "partial",
@@ -85854,14 +85849,8 @@
     "mode": "personal",
     "nextAt": null,
     "postIds": [],
-    "reason": "time_limit",
-    "searches": [
-      {
-        "date": "2026-10-12",
-        "handle": "kirari_zettai",
-        "name": "きらり"
-      }
-    ],
+    "reason": "complete",
+    "searches": [],
     "serviceDate": "2026-10-18",
     "targets": {
       "2026-10-12": {
@@ -105949,7 +105938,7 @@
         "handle": "uru_zettai"
       },
       "きらり": {
-        "attemptedAt": "2026-10-16T07:59:22.287275Z",
+        "attemptedAt": "2026-10-17T18:49:05.047538Z",
         "handle": "kirari_zettai"
       },
       "こえび": {
