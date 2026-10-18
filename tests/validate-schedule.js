@@ -184,13 +184,15 @@ function shiftsFor(name) {
 }
 
 {
-  const plans = data.sourceConfirmedPlans;
+  const allPlans = data.sourceConfirmedPlans;
+  const plans = allPlans.filter(plan => plan.source.period.from === "2026-09-16");
   const legacyContext = { window: {} };
   vm.runInNewContext(source.slice(0, source.indexOf("// Reviewed original sources")), legacyContext);
   for (const [date, day] of Object.entries(legacyContext.window.SCHEDULE_DATA.schedule)) {
     assert.equal(JSON.stringify(data.schedule[date]), JSON.stringify(day),
       `${date}: the original manual data must remain unchanged`);
   }
+  assert.ok(allPlans.every(plan => ["2026-09-16", "2026-10-16"].includes(plan.source.period.from)));
   assert.equal(new Set(plans.map(plan => plan.source.name)).size, 36);
   assert.equal(plans.length, 37);
   assert.equal(plans.reduce((total, plan) => total + plan.days.length, 0), 230);
@@ -198,17 +200,18 @@ function shiftsFor(name) {
     total + plan.days.reduce((count, day) => count + day.shifts.length, 0), 0), 265);
   const registry = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "data", "members.json"), "utf8"));
   const excluded = ["まこっちゃん", "うる", "みりん", "けだま"];
-  for (const plan of plans) {
+  for (const plan of allPlans) {
     const source = plan.source;
     const member = registry.members.find(member => member.canonicalName === source.name);
     assert.ok(member && member.membership === "active");
     assert.equal(member.xProfileUrl, `https://x.com/${source.authorScreenName}`);
+    assert.equal(source.url, `https://x.com/${source.authorScreenName}/status/${source.id}`);
     assert.equal(source.confirmation.method, "source-confirmed");
     assert.match(source.confirmation.bodySha256, /^[a-f0-9]{64}$/);
     for (const hash of source.confirmation.imageSha256) assert.match(hash, /^[a-f0-9]{64}$/);
     assert.ok(!excluded.includes(source.name));
     for (const day of plan.days) {
-      assert.ok("2026-09-16" <= day.date && day.date <= "2026-09-30");
+      assert.ok(source.period.from <= day.date && day.date <= source.period.to);
       for (const shift of day.shifts) {
         const entry = data.schedule[day.date][shift].find(entry => entry.name === source.name);
         assert.ok(entry.halfMonthSources.some(item => item.id === source.id));
@@ -268,6 +271,33 @@ function shiftsFor(name) {
   const anotherSource = { ...oldAnalysis, id: "2101144673276641666" };
   assert.ok(api.buildEffectiveSchedule(data.schedule, { schedules: [anotherSource] })
     ["2026-09-19"]["夜"].some(entry => entry.name === "ちぇる"));
+
+  // October second half: visually reviewed originals, not model inference.
+  const october = allPlans.filter(plan => plan.source.period.from === "2026-10-16");
+  assert.equal(october.length, 22);
+  assert.equal(new Set(october.map(plan => plan.source.name)).size, 22);
+  assert.equal(october.reduce((total, plan) => total + plan.days.length, 0), 142);
+  assert.equal(october.reduce((total, plan) =>
+    total + plan.days.reduce((count, day) => count + day.shifts.length, 0), 0), 162);
+  const oct = (name) => october.find(plan => plan.source.name === name);
+  const compact = (name) => Array.from(oct(name).days, day => `${day.date.slice(8)}${day.shifts.join("")}`);
+  assert.deepEqual(compact("るるか"), ["17昼", "18昼", "19昼", "21昼夜", "22夜", "23夜", "26昼", "29昼", "30昼夜", "31夜"]);
+  assert.deepEqual(compact("あらた"), ["16夜", "20昼", "21昼", "23昼夜", "26昼", "27昼", "28昼", "30昼", "31昼"]);
+  assert.deepEqual(compact("ひなり"), ["18昼"], "first-half rows of a whole-month post stay out of this period");
+  assert.ok(oct("ちゆ").days.every(day => day.date >= "2026-10-16"));
+  const miria22 = oct("みりあ").days.find(day => day.date === "2026-10-22");
+  assert.deepEqual([...miria22.shifts], ["昼"]);
+  assert.match(miria22.reviewNote, /おーらす with 12-17/);
+  assert.deepEqual(Array.from(oct("いと").days.filter(day => day.unmappedQualifier), day => day.date.slice(8)),
+    ["21", "28"], "早め昼 has no hour rule and stays unmapped");
+  const kanataLate = data.schedule["2026-10-21"]["夜"].find(entry => entry.name === "かなた").workTiming.facts
+    .find(fact => fact.boundary === "start");
+  assert.equal(kanataLate.explicitTime, "17:30");
+  assert.equal(kanataLate.qualifier, "late");
+  const yume = oct("ゆめ").days.map(day => day.date);
+  assert.ok(yume.every(date => date <= "2026-10-27"), "no plan after the announced graduation");
+  const oct21 = [...new Set(Object.values(data.schedule["2026-10-21"]).flat().map(entry => entry.name))].sort();
+  assert.deepEqual(oct21, ["あらた", "いと", "うな", "かなた", "ちま", "はぴる", "ひかり", "みえる", "みりあ", "るるか"].sort());
 }
 
 assert.deepEqual(
