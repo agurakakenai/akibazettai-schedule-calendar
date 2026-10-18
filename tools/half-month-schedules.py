@@ -15,6 +15,18 @@ LEGACY_VERSION = 'half-month-schedule-v1'
 VERSION = 'half-month-schedule-v2'
 READING_VERSION = 'half-month-reading-v3'
 TIMING_VERSION = 'half-month-timing-v1'
+# shiftStatus values whose shifts come from printed clocks (schedule-reading.clock_shifts).
+CLOCK_SHIFT_STATUSES = ('clock-derived', 'stated-conflict')
+WORKING_SHIFT_STATUSES = ('stated', *CLOCK_SHIFT_STATUSES)
+
+
+def clock_shifts(start, end):
+    """Store-hour mapping of a printed start-end pair; mirrors schedule-reading.clock_shifts."""
+    if start is None or end is None or start >= end:
+        return []
+    return [*(['昼'] if start < '16:00' else []), *(['夜'] if end >= '21:00' else [])]
+
+
 MODEL, MODEL_VERSION = 'gpt-5.6-luna', '2026-07-09'
 HEX = re.compile(r'[a-f0-9]{64}\Z')
 ID = re.compile(r'[1-9][0-9]{0,24}\Z')
@@ -270,12 +282,12 @@ def validate_reading(schedule):
             raise ValueError('invalid_schedule_weekday')
         if fact['qualifier'] not in (None, 'long', 'early', 'late', 'all_day'):
             raise ValueError('invalid_schedule_qualifier')
-        if fact['shiftStatus'] not in ('stated', 'unstated', 'unreadable'):
+        if fact['shiftStatus'] not in ('stated', 'unstated', 'unreadable', *CLOCK_SHIFT_STATUSES):
             raise ValueError('invalid_schedule_shift_status')
         cancellation = reply and fact['operation'] == 'cancel'
         if reply and fact['operation'] not in ('add', 'replace', 'cancel'):
             raise ValueError('invalid_schedule_operation')
-        if ((not cancellation and bool(row['shifts']) != (fact['shiftStatus'] == 'stated'))
+        if ((not cancellation and bool(row['shifts']) != (fact['shiftStatus'] in WORKING_SHIFT_STATUSES))
                 or cancellation and (fact['shiftStatus'] == 'unreadable'
                                      or row['shifts'] and fact['shiftStatus'] != 'stated')
                 or cancellation and (fact['hours'] or fact['qualifier'] is not None)):
@@ -283,6 +295,12 @@ def validate_reading(schedule):
         hours = fact['hours']
         if not isinstance(hours, dict) or set(hours) - {'start', 'end'}:
             raise ValueError('invalid_schedule_hours')
+        if fact['shiftStatus'] in CLOCK_SHIFT_STATUSES:
+            printed = clock_shifts(*((hours.get(key) or {}).get('time') if (hours.get(key) or {}).get('basis')
+                                     == 'explicit' else None for key in ('start', 'end')))
+            if (not printed or (set(printed) == set(row['shifts'])) != (fact['shiftStatus'] == 'clock-derived')
+                    or fact['shiftStatus'] == 'clock-derived' and fact['qualifier'] is not None):
+                raise ValueError('invalid_schedule_shift_status')
         rules = {('long', ('昼',)): ('12:00', '18:00'),
                  ('early', ('夜',)): ('16:00', '22:00'),
                  ('late', ('夜',)): ('18:00', '22:00')}

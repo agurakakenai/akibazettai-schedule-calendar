@@ -631,10 +631,12 @@ def normalize_reading(result, source, text, image_count, allowed_periods=None, *
             _reading_operation(row, reply)
             normalized = {key: row[key] for key in DAY_SCHEMA['required']}
             normalized['shifts'] = hours.pop('shifts')
-            qualifier = row['qualifier']
+            shift_basis = hours.pop('shiftBasis')
+            qualifier = hours.pop('qualifier')
             if shifts is None:
                 complete = False
                 normalized['shifts'] = []
+                shift_basis = None
                 hours = {key: value for key, value in hours.items() if value['basis'] == 'explicit'}
                 # The raw reading remains private; unknown shifts cannot assert all-day.
                 if qualifier == 'all_day':
@@ -661,7 +663,7 @@ def normalize_reading(result, source, text, image_count, allowed_periods=None, *
             detail = {'weekday': row['weekday'], 'qualifier': qualifier, 'hours': hours,
                       'evidence': evidence, 'transcriptionHash': facts.digest(row['transcription'].encode('utf-8')),
                       'shiftStatus': ('unreadable' if shifts is None else
-                                      'stated' if normalized['shifts'] else 'unstated')}
+                                      (shift_basis or 'stated') if normalized['shifts'] else 'unstated')}
             if reply:
                 detail['operation'] = row['operation']
             details[id(normalized)] = detail
