@@ -78,8 +78,26 @@ def schema(base):
     return result
 
 
+CLOCK_DAY_START_BEFORE = '16:00'
+CLOCK_NIGHT_END_FROM = '21:00'
+
+
+def clock_shifts(start, end):
+    """Store-hour mapping for a printed start-end pair (昼 12-17/18, 夜 16/17-22, both 12-22)."""
+    if start is None or end is None or start >= end:
+        return []
+    return [*(['昼'] if start < CLOCK_DAY_START_BEFORE else []),
+            *(['夜'] if end >= CLOCK_NIGHT_END_FROM else [])]
+
+
 def derived_hours(row):
-    """Explicit clocks win; rule-derived hours never enter explicitTime."""
+    """Explicit clocks win; rule-derived hours never enter explicitTime.
+
+    Without any 昼/夜 word or qualifier, a printed start-end pair supplies the shifts
+    (shiftBasis=clock-derived). A word that disagrees with the printed pair keeps the
+    word and is marked shiftBasis=stated-conflict. Words never supply clocks beyond the
+    existing qualifier rules, and a row with neither words nor clocks gets no shift.
+    """
     qualifier, shifts = row['qualifier'], row['shifts'] or []
     expected = {'long': (['昼'], '12:00', '18:00'),
                 'early': (['夜'], '16:00', '22:00'),
@@ -89,7 +107,7 @@ def derived_hours(row):
         shifts = ['夜']
     if not shifts and qualifier == 'all_day':
         shifts = ['昼', '夜']
-    result = {'shifts': shifts}
+    result = {'shifts': shifts, 'shiftBasis': None, 'qualifier': qualifier}
     for field, position in (('start', 1), ('end', 2)):
         explicit = row['explicit' + field.title()]
         if explicit is not None:
@@ -98,6 +116,11 @@ def derived_hours(row):
             result[field] = {'time': explicit, 'basis': 'explicit'}
         elif rule and shifts == rule[0]:
             result[field] = {'time': rule[position], 'basis': 'qualifier-rule-v1'}
+    printed = clock_shifts(row['explicitStart'], row['explicitEnd'])
+    if printed and not shifts and qualifier is None:
+        result.update(shifts=printed, shiftBasis='clock-derived')
+    elif printed and shifts and set(printed) != set(shifts):
+        result['shiftBasis'] = 'stated-conflict'
     return result
 
 
@@ -121,7 +144,12 @@ def validate_evidence(row, image_count, text):
              'late': r'遅め|おそめ', 'all_day': r'オーラス|おーらす'}
     if row['qualifier'] is not None and (
             row['qualifier'] not in words or not re.search(words[row['qualifier']], transcription)):
-        raise ValueError('ungrounded_reading_qualifier')
+        # A word-less all_day stays storable only when printed clocks themselves span both shifts;
+        # the unsupported qualifier itself is dropped, never published.
+        if not (row['qualifier'] == 'all_day'
+                and clock_shifts(row['explicitStart'], row['explicitEnd']) == ['昼', '夜']):
+            raise ValueError('ungrounded_reading_qualifier')
+        row = {**row, 'qualifier': None}
     return derived_hours(row)
 
 

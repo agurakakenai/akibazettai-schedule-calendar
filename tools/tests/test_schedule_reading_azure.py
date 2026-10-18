@@ -3,6 +3,7 @@ import copy
 import datetime as dt
 import io
 import json
+from pathlib import Path
 import struct
 import unittest
 import zlib
@@ -83,7 +84,7 @@ class NormalizationTests(base.Offline):
             (row(qualifier='long', transcription='5日 長め昼 13:00〜17:00',
                  start='13:00', end='17:00'), ['昼'], '13:00', '17:00'),
             (row(shifts=(), transcription='5日 13:00〜17:00', start='13:00', end='17:00'),
-             [], '13:00', '17:00'),
+             ['昼'], '13:00', '17:00'),
         ]
         for item, shifts, start, end in cases:
             with self.subTest(item=item):
@@ -107,6 +108,78 @@ class NormalizationTests(base.Offline):
         self.assertFalse(complete)
         self.assertEqual(schedules[0]['days'][0]['shifts'], [])
         self.assertEqual(schedules[0]['reading']['days']['2026-09-05']['hours'], {})
+
+    def test_printed_clocks_supply_missing_shifts_and_words_win_conflicts(self):
+        cases = [
+            # (shifts, qualifier, transcription, start, end) -> (shifts, shiftStatus, qualifier)
+            (((), None, '5日 12:00〜17:00', '12:00', '17:00'), (['昼'], 'clock-derived', None)),
+            (((), None, '5日 12:00〜18:00', '12:00', '18:00'), (['昼'], 'clock-derived', None)),
+            (((), None, '5日 16:00〜22:00', '16:00', '22:00'), (['夜'], 'clock-derived', None)),
+            (((), None, '5日 17:30〜22:00', '17:30', '22:00'), (['夜'], 'clock-derived', None)),
+            (((), None, '5日 12:00〜22:00', '12:00', '22:00'), (['昼', '夜'], 'clock-derived', None)),
+            # Clocks that match neither store window do not invent a shift.
+            (((), None, '5日 18:00〜20:00', '18:00', '20:00'), ([], 'unstated', None)),
+            # One printed bound is not a pair.
+            (((), None, '5日 17:00', None, '17:00'), ([], 'unstated', None)),
+            # Words win over contradicting clocks and the contradiction stays recorded.
+            ((('昼',), None, '5日 昼 17:00〜22:00', '17:00', '22:00'), (['昼'], 'stated-conflict', None)),
+            ((('昼', '夜'), 'all_day', '5日 おーらす 12-17 12:00〜17:00', '12:00', '17:00'),
+             (['昼', '夜'], 'stated-conflict', 'all_day')),
+            ((('夜',), None, '5日 夜 17:00〜22:00', '17:00', '22:00'), (['夜'], 'stated', None)),
+            # A qualifier word without clocks keeps its existing rule and never gains clock shifts.
+            (((), 'late', '5日 おそめ', None, None), (['夜'], 'stated', 'late')),
+            # Neither words nor clocks: no shift.
+            (((), None, '5日', None, None), ([], 'unstated', None)),
+        ]
+        for (shifts, qualifier, text, start, end), (expected, status, kept) in cases:
+            with self.subTest(text=text):
+                schedules, _ = self.normalize(result(row(
+                    shifts=shifts, qualifier=qualifier, transcription=text, start=start, end=end)))
+                fact = schedules[0]['reading']['days']['2026-09-05']
+                self.assertEqual(sorted(schedules[0]['days'][0]['shifts']), sorted(expected))
+                self.assertEqual((fact['shiftStatus'], fact['qualifier']), (status, kept))
+                facts.validate_reading(schedules[0])
+
+    def test_wordless_all_day_is_stored_only_when_printed_clocks_span_both_shifts(self):
+        schedules, complete = self.normalize(result(row(
+            shifts=('昼', '夜'), qualifier='all_day', transcription='5日 12:00〜22:00',
+            start='12:00', end='22:00')))
+        fact = schedules[0]['reading']['days']['2026-09-05']
+        self.assertTrue(complete)
+        self.assertEqual(schedules[0]['days'][0]['shifts'], ['昼', '夜'])
+        self.assertEqual((fact['qualifier'], fact['shiftStatus']), (None, 'stated'))
+        for item in [row(shifts=('昼', '夜'), qualifier='all_day', transcription='5日 12:00〜17:00',
+                         start='12:00', end='17:00'),
+                     row(shifts=('昼', '夜'), qualifier='all_day', transcription='5日 昼夜')]:
+            with self.subTest(item=item), self.assertRaisesRegex(ValueError, 'ungrounded_reading_qualifier'):
+                self.normalize(result(item))
+
+    def test_public_reading_rejects_forged_clock_shift_status(self):
+        schedules, _ = self.normalize(result(row(
+            shifts=(), transcription='5日 17:00〜22:00', start='17:00', end='22:00')))
+        schedule = schedules[0]
+        facts.validate_reading(schedule)
+        fact = schedule['reading']['days']['2026-09-05']
+        for forge in [lambda: schedule['days'][0].update(shifts=['昼']),
+                      lambda: fact.update(hours={}),
+                      lambda: fact.update(shiftStatus='stated-conflict'),
+                      lambda: fact.update(qualifier='late')]:
+            with self.subTest(forge=forge):
+                copy_schedule = copy.deepcopy(schedule)
+                saved = (schedule['days'][0]['shifts'], copy.deepcopy(fact))
+                forge()
+                with self.assertRaises(ValueError):
+                    facts.validate_reading(schedule)
+                schedule['days'][0]['shifts'] = saved[0]
+                fact.clear()
+                fact.update(saved[1])
+                self.assertEqual(schedule, copy_schedule)
+
+    def test_reading_and_public_clock_rules_agree(self):
+        clocks = [f'{hour:02d}:{minute:02d}' for hour in range(10, 24) for minute in (0, 30)]
+        for start in clocks:
+            for end in clocks:
+                self.assertEqual(azure.reading.clock_shifts(start, end), facts.clock_shifts(start, end))
 
     def test_explicit_clocks_and_qualifiers_must_be_in_row_transcription(self):
         for item in [row(start='13:00'), row(qualifier='long'),
@@ -478,6 +551,64 @@ class RequestTests(base.Offline):
         analyzer, _, _ = self.analyzer(result(row(index=1), indexes=(1,)))
         with self.assertRaisesRegex(azure.AnalysisFailure, 'azure_invalid_output'):
             analyzer.analyze_reading(source, text, images, None, lambda key: None, pack=pack)
+
+
+class SavedReadingBenchmarkTests(base.Offline):
+    """API0 re-normalization of five real-shaped readings (synthetic wording, local truth)."""
+    FIXTURE = Path(__file__).with_name('fixtures') / 'half_month_reading_benchmark.json'
+
+    def score(self):
+        posts = json.loads(self.FIXTURE.read_text(encoding='utf-8'))['posts']
+        shift_names = {'day': ['昼'], 'night': ['夜'], 'all': ['昼', '夜']}
+        results = {}
+        for post in posts:
+            source, text, images = fixture(photos=post['photos'])
+            value = {'classification': post['classification'], 'complete': post['complete'], 'periods': [
+                {'month': period['month'], 'half': period['half'], 'printedYear': None, 'textYear': None,
+                 'imageIndexes': period['imageIndexes'], 'days': [
+                     {**{key: item[key] for key in ('day', 'weekday', 'shifts', 'transcription', 'qualifier',
+                                                    'explicitStart', 'explicitEnd')},
+                      'workTiming': [], 'operation': None,
+                      'evidence': {'imageIndex': item['imageIndex'], 'box': None}}
+                     for item in period['days']]} for period in post['periods']]}
+            metadata = [azure.probe_image(image['bytes'], image['mime']) for image in images]
+            try:
+                schedules, _ = azure.normalize_reading(value, source, text, len(images), None,
+                                                       image_metadata=metadata)
+            except ValueError as exc:
+                results[post['post']] = {'rejected': str(exc), 'full': 0, 'outside': []}
+                continue
+            saved = {}
+            for schedule in schedules:
+                facts.validate_reading(schedule)
+                for item in schedule['days']:
+                    hours = schedule['reading']['days'][item['date']]['hours']
+                    clock = tuple(hours[key]['time'] if hours.get(key, {}).get('basis') == 'explicit' else None
+                                  for key in ('start', 'end'))
+                    saved[int(item['date'][-2:])] = (sorted(item['shifts']), clock)
+            full = 0
+            for day, shift, start, end in post['truth']:
+                if day not in saved:
+                    continue
+                shifts, clock = saved[day]
+                accepted = [sorted(shift_names[shift])] + [
+                    sorted(sum((shift_names[name] for name in names), [])) for d, names in post['alternatives']
+                    if d == day]
+                full += shifts in accepted and clock == (start, end)
+            truth_days = {day for day, *_ in post['truth']}
+            results[post['post']] = {'rejected': None, 'full': full, 'outside': sorted(set(saved) - truth_days)}
+        return results
+
+    def test_saved_reading_rules_recover_clock_backed_days_without_new_inference(self):
+        results = self.score()
+        self.assertEqual(sum(item['full'] for item in results.values()), 31)
+        self.assertEqual([item['outside'] for item in results.values()], [[]] * 5)
+        # The calendar-style post with an all-day word lacking printed clocks stays rejected.
+        self.assertEqual({post: item['rejected'] for post, item in results.items() if item['rejected']},
+                         {'P2': 'ungrounded_reading_qualifier'})
+        # P5 is the clock-only table that the previous rule rejected outright (21/51 before).
+        self.assertEqual(results['P5']['full'], 10)
+        self.assertEqual(sum(item['full'] for post, item in results.items() if post != 'P5'), 21)
 
 
 if __name__ == '__main__':

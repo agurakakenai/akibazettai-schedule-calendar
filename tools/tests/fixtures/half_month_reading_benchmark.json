@@ -1,0 +1,74 @@
+{
+ "note": "Synthetic structure of five October 2026 second-half readings by the production gpt-5.6-luna v3 path; names and wording are replaced.",
+ "posts": [
+  {"post": "P1", "classification": "schedule", "complete": true, "photos": 1, "truth": [[16, "night", null, null], [20, "day", null, null], [21, "day", null, null], [23, "all", null, null], [26, "day", null, null], [27, "day", null, null], [28, "day", null, null], [30, "day", null, null], [31, "day", null, null]], "alternatives": [], "periods": [
+   {"month": 10, "half": "second", "imageIndexes": [0], "days": [
+    {"day": 16, "weekday": null, "shifts": null, "transcription": "16日", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 20, "weekday": null, "shifts": null, "transcription": "20日", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 21, "weekday": null, "shifts": null, "transcription": "21日", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 23, "weekday": null, "shifts": ["昼", "夜"], "transcription": "23日 おーらす", "qualifier": "all_day", "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 26, "weekday": null, "shifts": null, "transcription": "26日", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 27, "weekday": null, "shifts": null, "transcription": "27日", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 28, "weekday": null, "shifts": null, "transcription": "28日", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 30, "weekday": null, "shifts": null, "transcription": "30日", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 31, "weekday": null, "shifts": null, "transcription": "31日", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0}
+   ]}
+  ]},
+  {"post": "P2", "classification": "schedule", "complete": true, "photos": 1, "truth": [[15, "night", "16:00", "22:00"], [16, "night", "17:00", "22:00"], [18, "night", "17:00", "22:00"], [19, "night", "17:00", "22:00"], [20, "night", "17:00", "22:00"], [22, "all", "12:00", "22:00"], [23, "day", "12:00", "17:00"], [25, "night", "17:00", "22:00"], [27, "night", "17:00", "22:00"], [28, "night", "17:00", "22:00"], [29, "night", "17:00", "22:00"], [31, "all", "12:00", "22:00"]], "alternatives": [], "periods": [
+   {"month": 10, "half": "second", "imageIndexes": [0], "days": [
+    {"day": 15, "weekday": "木", "shifts": ["昼", "夜"], "transcription": "15日 昼 夜", "qualifier": "all_day", "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 16, "weekday": "金", "shifts": ["昼", "夜"], "transcription": "16日 昼 夜", "qualifier": "all_day", "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 19, "weekday": "月", "shifts": ["夜"], "transcription": "19日 夜", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 20, "weekday": "火", "shifts": ["夜"], "transcription": "20日 夜", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 23, "weekday": "金", "shifts": ["昼"], "transcription": "23日 おーらす 昼", "qualifier": "all_day", "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 25, "weekday": "日", "shifts": ["夜"], "transcription": "25日 夜", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 27, "weekday": "火", "shifts": ["夜"], "transcription": "27日 夜", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 28, "weekday": "水", "shifts": ["夜"], "transcription": "28日 夜", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 29, "weekday": "木", "shifts": ["夜"], "transcription": "29日 夜", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 31, "weekday": "土", "shifts": ["昼", "夜"], "transcription": "31日 おーらす", "qualifier": "all_day", "explicitStart": null, "explicitEnd": null, "imageIndex": 0}
+   ]}
+  ]},
+  {"post": "P3", "classification": "schedule", "complete": true, "photos": 1, "truth": [[18, "all", "12:00", "22:00"], [20, "all", "12:00", "22:00"], [21, "day", "12:00", "17:00"], [22, "all", "12:00", "17:00"], [24, "all", "12:00", "22:00"], [25, "all", "12:00", "22:00"], [26, "day", "12:00", "17:00"], [28, "day", "12:00", "17:00"], [30, "all", "12:00", "22:00"], [31, "day", "12:00", "17:00"]], "alternatives": [[22, ["all", "day"]]], "periods": [
+   {"month": 10, "half": "second", "imageIndexes": [0], "days": [
+    {"day": 18, "weekday": "日", "shifts": ["昼", "夜"], "transcription": "18日 おーらす 12:00〜22:00", "qualifier": "all_day", "explicitStart": "12:00", "explicitEnd": "22:00", "imageIndex": 0},
+    {"day": 20, "weekday": "火", "shifts": ["昼", "夜"], "transcription": "20日 おーらす 12:00〜22:00", "qualifier": "all_day", "explicitStart": "12:00", "explicitEnd": "22:00", "imageIndex": 0},
+    {"day": 21, "weekday": "水", "shifts": ["昼"], "transcription": "21日 12:00〜17:00", "qualifier": null, "explicitStart": "12:00", "explicitEnd": "17:00", "imageIndex": 0},
+    {"day": 22, "weekday": "木", "shifts": ["昼", "夜"], "transcription": "22日 おーらす 12:00〜17:00", "qualifier": "all_day", "explicitStart": "12:00", "explicitEnd": "17:00", "imageIndex": 0},
+    {"day": 24, "weekday": "土", "shifts": ["昼", "夜"], "transcription": "24日 おーらす 12:00〜22:00", "qualifier": "all_day", "explicitStart": "12:00", "explicitEnd": "22:00", "imageIndex": 0},
+    {"day": 25, "weekday": "日", "shifts": ["昼", "夜"], "transcription": "25日 おーらす 12:00〜22:00", "qualifier": "all_day", "explicitStart": "12:00", "explicitEnd": "22:00", "imageIndex": 0},
+    {"day": 26, "weekday": "月", "shifts": ["昼"], "transcription": "26日 12:00〜17:00", "qualifier": null, "explicitStart": "12:00", "explicitEnd": "17:00", "imageIndex": 0},
+    {"day": 28, "weekday": "水", "shifts": ["昼"], "transcription": "28日 12:00〜17:00", "qualifier": null, "explicitStart": "12:00", "explicitEnd": "17:00", "imageIndex": 0},
+    {"day": 30, "weekday": "金", "shifts": ["昼", "夜"], "transcription": "30日 おーらす 12:00〜22:00", "qualifier": "all_day", "explicitStart": "12:00", "explicitEnd": "22:00", "imageIndex": 0},
+    {"day": 31, "weekday": "土", "shifts": ["昼"], "transcription": "31日 12:00〜17:00", "qualifier": null, "explicitStart": "12:00", "explicitEnd": "17:00", "imageIndex": 0}
+   ]}
+  ]},
+  {"post": "P4", "classification": "schedule", "complete": true, "photos": 1, "truth": [[17, "day", null, null], [18, "day", null, null], [19, "day", null, null], [21, "all", null, null], [22, "night", null, null], [23, "night", null, null], [26, "day", null, null], [29, "day", null, null], [30, "all", null, null], [31, "night", null, null]], "alternatives": [], "periods": [
+   {"month": 10, "half": "second", "imageIndexes": [0], "days": [
+    {"day": 17, "weekday": null, "shifts": ["昼"], "transcription": "17日 昼", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 18, "weekday": null, "shifts": ["昼"], "transcription": "18日 昼", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 19, "weekday": null, "shifts": ["昼"], "transcription": "19日 ながめ 昼", "qualifier": "long", "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 21, "weekday": null, "shifts": ["昼", "夜"], "transcription": "21日 おーらす", "qualifier": "all_day", "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 22, "weekday": null, "shifts": ["夜"], "transcription": "22日 夜", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 23, "weekday": null, "shifts": ["夜"], "transcription": "23日 夜", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 26, "weekday": null, "shifts": ["昼"], "transcription": "26日 昼", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 29, "weekday": null, "shifts": ["昼"], "transcription": "29日 昼", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 30, "weekday": null, "shifts": ["昼", "夜"], "transcription": "30日 おーらす", "qualifier": "all_day", "explicitStart": null, "explicitEnd": null, "imageIndex": 0},
+    {"day": 31, "weekday": null, "shifts": ["夜"], "transcription": "31日 夜", "qualifier": null, "explicitStart": null, "explicitEnd": null, "imageIndex": 0}
+   ]}
+  ]},
+  {"post": "P5", "classification": "schedule", "complete": true, "photos": 1, "truth": [[18, "day", "12:00", "18:00"], [19, "day", "12:00", "17:00"], [20, "night", "17:00", "22:00"], [21, "all", "12:00", "22:00"], [23, "day", "12:00", "18:00"], [25, "night", "17:00", "22:00"], [27, "night", "16:00", "22:00"], [28, "night", "17:00", "22:00"], [30, "day", "12:00", "18:00"], [31, "all", "12:00", "22:00"]], "alternatives": [], "periods": [
+   {"month": 10, "half": "second", "imageIndexes": [0], "days": [
+    {"day": 18, "weekday": null, "shifts": ["昼"], "transcription": "18日 12:00〜18:00", "qualifier": null, "explicitStart": "12:00", "explicitEnd": "18:00", "imageIndex": 0},
+    {"day": 19, "weekday": null, "shifts": ["昼"], "transcription": "19日 12:00〜17:00", "qualifier": null, "explicitStart": "12:00", "explicitEnd": "17:00", "imageIndex": 0},
+    {"day": 20, "weekday": null, "shifts": ["夜"], "transcription": "20日 17:00〜22:00", "qualifier": null, "explicitStart": "17:00", "explicitEnd": "22:00", "imageIndex": 0},
+    {"day": 21, "weekday": null, "shifts": ["昼", "夜"], "transcription": "21日 12:00〜22:00", "qualifier": "all_day", "explicitStart": "12:00", "explicitEnd": "22:00", "imageIndex": 0},
+    {"day": 23, "weekday": null, "shifts": ["昼"], "transcription": "23日 12:00〜18:00", "qualifier": null, "explicitStart": "12:00", "explicitEnd": "18:00", "imageIndex": 0},
+    {"day": 25, "weekday": null, "shifts": ["夜"], "transcription": "25日 17:00〜22:00", "qualifier": null, "explicitStart": "17:00", "explicitEnd": "22:00", "imageIndex": 0},
+    {"day": 27, "weekday": null, "shifts": ["夜"], "transcription": "27日 16:00〜22:00", "qualifier": null, "explicitStart": "16:00", "explicitEnd": "22:00", "imageIndex": 0},
+    {"day": 28, "weekday": null, "shifts": ["夜"], "transcription": "28日 17:00〜22:00", "qualifier": null, "explicitStart": "17:00", "explicitEnd": "22:00", "imageIndex": 0},
+    {"day": 30, "weekday": null, "shifts": ["昼"], "transcription": "30日 12:00〜18:00", "qualifier": null, "explicitStart": "12:00", "explicitEnd": "18:00", "imageIndex": 0},
+    {"day": 31, "weekday": null, "shifts": ["昼", "夜"], "transcription": "31日 12:00〜22:00", "qualifier": "all_day", "explicitStart": "12:00", "explicitEnd": "22:00", "imageIndex": 0}
+   ]}
+  ]}
+ ]
+}

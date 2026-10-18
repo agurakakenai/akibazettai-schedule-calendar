@@ -537,14 +537,15 @@
             !fields(reading.days, [...dates])) throw new Error("半月予定の判読情報が不正です");
         for (const day of source.days) {
           const fact = reading.days[day.date];
+          const working = ["stated", "clock-derived", "stated-conflict"];
           if (!fields(fact, ["weekday", "qualifier", "hours", "evidence", "transcriptionHash", "shiftStatus",
             ...(reply ? ["operation"] : [])]) || !hash(fact.transcriptionHash) ||
               (fact.weekday !== null && fact.weekday !== ["日", "月", "火", "水", "木", "金", "土"]
                 [new Date(day.date + "T00:00:00Z").getUTCDay()]) ||
               ![null, "long", "early", "late", "all_day"].includes(fact.qualifier) ||
-              !["stated", "unstated", "unreadable"].includes(fact.shiftStatus) ||
+              ![...working, "unstated", "unreadable"].includes(fact.shiftStatus) ||
               (reply && !["add", "replace", "cancel"].includes(fact.operation)) ||
-              (fact.operation !== "cancel" && Boolean(day.shifts.length) !== (fact.shiftStatus === "stated")) ||
+              (fact.operation !== "cancel" && Boolean(day.shifts.length) !== working.includes(fact.shiftStatus)) ||
               (fact.operation === "cancel" && (fact.shiftStatus === "unreadable" ||
                 (day.shifts.length > 0 && fact.shiftStatus !== "stated") || fact.qualifier !== null)) ||
               (fact.qualifier === "all_day" && day.shifts.length !== 2)) {
@@ -564,6 +565,17 @@
                 !/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(hour.time) ||
                 !["explicit", "qualifier-rule-v1"].includes(hour.basis) ||
                 (hour.basis === "qualifier-rule-v1" && hour.time !== rules?.[key === "end" ? 1 : 0])) {
+              throw new Error("半月予定の時刻根拠が不正です");
+            }
+          }
+          if (["clock-derived", "stated-conflict"].includes(fact.shiftStatus)) {
+            // Shifts mapped from printed clocks only: 昼 starts before 16:00, 夜 ends at 21:00 or later.
+            const [start, end] = ["start", "end"].map(key => hours[key]?.basis === "explicit" ? hours[key].time : null);
+            const printed = start && end && start < end
+              ? [...(start < "16:00" ? ["昼"] : []), ...(end >= "21:00" ? ["夜"] : [])] : [];
+            const same = printed.length === day.shifts.length && printed.every(shift => day.shifts.includes(shift));
+            if (!printed.length || same !== (fact.shiftStatus === "clock-derived") ||
+                (fact.shiftStatus === "clock-derived" && fact.qualifier !== null)) {
               throw new Error("半月予定の時刻根拠が不正です");
             }
           }

@@ -150,6 +150,29 @@ test("v3 public reading validates exact fields, partial placement, evidence and 
   assert.ok(api.validateHalfMonthSchedules({ ...halfFeed([]), partialSchedules: [longNight] }));
   longNight.reading.days[day].hours.end = { time: "22:00", basis: "qualifier-rule-v1" };
   assert.throws(() => api.validateHalfMonthSchedules({ ...halfFeed([]), partialSchedules: [longNight] }));
+  const clocks = (start, end) => ({ start: { time: start, basis: "explicit" }, end: { time: end, basis: "explicit" } });
+  const clockFeed = (shifts, fact) => ({ ...halfFeed([]), partialSchedules: [readingSource(
+    halfSource("いと", { days: [{ date: day, shifts }] }), { facts: { [day]: fact } })] });
+  for (const [shifts, start, end] of [[["昼"], "12:00", "17:00"], [["昼"], "12:00", "18:00"],
+    [["夜"], "16:00", "22:00"], [["夜"], "17:30", "22:00"], [["昼", "夜"], "12:00", "22:00"]]) {
+    assert.ok(api.validateHalfMonthSchedules(clockFeed(shifts,
+      { shiftStatus: "clock-derived", hours: clocks(start, end) })), `${start}-${end}`);
+  }
+  assert.ok(api.validateHalfMonthSchedules(clockFeed(["昼"],
+    { shiftStatus: "stated-conflict", hours: clocks("17:00", "22:00") })));
+  assert.ok(api.validateHalfMonthSchedules(clockFeed(["昼", "夜"],
+    { shiftStatus: "stated-conflict", qualifier: "all_day", hours: clocks("12:00", "17:00") })));
+  for (const [shifts, fact] of [
+    [["夜"], { shiftStatus: "clock-derived", hours: clocks("12:00", "17:00") }],
+    [["昼"], { shiftStatus: "clock-derived", hours: {} }],
+    [["昼"], { shiftStatus: "clock-derived", hours: { end: { time: "17:00", basis: "explicit" } } }],
+    [["夜"], { shiftStatus: "clock-derived", qualifier: "late", hours: clocks("18:00", "22:00") }],
+    [["昼"], { shiftStatus: "stated-conflict", hours: clocks("12:00", "17:00") }],
+    [["昼"], { shiftStatus: "clock-derived", hours: clocks("18:00", "20:00") }],
+    [[], { shiftStatus: "clock-derived", hours: clocks("12:00", "17:00") }]
+  ]) {
+    assert.throws(() => api.validateHalfMonthSchedules(clockFeed(shifts, fact)), JSON.stringify(fact));
+  }
 });
 
 test("v3 partials preserve manual and confirmed days; replies amend only their own parent series", () => {
