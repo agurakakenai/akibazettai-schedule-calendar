@@ -274,11 +274,11 @@ function shiftsFor(name) {
 
   // October second half: visually reviewed originals, not model inference.
   const october = allPlans.filter(plan => plan.source.period.from === "2026-10-16");
-  assert.equal(october.length, 22);
-  assert.equal(new Set(october.map(plan => plan.source.name)).size, 22);
-  assert.equal(october.reduce((total, plan) => total + plan.days.length, 0), 142);
+  assert.equal(october.length, 25);
+  assert.equal(new Set(october.map(plan => plan.source.name)).size, 25);
+  assert.equal(october.reduce((total, plan) => total + plan.days.length, 0), 155);
   assert.equal(october.reduce((total, plan) =>
-    total + plan.days.reduce((count, day) => count + day.shifts.length, 0), 0), 162);
+    total + plan.days.reduce((count, day) => count + day.shifts.length, 0), 0), 175);
   const oct = (name) => october.find(plan => plan.source.name === name);
   const compact = (name) => Array.from(oct(name).days, day => `${day.date.slice(8)}${day.shifts.join("")}`);
   assert.deepEqual(compact("るるか"), ["17昼", "18昼", "19昼", "21昼夜", "22夜", "23夜", "26昼", "29昼", "30昼夜", "31夜"]);
@@ -296,6 +296,16 @@ function shiftsFor(name) {
   assert.equal(kanataLate.qualifier, "late");
   const yume = oct("ゆめ").days.map(day => day.date);
   assert.ok(yume.every(date => date <= "2026-10-27"), "no plan after the announced graduation");
+  assert.deepEqual(compact("あくび"), ["16夜"], "graduation service only");
+  assert.deepEqual(compact("こえび"), ["17夜", "19夜", "24夜", "26夜"]);
+  assert.deepEqual(compact("すくい"), ["18昼", "20昼", "27昼", "29昼"]);
+  assert.deepEqual(compact("こん"), ["19夜", "23夜", "26夜", "28夜", "31夜"]);
+  assert.equal(october.filter(plan => plan.source.name === "こん").length, 1,
+    "the later single-day body post is folded into the table post, not a second plan");
+  const kon19 = data.schedule["2026-10-19"]["夜"].filter(entry => entry.name === "こん");
+  assert.equal(kon19.length, 1);
+  assert.deepEqual(Array.from(kon19[0].halfMonthSources.filter(item => item.period.from === "2026-10-16"),
+    item => item.id), ["2109785827832467849"]);
   const oct21 = [...new Set(Object.values(data.schedule["2026-10-21"]).flat().map(entry => entry.name))].sort();
   assert.deepEqual(oct21, ["あらた", "いと", "うな", "かなた", "ちま", "はぴる", "ひかり", "みえる", "みりあ", "るるか"].sort());
 }
