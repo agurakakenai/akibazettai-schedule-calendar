@@ -1,28 +1,46 @@
 {
-  "checkedAt": "2026-10-21T14:34:05Z",
+  "checkedAt": "2026-10-22T08:48:04Z",
   "complete": false,
-  "cooldowns": {
-    "pbs.twimg.com": "2026-10-20T20:26:45.218496Z"
-  },
+  "cooldowns": {},
   "lastRun": {
-    "attemptedCount": 2,
+    "attemptedCount": 4,
     "complete": false,
     "dateBasis": "JST service day, 05:00 boundary",
-    "dateFrom": "2026-10-20",
-    "dateTo": "2026-10-21",
+    "dateFrom": "2026-10-21",
+    "dateTo": "2026-10-22",
     "deferredCount": 0,
-    "discoveredCount": 38,
-    "eligibleCount": 2,
+    "discoveredCount": 39,
+    "eligibleCount": 4,
     "failures": [],
-    "fetchedCount": 2,
-    "finishedAt": "2026-10-21T14:35:12Z",
+    "fetchedCount": 4,
+    "finishedAt": "2026-10-22T08:49:15Z",
     "lastSuccessMeaning": "Both searches and every selected post handled without failure or deferral",
     "maxPosts": 20,
-    "newNameCount": 6,
-    "newPostCount": 1,
+    "newNameCount": 11,
+    "newPostCount": 2,
     "pendingCount": 34,
     "pendingOutsideRangeCount": 34,
     "rejected": [
+      {
+        "id": "2112464727955869777",
+        "reason": "outside_date_range"
+      },
+      {
+        "id": "2112464577699221598",
+        "reason": "outside_date_range"
+      },
+      {
+        "id": "2112379836190818693",
+        "reason": "outside_date_range"
+      },
+      {
+        "id": "2112378634929635545",
+        "reason": "outside_date_range"
+      },
+      {
+        "id": "2112364171283320868",
+        "reason": "outside_date_range"
+      },
       {
         "id": "2112109352563904986",
         "reason": "outside_date_range"
@@ -61,10 +79,6 @@
       },
       {
         "id": "2111641902189805941",
-        "reason": "outside_date_range"
-      },
-      {
-        "id": "2111392134989586650",
         "reason": "outside_date_range"
       },
       {
@@ -117,14 +131,6 @@
       },
       {
         "id": "2109479964127187098",
-        "reason": "outside_date_range"
-      },
-      {
-        "id": "2109479157520638352",
-        "reason": "outside_date_range"
-      },
-      {
-        "id": "2109117438449349102",
         "reason": "outside_date_range"
       },
       {
@@ -214,20 +220,28 @@
       {
         "id": "2097883444034596954",
         "reason": "outside_date_range"
+      },
+      {
+        "id": "2113096066086351284",
+        "reason": "not_shift_post"
+      },
+      {
+        "id": "2113097274792587373",
+        "reason": "not_shift_post"
       }
     ],
     "requests": {
-      "posts": 2,
+      "posts": 4,
       "searches": 2
     },
     "skippedCuratedCount": 0,
-    "skippedObservedCount": 7,
-    "skippedResolvedCount": 3,
+    "skippedObservedCount": 5,
+    "skippedResolvedCount": 2,
     "sourceCount": 2,
     "sourcePageLimit": 2,
     "sources": [
       {
-        "candidateCount": 23,
+        "candidateCount": 26,
         "status": "ok",
         "url": "https://search.yahoo.co.jp/realtime/search?p=%E3%82%A2%E3%82%AD%E3%83%90%E7%B5%B6%E5%AF%BE%E9%A0%98%E5%9F%9F&ei=UTF-8"
       },
@@ -1319,6 +1333,16 @@
         "reason": "no_event",
         "versionHash": "ec86d6443faf164198208e05bc7b9bb83db03cdba2326b130a7a7df50e95a8e6"
       },
+      "9ddd315656107e12f70c8419e2bd925afae391c316befa0a339a190714292e8c": {
+        "at": "2026-10-22T08:48:16.644300Z",
+        "bodyHash": "f1486ac8dd456ec11004da3579e741612dff22e0677a94e2aa54d431a0245b90",
+        "createdAt": "2026-10-22T03:26:37Z",
+        "fetchedAt": "2026-10-22T08:48:16.644116Z",
+        "notices": [],
+        "postId": "2113109746136031297",
+        "reason": "no_event",
+        "versionHash": "ec86d6443faf164198208e05bc7b9bb83db03cdba2326b130a7a7df50e95a8e6"
+      },
       "9dddbcf47112be9903faa7bd4fca9a7ec7ce0a8be2eb78e657f1819f8855781c": {
         "at": "2026-09-18T08:23:49.526943Z",
         "bodyHash": "ff8693cfb28edf6ecd7684447dc3b023b4307326cedddecccffe60a213b30f2a",
@@ -1486,6 +1510,16 @@
         "fetchedAt": "2026-10-07T10:29:01.688821Z",
         "notices": [],
         "postId": "2107672921972080880",
+        "reason": "no_event",
+        "versionHash": "ec86d6443faf164198208e05bc7b9bb83db03cdba2326b130a7a7df50e95a8e6"
+      },
+      "bf27834adafda82e07a374e338f32941e105dc8a18e6adcd3ce38edf0cd19fde": {
+        "at": "2026-10-22T08:48:13.364888Z",
+        "bodyHash": "10a509822840851f2ec7016288d16ed4fc3462f8fd64e046e60afde0eccfcf91",
+        "createdAt": "2026-10-22T03:26:10Z",
+        "fetchedAt": "2026-10-22T08:48:13.362328Z",
+        "notices": [],
+        "postId": "2113109631782588782",
         "reason": "no_event",
         "versionHash": "ec86d6443faf164198208e05bc7b9bb83db03cdba2326b130a7a7df50e95a8e6"
       },
@@ -6511,6 +6545,43 @@
       "shift": "夜",
       "storeId": "s3",
       "url": "https://x.com/akibazettai/status/2112833718054535325"
+    },
+    {
+      "authorId": "822429861218131969",
+      "authorScreenName": "akibazettai",
+      "createdAt": "2026-10-22T03:26:10Z",
+      "date": "2026-10-22",
+      "id": "2113109631782588782",
+      "names": [
+        "みりあ",
+        "もなか",
+        "きらり",
+        "こぐま",
+        "ちさと",
+        "うる"
+      ],
+      "observedAt": "2026-10-22T08:48:13Z",
+      "shift": "昼",
+      "storeId": "s1",
+      "url": "https://x.com/akibazettai/status/2113109631782588782"
+    },
+    {
+      "authorId": "822429861218131969",
+      "authorScreenName": "akibazettai",
+      "createdAt": "2026-10-22T03:26:37Z",
+      "date": "2026-10-22",
+      "id": "2113109746136031297",
+      "names": [
+        "ちゆ",
+        "いと",
+        "はぴる",
+        "あるか",
+        "けだま"
+      ],
+      "observedAt": "2026-10-22T08:48:16Z",
+      "shift": "昼",
+      "storeId": "s3",
+      "url": "https://x.com/akibazettai/status/2113109746136031297"
     }
   ],
   "resolved": [
@@ -7005,6 +7076,18 @@
       "reason": "not_shift_post",
       "resolvedAt": "2026-10-21T08:48:06Z",
       "url": "https://x.com/akibazettai/status/2112772055355850864"
+    },
+    {
+      "id": "2113096066086351284",
+      "reason": "not_shift_post",
+      "resolvedAt": "2026-10-22T08:48:09Z",
+      "url": "https://x.com/akibazettai/status/2113096066086351284"
+    },
+    {
+      "id": "2113097274792587373",
+      "reason": "not_shift_post",
+      "resolvedAt": "2026-10-22T08:48:11Z",
+      "url": "https://x.com/akibazettai/status/2113097274792587373"
     }
   ],
   "schemaVersion": 1
