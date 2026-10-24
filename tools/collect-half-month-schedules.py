@@ -49,6 +49,12 @@ TERMINAL_POST_REASONS = frozenset({
     'quoted_or_reply', 'obsolete_or_invalid_edit'})
 # History written before this time came from the photo-index and 6-per-person defects.
 HISTORY_RELEASE_BEFORE = dt.datetime(2026, 10, 25, 3, 0, tzinfo=dt.timezone.utc)
+SCHEDULE_WORDS = re.compile(r'予定|お給仕|おきゅ|給仕|出勤|シフト|前半|後半|昼|夜|ひる|よる|おーらす|オーラス|いる日')
+DATE_TOKEN = re.compile(r'(?<![0-9０-９])[0-9０-９]{1,2}\s*(?:日|[/／][0-9０-９]{1,2})')
+
+
+def plausible_schedule_text(text):
+    return bool(SCHEDULE_WORDS.search(text)) or len(DATE_TOKEN.findall(text)) >= 2
 azure = _module('schedule-azure.py', 'half_month_azure')
 official = _module('collect-shifts.py', 'half_month_official')
 personal = _module('collect-personal-shifts.py', 'half_month_personal')
@@ -1201,6 +1207,12 @@ def read_evidence(state, source, text, images, analyzer, periods, cache, clock, 
         bundle['stage'] = stage
         persist()
 
+    if bundle['stage'] == 'fetch' and not images and not bundle['issued'] and not plausible_schedule_text(text):
+        # A text-only post with no schedule word and fewer than two dates cannot carry a
+        # half-month table; end it as not_schedule without spending an AI request.
+        bundle['stage'], progress['reason'], progress['nextAt'] = 'done', 'not_schedule', None
+        persist()
+        return False
     if bundle['stage'] == 'fetch':
         plan('original')
     if bundle['stage'] in ('held', 'done'):

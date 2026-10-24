@@ -77,6 +77,22 @@ def effective_limit(now):
     return override[1] if override and now >= override[0] else LIMIT
 
 
+# Same-day official/personal analysis observed 2026-10-14..24: 6.7 JPY/day on average, at most
+# 11.3 JPY/day. The half-month schedule component must leave this per remaining JST day (today
+# included) for them; it waits (budget_wait) instead of spending the month's last yen first.
+SAME_DAY_RESERVE_PER_DAY = 8_000_000  # micro-JPY
+RESERVE_COMPONENTS = frozenset({'schedule'})
+
+
+def component_reserve(component, now):
+    """micro-JPY that `component` must leave unspent for same-day analysis this JST month."""
+    if component not in RESERVE_COMPONENTS:
+        return 0
+    today = now.astimezone(JST).date()
+    first_next = (today.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+    return (first_next - today).days * SAME_DAY_RESERVE_PER_DAY
+
+
 def empty():
     return {'schemaVersion': 1, 'currency': 'JPY', 'limitMicroJPY': LIMIT,
             'priceVersion': PRICE_VERSION, 'opening': {},

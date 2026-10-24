@@ -212,6 +212,30 @@ class BudgetTests(unittest.TestCase):
             self.assertEqual(money.balance(usage.state, self.now)['openingProvisionalMicroJPY'], 707_000_000)
         self.opener.open.assert_not_called()
 
+    def test_schedule_leaves_the_same_day_reserve_for_personal_and_official(self):
+        jst = lambda day: dt.datetime(2026, 10, day, 12, tzinfo=money.JST)
+        self.assertEqual(money.component_reserve('schedule', jst(25)), 7 * money.SAME_DAY_RESERVE_PER_DAY)
+        self.assertEqual(money.component_reserve('schedule', jst(31)), money.SAME_DAY_RESERVE_PER_DAY)
+        self.assertEqual(money.component_reserve('personal', jst(25)), 0)
+        self.assertEqual(money.component_reserve('official', jst(25)), 0)
+        # 2026-09-13 JST leaves 18 days (13th..30th): 144 JPY. 900 JPY spent leaves 100 JPY.
+        self.opening(900_000_000)
+        with self.finite(component='schedule') as usage:
+            with self.assertRaisesRegex(ledger.UsageFailure, 'azure_budget_exhausted'):
+                usage.check()
+            with self.assertRaisesRegex(ledger.UsageFailure, 'azure_budget_exhausted'):
+                usage.reserve(base.digest('schedule'), base.IDENTITY, request=self.request)
+            self.assertEqual(usage.state['receipts'], {})
+        with self.finite(component='personal') as usage:
+            usage.check()
+            self.issue(usage, 'personal')
+        self.opener.open.assert_not_called()
+        # With the reserve covered the schedule component spends normally.
+        self.opening(800_000_000)
+        with self.finite(component='schedule', run='two') as usage:
+            usage.check()
+            self.issue(usage, 'schedule-ok')
+
     def test_finite_queue_still_obeys_backoff_auth_deadline_and_request_validation(self):
         for status, reason in ((429, 'azure_rate_limited'), (401, 'azure_auth_stopped'), (403, 'azure_auth_stopped')):
             with self.subTest(status=status):

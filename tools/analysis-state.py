@@ -570,6 +570,12 @@ class SharedUsage:
         self._allowed()
         now = _now(self.clock())
         self._budget_allowed(now)
+        reserve = costs.component_reserve(self.component, now)
+        if reserve and 'money' in self.state:
+            available = costs.balance(self.state, now)
+            if available['reason'] == 'ok' and available['availableMicroJPY'] <= reserve:
+                # Nothing could be issued anyway; skip the source GETs for this component too.
+                raise UsageFailure('azure_budget_exhausted')
         retry = self.state['retryAt']
         if retry is not None and _time(retry) > now:
             raise UsageFailure('azure_backoff', retry_at=retry)
@@ -612,7 +618,8 @@ class SharedUsage:
             except (ValueError, KeyError, TypeError):
                 raise UsageFailure('azure_input_limit') from None
             available = costs.balance(self.state, now)
-            if available['reason'] != 'ok' or charge['reservedMicroJPY'] > available['availableMicroJPY']:
+            if (available['reason'] != 'ok' or charge['reservedMicroJPY']
+                    + costs.component_reserve(self.component, now) > available['availableMicroJPY']):
                 raise UsageFailure('azure_budget_exhausted')
         self.state['receipts'][receipt_id] = {
             'runId': self.run_id, 'component': self.component, 'requestHash': key,
