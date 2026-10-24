@@ -191,6 +191,11 @@ SAFE_CLASS = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,63}\Z')
 SAFE_LOCATION = re.compile(r'[A-Za-z0-9_.-]{1,64}\.py:[A-Za-z_<>][A-Za-z0-9_<>]{0,63}:[0-9]{1,6}\Z')
 SAFE_STAGE = re.compile(r'[a-z_]{1,32}\Z')
 COMPONENTS = ('official', 'personal', 'schedule')
+# Half-month queue bounds reached in a run: counter -> alert token. Housekeeping-only counters
+# (finishedCandidatesRetired) are summarized but never alert.
+HALF_MONTH_CAPACITY_TOKENS = {'readingCapacityWaits': 'reading_capacity', 'queueLimitDeferred': 'queue_limit',
+                              'queueLimitReplaced': 'queue_limit_replaced',
+                              'finishedCandidatesRetired': None}
 
 
 def child_failure_facts(process, component):
@@ -2180,7 +2185,14 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                     'searched': sum(half_facts.searched_in_period(coverage.get(name, {}), period)
                                     for name in active_names),
                     'confirmed': sum(bool(coverage.get(name, {}).get('confirmedIds')) for name in active_names),
-                    'pending': len(half_month_state['pending'])}
+                    'pending': len(half_month_state['pending']),
+                    'readings': len(half_month_state.get('readings', {})),
+                    'retiredReadings': report.get('retiredReadings', 0)}
+                capacity = report.get('capacity', {})
+                require(isinstance(capacity, dict) and all(
+                    key in HALF_MONTH_CAPACITY_TOKENS and type(value) is int and value > 0
+                    for key, value in capacity.items()), 'invalid_half_month_capacity')
+                result['halfMonthCapacity'] = dict(capacity)
 
             if collect_half_month and catch_up:
                 run_half_month()
@@ -2528,6 +2540,29 @@ def emit(result, environment):
                          if row.get('component') in COMPONENTS})
     result['attention'] = 'true' if (components or result.get('collectionStatus') == 'failed') else 'false'
     result['failedComponents'] = '-'.join(components)
+    for component in COMPONENTS:
+        # The first contained reason per component lets the alert track the same cause across runs.
+        reasons = [row['reason'] for row in failures if row.get('component') == component
+                   and isinstance(row.get('reason'), str) and SAFE_REASON.fullmatch(row['reason'])]
+        if not reasons and any(row.get('component') == component for row in unexpected):
+            reasons = ['candidate_unexpected_error']
+        result[component + 'FailureReason'] = reasons[0] if reasons else ''
+    capacity = result.get('halfMonthCapacity') or {}
+    result['scheduleCapacityLimit'] = '-'.join(
+        token for key, token in HALF_MONTH_CAPACITY_TOKENS.items() if token and capacity.get(key))
+    acquisition_rows = result.get('halfMonthAcquisition') or {}
+    if environment.get('GITHUB_STEP_SUMMARY') and (capacity or acquisition_rows.get('retiredReadings')):
+        notes = ['\n## Half-month queue capacity\n',
+                 f"\n- readings={acquisition_rows.get('readings')} (limit {load_half_month_state().READINGS_LIMIT}); "
+                 f"retired finished readings={acquisition_rows.get('retiredReadings', 0)}; "
+                 f"pending={acquisition_rows.get('pending')} (limit {load_half_month_state().PENDING_LIMIT}).\n"]
+        notes += [f'\n- {key}={value}' + (f' (alert token {HALF_MONTH_CAPACITY_TOKENS[key]})'
+                                          if HALF_MONTH_CAPACITY_TOKENS[key] else '') + '.\n'
+                  for key, value in sorted(capacity.items())]
+        with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
+            target.writelines(notes)
+    if result['scheduleCapacityLimit']:
+        print('::warning::Half-month queue capacity was reached: ' + result['scheduleCapacityLimit'])
     output = environment.get('GITHUB_OUTPUT')
     if output:
         # Only fixed names and single-line values; no report/paths/token payloads.
@@ -2536,6 +2571,8 @@ def emit(result, environment):
                    'officialCollectionStatus', 'officialCollectionCode',
                    'personalCollectionStatus', 'personalCollectionCode', 'personalStateSource',
                    'halfMonthCollectionStatus', 'halfMonthCollectionCode',
+                   'officialFailureReason', 'personalFailureReason', 'scheduleFailureReason',
+                   'scheduleCapacityLimit',
                    'reason', 'continuationReady', 'continuationMode', 'attention', 'failedComponents')
         lines = []
         for key in allowed:

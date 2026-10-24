@@ -192,6 +192,188 @@ class CandidateTerminationTests(DiscoveryBase):
         self.assertEqual(self.calls.count(('post', entry['id'])), 1)
 
 
+class ReadingCapacityTests(DiscoveryBase):
+    """October 18-25 outage: 240 finished readings made every later save fail validation."""
+
+    def stale_history(self):
+        self.now = at(13)
+        self.documents = {'amu_zettai': base.document()}
+        self.run_cycle(cycle_id='3101-1')
+        stale = self.post(dt.datetime(2026, 9, 20, 9, tzinfo=facts.JST).astimezone(facts.UTC),
+                          4, '9月後半のお給仕予定')
+        candidates, _ = collector.discover(base.document(stale), {'あむ': base.TARGET}, self.now, {},
+                                           registry=self.registry, candidate_since=dt.date(2026, 9, 16))
+        collector.enqueue(self.state, candidates, self.now)
+        self.now = at(17)
+        self.reopen()
+        self.run_cycle(resume=True, cycle_id='3101-1')
+        self.assertEqual(self.state['pending'], [])
+        return stale
+
+    def fill(self, source_id, count, stage):
+        for index in range(count):
+            key = facts.digest(f'synthetic-reading-{index}'.encode())
+            self.state['readings'][key] = {'sourceId': source_id, 'cacheKey': key, 'stage': stage,
+                                           'reason': 'not_schedule' if stage == 'done' else 'reading_pending',
+                                           'nextAt': None, 'attemptedVariants': []}
+
+    def test_full_reading_table_completes_saves_and_retires_finished_rows(self):
+        stale = self.stale_history()
+        self.fill(stale['id'], 240, 'done')
+        new = self.post(at(16, 21), 6, '10月後半のお給仕予定')
+        self.documents = {'amu_zettai': base.document(new)}
+        self.model.structured.return_value = self.second_half_result()
+        self.now = at(18)
+        self.reopen()
+        self.calls.clear()
+        calls = self.usage.calls
+        report, _ = self.run_cycle(cycle_id='3102-1')
+        self.assertEqual(report['retiredReadings'], 240)
+        self.assertEqual(report['readings'], 1)
+        self.assertEqual(self.usage.calls, calls + 1)
+        self.assertEqual(self.calls.count(('post', new['id'])), 1)
+        self.assertNotIn(('post', stale['id']), self.calls)
+        self.assertTrue(self.state['coverage'][SECOND_HALF]['あむ']['confirmedIds'])
+        facts.validate_state(self.state)
+
+    def test_retired_reading_never_refetches_or_reanalyses_its_source(self):
+        self.now = at(17)
+        entry = self.post(at(16, 21), 7, '10月後半のお給仕予定')
+        self.documents = {'amu_zettai': base.document(entry)}
+        self.model.structured.return_value = self.second_half_result()
+        self.run_cycle(cycle_id='3103-1')
+        self.assertEqual([row['stage'] for row in self.state['readings'].values()], ['done'])
+        calls, posts = self.usage.calls, self.calls.count(('post', entry['id']))
+        # The next day the finished reading is retired; the search sees the same post again.
+        self.now = at(18, 12)
+        self.state['coverage'][SECOND_HALF]['あむ'].update(confirmedIds=[], nextCheckAt=None)
+        self.reopen()
+        report, _ = self.run_cycle(cycle_id='3104-1')
+        self.assertEqual((report['retiredReadings'], report['readings']), (1, 0))
+        self.assertIn(('search', 'amu_zettai'), self.calls)
+        self.assertEqual(self.calls.count(('post', entry['id'])), posts)
+        self.assertEqual(self.usage.calls, calls)
+        self.assertEqual(self.state['pending'], [])
+        candidates, _ = collector.discover(base.document(entry), {'あむ': base.TARGET}, self.now, {},
+                                           registry=self.registry, candidate_since=dt.date(2026, 10, 1))
+        collector.enqueue(self.state, candidates, self.now, self.analyzer)
+        self.assertEqual(self.state['pending'], [], 'the terminal source record blocks re-queueing')
+
+    def test_queued_unsettled_or_unfinished_readings_are_never_retired(self):
+        stale = self.stale_history()
+        self.fill(stale['id'], 3, 'done')
+        keys = list(self.state['readings'])
+        self.state['readings'][keys[0]]['stage'] = 'original'
+        queued = self.post(at(16, 21), 8, '10月後半のお給仕予定')
+        self.state['readings'][keys[1]]['sourceId'] = queued['id']
+        self.state['pending'].append({**collector.discover(
+            base.document(queued), {'あむ': base.TARGET}, self.now, {}, registry=self.registry,
+            candidate_since=dt.date(2026, 10, 1))[0][0]})
+        self.assertEqual(collector.retirable_readings(self.state, self.analyzer), [keys[2]])
+        open_receipt = mock.Mock(state={'receipts': {'r': {'requestHash': 'a' * 64, 'completedAt': None}}})
+        self.cache.records[keys[2]] = {'value': {'reading': {'issued': ['a' * 64]}}}
+        self.assertEqual(collector.retirable_readings(self.state, mock.Mock(usage=open_receipt), self.cache), [])
+
+    def test_capacity_without_retirable_readings_waits_without_fetching(self):
+        stale = self.stale_history()
+        self.fill(stale['id'], facts.READINGS_LIMIT, 'fetch')
+        new = self.post(at(16, 21), 9, '10月後半のお給仕予定')
+        self.documents = {'amu_zettai': base.document(new)}
+        self.now = at(18)
+        self.reopen()
+        self.calls.clear()
+        calls = self.usage.calls
+        report, _ = self.run_cycle(cycle_id='3105-1')
+        self.assertIn('reading_capacity', report['reasons'])
+        self.assertEqual((report['retiredReadings'], report['readings']), (0, facts.READINGS_LIMIT))
+        self.assertNotIn(('post', new['id']), self.calls)
+        self.assertEqual(self.usage.calls, calls)
+        waiting = next(item for item in self.state['pending'] if item['id'] == new['id'])
+        self.assertEqual(facts.timestamp(waiting['nextAttemptAt']), at(18) + dt.timedelta(hours=6))
+        self.assertEqual(self.state['coverage'][SECOND_HALF]['あむ']['reason'], 'reading_capacity')
+        facts.validate_state(self.state)
+        self.state['readings'][facts.digest(b'one-too-many')] = dict(
+            next(iter(self.state['readings'].values())), cacheKey=facts.digest(b'one-too-many'))
+        with self.assertRaisesRegex(ValueError, 'invalid_readings'):
+            facts.validate_state(self.state)
+
+
+class QueueBoundTests(DiscoveryBase):
+    """Each queue bound reached at the start of a run: the run completes, saves and reports it."""
+
+    def queued(self, count, *, finished=True, first_suffix=20):
+        self.documents = {'amu_zettai': base.document()}
+        self.run_cycle(cycle_id='3200-1')
+        entries = [self.post(at(14, 9) + dt.timedelta(minutes=index), first_suffix + index, '雑談')
+                   for index in range(count)]
+        candidates, _ = collector.discover(base.document(*entries), {'あむ': base.TARGET}, self.now, {},
+                                           registry=self.registry, candidate_since=dt.date(2026, 10, 1))
+        self.state['pending'].extend(candidates)
+        if finished:
+            for item in candidates:
+                key = facts.digest(('reading-' + item['id']).encode())
+                self.state['readings'][key] = {'sourceId': item['id'], 'cacheKey': key, 'stage': 'held',
+                                               'reason': 'reading_uncertain', 'nextAt': None,
+                                               'attemptedVariants': []}
+        facts.validate_state(self.state)
+        return candidates
+
+    def run_with_new_post(self):
+        self.now = at(18)
+        new = self.post(at(16, 21), 90, '10月後半のお給仕予定')
+        self.documents = {'amu_zettai': base.document(new)}
+        self.model.structured.return_value = self.second_half_result()
+        self.reopen()
+        self.calls.clear()
+        report, _ = self.run_cycle(cycle_id='3201-1')
+        facts.validate_state(self.state)
+        return new, report
+
+    def assert_new_post_read_and_old_never_refetched(self, new, old, report):
+        self.assertEqual(self.calls.count(('post', new['id'])), 1)
+        self.assertFalse(any(('post', item['id']) in self.calls for item in old))
+        self.assertTrue(self.state['coverage'][SECOND_HALF]['あむ']['confirmedIds'])
+        self.assertEqual(report['capacity'], {'finishedCandidatesRetired': 1})
+        retired = [row for row in self.state['candidateHistory'].values() if row['candidate']['id'] == old[0]['id']]
+        self.assertEqual([row['reason'] for row in retired], ['reading_uncertain'])
+        # The retired candidate cannot be queued again by a later search.
+        collector.enqueue(self.state, [old[0]], self.now)
+        self.assertNotIn(old[0]['id'], [item['id'] for item in self.state['pending']])
+
+    def test_per_person_bound_full_of_finished_candidates_admits_the_new_post(self):
+        self.now = at(14, 12)
+        old = self.queued(facts.PENDING_PER_NAME)
+        new, report = self.run_with_new_post()
+        self.assert_new_post_read_and_old_never_refetched(new, old, report)
+
+    def test_global_bound_full_of_finished_candidates_admits_the_new_post(self):
+        self.now = at(14, 12)
+        with mock.patch.object(facts, 'PENDING_LIMIT', 5), mock.patch.object(facts, 'PENDING_PER_NAME', 50):
+            old = self.queued(5)
+            new, report = self.run_with_new_post()
+            self.assertLessEqual(len(self.state['pending']), 5)
+        self.assert_new_post_read_and_old_never_refetched(new, old, report)
+
+    def test_bound_full_of_unfinished_candidates_defers_visibly_without_error(self):
+        self.now = at(14, 12)
+        self.queued(facts.PENDING_PER_NAME, finished=False, first_suffix=40)
+        older = self.post(at(13, 9), 30, '10月後半のお給仕予定')
+        candidates, _ = collector.discover(base.document(older), {'あむ': base.TARGET}, self.now, {},
+                                           registry=self.registry, candidate_since=dt.date(2026, 10, 1))
+        capacity = {}
+        self.assertEqual(collector.enqueue(self.state, candidates, self.now, None, capacity), {'あむ'})
+        self.assertEqual(capacity, {'queueLimitDeferred': 1})
+        self.assertEqual(len(self.state['pending']), facts.PENDING_PER_NAME)
+        self.assertEqual(self.state['coverage'][SECOND_HALF]['あむ']['reason'], 'queue_limit')
+        facts.validate_state(self.state)
+        newer = self.post(at(14, 11), 99, '10月後半のお給仕予定')
+        candidates, _ = collector.discover(base.document(newer), {'あむ': base.TARGET}, self.now, {},
+                                           registry=self.registry, candidate_since=dt.date(2026, 10, 1))
+        self.assertEqual(collector.enqueue(self.state, candidates, self.now, None, capacity), set())
+        self.assertEqual(capacity['queueLimitReplaced'], 1)
+        facts.validate_state(self.state)
+
+
 class PriorityTests(DiscoveryBase):
     def test_open_period_searches_and_candidates_precede_first_half_residue(self):
         self.registry['members'].append(collector.members.new_member(

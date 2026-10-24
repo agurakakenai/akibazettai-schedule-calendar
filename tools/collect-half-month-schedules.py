@@ -567,7 +567,74 @@ def terminal_source(record, analyzer):
         record['status'] == 'failed' and retry_reason(record, analyzer) is None)
 
 
-def enqueue(state, candidates, now, analyzer=None):
+def retirable_readings(state, analyzer, cache=None):
+    """Terminal readings that no longer guard anything, oldest post first.
+
+    Re-processing of these sources is already blocked elsewhere: the source is not queued, and
+    either its source record is terminal (enqueue skips it) or its exact candidate is in
+    candidateHistory. Readings tied to an in-flight or unsettled AI receipt are kept.
+    """
+    queued = {item['id'] for item in state['pending']}
+    retired_candidates = {item['candidate']['id'] for item in state['candidateHistory'].values()}
+    usage = getattr(getattr(analyzer, 'usage', None), 'state', None)
+    open_requests = {item['requestHash'] for item in ((usage or {}).get('receipts') or {}).values()
+                     if item.get('completedAt') is None
+                     or (item.get('money') or {}).get('usageStatus') not in (None, 'settled')}
+    result = []
+    for key, record in state['readings'].items():
+        source = state['sources'].get(record['cacheKey'])
+        if (record['stage'] not in ('done', 'held') or record['sourceId'] in queued
+                or not (source is not None and terminal_source(source, analyzer)
+                        or record['sourceId'] in retired_candidates)):
+            continue
+        requests = {source.get('requestHash')} if source else set()
+        cached = (cache.records.get(record['cacheKey']) or {}) if cache is not None else {}
+        requests |= set(((cached.get('value') or {}).get('reading') or {}).get('issued') or [])
+        if requests & open_requests:
+            continue
+        result.append(key)
+    return sorted(result, key=lambda key: int(state['readings'][key]['sourceId']))
+
+
+def retire_readings(state, analyzer, cache=None, *, room=None):
+    """Drop retirable readings (all of them, or only enough to leave `room` free slots)."""
+    keys = retirable_readings(state, analyzer, cache)
+    if room is not None:
+        keys = keys[:max(0, len(state['readings']) + room - facts.READINGS_LIMIT)]
+    for key in keys:
+        del state['readings'][key]
+    return len(keys)
+
+
+def finished_pending(state, name=None):
+    """Queued candidates whose reading already ended (done/held), oldest first.
+
+    They only block re-searching their period; when a queue bound is reached they are moved to
+    candidateHistory (so the same post is never re-queued) instead of dropping new candidates.
+    Expired-cache holds stay queued because they can still be recovered once.
+    """
+    ended = {record['sourceId']: record['reason'] for record in state.get('readings', {}).values()
+             if record['stage'] in ('done', 'held') and record['reason'] != 'image_cache_expired'}
+    rows = [item for item in state['pending'] if item['id'] in ended
+            and (name is None or item['name'] == name)]
+    return sorted(rows, key=lambda item: int(item['id'])), ended
+
+
+def evict_finished(state, now, name=None, capacity=None):
+    rows, ended = finished_pending(state, name)
+    if not rows:
+        return False
+    item = rows[0]
+    reason = ended[item['id']] if ended[item['id']] in facts.REASONS else 'queue_limit'
+    state['candidateHistory'][facts.candidate_key(item)] = {
+        'candidate': dict(item), 'reason': reason, 'checkedAt': facts.stamp(now)}
+    state['pending'].remove(item)
+    if capacity is not None:
+        capacity['finishedCandidatesRetired'] = capacity.get('finishedCandidatesRetired', 0) + 1
+    return True
+
+
+def enqueue(state, candidates, now, analyzer=None, capacity=None):
     known = {item['id'] for item in state['pending']}
     dropped = set()
     for candidate in sorted(candidates, key=lambda item: (item['priority'], -int(item['id']))):
@@ -578,9 +645,15 @@ def enqueue(state, candidates, now, analyzer=None):
         if any(record['source']['id'] == candidate['id'] and terminal_source(record, analyzer)
                for record in state['sources'].values()):
             continue
-        people = [item for item in state['pending'] if item['name'] == candidate['name']]
+        name = candidate['name']
+        while (sum(item['name'] == name for item in state['pending']) >= facts.PENDING_PER_NAME
+               and evict_finished(state, now, name, capacity)):
+            pass
+        while len(state['pending']) >= facts.PENDING_LIMIT and evict_finished(state, now, None, capacity):
+            pass
+        people = [item for item in state['pending'] if item['name'] == name]
         count = len(people)
-        if count >= 6:
+        if count >= facts.PENDING_PER_NAME:
             rank = lambda item: (item['priority'], -int(item['id']))
             worst = max(people, key=rank)
             if rank(candidate) < rank(worst):
@@ -588,8 +661,12 @@ def enqueue(state, candidates, now, analyzer=None):
                     'candidate': dict(worst), 'reason': 'queue_limit', 'checkedAt': facts.stamp(now)}
                 state['pending'].remove(worst)
                 count -= 1
-        if len(state['pending']) >= 240 or count >= 6:
-            dropped.add(candidate['name'])
+                if capacity is not None:
+                    capacity['queueLimitReplaced'] = capacity.get('queueLimitReplaced', 0) + 1
+        if len(state['pending']) >= facts.PENDING_LIMIT or count >= facts.PENDING_PER_NAME:
+            dropped.add(name)
+            if capacity is not None:
+                capacity['queueLimitDeferred'] = capacity.get('queueLimitDeferred', 0) + 1
             continue
         state['pending'].append(candidate)
         known.add(candidate['id'])
@@ -607,9 +684,9 @@ def restore_transient_candidates(state, analyzer, now):
         if record['status'] != 'failed' or retry_reason(record, analyzer) is None:
             continue
         source = record['source']
-        if source['id'] in known or len(state['pending']) >= 240:
+        if source['id'] in known or len(state['pending']) >= facts.PENDING_LIMIT:
             continue
-        if sum(item['name'] == source['name'] for item in state['pending']) >= 6:
+        if sum(item['name'] == source['name'] for item in state['pending']) >= facts.PENDING_PER_NAME:
             continue
         due = record.get('retry', {}).get('notBefore') or facts.stamp(
             facts.timestamp(record['checkedAt']) + dt.timedelta(hours=1))
@@ -1241,6 +1318,9 @@ def _cycle_failure(exc, now):
         retry = None
     if reason in ('time_limit', 'azure_deadline'):
         return 'time_limit', now + dt.timedelta(minutes=1), True
+    if reason == 'reading_capacity':
+        # Nothing was fetched or issued for this candidate; retry once readings were retired.
+        return 'reading_capacity', now + dt.timedelta(hours=6), False
     if reason and 'budget' in reason:
         month = (now.astimezone(facts.JST).date().replace(day=28) + dt.timedelta(days=4)).replace(day=1)
         return 'budget_wait', retry or dt.datetime.combine(month, dt.time(), facts.JST), True
@@ -1398,6 +1478,10 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                 if item['id'] == progress['sourceId']:
                     item['nextAttemptAt'] = None
     counts = {'searches': 0, 'posts': 0, 'images': 0, 'analysis': 0}
+    # Finished readings are retired once sources/candidateHistory/the AI ledger already block
+    # any re-fetch or re-analysis, so live progress never accumulates up to READINGS_LIMIT.
+    retired = retire_readings(state, analyzer, cache)
+    capacity = {}
     stop, changed, errors = False, False, []
     failures = {}
     old_deadline = getattr(analyzer.usage, 'deadline', None)
@@ -1438,7 +1522,9 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
             if row['confirmedIds'] or (row['nextCheckAt'] is not None
                                        and facts.timestamp(row['nextCheckAt']) > clock()):
                 continue
-            if any(item['name'] == name and created(item) >= facts.publication_start(period)
+            # Only unfinished candidates may cover the period. A finished (held/done) one, e.g. a selfie
+            # read as uncertain, must not hide a later real schedule post until the half ends.
+            if any(item['name'] == name and created(item) >= facts.publication_start(period) and waiting(item)
                    for item in state['pending']):
                 continue
             result.append(period)
@@ -1501,7 +1587,7 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                                 other_bindings=(state['identityBindings'], existing_bindings or {}),
                                 candidate_since=candidate_since)
                             del document
-                            dropped = enqueue(state, candidates, clock(), analyzer)
+                            dropped = enqueue(state, candidates, clock(), analyzer, capacity)
                             for start, _ in due:
                                 row = state['coverage'][start][name]
                                 row.update(lastSearchedAt=facts.stamp(clock()),
@@ -1522,6 +1608,13 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                         if selected['nextAttemptAt'] and facts.timestamp(selected['nextAttemptAt']) > clock():
                             continue
                         if not known:
+                            if len(state['readings']) >= facts.READINGS_LIMIT:
+                                # Never grow past the validated bound: retire the oldest finished
+                                # readings first, otherwise wait without starting this one.
+                                retired += retire_readings(state, analyzer, cache, room=1)
+                                if len(state['readings']) >= facts.READINGS_LIMIT:
+                                    capacity['readingCapacityWaits'] = capacity.get('readingCapacityWaits', 0) + 1
+                                    raise Failure('reading_capacity')
                             cached_keys = cache.find_source(selected['id'], selected['authorId'])
                             if len(cached_keys) > 1:
                                 raise ValueError('evidence_cache_ambiguous')
@@ -1793,7 +1886,9 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                                      existing_bindings=existing_bindings)
     report.update(continuation=copy.deepcopy(current),
                   nextStage='complete' if current['reason'] == 'complete' else 'resume' if remaining else 'waiting',
-                  nextEligible=current['nextAt'], reasons=sorted(set(errors)), unresolvedCount=len(unresolved))
+                  nextEligible=current['nextAt'], reasons=sorted(set(errors)), unresolvedCount=len(unresolved),
+                  retiredReadings=retired, readings=len(state['readings']),
+                  capacity={key: value for key, value in sorted(capacity.items()) if value})
     for record in state['readings'].values():
         failure = record.get('failure')
         if failure and failure['name'] in current['names']:

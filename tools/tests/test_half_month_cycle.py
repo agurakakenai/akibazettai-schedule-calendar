@@ -175,7 +175,10 @@ class CycleTests(unittest.TestCase):
         self.reopen()
         self.run_cycle()
         self.assertEqual(self.usage.calls, 2)
-        self.assertEqual(self.gets, before)
+        # A finished (held) candidate no longer hides the person's open period: one daily re-check
+        # search, but the held source itself is never re-fetched or re-analysed.
+        self.assertEqual({**self.gets, 'searches': before['searches']}, before)
+        self.assertEqual(self.gets['searches'], before['searches'] + ['amu_zettai'])
 
     def test_detail_cannot_confirm_after_omitting_an_already_read_date(self):
         self.model.structured.side_effect = [
@@ -590,7 +593,12 @@ class CycleTests(unittest.TestCase):
         self.run_cycle()
         self.assertEqual(self.state['readings'][old_key]['reason'], 'image_cache_expired')
         self.assertEqual(source_gets(), (before['posts'], before['images']))
-        self.assertEqual(self.gets['searches'], before['searches'] + ['amu_zettai'],
+        # The source became held during the previous run, so the first half (9/1-15) gets its one
+        # re-check now; the second half stays inside its six-hour window.
+        self.assertEqual(self.gets['searches'], before['searches'] + ['amu_zettai', 'amu_zettai'])
+        self.reopen()
+        self.run_cycle()
+        self.assertEqual(self.gets['searches'], before['searches'] + ['amu_zettai', 'amu_zettai'],
                          'the six-hour check window prevents a repeated search')
         self.assertEqual(self.usage.calls, 1)
         self.state = facts.empty_state()
@@ -655,7 +663,9 @@ class CycleTests(unittest.TestCase):
         self.reopen()
         report, _ = self.run_cycle(resume=True, cycle_id='2002-1')
         self.assertEqual(report['analysisRequests'], 0)
-        self.assertEqual(self.gets, before)
+        # A finished candidate no longer hides the open period: one re-check search only.
+        self.assertEqual({**self.gets, 'searches': before['searches']}, before)
+        self.assertEqual(self.gets['searches'], before['searches'] + ['amu_zettai'])
         self.assertEqual(self.state['readings'][old_key]['reason'], 'image_cache_expired')
 
     def test_cycle_boundary_first_and_thirteenth(self):

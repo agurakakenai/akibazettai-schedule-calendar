@@ -1308,11 +1308,15 @@ HTTPの前にleaseをremoteへ保存します。収集後、成功・部分失�
 
 保存済みcohortの期間が当日の発見期間を含まなくなった場合（例：10月のcohortのまま11/1を迎えた場合）、そのcohortは再開せず、その日の新しいcycleを開始します。日付が変わって範囲外になったcohortへの継続dispatchは`stale-continuation`として何もせず、次のslotの新しいcycleに委ねます。time_limitで`ready=true`のcheckpointは`nextAt`を空にして公開直後に続行でき、cursorが末尾でも検索・候補作業が残っていれば継続対象です。それ以外は未来の時刻だけを使い、過去の確認時刻は「今すぐ処理可能」として扱います。画像hostだけが停止している間も、検索・本文で進められる作業があれば継続を起動します（画像作業は候補ごとに保留され、それ自体ではtime_limitに達しません）。
 
+半月の`readings`（投稿ごとの読取り進捗）は上限480件です。各cycleの開始時に、終わった（done/held）読取りのうち、候補がpendingに無く、source記録が終端（valid/negative/issued）またはその候補がcandidateHistoryにあり、未完了・未精算のAI receiptから参照されていないものを退避（削除）します。再登録はsources/candidateHistoryが、AIの重複はAI台帳のrequest hashが防ぐため、退避しても同じ投稿の再GET・再AIは起きません。処理中に上限へ達した場合は古い投稿の退避可能分から空け、空けられなければ新しい読取りを作らず`reading_capacity`で6時間後まで待機します（取得・AIは行いません）。2026-10-18〜25は終わった読取りが240件（旧上限）に達し、新しい読取りが1件増えるたびに保存前検証で失敗していました。
+
+半月の候補キュー（pending）は全体600件・1人12件までです（旧240件・6件）。上限に達したときは、読み終わった（done/held）候補を古い順にcandidateHistoryへ移して空けます（同じ投稿は再登録されません。画像cache期限切れで回復待ちの候補は残します）。それでも空かない場合だけ、従来どおり優先度の低い候補を後回し（`queue_limit`）にします。読み終わった候補はその人の期間の再検索を止めません。自撮りなどを「判読保留」と読んだ候補が残っていても、6時間ごとの確認で後から出た本当の予定表投稿を見つけます。未確定の部分予定表（partialSchedules）は新しい480件だけを公開投影し、元のrevisionは保持します。上限に達したこと（`queue_limit`・`queue_limit_replaced`・`reading_capacity`）はjob summaryの「Half-month queue capacity」と通知Issueの半月の項目に出し、黙って捨てません。
+
 Azureが4xxを返した場合は、応答JSONの`error.code`（なければ`error.type`）が短い識別子のときだけ`azure_<code>`の形で診断の`detail`へ残します。message・param・本文・画像・raw応答は保持しません。
 
 新しいrunでは`budget_wait`を実入力の予約額で再判定し、旧予約方式の月末待機だけで除外しません。期限切れcacheの再取得は、canonicalの未発行記録・空のattemptedVariants/issued/seen・共有source台帳の成功済み本文receipt（request hashと完了時刻）・その元runにschedule AI予約がないことをすべて確認できた候補に限定します。元runと異なるrun IDで、通常のURL・間隔・cooldownを守って本文と画像を1回取得し、同じsource keyであることを照合します。元receiptとholdは変更せず、元cacheの期限・failure・再取得runとpayload hashを暗号cacheの監査記録へ保持します。本人性やAI未発行の証明ができない候補、発行済みAI候補はheldを維持し、再GET・再AIしません。
 
-失敗・包含・候補隔離・deploy失敗は、Issue「Collector needs attention」1件を作成または本文更新して知らせます（重複作成しません）。その後に公式・本人・半月の収集から公開まで正常に終わったrunで自動的にcloseします。Issueには固定tokenとrunのURLだけを書き、ログや本文は転記しません。
+失敗・包含・候補隔離・deploy失敗は、Issue「Collector needs attention」1件を作成または本文更新して知らせます（重複作成しません）。Issueは構成要素（公式・本人・半月・公開）ごとに状態を持ち、失敗した構成要素が**その後の同じ構成要素の成功run**で回復するまで閉じません。別の構成要素だけを収集したrun（例：半月の失敗中に成功した公式・本人run）では閉じません。本文には構成要素ごとの原因token・同じ原因の連続失敗回数・初回失敗日時（UTC）・最新の失敗runを載せ、原因が変わると回数を1から数え直します。状態は本文先頭の固定形式のコメント行に保存し、形式に合わない値は捨てます。Issueには固定tokenとrunのURLだけを書き、ログや本文は転記しません。
 
 #### 承認済み保存根拠の適用
 

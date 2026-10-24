@@ -94,6 +94,16 @@ jobs:
       attention: ${{ steps.collection.outputs.attention }}
       failed_components: ${{ steps.collection.outputs.failedComponents }}
       failure_reason: ${{ steps.collection.outputs.reason }}
+      official_status: ${{ steps.collection.outputs.officialCollectionStatus }}
+      official_code: ${{ steps.collection.outputs.officialCollectionCode }}
+      official_reason: ${{ steps.collection.outputs.officialFailureReason }}
+      personal_status: ${{ steps.collection.outputs.personalCollectionStatus }}
+      personal_code: ${{ steps.collection.outputs.personalCollectionCode }}
+      personal_reason: ${{ steps.collection.outputs.personalFailureReason }}
+      schedule_status: ${{ steps.collection.outputs.halfMonthCollectionStatus }}
+      schedule_code: ${{ steps.collection.outputs.halfMonthCollectionCode }}
+      schedule_reason: ${{ steps.collection.outputs.scheduleFailureReason }}
+      schedule_capacity: ${{ steps.collection.outputs.scheduleCapacityLimit }}
     steps:
       # A queued collector must use current code, not the old triggering commit.
       - name: Check out current production code
@@ -320,31 +330,118 @@ jobs:
           ATTENTION: ${{ needs.collect.outputs.attention }}
           REASON: ${{ needs.collect.outputs.failure_reason }}
           COMPONENTS: ${{ needs.collect.outputs.failed_components }}
+          OFFICIAL_STATUS: ${{ needs.collect.outputs.official_status }}
+          OFFICIAL_CODE: ${{ needs.collect.outputs.official_code }}
+          OFFICIAL_REASON: ${{ needs.collect.outputs.official_reason }}
+          PERSONAL_STATUS: ${{ needs.collect.outputs.personal_status }}
+          PERSONAL_CODE: ${{ needs.collect.outputs.personal_code }}
+          PERSONAL_REASON: ${{ needs.collect.outputs.personal_reason }}
+          SCHEDULE_STATUS: ${{ needs.collect.outputs.schedule_status }}
+          SCHEDULE_CODE: ${{ needs.collect.outputs.schedule_code }}
+          SCHEDULE_REASON: ${{ needs.collect.outputs.schedule_reason }}
+          SCHEDULE_CAPACITY: ${{ needs.collect.outputs.schedule_capacity }}
         run: |
           # Only fixed tokens reach the issue; never logs, messages, paths or data.
+          # Each component (official, personal, schedule, publication) stays open until a later run
+          # of the SAME component succeeds; another component's success never closes it.
           for NAME in COLLECT BUILD DEPLOY; do
             [[ "${!NAME}" =~ ^(success|failure|cancelled|skipped)$ ]] || printf -v "$NAME" '%s' unknown
           done
-          [[ "$REASON" =~ ^[a-z_]{1,64}$ ]] || REASON=none
+          for NAME in REASON OFFICIAL_REASON PERSONAL_REASON SCHEDULE_REASON; do
+            [[ "${!NAME}" =~ ^[a-z_]{1,64}$ ]] || printf -v "$NAME" '%s' none
+          done
+          for NAME in OFFICIAL_STATUS PERSONAL_STATUS SCHEDULE_STATUS; do
+            [[ "${!NAME}" =~ ^[a-z-]{1,32}$ ]] || printf -v "$NAME" '%s' none
+          done
+          for NAME in OFFICIAL_CODE PERSONAL_CODE SCHEDULE_CODE; do
+            [[ "${!NAME}" =~ ^-?[0-9]{1,3}$ ]] || printf -v "$NAME" '%s' -1
+          done
           [[ "$COMPONENTS" =~ ^[a-z-]{1,64}$ ]] || COMPONENTS=none
+          # A reached queue bound (e.g. queue_limit, reading_capacity) is surfaced, never silently absorbed.
+          [[ "$SCHEDULE_CAPACITY" =~ ^[a-z_]{1,64}(-[a-z_]{1,64}){0,3}$ ]] || SCHEDULE_CAPACITY=""
           [[ "$EVENT" =~ ^[a-z_]{1,32}$ ]] || EVENT=unknown
+          RUN_ID=0
+          if [[ "$RUN_URL" =~ /runs/([0-9]{1,20})$ ]]; then RUN_ID="${BASH_REMATCH[1]}"; fi
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           TITLE="Collector needs attention"
           NUMBER="$(gh issue list --state open --search "\"$TITLE\" in:title" --json number,title \
             --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")"
-          FAILED=false
-          if [[ "$COLLECT" == failure || "$BUILD" == failure || "$DEPLOY" == failure || "$ATTENTION" == true ]]; then
-            FAILED=true
+          if [[ -n "$NUMBER" && ! "$NUMBER" =~ ^[0-9]{1,9}$ ]]; then NUMBER=""; fi
+          declare -A FAIL_REASON FAIL_COUNT FAIL_FIRST FAIL_RUN
+          KNOWN=(official personal schedule publication)
+          STATE_FOUND=false
+          if [[ -n "$NUMBER" ]]; then
+            STATE_LINE="$(gh issue view "$NUMBER" --json body --jq .body \
+              | grep -m1 -E '^<!-- alert-state( [a-z]+=[a-z_]+:[0-9]+:[0-9TZ:-]+:[0-9]+)* -->$' || true)"
+            if [[ -n "$STATE_LINE" ]]; then
+              STATE_FOUND=true
+              for ITEM in ${STATE_LINE}; do
+                [[ "$ITEM" =~ ^(official|personal|schedule|publication)=([a-z_]{1,64}):([0-9]{1,6}):([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z):([0-9]{1,20})$ ]] || continue
+                FAIL_REASON[${BASH_REMATCH[1]}]="${BASH_REMATCH[2]}"
+                FAIL_COUNT[${BASH_REMATCH[1]}]="${BASH_REMATCH[3]}"
+                FAIL_FIRST[${BASH_REMATCH[1]}]="${BASH_REMATCH[4]}"
+                FAIL_RUN[${BASH_REMATCH[1]}]="${BASH_REMATCH[5]}"
+              done
+            fi
           fi
-          if [[ "$FAILED" == true ]]; then
+          CHANGED=false
+          failed() {
+            if [[ "${FAIL_REASON[$1]:-}" == "$2" ]]; then
+              FAIL_COUNT[$1]=$(( ${FAIL_COUNT[$1]} < 999999 ? ${FAIL_COUNT[$1]} + 1 : 999999 ))
+            else
+              FAIL_REASON[$1]="$2"; FAIL_COUNT[$1]=1; FAIL_FIRST[$1]="$NOW"
+            fi
+            FAIL_RUN[$1]="$RUN_ID"; CHANGED=true
+          }
+          recovered() {
+            if [[ -n "${FAIL_REASON[$1]:-}" ]]; then
+              unset "FAIL_REASON[$1]" "FAIL_COUNT[$1]" "FAIL_FIRST[$1]" "FAIL_RUN[$1]"; CHANGED=true
+            fi
+          }
+          PUBLISHED=false
+          if [[ "$COLLECT" == success && "$BUILD" == success && "$DEPLOY" == success ]]; then PUBLISHED=true; fi
+          for C in official personal schedule; do
+            UPPER="${C^^}"; STATUS_NAME="${UPPER}_STATUS"; CODE_NAME="${UPPER}_CODE"; REASON_NAME="${UPPER}_REASON"
+            if [[ "-$COMPONENTS-" == *"-$C-"* ]]; then
+              REASON_C="${!REASON_NAME}"; if [[ "$REASON_C" == none ]]; then REASON_C=component_failure; fi
+              failed "$C" "$REASON_C"
+            elif [[ "$C" == schedule && -n "$SCHEDULE_CAPACITY" ]]; then
+              failed schedule "${SCHEDULE_CAPACITY%%-*}"
+            elif [[ "$PUBLISHED" == true && "${!CODE_NAME}" =~ ^[0-9]+$ \
+                    && "${!STATUS_NAME}" =~ ^(ok|partial|no-new|no-results|budget-exhausted|outside-window|paused)$ ]]; then
+              recovered "$C"
+            fi
+          done
+          if [[ "$COLLECT" == failure || "$BUILD" == failure || "$DEPLOY" == failure \
+                || ( "$ATTENTION" == true && "$COMPONENTS" == none ) ]]; then
+            PUBLICATION_REASON="$REASON"; if [[ "$PUBLICATION_REASON" == none ]]; then PUBLICATION_REASON=job_failure; fi
+            failed publication "$PUBLICATION_REASON"
+          elif [[ "$PUBLISHED" == true ]]; then
+            recovered publication
+          fi
+          ACTIVE=()
+          for C in "${KNOWN[@]}"; do if [[ -n "${FAIL_REASON[$C]:-}" ]]; then ACTIVE+=("$C"); fi; done
+          if (( ${#ACTIVE[@]} )); then
+            if [[ "$CHANGED" == false && -n "$NUMBER" && "$STATE_FOUND" == true ]]; then exit 0; fi
+            STATE="<!-- alert-state"
+            LINES=()
+            for C in "${ACTIVE[@]}"; do
+              STATE+=" $C=${FAIL_REASON[$C]}:${FAIL_COUNT[$C]}:${FAIL_FIRST[$C]}:${FAIL_RUN[$C]}"
+              LINES+=("- $C: reason=${FAIL_REASON[$C]}; consecutive failures=${FAIL_COUNT[$C]}; first failed (UTC)=${FAIL_FIRST[$C]}; latest failed run: ${RUN_URL%/runs/*}/runs/${FAIL_RUN[$C]}")
+            done
+            STATE+=" -->"
             BODY="$(printf '%s\n' \
-              'The collector or publication needs attention. This issue is updated in place; it is closed after a fully successful collection run.' \
+              "$STATE" \
+              'The collector or publication needs attention. This issue is updated in place and closed only after every failed component below has a later successful run of the same component.' \
               '' \
-              "- Latest affected run: $RUN_URL" \
-              "- Updated (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              "${LINES[@]}" \
+              '' \
+              "- Latest run: $RUN_URL" \
+              "- Updated (UTC): $NOW" \
               "- Event: $EVENT" \
               "- Jobs: collect=$COLLECT, build=$BUILD, deploy=$DEPLOY" \
               "- Collector reason: $REASON" \
-              "- Contained or isolated components: $COMPONENTS" \
+              "- Contained or isolated components in this run: $COMPONENTS" \
               '' \
               'If the reason is unresolved_lease or a component failure was not contained, follow README "保存失敗時の回復". Details are in the run job summary.')"
             if [[ -n "$NUMBER" ]]; then
@@ -352,6 +449,6 @@ jobs:
             else
               gh issue create --title "$TITLE" --body "$BODY"
             fi
-          elif [[ -n "$NUMBER" && "$COLLECT" == success && "$BUILD" == success && "$DEPLOY" == success ]]; then
-            gh issue close "$NUMBER" --comment "Recovered: a later collection run saved and published normally ($RUN_URL)."
+          elif [[ -n "$NUMBER" && ( "$CHANGED" == true || "$STATE_FOUND" == false ) && "$PUBLISHED" == true ]]; then
+            gh issue close "$NUMBER" --comment "Recovered: every failed component later succeeded in its own run ($RUN_URL)."
           fi
