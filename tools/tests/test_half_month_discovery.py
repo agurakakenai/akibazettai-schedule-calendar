@@ -470,6 +470,29 @@ class PostRecoveryTests(DiscoveryBase):
         self.assertEqual(self.usage.calls, calls)
 
 
+class TextPrefilterTests(DiscoveryBase):
+    def test_plausible_schedule_text(self):
+        for text in ('10月後半のお給仕予定', '16日 19日 21日 全部', '18日夜にゃん', '10/16 10/18',
+                     'あ、あと31日夜お給仕いる', '１６日　２０日'):
+            self.assertTrue(collector.plausible_schedule_text(text), text)
+        for text in ('スイートポテトつくる！', '今日は16日です', 'https://t.co/abc', ''):
+            self.assertFalse(collector.plausible_schedule_text(text), text)
+
+    def test_text_only_chatter_ends_without_ai_and_is_never_requeued(self):
+        self.now = at(17)
+        entry = self.post(at(16, 21), 60, 'スイートポテトつくる！')
+        self.payloads[entry['id']].update(photos=[], mediaDetails=[])
+        self.documents = {'amu_zettai': base.document(entry)}
+        calls = self.usage.calls
+        self.run_cycle(cycle_id='3501-1')
+        self.assertEqual(self.calls.count(('post', entry['id'])), 1)
+        self.assertEqual(self.usage.calls, calls)
+        self.assertEqual(self.state['pending'], [])
+        self.assertEqual([row['status'] for row in self.state['sources'].values()
+                          if row['source']['id'] == entry['id']], ['negative'])
+        facts.validate_state(self.state)
+
+
 class PriorityTests(DiscoveryBase):
     def test_open_period_searches_and_candidates_precede_first_half_residue(self):
         self.registry['members'].append(collector.members.new_member(
