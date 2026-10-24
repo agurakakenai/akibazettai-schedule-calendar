@@ -2126,6 +2126,27 @@ class CloudTests(unittest.TestCase):
             self.assertEqual(result['continuationReady'], 'false')
             self.assertEqual(self.remote_json(cloud.PERSONAL)[0], private)
 
+    def test_reached_half_month_queue_bound_is_summarized_and_exported(self):
+        summary, output_file = self.root / 'summary.txt', self.root / 'output.txt'
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            cloud.emit({'collectionStatus': 'partial', 'persistenceStatus': 'saved',
+                        'halfMonthAcquisition': {'period': '2026-10-16', 'targets': 40, 'searched': 40, 'confirmed': 3,
+                                                 'readings': 80, 'retiredReadings': 160, 'pending': 157},
+                        'halfMonthCapacity': {'queueLimitDeferred': 2, 'finishedCandidatesRetired': 3}},
+                       {'GITHUB_STEP_SUMMARY': str(summary), 'GITHUB_OUTPUT': str(output_file)})
+        text = summary.read_text(encoding='utf-8')
+        self.assertIn('## Half-month queue capacity', text)
+        self.assertIn('retired finished readings=160', text)
+        self.assertIn('queueLimitDeferred=2 (alert token queue_limit)', text)
+        self.assertIn('finishedCandidatesRetired=3.', text)
+        self.assertIn('scheduleCapacityLimit=queue_limit\n', output_file.read_text(encoding='utf-8'))
+        self.assertIn('::warning::Half-month queue capacity was reached: queue_limit', output.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()):
+            cloud.emit({'persistenceStatus': 'saved', 'halfMonthCapacity': {'finishedCandidatesRetired': 1}},
+                       {'GITHUB_OUTPUT': str(output_file)})
+        self.assertTrue(output_file.read_text(encoding='utf-8').endswith('scheduleCapacityLimit=\n')
+                        or 'scheduleCapacityLimit=\n' in output_file.read_text(encoding='utf-8'))
+
     def test_acquisition_summary_separates_published_status_from_missing_work_dates(self):
         summary = self.root / 'summary.txt'
         acquisition = {'complete': False, 'expired': 2, 'days': [{

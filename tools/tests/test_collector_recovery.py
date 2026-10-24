@@ -457,16 +457,93 @@ class AlertWorkflowTests(unittest.TestCase):
         self.assertIn('uses: ./.github/actions/collector-python', install)
         self.assertNotIn('pip install', routing_fixture.WORKFLOW)
 
-    def test_single_issue_is_created_updated_closed_and_untrusted_tokens_dropped(self):
+    def run_alert(self, values, open_number='', body=''):
         bash = self.bash()
         mock_gh = '''
 gh() {
   echo "$*" >> "$GH_LOG"
   case "$1 $2" in
     "issue list") printf '%s\\n' "$OPEN";;
+    "issue view") printf '%s\\n' "$ISSUE_BODY";;
   esac
 }
 '''
+        with tempfile.TemporaryDirectory() as folder:
+            environment = {**os.environ, 'GH_LOG': 'gh.txt', 'OPEN': open_number, 'ISSUE_BODY': body,
+                           'BASH_ENV': '', 'RUN_URL': 'https://github.com/o/r/actions/runs/42',
+                           'EVENT': 'schedule', 'COLLECT': 'success', 'BUILD': 'success',
+                           'DEPLOY': 'success', 'ATTENTION': 'false', 'REASON': '', 'COMPONENTS': '',
+                           'SCHEDULE_CAPACITY': '',
+                           **{f'{name}_{field}': value for name in ('OFFICIAL', 'PERSONAL', 'SCHEDULE')
+                              for field, value in (('STATUS', ''), ('CODE', '-1'), ('REASON', ''))}}
+            environment.update(values)
+            result = subprocess.run(
+                [str(bash), '--noprofile', '--norc', '-e', '-o', 'pipefail', '-s'],
+                input=mock_gh + self.script(), text=True, capture_output=True, cwd=folder,
+                timeout=15, env=environment, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((Path(folder) / 'pwned').exists())
+            path = Path(folder) / 'gh.txt'
+            return path.read_text() if path.exists() else ''
+
+    def state(self, *items):
+        return '<!-- alert-state ' + ' '.join(items) + ' -->\nold body'
+
+    def test_component_failure_closes_only_after_the_same_component_succeeds(self):
+        open_schedule = self.state('schedule=schedule_infrastructure_failed:3:2026-10-18T19:30:00Z:39153171472')
+        official_ok = {'OFFICIAL_STATUS': 'ok', 'OFFICIAL_CODE': '0'}
+        personal_ok = {'PERSONAL_STATUS': 'partial', 'PERSONAL_CODE': '2'}
+        for values in (official_ok, personal_ok, {**official_ok, **personal_ok},
+                       {'SCHEDULE_STATUS': 'unavailable', 'SCHEDULE_CODE': '3'},
+                       {'SCHEDULE_STATUS': 'ok', 'SCHEDULE_CODE': '0', 'DEPLOY': 'failure'}):
+            with self.subTest(values=values):
+                log = self.run_alert(values, '7', open_schedule)
+                self.assertNotIn('issue close', log)
+                self.assertNotIn('issue create', log)
+        log = self.run_alert({'SCHEDULE_STATUS': 'partial', 'SCHEDULE_CODE': '2'}, '7', open_schedule)
+        self.assertIn('issue close 7', log)
+        # Another component still failing keeps the issue open with only that component listed.
+        both = self.state('schedule=schedule_infrastructure_failed:3:2026-10-18T19:30:00Z:1',
+                          'official=component_failure:1:2026-10-24T03:30:00Z:2')
+        log = self.run_alert({'SCHEDULE_STATUS': 'ok', 'SCHEDULE_CODE': '0'}, '7', both)
+        self.assertIn('issue edit 7', log)
+        self.assertNotIn('issue close', log)
+        self.assertIn('<!-- alert-state official=component_failure:1:2026-10-24T03:30:00Z:2 -->', log)
+        self.assertNotIn('- schedule:', log)
+
+    def test_repeated_cause_counts_consecutive_failures_and_keeps_first_time(self):
+        open_schedule = self.state('schedule=schedule_infrastructure_failed:3:2026-10-18T19:30:00Z:39153171472')
+        failing = {'ATTENTION': 'true', 'COMPONENTS': 'schedule', 'SCHEDULE_STATUS': 'unavailable',
+                   'SCHEDULE_CODE': '3', 'SCHEDULE_REASON': 'schedule_infrastructure_failed'}
+        log = self.run_alert(failing, '7', open_schedule)
+        self.assertIn('issue edit 7', log)
+        self.assertIn('schedule=schedule_infrastructure_failed:4:2026-10-18T19:30:00Z:42', log)
+        self.assertIn('consecutive failures=4; first failed (UTC)=2026-10-18T19:30:00Z', log)
+        self.assertIn('latest failed run: https://github.com/o/r/actions/runs/42', log)
+        log = self.run_alert({**failing, 'SCHEDULE_REASON': 'reading_capacity'}, '7', open_schedule)
+        self.assertRegex(log, r'schedule=reading_capacity:1:\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ:42')
+        log = self.run_alert(failing)
+        self.assertIn('issue create', log)
+        self.assertIn('schedule=schedule_infrastructure_failed:1:', log)
+        # Forged state tokens are ignored instead of reaching the body.
+        log = self.run_alert(failing, '7', '<!-- alert-state schedule=$(touch pwned):1:x:1 -->')
+        self.assertNotIn('$(touch', log)
+        self.assertIn('schedule=schedule_infrastructure_failed:1:', log)
+
+    def test_reached_queue_bound_is_alerted_until_a_schedule_run_without_it(self):
+        capacity = {'SCHEDULE_STATUS': 'partial', 'SCHEDULE_CODE': '2', 'SCHEDULE_CAPACITY': 'queue_limit-reading_capacity'}
+        log = self.run_alert(capacity)
+        self.assertIn('issue create', log)
+        self.assertIn('schedule=queue_limit:1:', log)
+        open_state = self.state('schedule=queue_limit:1:2026-10-25T19:30:00Z:41')
+        log = self.run_alert({'OFFICIAL_STATUS': 'ok', 'OFFICIAL_CODE': '0'}, '7', open_state)
+        self.assertNotIn('issue close', log)
+        log = self.run_alert({'SCHEDULE_STATUS': 'ok', 'SCHEDULE_CODE': '0'}, '7', open_state)
+        self.assertIn('issue close 7', log)
+        log = self.run_alert({**capacity, 'SCHEDULE_CAPACITY': 'x;$(touch pwned)'}, '', '')
+        self.assertNotIn('issue create', log)
+
+    def test_single_issue_is_created_updated_closed_and_untrusted_tokens_dropped(self):
         cases = [
             ({'COLLECT': 'failure', 'REASON': 'unresolved_lease'}, '', 'issue create'),
             ({'COLLECT': 'success', 'ATTENTION': 'true', 'COMPONENTS': 'schedule'}, '7', 'issue edit 7'),
@@ -474,18 +551,8 @@ gh() {
             ({'COLLECT': 'skipped'}, '7', None),
             ({'COLLECT': 'failure', 'REASON': 'x $(touch pwned) ' + SECRET}, '', 'issue create')]
         for values, open_number, expected in cases:
-            with self.subTest(values=values), tempfile.TemporaryDirectory() as folder:
-                environment = {**os.environ, 'GH_LOG': 'gh.txt', 'OPEN': open_number, 'BASH_ENV': '',
-                               'RUN_URL': 'https://github.com/o/r/actions/runs/1', 'EVENT': 'schedule',
-                               'COLLECT': 'success', 'BUILD': 'success', 'DEPLOY': 'success',
-                               'ATTENTION': 'false', 'REASON': '', 'COMPONENTS': ''}
-                environment.update(values)
-                result = subprocess.run(
-                    [str(bash), '--noprofile', '--norc', '-e', '-o', 'pipefail', '-s'],
-                    input=mock_gh + self.script(), text=True, capture_output=True, cwd=folder,
-                    timeout=15, env=environment, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-                self.assertEqual(result.returncode, 0, result.stderr)
-                log = (Path(folder) / 'gh.txt').read_text() if (Path(folder) / 'gh.txt').exists() else ''
+            with self.subTest(values=values):
+                log = self.run_alert(values, open_number)
                 if expected:
                     self.assertIn(expected, log)
                 else:
@@ -493,7 +560,6 @@ gh() {
                     self.assertNotIn('issue edit', log)
                     self.assertNotIn('issue close', log)
                 self.assertNotIn(SECRET, log)
-                self.assertFalse((Path(folder) / 'pwned').exists())
                 self.assertEqual(log.count('issue create') + log.count('issue edit'), 1 if expected and
                                  'close' not in expected else 0)
 

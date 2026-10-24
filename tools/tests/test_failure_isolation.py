@@ -107,7 +107,9 @@ class CycleIsolationTests(IsolationBase):
         self.reopen()
         gets = copy.deepcopy(self.gets)
         self.run_cycle(resume=True)
-        self.assertEqual(self.gets, gets)
+        # A finished candidate no longer hides the open period: one re-check search only.
+        self.assertEqual({**self.gets, 'searches': gets['searches']}, gets)
+        self.assertEqual(self.gets['searches'], gets['searches'] + ['amu_zettai'])
         self.assertEqual(self.usage.calls, calls)
 
     def test_cache_write_defect_after_image_get_is_isolated(self):

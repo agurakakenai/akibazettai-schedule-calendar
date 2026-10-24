@@ -52,6 +52,16 @@ class ReadingStateTests(base.Offline):
         source, tables, analysis = fixture
         return facts.apply_reading_revision(state, tables, source, analysis)
 
+    def test_partial_projection_bound_keeps_newest_tables_and_all_revisions(self):
+        state = facts.empty_state()
+        with mock.patch.object(facts, 'PARTIALS_LIMIT', 1):
+            self.apply(state, reading_table(suffix=2))
+            self.apply(state, reading_table(suffix=3))
+            facts.validate_state(state)
+            self.assertEqual(len(state['revisions']), 2)
+            newest = max(int(row['schedule']['id']) for row in state['revisions'].values())
+            self.assertEqual([row['id'] for row in state['partialSchedules']], [str(newest)])
+
     def test_partial_is_durable_public_and_non_destructive(self):
         state = facts.empty_state()
         source, tables, analysis = base.normalized()

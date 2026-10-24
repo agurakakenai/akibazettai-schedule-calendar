@@ -48,8 +48,16 @@ REASONS = {
     'image_cache_unconfigured', 'image_cache_expired', 'reading_pending', 'reading_uncertain',
     'reading_partial', 'reading_outside_period', 'time_limit', 'image_fetch_failed',
     'source_not_found', 'identity_unknown',
-    'image_cache_invalid', 'candidate_unexpected_error',
+    'image_cache_invalid', 'candidate_unexpected_error', 'reading_capacity',
 }
+# Live reading progress. Terminal readings whose re-processing is already blocked by
+# sources/candidateHistory/the AI ledger are retired by the collector before this is reached.
+READINGS_LIMIT = 480
+# Queue bounds. The collector retires finished (held/done) candidates before these are reached and
+# reports queue_limit instead of dropping silently; validation only guards integrity.
+PENDING_LIMIT = 600
+PENDING_PER_NAME = 12
+PARTIALS_LIMIT = 480
 PUBLIC_FIELDS = {'schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt', 'schedules', 'lastRun'}
 PRIVATE_FIELDS = {'identityBindings', 'revisions', 'sources', 'pending', 'coverage', 'receipts',
                   'candidateHistory', 'savedImports'}
@@ -567,8 +575,9 @@ def partial_projection(state):
                 merged['days'] = sorted(days.values(), key=lambda item: item['date'])
                 merged['reading']['days'] = evidence
             rows[key] = merged
-    return sorted(copy.deepcopy(list(rows.values())),
-                  key=lambda row: (*_post_order(row), *_pair(row)))
+    result = sorted(copy.deepcopy(list(rows.values())), key=lambda row: (*_post_order(row), *_pair(row)))
+    # Only the newest unconfirmed partial tables are projected; the revisions themselves stay saved.
+    return result[-PARTIALS_LIMIT:] if len(result) > PARTIALS_LIMIT else result
 
 
 def _project(selected):
@@ -832,7 +841,7 @@ def validate_state(value, private=True):
             raise ValueError('inconsistent_schedule_post')
         siblings.append(schedule)
     partials = value.get('partialSchedules', [])
-    if not isinstance(partials, list) or len(partials) > 240:
+    if not isinstance(partials, list) or len(partials) > PARTIALS_LIMIT:
         raise ValueError('invalid_partial_schedules')
     partial_keys = {(*_pair(schedule), schedule['id']) for schedule in value['schedules']}
     for schedule in partials:
@@ -991,7 +1000,7 @@ def validate_state(value, private=True):
         if any(value['revisions'][key]['analysis']['requestHash'] != imported['requestHash']
                for key in linked):
             raise ValueError('schedule_saved_import_request_mismatch')
-    if not isinstance(value['pending'], list) or len(value['pending']) > 240:
+    if not isinstance(value['pending'], list) or len(value['pending']) > PENDING_LIMIT:
         raise ValueError('invalid_schedule_queue')
     ids, names = set(), {}
     for candidate in value['pending']:
@@ -1001,7 +1010,7 @@ def validate_state(value, private=True):
         ids.add(candidate['id'])
         name = candidate['name']
         names[name] = names.get(name, 0) + 1
-        if names[name] > 6:
+        if names[name] > PENDING_PER_NAME:
             raise ValueError('invalid_schedule_queue')
     for key, item in value['candidateHistory'].items():
         require_keys(item, ('candidate', 'reason', 'checkedAt'))
@@ -1024,7 +1033,7 @@ def validate_state(value, private=True):
                 if row[field] is not None:
                     timestamp(row[field])
             for field in ('candidateIds', 'confirmedIds'):
-                if not isinstance(row[field], list) or len(row[field]) > 6:
+                if not isinstance(row[field], list) or len(row[field]) > PENDING_PER_NAME:
                     raise ValueError('invalid_schedule_coverage')
                 for tid in row[field]:
                     identifier(tid)
@@ -1071,7 +1080,7 @@ def validate_collection_state(value):
         for slot in slots:
             timestamp(slot)
     if 'readings' in value:
-        if not isinstance(value['readings'], dict) or len(value['readings']) > 240:
+        if not isinstance(value['readings'], dict) or len(value['readings']) > READINGS_LIMIT:
             raise ValueError('invalid_readings')
         for key, record in value['readings'].items():
             valid_hash(key)

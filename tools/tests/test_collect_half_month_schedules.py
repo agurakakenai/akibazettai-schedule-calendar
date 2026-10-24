@@ -159,11 +159,11 @@ class DiscoveryTests(base.Offline):
         state = facts.empty_state()
         _, reasons = facts.population(base.SCHEDULE, {}, base.ACCOUNTS)
         periods = collector.refresh_coverage(state, reasons, base.NOW, {})
-        found, _ = collector.discover(base.document(*[base.entry(suffix=n + 1) for n in range(10)]),
+        found, _ = collector.discover(base.document(*[base.entry(suffix=n + 1) for n in range(facts.PENDING_PER_NAME + 4)]),
                                       {'あむ': base.TARGET}, base.NOW)
         dropped = collector.enqueue(state, found, base.NOW)
         self.assertEqual(dropped, {'あむ'})
-        self.assertEqual(len(state['pending']), 6)
+        self.assertEqual(len(state['pending']), facts.PENDING_PER_NAME)
         first = state['coverage'][periods[0][0]]['あむ']
         self.assertEqual(first['reason'], 'queue_limit')
         first['lastSearchedAt'] = facts.stamp(base.NOW)
@@ -171,7 +171,7 @@ class DiscoveryTests(base.Offline):
         self.assertEqual(first['nextCheckAt'], facts.stamp(base.NOW + dt.timedelta(hours=6)))
         collector.refresh_coverage(state, reasons, base.NOW + dt.timedelta(hours=1), {})
         self.assertEqual(first['nextCheckAt'], facts.stamp(base.NOW + dt.timedelta(hours=6)))
-        self.assertEqual(len(state['pending']), 6)
+        self.assertEqual(len(state['pending']), facts.PENDING_PER_NAME)
 
 
 class FetchTests(base.Offline):
@@ -511,14 +511,14 @@ class ProducerTests(base.Offline):
     def test_fresh_schedule_candidate_precedes_old_chatter_and_preserves_displaced_metadata(self):
         targets = {'あむ': base.TARGET}
         old = []
-        for suffix in range(1, 7):
+        for suffix in range(1, facts.PENDING_PER_NAME + 1):
             row = base.entry(base.CREATED - dt.timedelta(days=3), suffix=suffix)
             row['text'] = 'ordinary conversation'
             old.extend(collector.discover(base.document(row), targets, base.NOW)[0])
         self.state['pending'] = copy.deepcopy(old)
         fresh = collector.discover(base.document(base.entry()), targets, base.NOW)[0]
         collector.enqueue(self.state, fresh, base.NOW)
-        self.assertEqual(len(self.state['pending']), 6)
+        self.assertEqual(len(self.state['pending']), facts.PENDING_PER_NAME)
         self.assertEqual(collector.waiting_candidates(self.state, targets, base.NOW)[0]['id'], fresh[0]['id'])
         displaced = next(iter(self.state['candidateHistory'].values()))
         self.assertIn(displaced['candidate'], old)
