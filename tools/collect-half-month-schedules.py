@@ -47,6 +47,8 @@ TERMINAL_POST_REASONS = frozenset({
     'photo_owner_mismatch', 'photo_metadata_mismatch', 'incomplete_photo_metadata',
     'invalid_photo_metadata', 'invalid_photo_dimensions', 'non_photo_media',
     'quoted_or_reply', 'obsolete_or_invalid_edit'})
+# History written before this time came from the photo-index and 6-per-person defects.
+HISTORY_RELEASE_BEFORE = dt.datetime(2026, 10, 25, 3, 0, tzinfo=dt.timezone.utc)
 azure = _module('schedule-azure.py', 'half_month_azure')
 official = _module('collect-shifts.py', 'half_month_official')
 personal = _module('collect-personal-shifts.py', 'half_month_personal')
@@ -291,8 +293,11 @@ def validate_post(candidate, payload, target, now, binding=None, *, payload_hash
         expanded = detail.get('expanded_url')
         if expanded is not None:
             parsed = urllib.parse.urlsplit(expanded)
+            # X reports every photo of a multi-photo post as .../photo/1, so only the owner
+            # (handle and post id) and a valid photo position are checked, not this photo's index.
+            match = re.fullmatch(rf'/{re.escape(handle)}/status/{tid}/photo/([1-4])', parsed.path)
             if (parsed.scheme != 'https' or parsed.netloc not in ('x.com', 'twitter.com')
-                    or parsed.path != f'/{handle}/status/{tid}/photo/{index}'
+                    or match is None or int(match.group(1)) > len(photos)
                     or parsed.query or parsed.fragment):
                 raise ValueError('photo_owner_mismatch')
         for field in ('source_status_id_str', 'source_status_id'):
@@ -1455,6 +1460,21 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
     for progress in state['readings'].values():
         if progress['sourceId'] in stale:
             progress.update(stage='held', reason='stale_candidate', nextAt=None)
+    # Before HISTORY_RELEASE_BEFORE, multi-photo posts were wrongly ended as permanent_failure
+    # (photo index check) and unread candidates were retired as queue_limit by the 6-per-person
+    # bound. Release those once, if still in an open window and never fetched as a source.
+    known_sources = {record['source']['id'] for record in state['sources'].values()}
+    for key, item in list(state['candidateHistory'].items()):
+        candidate = item['candidate']
+        if (item['reason'] in ('permanent_failure', 'queue_limit')
+                and facts.timestamp(item['checkedAt']) < HISTORY_RELEASE_BEFORE
+                and candidate['name'] in targets
+                and (item['reason'] == 'permanent_failure' or candidate['priority'] == 0)
+                and facts.timestamp(candidate['searchCreatedAt']).astimezone(facts.JST).date() >= candidate_since
+                and candidate['id'] not in known_sources
+                and candidate['id'] not in {row['id'] for row in state['pending']}):
+            del state['candidateHistory'][key]
+            enqueue(state, [dict(candidate, nextAttemptAt=None)], started, analyzer)
     # A missing module is a runner/environment fault, not a property of the source. Once the
     # environment is fixed, release such delays/holds so the source is read on this run (paid
     # requests stay deduplicated by the usage ledger and the encrypted cache).
@@ -1605,6 +1625,20 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                                  if record['sourceId'] == selected['id']]
                         if known and known[0][1]['reason'] == 'budget_wait':
                             selected['nextAttemptAt'] = None
+                        if (known and known[0][1]['stage'] == 'held'
+                                and known[0][1]['reason'] == 'image_cache_expired'
+                                and known[0][1]['cacheKey'] not in cache.records
+                                and not known[0][1]['attemptedVariants']
+                                and (state['sources'].get(known[0][1]['cacheKey']) or {}).get('status') == 'pending'
+                                and state['sources'][known[0][1]['cacheKey']].get('requestHash') is None):
+                            # The encrypted evidence was pruned before any AI request: the canonical source
+                            # is still pending without a request hash (issue is recorded before every AI
+                            # call). Start over from one normal post/image fetch; the AI ledger still
+                            # rejects any duplicate request hash.
+                            del state['readings'][known[0][0]]
+                            known = []
+                            selected['nextAttemptAt'] = None
+                            save()
                         if selected['nextAttemptAt'] and facts.timestamp(selected['nextAttemptAt']) > clock():
                             continue
                         if not known:

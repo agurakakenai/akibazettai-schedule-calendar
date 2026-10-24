@@ -1312,6 +1312,8 @@ HTTPの前にleaseをremoteへ保存します。収集後、成功・部分失�
 
 半月の候補キュー（pending）は全体600件・1人12件までです（旧240件・6件）。上限に達したときは、読み終わった（done/held）候補を古い順にcandidateHistoryへ移して空けます（同じ投稿は再登録されません。画像cache期限切れで回復待ちの候補は残します）。それでも空かない場合だけ、従来どおり優先度の低い候補を後回し（`queue_limit`）にします。読み終わった候補はその人の期間の再検索を止めません。自撮りなどを「判読保留」と読んだ候補が残っていても、6時間ごとの確認で後から出た本当の予定表投稿を見つけます。未確定の部分予定表（partialSchedules）は新しい480件だけを公開投影し、元のrevisionは保持します。上限に達したこと（`queue_limit`・`queue_limit_replaced`・`reading_capacity`）はjob summaryの「Half-month queue capacity」と通知Issueの半月の項目に出し、黙って捨てません。
 
+複数画像の投稿では、Xが全画像の`expanded_url`を`…/photo/1`として返します。そのため写真の所有者確認は、handle・投稿IDと、画像枚数以内の位置だけを照合します。2026-10-25以前は2枚目で`photo_owner_mismatch`となり、複数画像の予定表（あらた・ぴあの・みえる・みりあ・ゆめ）が`permanent_failure`で終わっていました。この時期に記録された`permanent_failure`と、優先度の高い（予定語を含む）`queue_limit`の候補履歴は、まだsourceとして取得しておらず対象期間内のものに限り、1回だけ候補へ戻します。画像cacheの期限切れで保留した候補は、暗号cacheの記録自体が整理済みでも、canonical sourceが`pending`でrequest hashが無い（AI未発行）ことを確認できれば、本文と画像を通常の経路で1回だけ取り直します。AI発行済みの候補は取り直しません。
+
 Azureが4xxを返した場合は、応答JSONの`error.code`（なければ`error.type`）が短い識別子のときだけ`azure_<code>`の形で診断の`detail`へ残します。message・param・本文・画像・raw応答は保持しません。
 
 新しいrunでは`budget_wait`を実入力の予約額で再判定し、旧予約方式の月末待機だけで除外しません。期限切れcacheの再取得は、canonicalの未発行記録・空のattemptedVariants/issued/seen・共有source台帳の成功済み本文receipt（request hashと完了時刻）・その元runにschedule AI予約がないことをすべて確認できた候補に限定します。元runと異なるrun IDで、通常のURL・間隔・cooldownを守って本文と画像を1回取得し、同じsource keyであることを照合します。元receiptとholdは変更せず、元cacheの期限・failure・再取得runとpayload hashを暗号cacheの監査記録へ保持します。本人性やAI未発行の証明ができない候補、発行済みAI候補はheldを維持し、再GET・再AIしません。
