@@ -1,25 +1,23 @@
 {
-  "checkedAt": "2026-10-24T08:18:47Z",
+  "checkedAt": "2026-10-24T12:50:14Z",
   "complete": false,
-  "cooldowns": {
-    "pbs.twimg.com": "2026-10-20T20:26:45.218496Z"
-  },
+  "cooldowns": {},
   "lastRun": {
-    "attemptedCount": 3,
+    "attemptedCount": 1,
     "complete": false,
     "dateBasis": "JST service day, 05:00 boundary",
     "dateFrom": "2026-10-23",
     "dateTo": "2026-10-24",
     "deferredCount": 0,
-    "discoveredCount": 43,
-    "eligibleCount": 3,
+    "discoveredCount": 44,
+    "eligibleCount": 1,
     "failures": [],
-    "fetchedCount": 3,
-    "finishedAt": "2026-10-24T08:19:58Z",
+    "fetchedCount": 1,
+    "finishedAt": "2026-10-24T12:50:23Z",
     "lastSuccessMeaning": "Both searches and every selected post handled without failure or deferral",
     "maxPosts": 20,
-    "newNameCount": 15,
-    "newPostCount": 2,
+    "newNameCount": 7,
+    "newPostCount": 1,
     "pendingCount": 34,
     "pendingOutsideRangeCount": 34,
     "rejected": [
@@ -250,24 +248,20 @@
       {
         "id": "2097883444034596954",
         "reason": "outside_date_range"
-      },
-      {
-        "id": "2113817543597236726",
-        "reason": "not_shift_post"
       }
     ],
     "requests": {
-      "posts": 3,
+      "posts": 1,
       "searches": 2
     },
     "skippedCuratedCount": 0,
-    "skippedObservedCount": 4,
-    "skippedResolvedCount": 1,
+    "skippedObservedCount": 6,
+    "skippedResolvedCount": 2,
     "sourceCount": 2,
     "sourcePageLimit": 2,
     "sources": [
       {
-        "candidateCount": 31,
+        "candidateCount": 30,
         "status": "ok",
         "url": "https://search.yahoo.co.jp/realtime/search?p=%E3%82%A2%E3%82%AD%E3%83%90%E7%B5%B6%E5%AF%BE%E9%A0%98%E5%9F%9F&ei=UTF-8"
       },
@@ -1356,6 +1350,16 @@
         "fetchedAt": "2026-10-04T13:25:39.696307Z",
         "notices": [],
         "postId": "2106672461450465478",
+        "reason": "no_event",
+        "versionHash": "ec86d6443faf164198208e05bc7b9bb83db03cdba2326b130a7a7df50e95a8e6"
+      },
+      "8eb162066c64cce4aa6cb6cc21021ab5ce24985425363517e283063d6dbbb227": {
+        "at": "2026-10-24T12:50:20.694232Z",
+        "bodyHash": "cf9589d5ec9b7ea457a3f599a3f32e4e4d965efc9ee4b035940a81f56d517e8e",
+        "createdAt": "2026-10-24T10:31:12Z",
+        "fetchedAt": "2026-10-24T12:50:20.691432Z",
+        "notices": [],
+        "postId": "2113941371849773168",
         "reason": "no_event",
         "versionHash": "ec86d6443faf164198208e05bc7b9bb83db03cdba2326b130a7a7df50e95a8e6"
       },
@@ -6843,6 +6847,26 @@
       "shift": "昼",
       "storeId": "s2",
       "url": "https://x.com/akibazettai/status/2113832443899978090"
+    },
+    {
+      "authorId": "822429861218131969",
+      "authorScreenName": "akibazettai",
+      "createdAt": "2026-10-24T10:31:12Z",
+      "date": "2026-10-24",
+      "id": "2113941371849773168",
+      "names": [
+        "みりあ",
+        "こい",
+        "こえび",
+        "のあ",
+        "かなた",
+        "いちご",
+        "まこと"
+      ],
+      "observedAt": "2026-10-24T12:50:20Z",
+      "shift": "夜",
+      "storeId": "s1",
+      "url": "https://x.com/akibazettai/status/2113941371849773168"
     }
   ],
   "resolved": [
