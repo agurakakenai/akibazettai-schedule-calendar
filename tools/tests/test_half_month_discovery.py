@@ -168,6 +168,7 @@ class CandidateTerminationTests(DiscoveryBase):
         self.assertEqual(self.state['pending'], [])
         self.assertNotIn(('post', stale_entry['id']), self.calls)
 
+    @mock.patch.object(collector, 'HISTORY_RELEASE_BEFORE', at(1))
     def test_photo_owner_mismatch_is_terminal_after_one_body_get(self):
         self.now = at(17)
         entry = self.post(at(16, 21), 5, '10月後半のお給仕予定')
@@ -372,6 +373,101 @@ class QueueBoundTests(DiscoveryBase):
         self.assertEqual(collector.enqueue(self.state, candidates, self.now, None, capacity), set())
         self.assertEqual(capacity['queueLimitReplaced'], 1)
         facts.validate_state(self.state)
+
+
+class PostRecoveryTests(DiscoveryBase):
+    """10/25 findings: real schedule posts stuck by defects, not by their content."""
+
+    def test_multi_photo_post_reports_every_photo_as_photo_one(self):
+        candidate = collector.discover(base.document(base.entry()), {'あむ': base.TARGET}, base.NOW)[0][0]
+        payload = base.payload(photos=2)
+        for detail in payload['mediaDetails']:
+            detail['expanded_url'] = detail['expanded_url'].rsplit('/', 1)[0] + '/1'
+        verified, _, urls = collector.validate_post(candidate, payload, base.TARGET, base.NOW)
+        self.assertEqual(len(urls), 2)
+        for path, error in [('someone_else/status/{tid}/photo/1', 'photo_owner_mismatch'),
+                            ('amu_zettai/status/1/photo/1', 'photo_owner_mismatch'),
+                            ('amu_zettai/status/{tid}/photo/3', 'photo_owner_mismatch')]:
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, error):
+                bad = base.payload(photos=2)
+                bad['mediaDetails'][1]['expanded_url'] = 'https://x.com/' + path.format(tid=candidate['id'])
+                collector.validate_post(candidate, bad, base.TARGET, base.NOW)
+
+    def history_case(self, reason, checked, priority=0):
+        self.now = at(17)
+        self.documents = {'amu_zettai': base.document()}
+        self.run_cycle(cycle_id='3301-1')
+        entry = self.post(at(16, 21), 70, '10月後半のお給仕予定')
+        candidate = collector.discover(base.document(entry), {'あむ': base.TARGET}, self.now, {},
+                                       registry=self.registry, candidate_since=dt.date(2026, 10, 1))[0][0]
+        candidate['priority'] = priority
+        self.state['candidateHistory'][facts.candidate_key(candidate)] = {
+            'candidate': candidate, 'reason': reason, 'checkedAt': facts.stamp(checked)}
+        self.model.structured.return_value = self.second_half_result()
+        self.now = at(17, 18)
+        self.reopen()
+        self.calls.clear()
+        self.run_cycle(cycle_id='3302-1')
+        facts.validate_state(self.state)
+        return entry
+
+    def test_defect_era_history_is_released_once_and_read(self):
+        for reason in ('permanent_failure', 'queue_limit'):
+            with self.subTest(reason=reason):
+                self.setUp()
+                entry = self.history_case(reason, at(17, 9))
+                self.assertEqual(self.calls.count(('post', entry['id'])), 1)
+                self.assertTrue(self.state['coverage'][SECOND_HALF]['あむ']['confirmedIds'])
+
+    def test_history_after_the_fix_or_low_priority_queue_limit_stays_retired(self):
+        for reason, priority, release_before in (('permanent_failure', 0, at(17, 0)),
+                                                 ('queue_limit', 1, collector.HISTORY_RELEASE_BEFORE),
+                                                 ('not_schedule', 0, collector.HISTORY_RELEASE_BEFORE)):
+            with self.subTest(reason=reason, priority=priority):
+                self.setUp()
+                with mock.patch.object(collector, 'HISTORY_RELEASE_BEFORE', release_before):
+                    entry = self.history_case(reason, at(17, 9), priority)
+                self.assertNotIn(('post', entry['id']), self.calls)
+
+    def expired_without_record(self, *, issued):
+        self.now = at(17)
+        entry = self.post(at(16, 21), 80, '10月後半のお給仕予定')
+        self.documents = {'amu_zettai': base.document(entry)}
+        self.client_image = None
+        failing = self.client
+        def client():
+            value = failing()
+            value.image.side_effect = OSError('host paused')
+            return value
+        self.client = client
+        self.run_cycle(cycle_id='3401-1')
+        self.client = failing
+        progress = next(iter(self.state['readings'].values()))
+        self.assertEqual(progress['stage'], 'fetch')
+        progress.update(stage='held', reason='image_cache_expired', nextAt=None)
+        if issued:
+            self.state['sources'][progress['cacheKey']].update(status='issued', requestHash='a' * 64)
+        self.cache.records.pop(progress['cacheKey'])
+        self.cache.put('f' * 64, {'id': 'other', 'authorId': 'other'}, 'other', [])
+        self.model.structured.return_value = self.second_half_result()
+        self.now = at(17, 12)
+        self.reopen()
+        self.calls.clear()
+        calls = self.usage.calls
+        self.run_cycle(cycle_id='3402-1')
+        facts.validate_state(self.state)
+        return entry, calls
+
+    def test_pruned_cache_before_any_ai_request_is_refetched_once(self):
+        entry, calls = self.expired_without_record(issued=False)
+        self.assertEqual(self.calls.count(('post', entry['id'])), 1)
+        self.assertEqual(self.usage.calls, calls + 1)
+        self.assertTrue(self.state['coverage'][SECOND_HALF]['あむ']['confirmedIds'])
+
+    def test_pruned_cache_after_an_ai_request_is_never_refetched(self):
+        entry, calls = self.expired_without_record(issued=True)
+        self.assertNotIn(('post', entry['id']), self.calls)
+        self.assertEqual(self.usage.calls, calls)
 
 
 class PriorityTests(DiscoveryBase):
