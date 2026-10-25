@@ -16,11 +16,14 @@ import urllib.error
 import urllib.request
 
 
-LIMIT = 1_000_000_000  # micro-JPY; 1,000 JPY
+LIMIT = 1_000_000_000  # micro-JPY; stored ledger default (validated), not the current policy
 JST = dt.timezone(dt.timedelta(hours=9))
 MONTH_LIMIT_OVERRIDES = {
     '2026-09': (dt.datetime(2026, 9, 23, 8, 48, tzinfo=JST), 1_500_000_000),
 }
+# User-approved 2026-10-25 09:33 JST: the monthly limit is 2,000 JPY from that moment on, for the
+# rest of October and every later month. Stored ledgers keep limitMicroJPY=LIMIT.
+RAISED_LIMIT = (dt.datetime(2026, 10, 25, 9, 33, tzinfo=JST), 2_000_000_000)
 PRICE_VERSION = 'azure-retail-jpy-2026-09-13-write4'
 PRICE_SOURCE = 'https://prices.azure.com/api/retail/prices'
 MODEL_SOURCE = 'https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure'
@@ -74,7 +77,9 @@ def month(now):
 
 def effective_limit(now):
     override = MONTH_LIMIT_OVERRIDES.get(month(now))
-    return override[1] if override and now >= override[0] else LIMIT
+    if override and now >= override[0]:
+        return override[1]
+    return RAISED_LIMIT[1] if now >= RAISED_LIMIT[0] else LIMIT
 
 
 # Same-day official/personal analysis observed 2026-10-14..24: 6.7 JPY/day on average, at most
