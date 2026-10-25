@@ -1124,9 +1124,13 @@ private cacheの`channels`は対象日の確認・該当なし・保留を区別
 
 旧nano/mini・v4/v5/v6/v7や比較用deploymentのcache・履歴は保持し、本番Lunaのprovider/endpoint/deployment/model/versionとv8契約・入力contextを含む別のcache識別に分離します。旧応答を新版のモデル応答へ変換して再利用しません。旧版の保存実応答は専用のoffline groundingで照合できます。旧v5のタグ不整合は拒否のまま、旧v6の型適合でも意味が誤っていた負例も失敗記録のまま保持します。旧応答の再生を新版の実測成功とは数えません。既知投稿の自動再GET・一括再解析も追加せず、再確認には保存payloadによる明示操作が必要です。
 
-ローカルCLIは無設定なら従来の`--analysis-backend rules`です。`--analysis-backend azure`を明示すると、検証済みの新規本人本文**全体**をAzure OpenAI `gpt-5.6-luna`（2026-07-09）へ送り、Chat Completions v1・structured outputs・`reasoning_effort=none`で解析します。共通の設定/HTTP transportは`tools/azure-openai.py`、本人用prompt/schema・予算・履歴は`tools/personal-azure.py`に分離しています。本番安定名`gpt-5.6-luna`だけを受理し、providerの返却modelも照合します。ルールが一部を拾ってもAzureを省略せず、nano/mini・別model・rulesへの成功fallbackは行いません。
+ローカルCLIは無設定なら従来の`--analysis-backend rules`です。`--analysis-backend azure`を明示すると、検証済みの新規本人本文**全体**をAzure OpenAIへ送り、Chat Completions v1・structured outputsで解析します。共通の設定/HTTP transportは`tools/azure-openai.py`、本人用prompt/schema・予算・履歴は`tools/personal-azure.py`に分離しています。providerの返却modelも照合します。ルールが一部を拾ってもAzureを省略せず、nano/mini・別model・rulesへの成功fallbackは行いません。
 
-Actionsでは手動`personal` / `both`と、有効化された当日案内の公式・本人解析でAzureを選択します。必要な設定はsecret `AZURE_OPENAI_API_KEY`とvariables `AZURE_OPENAI_ENDPOINT`（`https://<resource>.openai.azure.com/`）、`AZURE_OPENAI_DEPLOYMENT`（`gpt-5.6-luna`）です。必要なcollector子だけに渡し、Git・Node入力読取・restore・stage/build・保存根拠の適用・frontendへは渡しません。無効時の公式定期は既存rulesのままです。
+**モデルはcomponentごとに固定します（2026-10-25）。** `tools/azure-openai.py`のprofileで、公式の遅刻・欠勤解析と本人告知解析（`text`）は`gpt-6-luna`（2026-09-22、deployment `gpt-6-luna`、`reasoning_effort=low`）、半月の画像読取りと勤務時間補足（`reading`）は`gpt-5.6-luna`（2026-07-09、`reasoning_effort=none`）です。profile間の自動fallbackはなく、返却modelが自profileと違えば`azure_model_mismatch`です。推論tokenは出力として課金されるため、`text`は各出力上限に1,024 tokenを足して予約します（それでも6-lunaの単価が低く、予約額は5.6より小さい）。receiptは実際のmodel・versionで予約・精算し、価格は`tools/ai-budget.py`の`PRICES`の該当行を使います（6-luna行はRetail API 2026-10-25、Japan East GlobalStandard LongCo：入力31.51・cache読取3.151・cache書込39.3875・出力118.1625円/100万token）。旧行と既存receipt・holdは変更しません。モデル名はcache keyの一部なので、切替後に初めて見る投稿だけが新モデルで解析されます。既に解析済みの投稿をモデル切替だけを理由に再解析はしません（公式はpostId単位の解析履歴、本人は解決済み投稿を再取得しません）。比較（10/25、合成の公式3件・本人3件、本番のprompt・schema・grounding）では5.6と同じ判定で、作り出し・拒否は0、費用は約43%安くなりました。半月の画像読取りは6-lunaで日付の作り出しが出たため5.6のままです。
+
+切り戻し：`TEXT_PROFILE`を5.6の値（`gpt-5.6-luna`・`2026-07-09`・`none`・allowance 0）に戻すか、このPRをrevertします。deployment `gpt-5.6-luna`は残しています。6-luna行は既存receiptの検証に必要なので`PRICES`から消しません。
+
+Actionsでは手動`personal` / `both`と、有効化された当日案内の公式・本人解析でAzureを選択します。必要な設定はsecret `AZURE_OPENAI_API_KEY`とvariables `AZURE_OPENAI_ENDPOINT`（`https://<resource>.openai.azure.com/`）、`AZURE_OPENAI_DEPLOYMENT`（半月用の`gpt-5.6-luna`）です。テキスト用deploymentはコード定数で、任意の`AZURE_OPENAI_TEXT_DEPLOYMENT`を与えた場合も`gpt-6-luna`以外は拒否します。必要なcollector子だけに渡し、Git・Node入力読取・restore・stage/build・保存根拠の適用・frontendへは渡しません。無効時の公式定期は既存rulesのままです。
 
 公式補足と本人本文v8は共通Luna transportを使い、用途別prompt/schemaを分けます。下記の半月予定表は独立した画像用途で、本人v8の本文契約へ画像を混ぜません。本人4slotと公式8slotを独立させても、公式runの補足解析は無効にしません。取得・本人確認・型・出典・原投稿順の履歴はコードの責務です。公式の未発行補足だけは別のbounded queueへ残し、次枠のAI容量がある場合に既知IDを確認できます。全既知投稿の編集巡回ではなく、拒否・失敗済みの再推論や結果合わせの再取得はしません。
 

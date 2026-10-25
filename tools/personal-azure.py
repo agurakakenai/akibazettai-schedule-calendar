@@ -709,7 +709,8 @@ def _assessment_result(events, links, pending, work_timing=()):
 class AzureAnalyzer:
     def __init__(self, state, save, personal, environment, *, clock, sleep=time.sleep, opener=None,
                  usage=None, registry_guard=None, review_names=None, deadline=None):
-        self.client = transport.AzureOpenAI(environment, on_http_failure=self.http_failure, opener=opener, usage=usage)
+        self.client = transport.AzureOpenAI(environment, on_http_failure=self.http_failure, opener=opener, usage=usage,
+                                           profile_name='text')
         self.state = state.setdefault('azureAnalysis', empty_state())
         self.save, self.personal, self.clock, self.sleep = save, personal, clock, sleep
         self.usage = usage
@@ -752,7 +753,7 @@ class AzureAnalyzer:
             lines = source_lines(text)
             messages, schema, payload = request_components(lines, created, date, shifts, name)
             _admit(payload)
-            budget = transport.request_budget(messages, schema, name='personal_announcements',
+            budget = self.client.request_budget(messages, schema, name='personal_announcements',
                                                max_completion_tokens=MAX_OUTPUT_TOKENS)
         except AnalysisFailure as exc:
             entry.update(exc.facts())

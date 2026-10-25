@@ -72,6 +72,36 @@ class TransportTests(unittest.TestCase):
             with self.subTest(model=model), self.assertRaisesRegex(azure.AzureFailure, 'azure_model_mismatch'):
                 self.client.structured([], {}, name='task', max_completion_tokens=1)
 
+    def test_text_profile_is_gpt6_luna_low_without_fallback_to_the_reading_model(self):
+        client = azure.AzureOpenAI({**ENV, 'AZURE_OPENAI_DEPLOYMENT': 'gpt-5.6-luna'}, on_http_failure=self.failures,
+                                   opener=self.opener, usage=mock.Mock(), profile_name='text')
+        self.assertEqual({key: client.identity[key] for key in ('deployment', 'model', 'modelVersion')},
+                         {'deployment': 'gpt-6-luna', 'model': 'gpt-6-luna', 'modelVersion': '2026-09-22'})
+        self.reply('gpt-6-luna-2026-09-22')
+        self.assertEqual(client.structured([], {}, name='task', max_completion_tokens=1200), {'ok': True})
+        body = json.loads(self.opener.open.call_args.args[0].data)
+        self.assertEqual((body['model'], body['reasoning_effort'], body['max_completion_tokens']),
+                         ('gpt-6-luna', 'low', 1200 + 1024))
+        budget = client.request_budget([], {}, name='task', max_completion_tokens=1200)
+        self.assertEqual(budget['outputCeiling'], 1200 + 1024)
+        self.assertEqual(budget['payloadHash'], azure.hashlib.sha256(
+            json.dumps(azure.request_payload([], {}, name='task', max_completion_tokens=1200,
+                                             profile_name='text')).encode()).hexdigest())
+        # The reading model's answer is never accepted for a text request, and vice versa.
+        for model in ('gpt-5.6-luna-2026-07-09', 'gpt-5.6-luna'):
+            self.reply(model)
+            with self.subTest(model=model), self.assertRaisesRegex(azure.AzureFailure, 'azure_model_mismatch'):
+                client.structured([], {}, name='task', max_completion_tokens=1)
+        self.reply('gpt-6-luna-2026-09-22')
+        with self.assertRaisesRegex(azure.AzureFailure, 'azure_model_mismatch'):
+            self.client.structured([], {}, name='task', max_completion_tokens=1)
+        for deployment in ('', 'gpt-5.6-luna', 'gpt-6-luna-compare'):
+            with self.subTest(deployment=deployment), self.assertRaisesRegex(ValueError, 'invalid_azure_configuration'):
+                azure.AzureOpenAI({**ENV, 'AZURE_OPENAI_TEXT_DEPLOYMENT': deployment},
+                                  on_http_failure=self.failures, profile_name='text')
+        with self.assertRaisesRegex(ValueError, 'invalid_azure_profile'):
+            azure.AzureOpenAI(ENV, on_http_failure=self.failures, profile_name='image')
+
     def test_http_failure_callback_cannot_silently_return_success(self):
         response = self.reply()
         response.getcode.return_value = 403

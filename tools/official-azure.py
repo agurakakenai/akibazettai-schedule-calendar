@@ -355,7 +355,8 @@ class AzureAnalyzer:
         self.official, self.usage, self.clock = official, usage, clock
         self.save = save or (lambda state: None)
         self.names = tuple(load_names(official.ROOT) if names is None else name_choices({'roster': list(names)}))
-        self.client = transport.AzureOpenAI(environment, on_http_failure=self.http_failure, opener=opener, usage=usage)
+        self.client = transport.AzureOpenAI(environment, on_http_failure=self.http_failure, opener=opener, usage=usage,
+                                           profile_name='text')
         self.version = digest(canonical_json([VERSION, PROMPT, SCHEMA, LIMITS,
                                               self.names, self.client.identity]))
         self.bind(state)
@@ -494,7 +495,7 @@ class AzureAnalyzer:
                             'shift': post['shift'], 'storeId': post['storeId'], 'replyTo': post.get('replyTo'),
                             'allowedNames': list(self.names), 'bodyLines': lines})}]
             schema = response_schema(lines, self.names)
-            budget = transport.request_budget(messages, schema, name='official_late_notices',
+            budget = self.client.request_budget(messages, schema, name='official_late_notices',
                                                max_completion_tokens=MAX_OUTPUT_TOKENS)
             if not allow_request:
                 recorded = next((receipt for receipt in self.usage.state['receipts'].values()

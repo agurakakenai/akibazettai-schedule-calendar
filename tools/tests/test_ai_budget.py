@@ -92,6 +92,7 @@ class BudgetTests(unittest.TestCase):
         curated = self.path.parent / 'curated.csv'
         curated.write_text('tweet_id,maid\n', encoding='utf-8')
         envelope = self.envelope()
+        envelope['model'] = 'gpt-6-luna-2026-09-22'
         envelope['choices'][0]['message']['content'] = json.dumps(fixture.decision())
         self.reply(envelope)
         def segment(offset, limit=3, target=snapshot):
@@ -118,6 +119,9 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(len(receipts), 6)
         self.assertEqual({row['runId'] for row in receipts.values()}, {'12345-1'})
         self.assertTrue(all(row['money']['chargedMicroJPY'] is not None for row in receipts.values()))
+        # Official text analysis is priced and settled as gpt-6-luna, never as the reading model.
+        self.assertEqual({(row['money']['model'], row['money']['modelVersion'], row['money']['usageStatus'])
+                          for row in receipts.values()}, {('gpt-6-luna', '2026-09-22', 'settled')})
         self.assertEqual(segment(3), 0)
         self.assertEqual(self.opener.open.call_count, 6)
         self.assertEqual(segment(6, 0, self.path.parent / 'disabled.json'), 2)
@@ -352,6 +356,23 @@ class BudgetTests(unittest.TestCase):
             with self.assertRaisesRegex(azure.AzureFailure, 'azure_interrupted'):
                 client.structured(self.messages, {}, **self.arguments)
             self.opener.open.assert_called_once()
+
+    def test_gpt6_luna_price_row_is_added_without_changing_existing_receipts(self):
+        self.assertEqual(money.PRICES['gpt-5.6-luna', '2026-07-09'], ('63.728', '6.3728', '79.66', '286.776'))
+        self.assertEqual(money.PRICES['gpt-6-luna', '2026-09-22'], ('31.51', '3.151', '39.3875', '118.1625'))
+        # LongCo rates with additive cache write: 1000 input (100 cached, 50 written), 200 output.
+        self.assertEqual(money.cost('gpt-6-luna', '2026-09-22', 1000, 100, 50, 200),
+                         (900 * 31_510_000 + 100 * 3_151_000 + 50 * 39_387_500 + 200 * 118_162_500
+                          + 999_999) // 1_000_000)
+        identity = {**base.IDENTITY, 'model': 'gpt-6-luna', 'modelVersion': '2026-09-22', 'deployment': 'gpt-6-luna'}
+        charge = money.reservation(identity, self.request)
+        self.assertLess(charge['reservedMicroJPY'], money.reservation(base.IDENTITY, self.request)['reservedMicroJPY'])
+        settled = money.settle(charge, {'model': 'gpt-6-luna-2026-09-22', 'usage': {
+            'prompt_tokens': 100, 'completion_tokens': 10, 'total_tokens': 110,
+            'prompt_tokens_details': {'cached_tokens': 0, 'cache_write_tokens': 0}}})
+        self.assertEqual((settled['usageStatus'], settled['model']), ('settled', 'gpt-6-luna'))
+        with self.assertRaises(money.UsageInconsistent):
+            money.settle(charge, {'model': 'gpt-5.6-luna-2026-07-09', 'usage': {}})
 
     def test_final_http_gate_observes_budget_changes_and_unknown_prices(self):
         reservation = money.reservation(base.IDENTITY, self.request)['reservedMicroJPY']
