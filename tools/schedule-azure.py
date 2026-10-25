@@ -439,6 +439,9 @@ def validate_clock_text(text, explicit_time):
     numeric_text = unicodedata.normalize('NFKC', text)
     ranges = (r'|(?<!\d)0?' + str(int(hour)) + r'(?=\s*[-〜~])'
               + r'|(?<=[-〜~])\s*0?' + str(int(hour)) + r'(?!\d)' if minute == '00' else '')
+    if minute == '30':
+        # "17.5-22" prints 17:30 as a decimal hour.
+        ranges += r'|(?<![\d.:])0?' + str(int(hour)) + r'\.5(?!\d)'
     if not re.search(clock + '|' + japanese + ranges, numeric_text):
         raise ValueError('schedule_timing_clock_ungrounded')
 
@@ -584,6 +587,108 @@ def _reading_operation(row, reply):
         raise ValueError('ungrounded_reading_operation')
 
 
+ROW_LOCAL_ERRORS = frozenset({'reading_day_mismatch', 'ungrounded_reading_qualifier', 'reading_row_without_content',
+                              'schedule_timing_clock_ungrounded', 'invalid_reading_clock'})
+
+
+def _grounded_row(row):
+    """Row fields derived from the row's own printed line; ungrounded details are removed."""
+    row = reading.reconcile_with_transcription(row)
+    for field in ('explicitStart', 'explicitEnd'):
+        if row[field] is not None:
+            try:
+                validate_clock_text(row['transcription'], row[field])
+            except ValueError:
+                row = {**row, field: None}
+    timing = row['workTiming']
+    if isinstance(timing, list):
+        kept = []
+        for item in timing:
+            if isinstance(item, dict) and item.get('time') is not None:
+                try:
+                    validate_clock_text(row['transcription'], item['time'])
+                except ValueError:
+                    continue
+            try:
+                facts.timing().expand_compact(item, '2026-01-01')
+            except ValueError:
+                continue
+            kept.append(item)
+        row = {**row, 'workTiming': kept}
+    return row
+
+
+def _grounded_periods(result, text, created):
+    """Copy of the reading with an ungrounded body year dropped and a mixed month split by day.
+
+    Printed weekdays (from each row's own transcription) are checked against the calendar:
+    when one candidate year matches a strict majority of them, rows that disagree are dropped.
+    """
+    result = copy.deepcopy(result)
+    split = False
+    periods = []
+    for period in result['periods'] or []:
+        if not isinstance(period, dict):
+            periods.append(period)
+            continue
+        year = period.get('textYear')
+        if type(year) is int and not re.search(r'(?<!\d)' + str(year) + r'(?:年|[-/])', text):
+            period['textYear'] = None
+        days = period.get('days')
+        half = period.get('half')
+        if isinstance(days, list) and half in ('first', 'second'):
+            inside = [row for row in days if not (isinstance(row, dict) and type(row.get('day')) is int
+                                                  and (row['day'] > 15) != (half == 'second'))]
+            if len(inside) != len(days):
+                # A row outside the stated half is not saved under either half.
+                split = True
+                period['days'] = days = inside
+        if isinstance(days, list):
+            for row in days:
+                if isinstance(row, dict) and isinstance(row.get('transcription'), str):
+                    printed = reading.transcription_facts(row['transcription'])['weekday']
+                    if printed is not None:
+                        row['weekday'] = printed
+            month = period.get('month')
+            dated = [row for row in days if isinstance(row, dict) and type(row.get('day')) is int
+                     and row.get('weekday') in tuple(WEEKDAYS)]
+            if type(month) is int and 1 <= month <= 12 and dated:
+                try:
+                    years = _year_candidates(month, period.get('printedYear'), period.get('textYear'), created)
+                except ValueError:
+                    years = []
+                fits = {}
+                for candidate in years:
+                    matched = set()
+                    for row in dated:
+                        try:
+                            if WEEKDAYS[dt.date(candidate, month, row['day']).weekday()] == row['weekday']:
+                                matched.add(id(row))
+                        except ValueError:
+                            pass
+                    if 2 * len(matched) > len(dated):
+                        fits[candidate] = matched
+                if len(fits) == 1:
+                    matched = next(iter(fits.values()))
+                    kept = [row for row in days if row not in dated or id(row) in matched]
+                    if len(kept) != len(days):
+                        split = True
+                    period['days'] = days = kept
+        if (period.get('half') is None and type(period.get('month')) is int and isinstance(days, list)
+                and days and all(isinstance(row, dict) and type(row.get('day')) is int for row in days)):
+            # Day numbers alone decide the half; the result is never a complete table.
+            for half, chosen in (('first', [row for row in days if row['day'] <= 15]),
+                                 ('second', [row for row in days if row['day'] > 15])):
+                if chosen:
+                    periods.append({**period, 'half': half, 'days': chosen})
+            split = True
+            continue
+        periods.append(period)
+    if result['periods'] is not None:
+        result['periods'] = periods[:2]
+    return result, split
+
+
 def normalize_reading(result, source, text, image_count, allowed_periods=None, *, image_metadata=None):
     """Preserve useful dates without promoting partial evidence to a complete table."""
     facts.validate_source(source)
@@ -601,6 +706,8 @@ def normalize_reading(result, source, text, image_count, allowed_periods=None, *
     reply = 'replyToId' in source
     complete = (not reply and result['complete'] and result['classification'] != 'uncertain'
                 and result['periods'] is not None)
+    result, split = _grounded_periods(result, text, facts.timestamp(source['createdAt']).astimezone(facts.JST))
+    complete = complete and not split
     clean, details, total = [], {}, 0
     for period in result['periods'] or []:
         facts.require_keys(period, PERIOD_SCHEMA['required'])
@@ -618,13 +725,21 @@ def normalize_reading(result, source, text, image_count, allowed_periods=None, *
             if row['day'] is None:
                 complete = False
                 continue
+            try:
+                row = _grounded_row(row)
+                hours = reading.validate_evidence(row, image_count, text)
+            except ValueError as exc:
+                if str(exc) not in ROW_LOCAL_ERRORS:
+                    raise
+                # This row's own fields contradict its printed line: never saved, table stays partial.
+                complete = False
+                continue
             shifts = row['shifts']
             if shifts is not None and (
                     not isinstance(shifts, list) or len(shifts) > 2
                     or any(shift not in ('昼', '夜') for shift in shifts)
                     or len(set(shifts)) != len(shifts)):
                 raise ValueError('invalid_schedule_day')
-            hours = reading.validate_evidence(row, image_count, text)
             for field in ('explicitStart', 'explicitEnd'):
                 if row[field] is not None:
                     validate_clock_text(row['transcription'], row[field])
@@ -654,6 +769,16 @@ def normalize_reading(result, source, text, image_count, allowed_periods=None, *
                 evidence['imageHash'] = image_metadata[index]['sha256']
                 facts.valid_hash(evidence['imageHash'])
             timing = normalized['workTiming']
+            if isinstance(timing, list):
+                # Items for a shift the row does not have, or repeating one target, are dropped alone.
+                kept, targets = [], set()
+                for item in timing:
+                    fact = facts.timing().expand_compact(item, '2026-01-01')
+                    key = facts.timing().fact_key(fact)
+                    if fact['shift'] in normalized['shifts'] and key not in targets:
+                        targets.add(key)
+                        kept.append(item)
+                normalized['workTiming'] = timing = kept
             if timing is not None:
                 if not isinstance(timing, list) or len(timing) > 2:
                     raise ValueError('invalid_schedule_work_timing')
