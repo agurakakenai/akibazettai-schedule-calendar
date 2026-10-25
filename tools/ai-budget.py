@@ -29,8 +29,12 @@ PRICE_SOURCE = 'https://prices.azure.com/api/retail/prices'
 MODEL_SOURCE = 'https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure'
 # JPY / million tokens: uncached input, cached read, additional cache write, output.
 # Luna uses the more expensive LongCo tier and additive write charging.
+# Rows are never edited once receipts use them; new models are added (PRICE_VERSION is the
+# receipt schema tag and stays). gpt-6-luna: Retail API 2026-10-25, Japan East GlobalStandard,
+# "6-luna LongCo {Inp,Cd Inp,Cd Wr,Opt} Std Gl" meters.
 PRICES = {
     ('gpt-5.6-luna', '2026-07-09'): ('63.728', '6.3728', '79.66', '286.776'),
+    ('gpt-6-luna', '2026-09-22'): ('31.51', '3.151', '39.3875', '118.1625'),
     ('gpt-5.4-nano', '2026-03-17'): ('31.864', '3.1864', '0', '199.15'),
     ('gpt-5.4-mini', '2026-03-17'): ('119.49', '11.949', '0', '716.94'),
 }

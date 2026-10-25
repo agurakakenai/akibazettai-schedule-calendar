@@ -3388,7 +3388,7 @@ class CloudTests(unittest.TestCase):
                 }]}
                 message = ({'refusal': 'offline refusal', 'content': None}
                            if replay_refusal and phases[-1][0] == 'replay' else {'content': json.dumps(result)})
-                return json.dumps({'model': analysis.transport.MODEL_NAME, 'choices': [{
+                return json.dumps({'model': analysis.transport.TEXT_PROFILE['model'], 'choices': [{
                     'finish_reason': 'stop', 'message': message,
                 }]}).encode('utf-8')[:limit]
 

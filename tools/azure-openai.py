@@ -23,9 +23,26 @@ _COST_SPEC.loader.exec_module(costs)
 MODEL_NAME = 'gpt-5.6-luna'
 MODEL_VERSION = '2026-07-09'
 DEPLOYMENT = 'gpt-5.6-luna'
+# Per-component model profiles; a component never falls back to another profile's model.
+# 'reading' (half-month images and timing) stays on gpt-5.6-luna. 'text' (official late notices
+# and personal announcements) uses gpt-6-luna with low reasoning from 2026-10-25. Reasoning tokens
+# are billed as output, so the text profile adds a fixed allowance to every output ceiling.
+TEXT_PROFILE = {'model': 'gpt-6-luna', 'modelVersion': '2026-09-22', 'deployment': 'gpt-6-luna',
+                'reasoningEffort': 'low', 'reasoningAllowance': 1024,
+                'environment': 'AZURE_OPENAI_TEXT_DEPLOYMENT'}
+PROFILE_NAMES = ('reading', 'text')
 TIMEOUT = 30
 MAX_RESPONSE_BYTES = 24000
 MAX_INPUT_TOKENS = 922000
+
+
+def profile(name):
+    if name == 'reading':
+        return {'model': MODEL_NAME, 'modelVersion': MODEL_VERSION, 'deployment': DEPLOYMENT,
+                'reasoningEffort': 'none', 'reasoningAllowance': 0, 'environment': 'AZURE_OPENAI_DEPLOYMENT'}
+    if name == 'text':
+        return dict(TEXT_PROFILE)
+    raise ValueError('invalid_azure_profile')
 
 
 class AzureFailure(Exception):
@@ -86,9 +103,10 @@ def error_code_token(raw):
     return None
 
 
-def request_payload(messages, schema, *, name, max_completion_tokens):
-    return {'model': DEPLOYMENT, 'reasoning_effort': 'none',
-            'max_completion_tokens': max_completion_tokens, 'messages': messages,
+def request_payload(messages, schema, *, name, max_completion_tokens, profile_name='reading'):
+    selected = profile(profile_name)
+    return {'model': selected['deployment'], 'reasoning_effort': selected['reasoningEffort'],
+            'max_completion_tokens': max_completion_tokens + selected['reasoningAllowance'], 'messages': messages,
             'response_format': {'type': 'json_schema', 'json_schema': {
                 'name': name, 'strict': True, 'schema': schema}}}
 
@@ -129,8 +147,11 @@ def image_dimensions(url):
     return None
 
 
-def request_budget(messages, schema, *, name, max_completion_tokens):
+def request_budget(messages, schema, *, name, max_completion_tokens, profile_name='reading'):
     if type(max_completion_tokens) is not int or not 1 <= max_completion_tokens <= 128000:
+        raise AzureFailure('azure_input_limit')
+    output_ceiling = max_completion_tokens + profile(profile_name)['reasoningAllowance']
+    if output_ceiling > 128000:
         raise AzureFailure('azure_input_limit')
     images = []
     if not isinstance(messages, list):
@@ -146,9 +167,9 @@ def request_budget(messages, schema, *, name, max_completion_tokens):
                     if not isinstance(part.get('image_url'), dict):
                         raise AzureFailure('azure_input_limit')
                     images.append(part)
-    raw = json.dumps(request_payload(messages, schema, name=name,
-                                     max_completion_tokens=max_completion_tokens)).encode('utf-8')
-    result = {'payloadHash': hashlib.sha256(raw).hexdigest(), 'outputCeiling': max_completion_tokens,
+    raw = json.dumps(request_payload(messages, schema, name=name, max_completion_tokens=max_completion_tokens,
+                                     profile_name=profile_name)).encode('utf-8')
+    result = {'payloadHash': hashlib.sha256(raw).hexdigest(), 'outputCeiling': output_ceiling,
               'imageInput': bool(images)}
     if not images:
         # Escaped full wire text bounds byte-tokenization, including the schema and
@@ -168,7 +189,8 @@ def request_budget(messages, schema, *, name, max_completion_tokens):
         if part.get('type') == 'image_url' else part for part in message['content']]}
         if isinstance(message['content'], list) else message for message in messages]
     text_bound = len(json.dumps(request_payload(stripped, schema, name=name,
-                                                max_completion_tokens=max_completion_tokens)).encode('utf-8')) + 512
+                                                max_completion_tokens=max_completion_tokens,
+                                                profile_name=profile_name)).encode('utf-8')) + 512
     basis = {'version': costs.IMAGE_BASIS_VERSION, 'textBound': text_bound,
              'images': [{'width': width, 'height': height,
                          'tokens': costs.image_token_bound(width, height)} for width, height in sizes],
@@ -178,20 +200,25 @@ def request_budget(messages, schema, *, name, max_completion_tokens):
 
 
 class AzureOpenAI:
-    def __init__(self, environment, *, on_http_failure, opener=None, usage=None):
+    def __init__(self, environment, *, on_http_failure, opener=None, usage=None, profile_name='reading'):
+        selected = profile(profile_name)
         endpoint = environment.get('AZURE_OPENAI_ENDPOINT', '').rstrip('/')
-        deployment = environment.get('AZURE_OPENAI_DEPLOYMENT', DEPLOYMENT)
+        deployment = environment.get(selected['environment'], selected['deployment'])
         key = environment.get('AZURE_OPENAI_API_KEY', '')
         if (not re.fullmatch(r'https://[a-z0-9-]+\.openai\.azure\.com', endpoint)
-                or deployment != DEPLOYMENT or not key or re.search(r'[\r\n]', key)):
+                or deployment != selected['deployment'] or not key or re.search(r'[\r\n]', key)):
             raise ValueError('invalid_azure_configuration')
         self.url = endpoint + '/openai/v1/chat/completions'
-        self.deployment, self._key = deployment, key
-        self.identity = {'provider': 'azure_openai', 'endpoint': endpoint,
-                         'deployment': deployment, 'model': MODEL_NAME, 'modelVersion': MODEL_VERSION}
+        self.deployment, self._key, self.profile_name = deployment, key, profile_name
+        self.identity = {'provider': 'azure_openai', 'endpoint': endpoint, 'deployment': deployment,
+                         'model': selected['model'], 'modelVersion': selected['modelVersion']}
         self.on_http_failure = on_http_failure
         self.usage = usage
         self.opener = opener or urllib.request.build_opener(NoRedirect())
+
+    def request_budget(self, messages, schema, *, name, max_completion_tokens):
+        return request_budget(messages, schema, name=name, max_completion_tokens=max_completion_tokens,
+                              profile_name=self.profile_name)
 
     def fail_http(self, status, retry_after, *, detail=None):
         self.on_http_failure(status, retry_after)
@@ -201,8 +228,9 @@ class AzureOpenAI:
         raise failure
 
     def structured(self, messages, schema, *, name, max_completion_tokens):
-        payload = request_payload(messages, schema, name=name, max_completion_tokens=max_completion_tokens)
-        budget = request_budget(messages, schema, name=name, max_completion_tokens=max_completion_tokens)
+        payload = request_payload(messages, schema, name=name, max_completion_tokens=max_completion_tokens,
+                                  profile_name=self.profile_name)
+        budget = self.request_budget(messages, schema, name=name, max_completion_tokens=max_completion_tokens)
         request = urllib.request.Request(
             self.url, data=json.dumps(payload).encode('utf-8'),
             headers={'Content-Type': 'application/json', 'api-key': self._key})

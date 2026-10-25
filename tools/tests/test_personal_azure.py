@@ -89,7 +89,7 @@ def capacity_stress_text():
 
 
 def response(value=None, *, content=None, refusal=None, finish='stop'):
-    envelope = {'model': 'gpt-5.6-luna-2026-07-09', 'choices': [{'finish_reason': finish, 'message': {
+    envelope = {'model': 'gpt-6-luna-2026-09-22', 'choices': [{'finish_reason': finish, 'message': {
         'content': json.dumps(value) if content is None else content, 'refusal': refusal}}]}
     envelope['usage'] = {'prompt_tokens': 200, 'completion_tokens': 20, 'total_tokens': 220,
                          'prompt_tokens_details': {'cached_tokens': 0, 'cache_write_tokens': 0}}
@@ -258,7 +258,7 @@ class AzureTests(base.Offline):
             self.assertEqual(receipt['reason'], 'events')
             self.assertIsNotNone(receipt['issuedAt'])
             self.assertIsNotNone(receipt['completedAt'])
-            self.assertEqual(receipt['identity']['model'], 'gpt-5.6-luna')
+            self.assertEqual(receipt['identity']['model'], 'gpt-6-luna')
             encoded = json.dumps(ledger.state)
             for private in ('PRIVATE_BODY_SENTINEL', 'bodyLines', 'evidenceLineIds',
                             ENV['AZURE_OPENAI_API_KEY'], 'offline.openai.azure.com'):
@@ -1186,9 +1186,9 @@ class AzureTests(base.Offline):
                 'tomorrow': '2026-09-07', 'dayAfterTomorrow': '2026-09-08'},
             'author': 'あむ', 'knownShiftsByDate': {'2026-09-06': ['昼', '夜']},
             'stores': personal.official.STORE_IDS})
-        self.assertEqual(sent['reasoning_effort'], 'none')
-        self.assertEqual(sent['model'], 'gpt-5.6-luna')
-        self.assertEqual(sent['max_completion_tokens'], 2304)
+        self.assertEqual(sent['reasoning_effort'], 'low')
+        self.assertEqual(sent['model'], 'gpt-6-luna')
+        self.assertEqual(sent['max_completion_tokens'], 2304 + 1024)
         self.assertNotIn('tools', sent)
         self.assertNotIn(ENV['AZURE_OPENAI_API_KEY'], json.dumps(sent))
 
@@ -1473,9 +1473,9 @@ class AzureTests(base.Offline):
         for boundary in ('Publication', 'half-month schedules', 'third-party', 'recruitment',
                          'unspecified', 'already-displayed', 'independently', 'knownShiftsByDate'):
             self.assertIn(boundary, sent['messages'][0]['content'])
-        self.assertEqual(sent['model'], 'gpt-5.6-luna')
-        self.assertEqual(sent['max_completion_tokens'], 2304)
-        self.assertEqual(self.analyzer.client.identity['modelVersion'], '2026-07-09')
+        self.assertEqual(sent['model'], 'gpt-6-luna')
+        self.assertEqual(sent['max_completion_tokens'], 2304 + 1024)
+        self.assertEqual(self.analyzer.client.identity['modelVersion'], '2026-09-22')
         schema = sent['response_format']['json_schema']['schema']
         self.assertEqual(set(schema['required']), {'events', 'links', 'workTiming'})
         self.assertEqual(set(schema['properties']), {'events', 'links', 'workTiming'})
@@ -2170,10 +2170,10 @@ class AzureTests(base.Offline):
             personal.saved_candidates(self.state, {base.TID: base.post()}, base.DATE)
 
     def test_bad_configuration_never_falls_back_or_persists_credentials(self):
-        for env in ({}, {**ENV, 'AZURE_OPENAI_DEPLOYMENT': 'expensive-model'},
-                    {**ENV, 'AZURE_OPENAI_DEPLOYMENT': 'gpt-5.4-nano'},
-                    {**ENV, 'AZURE_OPENAI_DEPLOYMENT': 'gpt-5.4-mini-compare'},
-                    {**ENV, 'AZURE_OPENAI_DEPLOYMENT': 'gpt-5.6-luna-compare'},
+        for env in ({}, {**ENV, 'AZURE_OPENAI_TEXT_DEPLOYMENT': 'expensive-model'},
+                    {**ENV, 'AZURE_OPENAI_TEXT_DEPLOYMENT': 'gpt-5.4-nano'},
+                    {**ENV, 'AZURE_OPENAI_TEXT_DEPLOYMENT': 'gpt-5.6-luna'},
+                    {**ENV, 'AZURE_OPENAI_TEXT_DEPLOYMENT': 'gpt-6-luna-compare'},
                     {**ENV, 'AZURE_OPENAI_ENDPOINT': 'https://example.com/'}):
             with self.assertRaisesRegex(ValueError, 'invalid_azure_configuration'):
                 self.make_analyzer(env)
@@ -2185,8 +2185,8 @@ class AzureTests(base.Offline):
     def test_production_model_identity_is_part_of_the_private_cache_namespace(self):
         self.assertEqual(self.analyzer.client.identity, {
             'provider': 'azure_openai', 'endpoint': 'https://offline.openai.azure.com',
-            'deployment': 'gpt-5.6-luna', 'model': 'gpt-5.6-luna', 'modelVersion': '2026-07-09'})
-        with mock.patch.object(azure.transport, 'MODEL_VERSION', '2026-07-10'):
+            'deployment': 'gpt-6-luna', 'model': 'gpt-6-luna', 'modelVersion': '2026-09-22'})
+        with mock.patch.dict(azure.transport.TEXT_PROFILE, modelVersion='2026-09-23'):
             other = self.make_analyzer()
         self.assertNotEqual(self.analyzer.version, other.version)
 

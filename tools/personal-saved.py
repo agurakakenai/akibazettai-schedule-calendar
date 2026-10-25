@@ -76,6 +76,8 @@ SOURCE_FIELDS = (*METADATA, *HASHES, 'fetchedAt', 'analyzedAt', 'provenance',
 MAX_IMPORTS = 1000
 MODEL = 'gpt-5.6-luna'
 MODEL_VERSION = '2026-07-09'
+# Personal text analysis moved to gpt-6-luna on 2026-10-25; older attestations keep 5.6.
+MODELS = {(MODEL, MODEL_VERSION), ('gpt-6-luna', '2026-09-22')}
 LEGACY_CONTRACT = 'personal-line-ids-v4'
 PREVIOUS_LINK_CONTRACT = 'personal-line-ids-v5'
 NULLABLE_LINK_CONTRACT = 'personal-line-ids-v6'
@@ -133,8 +135,8 @@ def _validate_entry(entry, personal):
     _keys(source, SOURCE_FIELDS, ('searchCreatedAt',))
     for field in HASHES:
         _hash(source[field])
-    _require(source['model'] == source['deployment'] == MODEL
-             and source['modelVersion'] == MODEL_VERSION)
+    _require(source['model'] == source['deployment']
+             and (source['model'], source['modelVersion']) in MODELS)
     _require(source['contractVersion'] in (
         LEGACY_CONTRACT, PREVIOUS_LINK_CONTRACT, NULLABLE_LINK_CONTRACT, LINK_CONTRACT, TIMING_CONTRACT))
     if source['contractVersion'] == TIMING_CONTRACT:
@@ -375,7 +377,8 @@ def validate_accounting(imports, usage, personal):
         _require(receipt.get('date') == date, 'saved_personal_usage_mismatch')
         count = sum(item['count'] for item in receipt.get('modelBreakdown', [])
                     if all(item.get(key) == expected for key, expected in (
-                        ('model', MODEL), ('deployment', MODEL), ('modelVersion', MODEL_VERSION),
+                        ('model', source['model']), ('deployment', source['deployment']),
+                        ('modelVersion', source['modelVersion']),
                         ('kind', 'text'), ('component', 'personal'))))
         groups[receipt_id] = groups.get(receipt_id, 0) + 1
         _require(groups[receipt_id] <= count, 'saved_personal_usage_exhausted')

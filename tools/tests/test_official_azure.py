@@ -60,7 +60,7 @@ class Response:
 
 
 class Opener:
-    def __init__(self, result, model=azure.transport.MODEL_NAME):
+    def __init__(self, result, model=azure.transport.TEXT_PROFILE['model']):
         self.result, self.model, self.requests = result, model, []
 
     def open(self, request, timeout):
@@ -277,7 +277,8 @@ class OfficialAzureTests(unittest.TestCase):
             'name': 'みりあ', 'kind': 'late', 'excerpt': 'みりあ',
             'observedAt': NOW.isoformat().replace('+00:00', 'Z')}])
         request = json.loads(opener.requests[0].data)
-        self.assertEqual(request['max_completion_tokens'], 1200)
+        self.assertEqual((request['model'], request['reasoning_effort'], request['max_completion_tokens']),
+                         ('gpt-6-luna', 'low', 1200 + 1024))
         user = json.loads(request['messages'][1]['content'])
         self.assertEqual(''.join(line['text'] for line in user['bodyLines']), payload()['text'])
         self.assertEqual(user['bodyLines'][-1]['text'], '')
@@ -371,7 +372,7 @@ class OfficialAzureTests(unittest.TestCase):
             'observedAt': official.iso(NOW - dt.timedelta(minutes=30))}]
         for index, response in enumerate((
                 decision(kind='pending'), decision(kind='no_event'), TimeoutError(),
-                Response({'model': azure.transport.MODEL_NAME, 'choices': [{
+                Response({'model': azure.transport.TEXT_PROFILE['model'], 'choices': [{
                     'finish_reason': 'stop', 'message': {'refusal': 'no'}}]}))):
             azure.ledger.atomic_json(self.path, azure.ledger.empty_state())
             with self.subTest(response=response), self.usage('run-' + str(index)) as usage:
