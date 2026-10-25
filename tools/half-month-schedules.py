@@ -186,15 +186,20 @@ def candidate_start(now):
     return day(half_period(day(current[0]) - dt.timedelta(days=1))[0])
 
 
+# Half-month schedules are announced before the half begins: the second half on the 13th
+# (3 days before the 16th) and the first half about 2 days before the 1st. Both are searched
+# from 3 days before the start, so a schedule posted early is never left until the 1st.
+ANNOUNCE_LEAD_DAYS = 3
+
+
 def discovery_periods(now):
     date = now.astimezone(JST).date() if isinstance(now, dt.datetime) else now
     current, following = target_periods(date)
-    return [following, current] if 13 <= date.day <= 15 else [current]
+    return [following, current] if date >= publication_start(following) else [current]
 
 
 def publication_start(period):
-    start = day(period[0])
-    return start.replace(day=1 if start.day == 1 else 13)
+    return day(period[0]) - dt.timedelta(days=ANNOUNCE_LEAD_DAYS)
 
 
 def searched_in_period(row, period):

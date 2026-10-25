@@ -404,7 +404,8 @@ class CycleTests(unittest.TestCase):
                 report, _ = self.run_cycle(resume=True, cycle_id=original['chainId'])
                 for field in ('chainId', 'names', 'periods', 'serviceDate', 'mode'):
                     self.assertEqual(report['continuation'][field], original[field])
-                self.assertEqual(report['nextStage'], 'complete')
+                # 9/30 also searches the coming first half (announced up to 3 days before the 1st).
+                self.assertEqual(report['nextStage'], 'waiting' if local_day == 30 else 'complete')
                 self.assertEqual(self.gets, before)
                 self.assertEqual(self.usage.calls, 2)
                 self.assertEqual(self.usage.requests.count(original_request), 1)
@@ -427,9 +428,10 @@ class CycleTests(unittest.TestCase):
         self.model.structured.return_value = reading_fixture.result(
             reading_fixture.row(20, weekday='日', transcription='20日 昼'), half='second')
         report, code = self.run_cycle(service_date='2026-09-30')
-        self.assertEqual((code, report['analysisRequests']), (0, 1))
+        # The coming first half is in scope from 9/28 and stays unconfirmed here (partial).
+        self.assertEqual((code, report['analysisRequests']), (2, 1))
         self.assertEqual(report['continuation']['serviceDate'], '2026-09-30')
-        self.assertEqual(report['continuation']['periods'], [['2026-09-16', '2026-09-30']])
+        self.assertEqual(report['continuation']['periods'], [['2026-10-01', '2026-10-15'], ['2026-09-16', '2026-09-30']])
         self.assertEqual(report['finishedAt'], facts.stamp(started))
         self.assertEqual(self.state['schedules'][0]['period']['from'], '2026-09-16')
         record = next(iter(self.cache.records.values()))
@@ -441,7 +443,7 @@ class CycleTests(unittest.TestCase):
         self.reopen()
         report, _ = self.run_cycle(resume=True, service_date='2026-10-13')
         self.assertEqual(report['continuation']['serviceDate'], '2026-09-30')
-        self.assertEqual(report['continuation']['periods'], [['2026-09-16', '2026-09-30']])
+        self.assertEqual(report['continuation']['periods'], [['2026-10-01', '2026-10-15'], ['2026-09-16', '2026-09-30']])
         self.assertEqual(report['analysisRequests'], 0)
         self.assertEqual(self.gets, before)
 
@@ -906,9 +908,9 @@ class SharedAccountingCycleTests(unittest.TestCase):
         self.responses[1] = reading_fixture.result(
             reading_fixture.row(20, weekday='日', transcription='20日 昼'), half='second')
         report, code = self.invoke('--service-date', '2026-09-30')
-        self.assertEqual((code, report['analysisRequests']), (0, 2))
+        self.assertEqual((code, report['analysisRequests']), (2, 2))
         self.assertEqual(report['continuation']['serviceDate'], '2026-09-30')
-        self.assertEqual(report['continuation']['periods'], [['2026-09-16', '2026-09-30']])
+        self.assertEqual(report['continuation']['periods'], [['2026-10-01', '2026-10-15'], ['2026-09-16', '2026-09-30']])
         state = self.ledger.load_state(self.ai_path)
         self.assertEqual(state['money']['opening'], opening)
         receipts = list(state['receipts'].values())
