@@ -24,11 +24,34 @@ class MonthlyOverrideTests(unittest.TestCase):
             ('2026-09-22T23:48:00+00:00', 1_500_000_000),
             ('2026-09-30T14:59:59.999999+00:00', 1_500_000_000),
             ('2026-09-30T15:00:00+00:00', 1_000_000_000),
-            ('2026-10-31T15:00:00+00:00', 1_000_000_000),
+            ('2026-10-25T00:32:59.999999+00:00', 1_000_000_000),
+            ('2026-10-25T00:33:00+00:00', 2_000_000_000),
+            ('2026-10-31T15:00:00+00:00', 2_000_000_000),
+            ('2027-01-15T00:00:00+00:00', 2_000_000_000),
         ):
             with self.subTest(value=value):
                 self.assertEqual(money.effective_limit(dt.datetime.fromisoformat(value)), expected)
         self.assertEqual(money.empty()['limitMicroJPY'], 1_000_000_000)
+
+    def test_two_thousand_from_approval_keeps_stored_limit_receipts_and_holds(self):
+        self.now = dt.datetime(2026, 10, 25, 9, 32, tzinfo=money.JST)
+        self.request = {'payloadHash': 'a' * 64, 'inputCeiling': 922_000,
+                        'outputCeiling': 3840, 'imageInput': True}
+        with self.shared() as usage:
+            issued = self.issue(usage, 'unsettled-october')
+            usage.finish(issued, 'azure_timeout')
+            before = copy.deepcopy(usage.state)
+            previous = money.balance(usage.state, self.now)
+            current = money.balance(usage.state, dt.datetime(2026, 10, 25, 9, 33, tzinfo=money.JST))
+            self.assertEqual((previous['limitMicroJPY'], current['limitMicroJPY']),
+                             (1_000_000_000, 2_000_000_000))
+            self.assertEqual(current['availableMicroJPY'] - previous['availableMicroJPY'], 1_000_000_000)
+            self.assertEqual(current['reservedMicroJPY'], previous['reservedMicroJPY'])
+            november = money.balance(usage.state, dt.datetime(2026, 11, 1, tzinfo=money.JST))
+            self.assertEqual(november['limitMicroJPY'], 2_000_000_000)
+            self.assertEqual(usage.state, before)
+            self.assertEqual(usage.state['money']['limitMicroJPY'], 1_000_000_000)
+            money.validate(usage.state)
 
     def test_extra_five_hundred_preserves_all_receipts_and_707_yen_hold(self):
         self.now = dt.datetime(2026, 9, 23, 9, tzinfo=money.JST)
