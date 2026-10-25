@@ -1367,21 +1367,31 @@ def expired_unissued_receipt(state, progress, cache, source, analyzer, now):
     usage.issued comes afterwards. Require the original post's accounting run to have no
     schedule AI reservation at all, as well as no candidate-level issued markers.
     """
+    def refuse(token):
+        # Code-defined token only; it names the failed condition in the run diagnostics.
+        expired_unissued_receipt.refusal = token
+        return None
+
+    expired_unissued_receipt.refusal = None
     key = progress['cacheKey']
     record = state['sources'].get(key)
     cached = cache.records.get(key)
     if not record or not cached or dt.datetime.fromisoformat(cached['expiresAt']) > now:
-        return None
+        return refuse('recovery_not_expired_cache')
     reading = cached['value'].get('reading') or {}
-    if (record['status'] != 'pending' or record['requestHash'] is not None
-            or progress['attemptedVariants'] or reading.get('issued') or reading.get('results')
-            or cached['value'].get('seen') or progress['stage'] not in ('fetch', 'original', 'held')
+    if record['status'] != 'pending' or record['requestHash'] is not None:
+        return refuse('recovery_source_issued')
+    if progress['attemptedVariants'] or cached['value'].get('seen'):
+        return refuse('recovery_variants_seen')
+    if reading.get('issued') or reading.get('results'):
+        return refuse('recovery_cache_issued')
+    if (progress['stage'] not in ('fetch', 'original', 'held')
             or progress['stage'] == 'held' and progress['reason'] != 'image_cache_expired'):
-        return None
+        return refuse('recovery_stage')
     verified = record['source']
     if (cached['value']['source'].get('id') != verified['id']
             or cached['value']['source'].get('authorId') != verified['authorId']):
-        return None
+        return refuse('recovery_identity')
     request_hash, _ = source_safety.request_identity(
         'posts', f'https://{POST_HOST}/tweet-result?id={verified["id"]}&lang=ja&token=a')
     receipts = [item for item in source.state['receipts'].values()
@@ -1392,7 +1402,7 @@ def expired_unissued_receipt(state, progress, cache, source, analyzer, now):
                 and abs((facts.timestamp(item['completedAt']) -
                          facts.timestamp(verified['observedAt'])).total_seconds()) < 5]
     if len(receipts) != 1 or receipts[0]['runId'] == source.run_id:
-        return None
+        return refuse('recovery_post_receipt')
     usage = analyzer.usage.state
     # Any schedule AI request of the original run that could belong to this source blocks the
     # recovery. A request cannot be this source's reading if it is attributed to another known
@@ -1408,7 +1418,7 @@ def expired_unissued_receipt(state, progress, cache, source, analyzer, now):
            and not (verified['media'] and item.get('money') and item['money'].get('imageInput') is False)
            and not (item.get('reservedAt') and facts.timestamp(item['reservedAt']) < fetched)
            for item in usage['receipts'].values()):
-        return None
+        return refuse('recovery_ai_in_run')
     return receipts[0]
 
 
@@ -1489,12 +1499,18 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
     # bound. Release those once, if still in an open window and never fetched as a source.
     known_sources = {record['source']['id'] for record in state['sources'].values()
                      if record['status'] != 'pending' or record.get('requestHash') is not None}
+    unissued_images = {record['source']['id'] for record in state['sources'].values()
+                       if record['status'] == 'pending' and record.get('requestHash') is None
+                       and record['source']['media']}
     for key, item in list(state['candidateHistory'].items()):
         candidate = item['candidate']
         if (item['reason'] in ('permanent_failure', 'queue_limit')
                 and facts.timestamp(item['checkedAt']) < HISTORY_RELEASE_BEFORE
                 and candidate['name'] in targets
-                and (item['reason'] == 'permanent_failure' or candidate['priority'] == 0)
+                # A low-priority queue_limit entry is released only when its post was already
+                # fetched as an image source and never analysed (an unread image schedule).
+                and (item['reason'] == 'permanent_failure' or candidate['priority'] == 0
+                     or candidate['id'] in unissued_images)
                 and facts.timestamp(candidate['searchCreatedAt']).astimezone(facts.JST).date() >= candidate_since
                 and candidate['id'] not in known_sources
                 and candidate['id'] not in {row['id'] for row in state['pending']}):
@@ -1713,7 +1729,9 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                                 receipt = expired_unissued_receipt(
                                     state, progress, cache, source, analyzer, clock())
                                 if receipt is None:
-                                    raise ValueError('evidence_cache_expired')
+                                    error = ValueError('evidence_cache_expired')
+                                    error.detail = expired_unissued_receipt.refusal or 'evidence_cache_expired'
+                                    raise error
                                 old_source = state['sources'][progress['cacheKey']]['source']
                                 guard(client, name)
                                 source.check('posts')

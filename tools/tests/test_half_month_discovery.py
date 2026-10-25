@@ -419,6 +419,28 @@ class PostRecoveryTests(DiscoveryBase):
                 self.assertEqual(self.calls.count(('post', entry['id'])), 1)
                 self.assertTrue(self.state['coverage'][SECOND_HALF]['あむ']['confirmedIds'])
 
+    def test_low_priority_queue_limit_with_an_unissued_image_source_is_released(self):
+        self.now = at(17)
+        self.documents = {'amu_zettai': base.document()}
+        self.run_cycle(cycle_id='3701-1')
+        entry = self.post(at(16, 21), 71, 'お待たせしました')
+        candidate = collector.discover(base.document(entry), {'あむ': base.TARGET}, self.now, {},
+                                       registry=self.registry, candidate_since=dt.date(2026, 10, 1))[0][0]
+        candidate['priority'] = 1
+        verified, _, _ = collector.validate_post(candidate, base.payload(created=at(16, 21), suffix=71),
+                                                 base.TARGET, self.now)
+        facts.record_source(self.state, verified, 'pending', 'not_issued', self.now)
+        self.state['candidateHistory'][facts.candidate_key(candidate)] = {
+            'candidate': candidate, 'reason': 'queue_limit', 'checkedAt': facts.stamp(at(17, 9))}
+        self.model.structured.return_value = self.second_half_result()
+        self.now = at(17, 18)
+        self.reopen()
+        self.calls.clear()
+        self.run_cycle(cycle_id='3702-1')
+        self.assertIn(entry['id'], [item['id'] for item in self.state['pending']]
+                      + [item['id'] for item in self.state['schedules']])
+        facts.validate_state(self.state)
+
     def test_history_after_the_fix_or_low_priority_queue_limit_stays_retired(self):
         for reason, priority, release_before in (('permanent_failure', 0, at(17, 0)),
                                                  ('queue_limit', 1, collector.HISTORY_RELEASE_BEFORE),
@@ -513,6 +535,7 @@ class PostRecoveryTests(DiscoveryBase):
                             'money': {'imageInput': True}}
         self.assertIsNone(collector.expired_unissued_receipt(
             self.state, progress, self.cache, self.source, self.analyzer, self.now))
+        self.assertEqual(collector.expired_unissued_receipt.refusal, 'recovery_ai_in_run')
 
 
 class TextPrefilterTests(DiscoveryBase):
