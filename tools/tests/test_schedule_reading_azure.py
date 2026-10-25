@@ -24,8 +24,11 @@ def fixture(*, photos=1, text='9月前半のお給仕予定', reply=False):
     return source, text, [{'bytes': base.png(), 'mime': 'image/png'} for _ in range(photos)]
 
 
-def row(day=5, shifts=('昼',), *, weekday='土', transcription='5日 昼', qualifier=None,
+def row(day=5, shifts=('昼',), *, weekday='土', transcription=None, qualifier=None,
         start=None, end=None, index=0, box=None, operation=None):
+    if transcription is None:
+        # A row's transcription is its own printed line: the date and its 昼/夜 words.
+        transcription = f'{day}日 ' + (''.join(shifts) if shifts else 'にゃ?')
     return {'day': day, 'weekday': weekday, 'shifts': None if shifts is None else list(shifts),
             'workTiming': [], 'transcription': transcription, 'qualifier': qualifier,
             'explicitStart': start, 'explicitEnd': end,
@@ -50,13 +53,17 @@ class NormalizationTests(base.Offline):
     def test_date_only_and_unreadable_rows_are_distinct(self):
         schedules, complete = self.normalize(result(
             row(shifts=(), transcription='5日'),
-            row(7, None, weekday='月', transcription='7日 判読不能')))
+            row(7, None, weekday='月', transcription='7日 にゃ?')))
         self.assertFalse(complete)
         self.assertEqual([item['shifts'] for item in schedules[0]['days']], [[], []])
         details = schedules[0]['reading']['days']
         self.assertEqual(details['2026-09-05']['shiftStatus'], 'unstated')
         self.assertEqual(details['2026-09-07']['shiftStatus'], 'unreadable')
         self.assertFalse(schedules[0]['reading']['complete'])
+        # A date whose own cell is only "unreadable" is no evidence of work and is not saved.
+        schedules, complete = self.normalize(result(
+            row(shifts=(), transcription='5日'), row(7, None, weekday='月', transcription='7日 判読不能')))
+        self.assertEqual(([item['date'] for item in schedules[0]['days']], complete), (['2026-09-05'], False))
         schedule, complete = self.normalize(result(row(shifts=(), transcription='5日')))
         self.assertTrue(complete)
         self.assertEqual(schedule[0]['days'][0]['shifts'], [])
@@ -147,12 +154,13 @@ class NormalizationTests(base.Offline):
         fact = schedules[0]['reading']['days']['2026-09-05']
         self.assertTrue(complete)
         self.assertEqual(schedules[0]['days'][0]['shifts'], ['昼', '夜'])
-        self.assertEqual((fact['qualifier'], fact['shiftStatus']), (None, 'stated'))
+        # Without a printed 昼/夜 word the shifts come from the printed clocks (PR84 rule).
+        self.assertEqual((fact['qualifier'], fact['shiftStatus']), (None, 'clock-derived'))
         for item in [row(shifts=('昼', '夜'), qualifier='all_day', transcription='5日 12:00〜17:00',
                          start='12:00', end='17:00'),
                      row(shifts=('昼', '夜'), qualifier='all_day', transcription='5日 昼夜')]:
-            with self.subTest(item=item), self.assertRaisesRegex(ValueError, 'ungrounded_reading_qualifier'):
-                self.normalize(result(item))
+            with self.subTest(item=item):
+                self.assertEqual(self.normalize(result(item)), ([], False))
 
     def test_public_reading_rejects_forged_clock_shift_status(self):
         schedules, _ = self.normalize(result(row(
@@ -182,11 +190,18 @@ class NormalizationTests(base.Offline):
                 self.assertEqual(azure.reading.clock_shifts(start, end), facts.clock_shifts(start, end))
 
     def test_explicit_clocks_and_qualifiers_must_be_in_row_transcription(self):
-        for item in [row(start='13:00'), row(qualifier='long'),
-                     row(end='24:00', transcription='5日 24:00'),
-                     row(start='13:00', transcription='5日 113:00')]:
-            with self.subTest(item=item), self.assertRaises(ValueError):
-                self.normalize(result(item))
+        # Unprinted clocks are removed from the row; an unprinted qualifier or an invalid
+        # clock drops the row and leaves the table partial. Nothing ungrounded is saved.
+        for item, saved in [(row(start='13:00'), True), (row(qualifier='long'), False),
+                            (row(end='24:00', transcription='5日 24:00'), False),
+                            (row(start='13:00', transcription='5日 113:00'), True)]:
+            with self.subTest(item=item):
+                schedules, complete = self.normalize(result(item))
+                if not saved:
+                    self.assertEqual((schedules, complete), ([], False))
+                    continue
+                detail = schedules[0]['reading']['days']['2026-09-05']
+                self.assertEqual((detail['hours'], detail['qualifier']), ({}, None))
         item = row(transcription='5日 昼13時〜17時', start='13:00', end='17:00')
         self.assertTrue(self.normalize(result(item))[1])
 
@@ -249,9 +264,12 @@ class NormalizationTests(base.Offline):
         self.assertEqual(schedules[0]['workTiming']['facts'][0]['explicitTime'], '17:00')
         self.assertEqual(schedules[0]['reading']['days']['2026-09-05']['hours']['end'],
                          {'time': '17:00', 'basis': 'explicit'})
+        # An unprinted timing clock is dropped alone; the printed row itself is kept.
         item['workTiming'][0]['time'] = '18:00'
-        with self.assertRaisesRegex(ValueError, 'clock_ungrounded'):
-            self.normalize(result(item))
+        schedules, _ = self.normalize(result(item))
+        self.assertNotIn('workTiming', schedules[0])
+        self.assertEqual(schedules[0]['reading']['days']['2026-09-05']['hours']['end'],
+                         {'time': '17:00', 'basis': 'explicit'})
         item['workTiming'] = None
         self.assertTrue(self.normalize(result(item))[1])
 
@@ -553,6 +571,72 @@ class RequestTests(base.Offline):
             analyzer.analyze_reading(source, text, images, None, lambda key: None, pack=pack)
 
 
+class TranscriptionGroundingTests(base.Offline):
+    """Rows follow their own printed line; one bad row never rejects or contaminates a table."""
+    normalize = NormalizationTests.normalize
+
+    def dates(self, value, context=None):
+        schedules, complete = self.normalize(value, context)
+        return [item['date'] for schedule in schedules for item in schedule['days']], complete
+
+    def test_row_shifts_and_clocks_come_from_its_transcription(self):
+        schedules, _ = self.normalize(result(row(shifts=('夜',), transcription='5日 昼')))
+        self.assertEqual(schedules[0]['days'][0]['shifts'], ['昼'])
+        # A model 昼 without a printed word is not evidence; printed clocks decide (PR84 rule).
+        schedules, _ = self.normalize(result(row(shifts=('昼',), transcription='5日 17-22')))
+        detail = schedules[0]['reading']['days']['2026-09-05']
+        self.assertEqual(schedules[0]['days'][0]['shifts'], ['夜'])
+        self.assertEqual((detail['shiftStatus'], detail['hours']['start'], detail['hours']['end']),
+                         ('clock-derived', {'time': '17:00', 'basis': 'explicit'},
+                          {'time': '22:00', 'basis': 'explicit'}))
+        # Neither a word nor a clock: still no shift.
+        schedules, _ = self.normalize(result(row(shifts=('昼',), transcription='5日 おきゅ')))
+        self.assertEqual(schedules[0]['days'][0]['shifts'], [])
+
+    def test_decimal_half_hour_is_an_explicit_clock(self):
+        schedules, _ = self.normalize(result(row(
+            shifts=('夜',), qualifier='late', transcription='5日 おそめよる 17.5-22')))
+        hours = schedules[0]['reading']['days']['2026-09-05']['hours']
+        self.assertEqual((hours['start'], hours['end']), ({'time': '17:30', 'basis': 'explicit'},
+                                                          {'time': '22:00', 'basis': 'explicit'}))
+
+    def test_row_whose_transcription_names_another_date_is_dropped_alone(self):
+        self.assertEqual(self.dates(result(row(), row(7, weekday='月', transcription='8日 昼'))),
+                         (['2026-09-05'], False))
+        self.assertEqual(self.dates(result(row(), row(7, weekday='月', transcription=''))),
+                         (['2026-09-05'], False))
+
+    def test_printed_weekday_majority_drops_only_the_contradicting_row(self):
+        value = result(row(), row(7, weekday='月', transcription='7日(月) 昼'),
+                       row(8, weekday='火', transcription='8日(火) 昼'),
+                       row(9, weekday='水', transcription='9日(月) 昼'))
+        self.assertEqual(self.dates(value), (['2026-09-05', '2026-09-07', '2026-09-08'], False))
+        # Without a majority the calendar stays unresolved, as before.
+        with self.assertRaisesRegex(ValueError, 'calendar'):
+            self.normalize(result(row(transcription='5日(日) 昼', weekday='日')))
+
+    def test_unprinted_body_year_is_ignored_not_fatal(self):
+        self.assertEqual(self.dates(result(row(), text_year=2025)), (['2026-09-05'], True))
+        context = fixture(text='2025年9月前半のお給仕予定')
+        self.assertEqual(self.dates(result(row(weekday=None), text_year=2025), context),
+                         (['2025-09-05'], True))
+
+    def test_missing_or_contradicted_half_is_decided_by_day_and_partial(self):
+        late = row(20, weekday='日', transcription='20日 昼')
+        self.assertEqual(self.dates(result(row(), late, half=None)),
+                         (['2026-09-05', '2026-09-20'], False))
+        self.assertEqual(self.dates(result(row(), copy.deepcopy(late), half='first')),
+                         (['2026-09-05'], False))
+
+    def test_invalid_or_foreign_timing_items_are_dropped_alone(self):
+        item = row(transcription='5日 昼 12-17', start='12:00', end='17:00')
+        item['workTiming'] = [{'shift': '夜', 'kind': 'time', 'time': '17:00'},
+                              {'shift': '昼', 'kind': 'time', 'time': None}]
+        schedules, _ = self.normalize(result(item))
+        self.assertNotIn('workTiming', schedules[0])
+        self.assertEqual(schedules[0]['days'][0]['shifts'], ['昼'])
+
+
 class SavedReadingBenchmarkTests(base.Offline):
     """API0 re-normalization of five real-shaped readings (synthetic wording, local truth)."""
     FIXTURE = Path(__file__).with_name('fixtures') / 'half_month_reading_benchmark.json'
@@ -603,9 +687,9 @@ class SavedReadingBenchmarkTests(base.Offline):
         results = self.score()
         self.assertEqual(sum(item['full'] for item in results.values()), 31)
         self.assertEqual([item['outside'] for item in results.values()], [[]] * 5)
-        # The calendar-style post with an all-day word lacking printed clocks stays rejected.
-        self.assertEqual({post: item['rejected'] for post, item in results.items() if item['rejected']},
-                         {'P2': 'ungrounded_reading_qualifier'})
+        # An all-day word absent from its own row no longer rejects the whole post: only
+        # those rows are dropped, the remaining printed dates are kept (still never fabricated).
+        self.assertEqual({post: item['rejected'] for post, item in results.items() if item['rejected']}, {})
         # P5 is the clock-only table that the previous rule rejected outright (21/51 before).
         self.assertEqual(results['P5']['full'], 10)
         self.assertEqual(sum(item['full'] for post, item in results.items() if post != 'P5'), 21)

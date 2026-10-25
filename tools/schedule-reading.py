@@ -80,6 +80,81 @@ def schema(base):
 
 CLOCK_DAY_START_BEFORE = '16:00'
 CLOCK_NIGHT_END_FROM = '21:00'
+_DAY_WORDS = {'昼': r'昼|ひる|ﾋﾙ|☀', '夜': r'夜|よる|ﾖﾙ|🌙|☾', 'all': r'おーらす|オーラス|通し'}
+_QUALIFIER_WORDS = {'long': r'長め|ながめ', 'early': r'早め|はやめ', 'late': r'遅め|おそめ'}
+_WEEKDAY = re.compile(r'[(（]\s*([月火水木金土日])\s*(?:曜日?)?\s*[)）]|([月火水木金土日])曜')
+_ILLEGIBLE = re.compile(r'(?:続き|続く文字|続く)(?:は|が)?|判読(?:不能|困難|不可)?|読め(?:ない|ず)|'
+                        r'読み取れ(?:ない|ず)|不鮮明|不明|かすれ|illegible|unreadable|[?？]', re.I)
+_RANGE = re.compile(r'(?<![\d:.])(\d{1,2})(?:[:：](\d{2})|\.(5))?\s*[-〜~～ー－]\s*'
+                    r'(\d{1,2})(?:[:：](\d{2})|\.(5))?(?![\d])')
+
+
+def transcription_facts(transcription):
+    """Deterministic facts of one printed schedule line, as transcribed by the model.
+
+    Returns the printed day number, the 昼/夜 words, a qualifier word and a printed clock range,
+    each None when not printed. Code derives structure from this line instead of trusting the
+    model's separately structured fields.
+    """
+    text = unicodedata.normalize('NFKC', transcription or '')
+    day = None
+    for pattern in (r'(?<!\d)\d{1,2}\s*/\s*(\d{1,2})(?!\d)', r'(?<!\d)(\d{1,2})\s*日',
+                    r'^\W*(\d{1,2})(?![\d:.\-〜~～])'):
+        match = re.search(pattern, text)
+        if match:
+            day = int(match.group(1))
+            break
+    clock = None
+    for match in _RANGE.finditer(text):
+        values = []
+        for hour, minute, half in (match.group(1, 2, 3), match.group(4, 5, 6)):
+            minutes = int(minute) if minute else 30 if half else 0
+            values.append(f'{int(hour):02d}:{minutes:02d}')
+        if 9 <= int(match.group(1)) < int(match.group(4)) <= 24 and values[1] <= '23:59':
+            clock = tuple(values)
+            break
+    words = {key for key, pattern in _DAY_WORDS.items() if re.search(pattern, text)}
+    shifts = (['昼', '夜'] if 'all' in words or {'昼', '夜'} <= words
+              else ['昼'] if '昼' in words else ['夜'] if '夜' in words else None)
+    qualifier = 'all_day' if 'all' in words else None
+    allowed = {'long': (None, ['昼']), 'early': (None, ['夜']), 'late': (None, ['夜'])}
+    for key, pattern in _QUALIFIER_WORDS.items():
+        # Hour rules exist only for long day and early/late night (ながめ夜・早め昼 stay unmapped).
+        if qualifier is None and re.search(pattern, text) and shifts in allowed[key]:
+            qualifier = key
+    weekday = _WEEKDAY.search(text)
+    rest = re.sub(r'[\W_]', '', _ILLEGIBLE.sub('', _WEEKDAY.sub('', re.sub(
+        r'(?<!\d)\d{1,2}\s*(?:/\s*\d{1,2}|日)?', '', text))))
+    return {'day': day, 'shifts': shifts, 'qualifier': qualifier, 'clock': clock,
+            'weekday': weekday and (weekday.group(1) or weekday.group(2)),
+            'contentFree': not rest, 'illegibleOnly': bool(_ILLEGIBLE.search(text)) and not rest}
+
+
+def reconcile_with_transcription(row):
+    """Align structured fields with the row's own transcription; raise when the date disagrees."""
+    if not isinstance(row['transcription'], str) or not row['transcription'].strip():
+        raise ValueError('reading_row_without_content')
+    printed = transcription_facts(row['transcription'])
+    if printed['day'] is not None and row['day'] is not None and printed['day'] != row['day']:
+        raise ValueError('reading_day_mismatch')
+    if printed['illegibleOnly'] or (printed['contentFree'] and row['shifts'] is None):
+        # A printed date whose own cell is unreadable is not evidence that the date is a work day.
+        raise ValueError('reading_row_without_content')
+    row = dict(row)
+    if printed['weekday'] is not None:
+        row['weekday'] = printed['weekday']
+    if printed['shifts'] is not None:
+        row['shifts'] = printed['shifts']
+    elif row['shifts']:
+        # Model-supplied 昼/夜 without any printed word is not evidence; clocks may still decide.
+        row['shifts'] = []
+    elif row['shifts'] is None and printed['clock'] is not None:
+        row['shifts'] = []
+    if printed['clock'] is not None:
+        row['explicitStart'], row['explicitEnd'] = printed['clock']
+    if row['qualifier'] is None and printed['qualifier'] is not None:
+        row['qualifier'] = printed['qualifier']
+    return row
 
 
 def clock_shifts(start, end):
