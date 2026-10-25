@@ -1394,7 +1394,19 @@ def expired_unissued_receipt(state, progress, cache, source, analyzer, now):
     if len(receipts) != 1 or receipts[0]['runId'] == source.run_id:
         return None
     usage = analyzer.usage.state
+    # Any schedule AI request of the original run that could belong to this source blocks the
+    # recovery. A request cannot be this source's reading if it is attributed to another known
+    # source or revision, is text-only (an image post is only ever read with its images), or was
+    # reserved before this post body was fetched.
+    attributed = {item['requestHash'] for item in state['sources'].values() if item.get('requestHash')}
+    for revision in state['revisions'].values():
+        attributed.add(revision['analysis']['requestHash'])
+        attributed |= {part['requestHash'] for part in revision['analysis'].get('readingBatch', [])}
+    fetched = facts.timestamp(verified['observedAt'])
     if any(item['component'] == 'schedule' and item['runId'] == receipts[0]['runId']
+           and item['requestHash'] not in attributed
+           and not (verified['media'] and item.get('money') and item['money'].get('imageInput') is False)
+           and not (item.get('reservedAt') and facts.timestamp(item['reservedAt']) < fetched)
            for item in usage['receipts'].values()):
         return None
     return receipts[0]
@@ -1475,7 +1487,8 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
     # Before HISTORY_RELEASE_BEFORE, multi-photo posts were wrongly ended as permanent_failure
     # (photo index check) and unread candidates were retired as queue_limit by the 6-per-person
     # bound. Release those once, if still in an open window and never fetched as a source.
-    known_sources = {record['source']['id'] for record in state['sources'].values()}
+    known_sources = {record['source']['id'] for record in state['sources'].values()
+                     if record['status'] != 'pending' or record.get('requestHash') is not None}
     for key, item in list(state['candidateHistory'].items()):
         candidate = item['candidate']
         if (item['reason'] in ('permanent_failure', 'queue_limit')
@@ -1653,6 +1666,7 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                             save()
                         if selected['nextAttemptAt'] and facts.timestamp(selected['nextAttemptAt']) > clock():
                             continue
+                        cached_keys = []
                         if not known:
                             if len(state['readings']) >= facts.READINGS_LIMIT:
                                 # Never grow past the validated bound: retire the oldest finished
@@ -1667,6 +1681,16 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                             if cached_keys:
                                 key = cached_keys[0]
                                 failure_stage, failure_host = 'cache', None
+                                record = cache.records[key]
+                                if dt.datetime.fromisoformat(record['expiresAt']) <= clock():
+                                    # Expired evidence: register the hold so the proven-unissued
+                                    # recovery below decides, instead of failing on every run.
+                                    progress = {'sourceId': selected['id'], 'cacheKey': key, 'stage': 'held',
+                                                'reason': 'image_cache_expired', 'nextAt': None,
+                                                'attemptedVariants': list(record['value'].get('seen') or [])}
+                                    state['readings'][key] = progress
+                                    known = [(key, progress)]
+                        if not known and cached_keys:
                                 recovered = cache.get(key)
                                 progress = {'sourceId': selected['id'], 'cacheKey': key,
                                             'stage': recovered['reading']['stage'], 'reason': 'reading_pending',

@@ -469,6 +469,51 @@ class PostRecoveryTests(DiscoveryBase):
         self.assertNotIn(('post', entry['id']), self.calls)
         self.assertEqual(self.usage.calls, calls)
 
+    def test_expired_record_whose_run_only_read_other_posts_is_recovered(self):
+        """Production 10/17 runs: the post was fetched in a run that read other posts."""
+        self.now = at(17)
+        entry = self.post(at(16, 21), 81, '10月後半のお給仕予定')
+        self.documents = {'amu_zettai': base.document(entry)}
+        failing = self.client
+        def client():
+            value = failing()
+            value.image.side_effect = OSError('host paused')
+            return value
+        self.client = client
+        self.run_cycle(cycle_id='3601-1')
+        self.client = failing
+        progress = next(iter(self.state['readings'].values()))
+        progress.update(stage='held', reason='image_cache_expired', nextAt=None)
+        source_record = self.state['sources'][progress['cacheKey']]['source']
+        run = '3601-1'
+        receipts = {
+            # text-only request of another candidate after this post was fetched
+            'text': {'component': 'schedule', 'runId': run, 'requestHash': 'b' * 64,
+                     'reservedAt': facts.stamp(at(17) + dt.timedelta(minutes=5)),
+                     'money': {'imageInput': False}},
+            # image request reserved before this post was fetched
+            'early': {'component': 'schedule', 'runId': run, 'requestHash': 'c' * 64,
+                      'reservedAt': facts.stamp(facts.timestamp(source_record['observedAt']) - dt.timedelta(minutes=9)),
+                      'money': {'imageInput': True}}}
+        self.usage.state = {'receipts': receipts}
+        self.source.state['receipts'] = {'post': {
+            'component': 'schedule', 'kind': 'posts', 'runId': run, 'status': 'ok', 'httpStatus': 200,
+            'issuedAt': source_record['observedAt'], 'completedAt': source_record['observedAt'],
+            'requestHash': collector.source_safety.request_identity(
+                'posts', f'https://{collector.POST_HOST}/tweet-result?id={entry["id"]}&lang=ja&token=a')[0]}}
+        self.now = at(25)
+        self.reopen()
+        self.analyzer.usage.state = {'receipts': receipts}
+        self.assertIsNotNone(collector.expired_unissued_receipt(
+            self.state, progress, self.cache, self.source, self.analyzer, self.now))
+        # An unattributed image request after the fetch could be this post's reading: refuse.
+        receipts['late'] = {'component': 'schedule', 'runId': run, 'requestHash': 'd' * 64,
+                            'reservedAt': facts.stamp(facts.timestamp(source_record['observedAt'])
+                                                      + dt.timedelta(minutes=1)),
+                            'money': {'imageInput': True}}
+        self.assertIsNone(collector.expired_unissued_receipt(
+            self.state, progress, self.cache, self.source, self.analyzer, self.now))
+
 
 class TextPrefilterTests(DiscoveryBase):
     def test_plausible_schedule_text(self):
