@@ -15,7 +15,7 @@ const newMember = (changes = {}) => ({
   memberId: "m-00000000000000000000000000000001", canonicalName: "新しい人", displayName: "新しい人",
   aliases: [], role: "normal", membership: "active", collection: "enabled", inactiveFrom: null,
   xProfileUrl: "https://x.com/new_member", homeStore: null, homeStoreSource: null,
-  officialListing: "unknown", orderBefore: null, ...changes
+  officialListing: "unknown", orderBefore: null, graduation: null, ...changes
 });
 const registryWith = (...members) => ({ schemaVersion: 1, members, unresolvedNames: [] });
 const halfSource = (member, changes = {}) => {
@@ -49,7 +49,7 @@ const personalFeed = post => ({
 
 test("the public registry is strict, immutable and separates all identities from current membership", () => {
   assert.equal(api.validateMemberRegistry(publicRegistry), publicRegistry);
-  const registry = api.createMemberRegistryAdapter(publicRegistry);
+  const registry = api.createMemberRegistryAdapter(publicRegistry, "2026-10-01");
   assert.equal(registry.activeNames.length, 40);
   assert.equal(registry.kitchenStaff.length, 5);
   assert.equal(registry.activeNames.filter(name => !registry.kitchenStaff.includes(name)).length, 35);
@@ -107,6 +107,16 @@ test("malformed registry never becomes a partial or legacy roster", () => {
     value => { value.members[0].officialListing = true; },
     value => { value.members[0].orderBefore = value.members[0].memberId; },
     value => { value.members[0].orderBefore = "m-000000000000000000000000000000ff"; },
+    value => { delete value.members[0].graduation; },
+    value => { value.members[0].graduation = "2026-10-16"; },
+    value => { value.members[0].graduation = { lastServiceDate: "2026-10-16" }; },
+    value => { value.members[0].graduation = { lastServiceDate: "2026-02-30", evidenceUrl: "https://x.com/new_member/status/1" }; },
+    value => { value.members[0].graduation = { lastServiceDate: "2026-10-16", evidenceUrl: "https://x.com/someone_else/status/1" }; },
+    value => { value.members[0].graduation = { lastServiceDate: "2026-10-16", evidenceUrl: "https://x.com/new_member" }; },
+    value => { value.members[0].graduation = { lastServiceDate: "2026-10-16", evidenceUrl: "https://x.com/new_member/status/1?s=20" }; },
+    value => { value.members[0].graduation = { lastServiceDate: "2026-10-16", evidenceUrl: "https://x.com/new_member/status/1", note: "卒業" }; },
+    value => { Object.assign(value.members[0], { xProfileUrl: null,
+      graduation: { lastServiceDate: "2026-10-16", evidenceUrl: "https://x.com/new_member/status/1" } }); },
     value => { value.unresolvedNames = ["新しい人"]; },
     value => { value.unresolvedNames = ["未解決", "未解決"]; },
     value => { value.members.push(copy(value.members[0])); },
@@ -300,4 +310,73 @@ test("registered timing-only posts still cannot create attendance, shops or core
   assert.deepEqual(api.resolveShiftRoster(options).entries, []);
   assert.equal(api.dayHasPersonStoreEvidence(insights, null, post.date, personal), false);
   assert.equal(api.rosterPostLink(options), null);
+});
+
+test("published graduations leave the roster from the day after the announced last service day", () => {
+  const confirmed = {
+    あくび: ["2026-10-16", "https://x.com/akubi_zettai/status/2109664298628944019"],
+    つぼみ: ["2026-10-09", "https://x.com/tsubomi_zettai/status/2108572843789504519"],
+    ゆめ: ["2026-10-27", "https://x.com/yume1_zettai/status/2109661316923396251"]
+  };
+  const graduates = publicRegistry.members.filter(member => member.graduation !== null);
+  assert.deepEqual(Object.fromEntries(graduates.map(member =>
+    [member.canonicalName, [member.graduation.lastServiceDate, member.graduation.evidenceUrl]])), confirmed);
+  assert.ok(graduates.every(member => member.membership === "active"), "graduation does not rewrite saved status");
+  const rosterOn = today => api.createMemberRegistryAdapter(publicRegistry, today).activeNames;
+  assert.equal(rosterOn("2026-10-09").length, 40);
+  assert.ok(rosterOn("2026-10-09").includes("つぼみ"), "she is still listed on her last day");
+  assert.ok(!rosterOn("2026-10-10").includes("つぼみ"));
+  assert.ok(rosterOn("2026-10-16").includes("あくび"));
+  assert.ok(!rosterOn("2026-10-17").includes("あくび"));
+  assert.ok(rosterOn("2026-10-27").includes("ゆめ"));
+  assert.deepEqual(rosterOn("2026-10-27").filter(name => confirmed[name]), ["ゆめ"]);
+  const after = api.createMemberRegistryAdapter(publicRegistry, "2026-10-28");
+  assert.equal(after.activeNames.length, 37);
+  assert.deepEqual([...after.graduatedNames].sort(), Object.keys(confirmed).sort());
+  assert.ok(Object.keys(confirmed).every(name => after.knownNames.includes(name)), "identities stay known for history");
+});
+
+test("a graduate keeps history and plans up to her last day but leaves the member filter", () => {
+  const member = newMember({ graduation: { lastServiceDate: "2026-09-06", evidenceUrl: "https://x.com/new_member/status/1" } });
+  const other = newMember({ memberId: "m-00000000000000000000000000000002", canonicalName: "在籍", displayName: "在籍",
+    xProfileUrl: "https://x.com/current" });
+  const value = registryWith(member, other);
+  const before = api.createMemberRegistryAdapter(value, "2026-09-06");
+  const registry = api.createMemberRegistryAdapter(value, "2026-09-07");
+  assert.deepEqual(before.activeNames, [member.canonicalName, other.canonicalName]);
+  assert.deepEqual(registry.activeNames, [other.canonicalName]);
+  assert.equal(registry.graduated(member.canonicalName), true);
+  assert.equal(registry.graduated(other.canonicalName), false);
+  const feed = halfFeed(halfSource(member));
+  const manual = { "2026-09-06": { 昼: [{ name: member.canonicalName }] }, "2026-09-07": { 夜: [{ name: member.canonicalName }] } };
+  const saved = JSON.stringify([manual, feed]);
+  const schedule = api.buildEffectiveSchedule(manual, feed, { registry });
+  assert.equal(schedule["2026-09-06"].昼.length, 1, "plans up to the last service day stay");
+  assert.equal(schedule["2026-09-07"].夜.length, 0, "plans after the last service day are not shown");
+  assert.equal(api.buildEffectiveSchedule(manual, feed, { registry, includeInactivePlans: true })["2026-09-07"].夜.length, 1);
+  assert.equal(JSON.stringify([manual, feed]), saved, "saved sources are not rewritten");
+  const insights = { memberRegistry: registry, stores: [{ id: "s2" }],
+    actualRoster: { "2026-09-06": { 昼: { stores: { s2: [member.canonicalName] }, trainees: [] } } } };
+  const recorded = api.resolveShiftRoster({ insights, schedule, roster: registry.knownNames, dateKey: "2026-09-06", shift: "昼" });
+  assert.equal(recorded.entries[0].name, member.canonicalName, "her recorded history is still shown");
+  for (const range of [["2026-09-01", "2026-09-30"], ["2026-09-06", "2026-09-06"]]) {
+    assert.deepEqual(api.memberFilterNames(registry, { schedule, insights, dateFrom: range[0], dateTo: range[1] }),
+      [other.canonicalName], "she is not listed even where her past days are visible");
+  }
+  assert.deepEqual(api.memberFilterNames(before, { schedule, insights, dateFrom: "2026-09-01", dateTo: "2026-09-30" }),
+    [member.canonicalName, other.canonicalName]);
+  const note = api.schedulePendingNote({ memberRegistry: registry }, undefined, { dateFrom: "2026-09-16", dateTo: "2026-09-30" });
+  assert.match(note.short, /在籍1名のうち1名/);
+  assert.doesNotMatch(note.long, /新しい人/);
+});
+
+test("graduation evidence may come from her own account or the official account only", () => {
+  for (const evidenceUrl of ["https://x.com/new_member/status/1", "https://x.com/New_Member/status/2",
+    "https://x.com/akibazettai/status/3", "https://x.com/AkibaZettai/status/4"]) {
+    const value = registryWith(newMember({ graduation: { lastServiceDate: "2026-10-16", evidenceUrl } }));
+    assert.equal(api.createMemberRegistryAdapter(value, "2026-10-17").activeNames.length, 0, evidenceUrl);
+  }
+  const official = registryWith(newMember({ xProfileUrl: null,
+    graduation: { lastServiceDate: "2026-10-16", evidenceUrl: "https://x.com/akibazettai/status/5" } }));
+  assert.equal(api.createMemberRegistryAdapter(official, "2026-10-16").activeNames.length, 1);
 });

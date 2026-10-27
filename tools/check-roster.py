@@ -99,7 +99,7 @@ def read_schedule():
     members = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(members)
     registry = members.load_registry(os.path.join(ROOT, 'data', 'members.json'))
-    active = [member for member in registry['members'] if member['membership'] == 'active']
+    active = [member for member in registry['members'] if members.active_on(member)]
     roster = [member['canonicalName'] for member in active]
     home = {member['canonicalName']: member['homeStore'] for member in active if member['homeStore']}
     unposted = [member['canonicalName'] for member in active if member['officialListing'] != 'listed']

@@ -2900,7 +2900,7 @@ const registryUiMember = (changes = {}) => ({
   memberId: "m-00000000000000000000000000000001", canonicalName: "新しい人", displayName: "新しい人",
   aliases: [], role: "normal", membership: "active", collection: "enabled", inactiveFrom: null,
   xProfileUrl: "https://x.com/new_member", homeStore: null, homeStoreSource: null,
-  officialListing: "unknown", orderBefore: null, ...changes
+  officialListing: "unknown", orderBefore: null, graduation: null, ...changes
 });
 
 test("registry-only members have a selectable profile without inventing a shift or store", () => {

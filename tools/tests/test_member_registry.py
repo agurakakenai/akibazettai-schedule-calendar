@@ -331,6 +331,149 @@ class PlanTests(unittest.TestCase):
             registry.plan_impact(value, NAME, [{**plans[0], 'actual': True}], '2026-09-07')
 
 
+EVIDENCE = URL + '/status/2109664298628944019'
+
+
+class GraduationTests(unittest.TestCase):
+    def graduate(self, last='2026-09-09', evidence=EVIDENCE, value=None):
+        return registry.set_graduation(fixture() if value is None else value, NAME,
+                                       last_service_date=last, evidence_url=evidence)
+
+    def test_records_only_a_self_or_official_status_post_without_rewriting_status(self):
+        original = fixture()
+        value = self.graduate(value=original)
+        member = value['members'][0]
+        self.assertEqual(member['graduation'], {'lastServiceDate': '2026-09-09', 'evidenceUrl': EVIDENCE})
+        self.assertEqual(registry.status_of(member), registry.status_of(original['members'][0]))
+        self.assertEqual(member['statusHistory'], [])
+        self.assertIsNone(original['members'][0]['graduation'])
+        self.assertEqual(registry.public_projection(value)['members'][0]['graduation'], member['graduation'])
+        for evidence in ('https://x.com/akibazettai/status/1', 'https://x.com/AkibaZettai/status/2',
+                         'https://x.com/Fixture_Member/status/3'):
+            with self.subTest(evidence=evidence):
+                self.assertEqual(self.graduate(evidence=evidence)['members'][0]['graduation']['evidenceUrl'],
+                                 evidence)
+        for evidence, last, reason in (
+                ('https://x.com/someone_else/status/1', '2026-09-09', 'graduation_evidence_not_self_or_official'),
+                (URL, '2026-09-09', 'invalid_graduation_evidence'),
+                (EVIDENCE + '?s=20', '2026-09-09', 'invalid_graduation_evidence'),
+                ('https://twitter.com/fixture_member/status/1', '2026-09-09', 'invalid_graduation_evidence'),
+                (None, '2026-09-09', 'invalid_graduation_evidence'),
+                (EVIDENCE, '2026-02-30', 'invalid_registry_date'),
+                (EVIDENCE, '20260909', 'invalid_registry_date')):
+            with self.subTest(evidence=evidence, last=last), self.assertRaisesRegex(registry.RegistryError, reason):
+                self.graduate(last, evidence)
+        unknown = fixture(None)
+        with self.assertRaisesRegex(registry.RegistryError, 'graduation_evidence_not_self_or_official'):
+            self.graduate(value=unknown)
+        self.assertIsNotNone(self.graduate(evidence='https://x.com/akibazettai/status/4', value=unknown))
+        for broken in ({'lastServiceDate': '2026-09-09'}, '2026-09-09',
+                       {'lastServiceDate': '2026-09-09', 'evidenceUrl': EVIDENCE, 'note': 'x'}):
+            changed = copy.deepcopy(value)
+            changed['members'][0]['graduation'] = broken
+            with self.subTest(broken=broken), self.assertRaises(registry.RegistryError):
+                registry.validate_registry(changed)
+        missing = copy.deepcopy(value)
+        del missing['members'][0]['graduation']
+        with self.assertRaisesRegex(registry.RegistryError, 'invalid_registry_fields'):
+            registry.validate_registry(missing)
+
+    def test_targets_roster_and_counts_stop_from_the_next_jst_day(self):
+        value = self.graduate()
+        mid = value['members'][0]['memberId']
+        last_evening = dt.datetime(2026, 9, 9, 14, 59, tzinfo=registry.UTC)
+        next_morning = dt.datetime(2026, 9, 9, 15, 0, tzinfo=registry.UTC)
+        for today in ('2026-09-09', dt.date(2026, 9, 9), last_evening):
+            with self.subTest(today=today):
+                targets, coverage = registry.collection_population(value, {}, today=today)
+                self.assertIn(mid, targets)
+                self.assertEqual(registry.display_projection(value, today)['roster'], [NAME])
+                self.assertEqual(registry.registry_report(value, {}, today=today)['activeCount'], 1)
+        for today in ('2026-09-10', next_morning, dt.date(2026, 10, 1)):
+            with self.subTest(today=today):
+                targets, coverage = registry.collection_population(value, {}, today=today)
+                self.assertEqual(targets, {})
+                self.assertEqual(coverage[mid]['reason'], 'graduated')
+                projection = registry.display_projection(value, today)
+                self.assertEqual(projection['roster'], [])
+                self.assertEqual(projection['knownNames'], [NAME])
+                self.assertIn(NAME, projection['aliases'])
+                report = registry.registry_report(value, {}, today=today)
+                self.assertEqual((report['activeCount'], report['graduatedCount'], report['eligibleCount']), (0, 1, 0))
+                self.assertEqual(report['knownIdentityCount'], 1)
+        with self.assertRaisesRegex(registry.RegistryError, 'timezone_required'):
+            registry.collection_population(value, {}, today=dt.datetime(2026, 9, 10))
+        with mock.patch.object(registry, 'jst_today', return_value=dt.date(2026, 9, 10)):
+            self.assertEqual(registry.collection_population(value, {})[0], {})
+        with mock.patch.object(registry, 'jst_today', return_value=dt.date(2026, 9, 9)):
+            self.assertIn(mid, registry.collection_population(value, {})[0])
+
+    def test_plans_after_the_last_service_day_leave_the_plan_view_only(self):
+        plans = json.loads((TOOLS / 'tests' / 'fixtures' / 'member-registry-plans.json').read_text(encoding='utf-8'))
+        original = copy.deepcopy(plans)
+        impact = registry.plan_impact(self.graduate(), NAME, plans, '2026-09-07')
+        self.assertEqual([(row['date'], row['policy']) for row in impact['futurePlans']], [
+            ('2026-09-07', 'retained'), ('2026-09-09', 'retained'),
+            ('2026-09-10', 'excluded_from_plan_view'), ('2026-09-10', 'excluded_from_plan_view')])
+        self.assertEqual(impact['factsDeleted'], 0)
+        self.assertEqual(plans, original)
+
+    def test_guard_fixes_the_day_for_the_whole_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'members.json'
+            registry.save_registry(path, self.graduate(), None)
+            last = registry.RegistryGuard(path, bindings=({},), today=dt.date(2026, 9, 9))
+            self.assertEqual(last.check(NAME)['name'], NAME)
+            with mock.patch.object(registry, 'jst_today', return_value=dt.date(2026, 9, 10)):
+                self.assertEqual(last.check(NAME)['name'], NAME)
+                after = registry.RegistryGuard(path, bindings=({},))
+            with self.assertRaisesRegex(registry.RegistryError, 'graduated'):
+                after.check(NAME)
+
+    def test_cli_records_graduation_and_reports_the_day_after(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'members.json'
+            registry.save_registry(path, fixture(), None)
+
+            def cli(*arguments, now=LATER):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = registry.main(['--registry', str(path), *arguments], clock=lambda: now)
+                return code, json.loads(out.getvalue() or err.getvalue())
+
+            code, result = cli('set-graduation', '--member', NAME, '--last-service-date', '2026-09-07',
+                               '--evidence-url', EVIDENCE)
+            self.assertEqual(code, 0)
+            self.assertEqual((result['activeCount'], result['graduatedCount']), (1, 0))
+            self.assertEqual(registry.load_registry(path)['members'][0]['graduation']['lastServiceDate'], '2026-09-07')
+            code, result = cli('report', now=LATER + dt.timedelta(days=1))
+            self.assertEqual((code, result['activeCount'], result['graduatedCount']), (0, 0, 1))
+            self.assertEqual(cli('check')[0], 0)
+            before = path.read_bytes()
+            code, result = cli('set-graduation', '--member', NAME, '--last-service-date', '2026-09-07',
+                               '--evidence-url', 'https://x.com/someone_else/status/1')
+            self.assertEqual((code, result['error']), (2, 'graduation_evidence_not_self_or_official'))
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_published_graduations_are_the_confirmed_announcements(self):
+        value = registry.load_registry(TOOLS.parent / 'data' / 'members.json')
+        confirmed = {
+            'あくび': ('2026-10-16', 'https://x.com/akubi_zettai/status/2109664298628944019'),
+            'つぼみ': ('2026-10-09', 'https://x.com/tsubomi_zettai/status/2108572843789504519'),
+            'ゆめ': ('2026-10-27', 'https://x.com/yume1_zettai/status/2109661316923396251'),
+        }
+        self.assertEqual({m['canonicalName']: (m['graduation']['lastServiceDate'], m['graduation']['evidenceUrl'])
+                          for m in value['members'] if m['graduation']}, confirmed)
+        names = lambda today: {row['name'] for row in registry.collection_population(value, today=today)[0].values()}
+        self.assertTrue(set(confirmed) <= names('2026-10-09'))
+        self.assertEqual(set(confirmed) & names('2026-10-27'), {'ゆめ'})
+        self.assertEqual(set(confirmed) & names('2026-10-28'), set())
+        self.assertEqual(len(names('2026-10-28')), len(names('2026-10-09')) - 3)
+        roster = registry.display_projection(value, '2026-10-28')['roster']
+        self.assertFalse(set(confirmed) & set(roster))
+        self.assertTrue(set(confirmed) <= set(registry.display_projection(value, '2026-10-28')['knownNames']))
+
+
 class MigrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

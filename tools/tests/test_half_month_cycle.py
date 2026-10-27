@@ -285,6 +285,34 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(self.state['coverage']['2026-09-01']['新人']['reason'], 'account_unknown')
         self.assertEqual(report['nextStage'], 'waiting')
 
+    def test_graduate_leaves_new_cohort_and_searches_from_the_day_after_her_last_service(self):
+        today = self.now.astimezone(facts.JST).date()
+        self.registry['members'].append(collector.members.new_member(
+            '卒業', 'https://x.com/graduate', base.NOW, member_id='m-' + '2' * 32))
+        self.registry['members'][-1]['graduation'] = {
+            'lastServiceDate': (today - dt.timedelta(days=1)).isoformat(),
+            'evidenceUrl': 'https://x.com/graduate/status/2109664298628944019'}
+        self.documents['graduate'] = base.document(base.entry(suffix=2, handle='graduate'))
+        report, _ = self.run_cycle()
+        self.assertNotIn('卒業', report['continuation']['names'])
+        self.assertNotIn('graduate', self.gets['searches'])
+        self.assertIn(base.TARGET['handle'], self.gets['searches'])
+        self.assertTrue(all(people['卒業']['reason'] == 'paused' and people['卒業']['lastSearchedAt'] is None
+                            for people in self.state['coverage'].values()))
+        self.assertEqual({row['name'] for row in self.state['schedules']}, {'あむ'})
+
+    def test_graduate_is_still_searched_on_her_last_service_day(self):
+        today = self.now.astimezone(facts.JST).date()
+        self.registry['members'].append(collector.members.new_member(
+            '卒業', 'https://x.com/graduate', base.NOW, member_id='m-' + '2' * 32))
+        self.registry['members'][-1]['graduation'] = {
+            'lastServiceDate': today.isoformat(),
+            'evidenceUrl': 'https://x.com/akibazettai/status/2109664298628944019'}
+        self.documents['graduate'] = base.document(base.entry(suffix=2, handle='graduate'))
+        report, _ = self.run_cycle()
+        self.assertIn('卒業', report['continuation']['names'])
+        self.assertIn('graduate', self.gets['searches'])
+
     def test_full_month_both_halves_and_date_only_not_discarded(self):
         self.model.structured.return_value = reading_fixture.result(
             reading_fixture.row(shifts=(), transcription='5日'),

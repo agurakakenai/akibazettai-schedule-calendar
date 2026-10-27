@@ -140,7 +140,8 @@
     const handles = new Set();
     for (const member of value.members) {
       if (!fields(member, ["memberId", "canonicalName", "displayName", "aliases", "role", "membership",
-        "collection", "inactiveFrom", "xProfileUrl", "homeStore", "homeStoreSource", "officialListing", "orderBefore"]) ||
+        "collection", "inactiveFrom", "xProfileUrl", "homeStore", "homeStoreSource", "officialListing", "orderBefore",
+        "graduation"]) ||
           typeof member.memberId !== "string" || member.memberId.length !== 34 ||
           !/^m-[0-9a-f]{32}$/.test(member.memberId) || ids.has(member.memberId) ||
           !nameOK(member.canonicalName) || !nameOK(member.displayName) ||
@@ -165,6 +166,15 @@
         if (!match || match[0] !== member.xProfileUrl || reserved.has(match[1]) || handles.has(match[1])) invalid();
         handles.add(match[1]);
       }
+      if (member.graduation !== null) {
+        // Only her own or the official announcement can set a last service day.
+        const own = member.xProfileUrl?.split("/").at(-1) ?? null;
+        const evidence = fields(member.graduation, ["lastServiceDate", "evidenceUrl"]) &&
+          typeof member.graduation.evidenceUrl === "string" &&
+          /^https:\/\/x\.com\/([A-Za-z0-9_]{1,15})\/status\/[1-9][0-9]{0,24}$/.exec(member.graduation.evidenceUrl);
+        if (!evidence || !validDateKey(member.graduation.lastServiceDate) ||
+            ![own, "akibazettai"].includes(evidence[1].toLowerCase())) invalid();
+      }
       ids.set(member.memberId, member);
     }
     for (const member of value.members) {
@@ -186,10 +196,11 @@
     return value;
   }
 
-  function createMemberRegistryAdapter(value) {
+  function createMemberRegistryAdapter(value, today = tokyoToday()) {
     validateMemberRegistry(value);
     const members = Object.freeze(value.members.map((member) =>
-      Object.freeze({ ...member, aliases: Object.freeze([...member.aliases]) })));
+      Object.freeze({ ...member, aliases: Object.freeze([...member.aliases]),
+        graduation: member.graduation && Object.freeze({ ...member.graduation }) })));
     const byId = new Map(members.map((member) => [member.memberId, member]));
     const byName = new Map(members.flatMap((member) =>
       [...new Set([member.canonicalName, member.displayName, ...member.aliases])].map((name) => [name, member])));
@@ -200,9 +211,12 @@
     };
     members.filter((member) => member.orderBefore === null).forEach(append);
     const names = (select) => Object.freeze(ordered.filter(select).map((member) => member.canonicalName));
+    // From the day after her announced last service day, she leaves the roster and filters.
+    const graduated = (member) => Boolean(member?.graduation) && today > member.graduation.lastServiceDate;
     return Object.freeze({
       members,
-      activeNames: names((member) => member.membership === "active"),
+      activeNames: names((member) => member.membership === "active" && !graduated(member)),
+      graduatedNames: names(graduated),
       knownNames: names(() => true),
       kitchenStaff: names((member) => member.role === "kitchen"),
       unresolvedNames: Object.freeze([...value.unresolvedNames]),
@@ -212,6 +226,8 @@
       normalOrderBefore: Object.freeze(Object.fromEntries(members.filter((member) => member.orderBefore)
         .map((member) => [member.canonicalName, byId.get(member.orderBefore).canonicalName]))),
       member: (name) => byName.get(name) ?? null,
+      graduated: (name) => graduated(byName.get(name)),
+      lastServiceDate: (name) => byName.get(name)?.graduation?.lastServiceDate ?? null,
       canonicalName: (name) => byName.get(name)?.canonicalName ?? name,
       profileUrl: (name) => byName.get(name)?.xProfileUrl ?? null,
       aliases: () => new Map([...byName].map(([name, member]) => [name, member.canonicalName]))
@@ -255,8 +271,10 @@
     for (const post of personal?.posts ?? []) {
       if (isDateKeyInRange(post.date, dateFrom, dateTo)) add(post.name);
     }
+    // Graduates keep their past entries on the calendar, but are no longer listed as members.
     return [...registry.activeNames, ...[...registry.knownNames, ...registry.unresolvedNames]
-      .filter((name) => !registry.activeNames.includes(name) && evidence.has(name))];
+      .filter((name) => !registry.activeNames.includes(name) && !registry.graduated?.(name) &&
+        evidence.has(name))];
   }
 
   function halfMonthPeriod(key) {
@@ -625,8 +643,12 @@
   function buildEffectiveSchedule(manual, snapshot = EMPTY_HALF_MONTH_SCHEDULES,
     { registry, today = tokyoToday(), includeInactivePlans = false } = {}) {
     const canonical = (name) => registry ? registry.canonicalName(name) : name;
-    const included = (name, key) => includeInactivePlans || !registry?.member(name)?.inactiveFrom ||
-      key < registry.member(name).inactiveFrom;
+    const included = (name, key) => {
+      if (includeInactivePlans || !registry) return true;
+      const member = registry.member(name);
+      const last = registry.lastServiceDate?.(name);
+      return (!member?.inactiveFrom || key < member.inactiveFrom) && (!last || key <= last);
+    };
     const projection = (entry, key) => {
       const review = memberPlanReview(registry, entry.name, key, today);
       return { ...entry, name: canonical(entry.name), ...(review ? { memberReview: review } : {}) };
@@ -2941,7 +2963,12 @@
       ? `この${shift}は${top.short}だけが開く見込みなので、その見込みが当たればこの店です`
       : null;
     // 在籍者数は roster が増減するので数えて出す。文言に焼き込むと黙って古くなる。
-    const rosterSize = Object.keys(insights.maidTendency ?? {}).length;
+    // 統計は卒業前の記録も持つので、名簿があれば現在の在籍者だけを数える。
+    const tendencyNames = Object.keys(insights.maidTendency ?? {});
+    const currentNames = insights.memberRegistry ? new Set(insights.memberRegistry.activeNames) : null;
+    const rosterSize = currentNames
+      ? tendencyNames.filter((name) => currentNames.has(insights.memberRegistry.canonicalName(name))).length
+      : tendencyNames.length;
 
     return {
       basis: "probability",
