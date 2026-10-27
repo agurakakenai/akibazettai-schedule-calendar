@@ -4698,5 +4698,25 @@ class PersonalSavedTests(unittest.TestCase):
             self.saved.validate_imports({str(index): {} for index in range(1001)}, self.personal)
 
 
+class HalfMonthCohortTests(unittest.TestCase):
+    def cohort(self, *periods):
+        return {'collection': {'periods': [list(period) for period in periods]}}
+
+    def test_first_half_cohort_switches_four_days_before_the_first(self):
+        at = lambda *args: dt.datetime(*args, tzinfo=cloud.JST)
+        october, november = ('2026-10-16', '2026-10-31'), ('2026-11-16', '2026-11-30')
+        self.assertTrue(cloud.half_month_cohort_current(self.cohort(october), at(2026, 10, 27, 23, 59)))
+        self.assertFalse(cloud.half_month_cohort_current(self.cohort(october), at(2026, 10, 28, 0, 30)))
+        self.assertTrue(cloud.half_month_cohort_current(
+            self.cohort(('2026-11-01', '2026-11-15'), october), at(2026, 10, 28, 0, 30)))
+        # A 30-day month switches on the 27th.
+        self.assertTrue(cloud.half_month_cohort_current(self.cohort(november), at(2026, 11, 26, 23, 59)))
+        self.assertFalse(cloud.half_month_cohort_current(self.cohort(november), at(2026, 11, 27, 0, 30)))
+        # The second half keeps switching on the 13th.
+        first = ('2026-11-01', '2026-11-15')
+        self.assertTrue(cloud.half_month_cohort_current(self.cohort(first), at(2026, 11, 12, 23, 59)))
+        self.assertFalse(cloud.half_month_cohort_current(self.cohort(first), at(2026, 11, 13, 0, 30)))
+
+
 if __name__ == '__main__':
     unittest.main()
