@@ -2173,9 +2173,10 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                     validate_ai_usage(collected / AI_USAGE)[0], personal_state)
                 result.update(halfMonthCollectionStatus=status, halfMonthCollectionCode=code)
                 result['halfMonthContinuation'] = progress
-                registry = load_member_registry().load_registry(root / 'data' / 'members.json')
+                member_registry = load_member_registry()
+                registry = member_registry.load_registry(root / 'data' / 'members.json')
                 active_names = {member['canonicalName'] for member in registry['members']
-                                if member['membership'] == 'active'}
+                                if member_registry.active_on(member, collector.utc_now())}
                 half_facts = load_half_month_state()
                 period = (progress['periods'][0] if progress
                           else half_facts.discovery_periods(collector.utc_now())[0])

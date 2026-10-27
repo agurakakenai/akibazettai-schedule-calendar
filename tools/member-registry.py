@@ -3,7 +3,7 @@
 members.json is authoritative; members.js is a deterministic public projection.
 Existing schedules, statistics and author bindings are never rewritten here.
 Commands: migrate, add-normal, set-account, set-status, set-display-name,
-          check, export, report. Run with --help for arguments.
+          set-graduation, check, export, report. Run with --help for arguments.
 """
 import argparse
 import copy
@@ -40,13 +40,20 @@ STATUS_FIELDS = {'membership', 'collection', 'inactiveFrom', 'statusRecordedAt'}
 MEMBER_FIELDS = {
     'memberId', 'canonicalName', 'displayName', 'aliases', 'role', 'xProfileUrl',
     'accountTrust', 'registeredAt', 'registrationSource', 'homeStore',
-    'homeStoreSource', 'officialListing', 'orderBefore', 'statusHistory',
+    'homeStoreSource', 'officialListing', 'orderBefore', 'statusHistory', 'graduation',
 } | STATUS_FIELDS
 PUBLIC_MEMBER_FIELDS = (
     'memberId', 'canonicalName', 'displayName', 'aliases', 'role', 'membership',
     'collection', 'inactiveFrom', 'xProfileUrl', 'homeStore', 'homeStoreSource',
-    'officialListing', 'orderBefore',
+    'officialListing', 'orderBefore', 'graduation',
 )
+# Graduation is recorded only from an explicit announcement by the member herself or
+# the official account; it is never inferred. lastServiceDate is the final day she
+# works. From the following JST day she leaves the roster, filters and collection
+# targets, while history and plans up to that day are kept.
+GRADUATION_FIELDS = {'lastServiceDate', 'evidenceUrl'}
+OFFICIAL_HANDLE = 'akibazettai'
+STATUS_URL = re.compile(r'https://x\.com/([A-Za-z0-9_]{1,15})/status/([1-9][0-9]{0,24})\Z')
 MAX_BYTES = 4 * 1024 * 1024
 
 
@@ -178,6 +185,43 @@ def validate_status(status):
     timestamp(status['statusRecordedAt'])
 
 
+def validate_graduation(member):
+    graduation = member['graduation']
+    if graduation is None:
+        return
+    fields(graduation, GRADUATION_FIELDS, 'invalid_graduation')
+    date_key(graduation['lastServiceDate'])
+    url = graduation['evidenceUrl']
+    match = STATUS_URL.fullmatch(url) if isinstance(url, str) else None
+    require(match is not None, 'invalid_graduation_evidence')
+    own = profile_handle(member['xProfileUrl']) if member['xProfileUrl'] else None
+    require(match[1].lower() in {own, OFFICIAL_HANDLE}, 'graduation_evidence_not_self_or_official')
+
+
+def jst_today():
+    return dt.datetime.now(JST).date()
+
+
+def day_key(today=None):
+    """JST calendar day for graduation checks; the wall clock when not supplied."""
+    if today is None:
+        today = jst_today()
+    elif isinstance(today, dt.datetime):
+        require(today.utcoffset() is not None, 'timezone_required')
+        today = today.astimezone(JST).date()
+    if isinstance(today, dt.date):
+        return today.isoformat()
+    return date_key(today)
+
+
+def graduated(member, today=None):
+    graduation = member.get('graduation')
+    return graduation is not None and day_key(today) > graduation['lastServiceDate']
+
+
+def active_on(member, today=None):
+    return member['membership'] == 'active' and not graduated(member, today)
+
 def validate_registry(value):
     fields(value, ROOT_FIELDS)
     require(type(value['schemaVersion']) is int and value['schemaVersion'] == 1,
@@ -228,6 +272,7 @@ def validate_registry(value):
             handle = profile_handle(url)
             require(handle not in handles, 'member_handle_collision')
             handles[handle] = mid
+        validate_graduation(member)
         home = member['homeStore']
         if home is None:
             require(member['homeStoreSource'] is None, 'home_source_without_store')
@@ -313,7 +358,7 @@ def new_member(name, url, now, *, role='normal', member_id=None, source='user-pr
         'statusHistory': [], 'xProfileUrl': normalize_profile_url(url) if url is not None else None,
         'accountTrust': 'user-provided' if url is not None else None,
         'homeStore': None, 'homeStoreSource': None, 'officialListing': 'unknown',
-        'orderBefore': None,
+        'orderBefore': None, 'graduation': None,
     }
 
 
@@ -400,6 +445,17 @@ def update_member(registry, selector, *, now, url=None, display_name=None,
     return validate_transition(registry, result)
 
 
+def set_graduation(registry, selector, *, last_service_date, evidence_url):
+    """Record an announced last service day; history and saved plans are untouched."""
+    validate_registry(registry)
+    found = lookup(registry, selector)
+    require(found is not None, 'unknown_member')
+    result = copy.deepcopy(registry)
+    member = next(m for m in result['members'] if m['memberId'] == found['memberId'])
+    member['graduation'] = {'lastServiceDate': date_key(last_service_date), 'evidenceUrl': evidence_url}
+    return validate_transition(registry, result)
+
+
 def binding_index(registry, binding_maps):
     """Compare both collectors without rebinding or requiring a first binding."""
     records, by_handle, by_author, conflicts = {}, {}, {}, set()
@@ -429,8 +485,9 @@ def binding_index(registry, binding_maps):
     return records, conflicts
 
 
-def collection_population(registry, *binding_maps):
+def collection_population(registry, *binding_maps, today=None):
     validate_registry(registry)
+    day = day_key(today)
     bindings, conflicts = binding_index(registry, binding_maps)
     targets, coverage = {}, {}
     for member in registry['members']:
@@ -444,6 +501,8 @@ def collection_population(registry, *binding_maps):
                     'binding_not_loaded' if handle else 'account_unknown')
         if member['membership'] != 'active':
             reason = 'membership_' + member['membership']
+        elif graduated(member, day):
+            reason = 'graduated'
         elif member['collection'] != 'enabled':
             reason = 'collection_' + member['collection']
         elif identity == 'account_identity_mismatch':
@@ -462,11 +521,16 @@ def collection_population(registry, *binding_maps):
 
 
 class RegistryGuard:
-    """Recheck local authority immediately before I/O, including after any wait."""
+    """Recheck local authority immediately before I/O, including after any wait.
 
-    def __init__(self, path, *, bindings=()):
+    The graduation day is fixed when the guard is created, so a run that crosses JST
+    midnight keeps the same targets it selected at the start.
+    """
+
+    def __init__(self, path, *, bindings=(), today=None):
         self.path = Path(path)
         self.bindings = bindings
+        self.today = day_key(today)
         self.registry, self.revision = self._read()
         self._seen_bindings, _ = binding_index(self.registry, self._binding_maps())
 
@@ -495,7 +559,7 @@ class RegistryGuard:
             return current
         member = lookup(current, name)
         require(member is not None, 'unknown_member')
-        targets, coverage = collection_population(current, *maps)
+        targets, coverage = collection_population(current, *maps, today=self.today)
         mid = member['memberId']
         require(mid in targets, coverage[mid]['reason'])
         return targets[mid]
@@ -516,9 +580,10 @@ def javascript_bytes(registry):
             'window.MEMBER_REGISTRY = ' + payload + ';\n').encode('utf-8')
 
 
-def display_projection(registry):
+def display_projection(registry, today=None):
     validate_registry(registry)
-    active = [m for m in registry['members'] if m['membership'] == 'active']
+    day = day_key(today)
+    active = [m for m in registry['members'] if active_on(m, day)]
     return {
         'roster': [m['canonicalName'] for m in active],
         'knownNames': [m['canonicalName'] for m in registry['members']],
@@ -534,6 +599,8 @@ def display_projection(registry):
 
 def plan_policy(member, day):
     date_key(day)
+    if member.get('graduation') is not None and day > member['graduation']['lastServiceDate']:
+        return 'excluded_from_plan_view'
     if member['membership'] != 'inactive':
         return 'retained'
     if member['inactiveFrom'] is None:
@@ -567,11 +634,13 @@ def plan_impact(registry, selector, plans, today):
             'excludedFromPlanViewCount': sum(row['policy'] == 'excluded_from_plan_view' for row in results)}
 
 
-def registry_report(registry, *binding_maps):
-    targets, coverage = collection_population(registry, *binding_maps)
-    active = [m for m in registry['members'] if m['membership'] == 'active']
+def registry_report(registry, *binding_maps, today=None):
+    day = day_key(today)
+    targets, coverage = collection_population(registry, *binding_maps, today=day)
+    active = [m for m in registry['members'] if active_on(m, day)]
     return {
         'activeCount': len(active),
+        'graduatedCount': sum(graduated(m, day) for m in registry['members']),
         'activeKitchenCount': sum(m['role'] == 'kitchen' for m in active),
         'activeFloorCount': sum(m['role'] in ('normal', 'trainee') for m in active),
         'activeUnknownRoleCount': sum(m['role'] == 'unknown' for m in active),
@@ -819,6 +888,12 @@ def argument_parser():
     dates.add_argument('--inactive-from')
     dates.add_argument('--clear-inactive-from', action='store_true')
     status.add_argument('--plans', type=Path, help='JSON array of name/date/shift plan references; read only')
+    graduation = sub.add_parser(
+        'set-graduation', help='record an announced last service day from her own or the official post')
+    graduation.add_argument('--member', required=True)
+    graduation.add_argument('--last-service-date', required=True, help='YYYY-MM-DD (JST), the final day she works')
+    graduation.add_argument('--evidence-url', required=True,
+                            help='https://x.com/<her handle or akibazettai>/status/<id>')
     for command in ('check', 'export', 'report'):
         sub.add_parser(command)
     return parser
@@ -861,9 +936,13 @@ def main(argv=None, *, clock=lambda: dt.datetime.now(UTC)):
                                      collection=args.collection, inactive_from=args.inactive_from,
                                      clear_inactive_from=args.clear_inactive_from)
             affected = args.member
+        elif args.command == 'set-graduation':
+            registry = set_graduation(registry, args.member, last_service_date=args.last_service_date,
+                                      evidence_url=args.evidence_url)
+            affected = args.member
         if args.baseline:
             validate_transition(load_registry(args.baseline), registry)
-        report = registry_report(registry, *binding_maps)
+        report = registry_report(registry, *binding_maps, today=clock())
         if affected and args.command in ('add-normal', 'set-account'):
             member = lookup(registry, affected)
             require(report['coverage'][member['memberId']]['identity'] != 'account_identity_mismatch',

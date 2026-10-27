@@ -747,12 +747,13 @@ def waiting_candidates(state, targets, now, source=None):
                                     item['discoveredAt'], -int(item['id'])))
 
 
-def target_population(state, schedule, insights, accounts, existing_bindings=None, *, registry=None):
+def target_population(state, schedule, insights, accounts, existing_bindings=None, *, registry=None,
+                      today=None):
     bindings = dict(existing_bindings or {})
     if registry is not None:
         targets, reasons = facts.population(
             schedule, insights, accounts, existing_bindings, registry=registry,
-            other_bindings=(state['identityBindings'],))
+            other_bindings=(state['identityBindings'],), today=today)
         bindings = {}
         for mapping in (existing_bindings or {}, state['identityBindings']):
             for name, bound in mapping.items():
@@ -786,7 +787,7 @@ def completion_report(state, status, counts, now, *, registry=None, existing_bin
             'finishedAt': facts.stamp(now)}
     if registry is not None:
         report['registry'] = members.registry_report(
-            registry, existing_bindings or {}, state['identityBindings'])
+            registry, existing_bindings or {}, state['identityBindings'], today=now)
         report['registry']['unresolvedNames'] = [
             row['name'] for row in registry['unresolvedNames'] if row['resolvedMemberId'] is None]
         if registry_error is not None:
@@ -822,7 +823,7 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
     prior_checked = state['checkedAt']
     update_check_time(state, now)
     targets, reasons, bindings = target_population(
-        state, schedule, insights, accounts, existing_bindings, registry=registry)
+        state, schedule, insights, accounts, existing_bindings, registry=registry, today=now)
     binding_maps = (existing_bindings or {}, state['identityBindings'])
     manual = (schedule or {}).get('schedule') or {}
     periods = refresh_coverage(state, reasons, now, manual, registry=registry)
@@ -1442,7 +1443,7 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
     update_check_time(state, started)
     allowed = lambda: (clock() - started).total_seconds() < runtime_seconds
     targets, reasons, bindings = target_population(
-        state, schedule, {}, [], existing_bindings, registry=registry)
+        state, schedule, {}, [], existing_bindings, registry=registry, today=started)
     manual = schedule.get('schedule', {})
     current = state.get('collection')
     if resume and current is None:
@@ -1454,7 +1455,8 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
         identity = cycle_id or source.run_id
         if not re.fullmatch(r'[1-9][0-9]{0,19}-[1-9][0-9]{0,19}', identity):
             identity = f'{int(started.timestamp())}-{int(facts.digest(identity.encode())[:12], 16) or 1}'
-        names = ({member['canonicalName'] for member in registry['members'] if member['membership'] == 'active'}
+        names = ({member['canonicalName'] for member in registry['members']
+                  if members.active_on(member, started)}
                  if registry is not None else set(reasons))
         current = {'chainId': identity, 'names': sorted(names), 'periods': [list(p) for p in discovery],
                    'reason': 'processing', 'ready': False, 'cursor': 0, 'nextAt': None,
@@ -2105,7 +2107,8 @@ def run(args, *, clock=official.utc_now, sleep=time.sleep, environment=None):
     def defer(state, status):
         check_registry(registry_guard)
         _, reasons, _ = target_population(
-            state, {}, {}, [], personal_state['identityBindings'], registry=registry)
+            state, {}, {}, [], personal_state['identityBindings'], registry=registry,
+            today=registry_guard.today)
         refresh_coverage(state, reasons, clock(), {}, registry=registry, terminal_confirmed=cycle)
         state['lastRun'] = {'status': status}
         facts.validate_state(state)
@@ -2125,7 +2128,8 @@ def run(args, *, clock=official.utc_now, sleep=time.sleep, environment=None):
         state = facts.read_state(args.snapshot)
         personal_state = personal.read_state(args.personal_state)
         registry_guard = members.RegistryGuard(args.members, bindings=lambda: (
-            personal.read_state(args.personal_state)['identityBindings'], state['identityBindings']))
+            personal.read_state(args.personal_state)['identityBindings'], state['identityBindings']),
+            today=clock())
         registry = registry_guard.registry
         if args.analysis_limit == 0:
             source_module.validate_legacy(
@@ -2162,7 +2166,7 @@ def run(args, *, clock=official.utc_now, sleep=time.sleep, environment=None):
                 return defer(state, 'paused')
             raise
         if not target_population(state, {}, {}, [], personal_state['identityBindings'],
-                                 registry=registry)[0]:
+                                 registry=registry, today=registry_guard.today)[0]:
             return defer(state, 'no-new')
         if not cycle and not (args.max_searches or args.max_posts):
             return defer(state, 'no-new')

@@ -14,6 +14,7 @@ py -B -X utf8 tools\member-registry.py set-account --member "<memberIdまたは�
 py -B -X utf8 tools\member-registry.py set-display-name --member "<memberIdまたは名前>" --name "<表示名>"
 py -B -X utf8 tools\member-registry.py set-status --member "<memberIdまたは名前>" --collection paused
 py -B -X utf8 tools\member-registry.py set-status --member "<memberIdまたは名前>" --membership inactive
+py -B -X utf8 tools\member-registry.py set-graduation --member "<memberIdまたは名前>" --last-service-date "<YYYY-MM-DD>" --evidence-url "https://x.com/<本人または akibazettai>/status/<id>"
 py -B -X utf8 tools\member-registry.py check
 py -B -X utf8 tools\member-registry.py report
 ```
@@ -21,6 +22,15 @@ py -B -X utf8 tools\member-registry.py report
 名前＋ユーザー提供のXプロフィールURLだけで、両collectorの本人情報とUIのfilter/profileへ反映します。**当日本人投稿は、確認済み半月予定からその日の勤務が分かる人だけを検索します。半月予定表は予定を発見するため在籍名簿を対象にします。** 所属店、初お給仕日、昇格日、統計・予定は登録条件ではありませんが、名簿だけで当日の検索対象や勤務chip、昼夜、店舗、実績を作りません。URLは`https://x.com/<handle>`へ正規化します。検索／投稿URL・不明handleの推測、同名別世代への再割当、既存handleの無確認置換はしません。`accounts.csv`の旧名を登録しただけの現役へ戻すこともありません。
 
 `paused`は取得だけを止めます。`inactive`も新しい取得を止め、過去の予定・実績・投稿リンク・名前対応は残します。退在籍日が不明なら将来の根拠も保存し「照合要」とします。確認済みの日付がある場合だけ、`set-status --membership inactive --inactive-from "<YYYY-MM-DD>"`でその日以降のplan-only表示を除外できます。登録時刻を退在籍日へ転用せず、原予定や実績は削除しません。
+
+**卒業は、本人または公式（@akibazettai）の明示的な告知だけで記録します。** `set-graduation`に最後のお給仕の日（JST）と告知投稿のURLを渡し、名簿の更新を通常のPRで公開します。告知の無い卒業日を推測したり、更新の途絶から卒業とみなしたりはしません。証拠URLは本人のプロフィールか`akibazettai`の`/status/<id>`だけを受け付けます。最後のお給仕の日までは今までどおりで、**その翌日（JST）から**次をすべて止めます。
+
+- 所属メイド欄・絞り込みの一覧（過去の予定がある月を見ても出しません。カレンダー上の過去の予定・実績は、全員を選んだ表示で残ります）
+- 半月予定の取得対象（新しいcohortの`names`、検索、`halfMonthAcquisition`の対象数）
+- 本人の当日取得の対象（理由`graduated`）
+- 在籍者数（未確認予定の注記や確率の注記にある「在籍N名」）
+
+告知済みで日付が先の卒業も、その日を過ぎれば自動で切り替わります。`membership`・`statusHistory`は書き換えず、過去のシフト履歴・出典・名前対応と、卒業日までの予定は残します。卒業日より後の予定はplan-only表示から外します。collectorの名簿確認（`RegistryGuard`）は起動時のJST日付で固定するので、日付をまたぐrunの途中で対象が変わることはありません。歴史的統計（`data/store-insights.js`）は卒業前の記録を含むため再集計しません。
 
 停止操作は手元の保存予定から残る将来予定を示します。`--plans`で`name/date/shift`参照配列を指定することもできます。これは最新canonicalをネット取得した結果ではありません。`--bindings`で保存済みの本人・半月stateを指定すれば同定も照合できます。省略時の`binding_not_loaded`や`eligible_not_collected`は、本人確認・投稿取得の完了を意味しません。
 

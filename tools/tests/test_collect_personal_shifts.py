@@ -1375,6 +1375,30 @@ class StateTests(Offline):
                     self.assertEqual(self.state[field], old[field])
                 self.assertEqual(report['coverage']['あむ']['reason'], reason)
 
+    def test_graduate_is_no_personal_target_from_the_day_after_her_last_service(self):
+        baseline = registry_fixture(AMU)
+        registry = personal.members.set_graduation(
+            baseline, 'あむ', last_service_date=DATE.isoformat(),
+            evidence_url=f'https://x.com/{AMU["handle"]}/status/{TID}')
+        self.state['originalTargets'] = {DATE.isoformat(): {'あむ': copy.deepcopy(AMU)}}
+        old = copy.deepcopy(self.state)
+        with mock.patch.object(personal.members, 'jst_today', return_value=DATE):
+            on_last_day = personal.select_targets(self.schedule, self.insights, self.accounts,
+                                                  DATE, copy.deepcopy(old), registry=registry)
+        self.assertEqual(set(on_last_day), {'あむ'})
+        with mock.patch.object(personal.members, 'jst_today', return_value=DATE + dt.timedelta(days=1)):
+            self.targets = personal.select_targets(self.schedule, self.insights, self.accounts,
+                                                   DATE, self.state, registry=registry)
+            self.assertEqual(self.targets, {})
+            durable = self.durable()
+            client = self.fake_client(durable)
+            report, _ = self.collect(client, durable)
+        client.search.assert_not_called()
+        client.fetch_post.assert_not_called()
+        for field in ('pending', 'originalTargets', 'posts', 'identityBindings', 'budgets'):
+            self.assertEqual(self.state[field], old[field])
+        self.assertEqual(report['coverage']['あむ']['reason'], 'graduated')
+
     def test_unknown_shifts_do_not_open_a_daily_discovery_window(self):
         target = {**AMU, 'shifts': []}
         for scheduled, last in ((True, dt.time(18)), (False, dt.time(19, 30))):

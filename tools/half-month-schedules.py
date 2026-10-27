@@ -1304,11 +1304,12 @@ def apply_reading_revision(state, schedules, source, analysis, *, saved_import=N
     return apply_revision(state, schedules, source, analysis, saved_import=saved_import)
 
 
-def population(schedule, insights, accounts, bindings=None, *, registry=None, other_bindings=()):
+def population(schedule, insights, accounts, bindings=None, *, registry=None, other_bindings=(), today=None):
     """Registry targets are independent of historical feeds and legacy metadata."""
     if registry is not None:
         members = member_registry()
-        targets, coverage = members.collection_population(registry, bindings or {}, *other_bindings)
+        targets, coverage = members.collection_population(
+            registry, bindings or {}, *other_bindings, today=today)
         reasons = {}
         for row in coverage.values():
             reason = row['reason']
