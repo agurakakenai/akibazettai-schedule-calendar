@@ -404,7 +404,7 @@ class CycleTests(unittest.TestCase):
                 report, _ = self.run_cycle(resume=True, cycle_id=original['chainId'])
                 for field in ('chainId', 'names', 'periods', 'serviceDate', 'mode'):
                     self.assertEqual(report['continuation'][field], original[field])
-                # 9/30 also searches the coming first half (announced up to 3 days before the 1st).
+                # 9/30 also searches the coming first half (searched from 4 days before the 1st).
                 self.assertEqual(report['nextStage'], 'waiting' if local_day == 30 else 'complete')
                 self.assertEqual(self.gets, before)
                 self.assertEqual(self.usage.calls, 2)

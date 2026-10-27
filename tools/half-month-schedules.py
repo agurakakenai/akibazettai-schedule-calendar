@@ -187,9 +187,12 @@ def candidate_start(now):
 
 
 # Half-month schedules are announced before the half begins: the second half on the 13th
-# (3 days before the 16th) and the first half about 2 days before the 1st. Both are searched
-# from 3 days before the start, so a schedule posted early is never left until the 1st.
-ANNOUNCE_LEAD_DAYS = 3
+# (3 days before the 16th) and the first half a few days before the 1st. The second half is
+# searched from the 13th and the first half from 4 days before the 1st (the 28th of a 31-day
+# month, the 27th of a 30-day month, Feb 25th or 26th in a leap year), so a schedule posted
+# early is never left until the 1st.
+SECOND_HALF_LEAD_DAYS = 3
+FIRST_HALF_LEAD_DAYS = 4
 
 
 def discovery_periods(now):
@@ -199,7 +202,9 @@ def discovery_periods(now):
 
 
 def publication_start(period):
-    return day(period[0]) - dt.timedelta(days=ANNOUNCE_LEAD_DAYS)
+    start = day(period[0])
+    lead = FIRST_HALF_LEAD_DAYS if start.day == 1 else SECOND_HALF_LEAD_DAYS
+    return start - dt.timedelta(days=lead)
 
 
 def searched_in_period(row, period):
