@@ -52,6 +52,7 @@ class RosterParser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.out = []
+        self.entries = []
         self.seen = set()
         self.items = []
 
@@ -61,7 +62,9 @@ class RosterParser(HTMLParser):
             store = next((m.group(1) for value in classes
                           if (m := re.fullmatch(r'shopNum(\d+)', value))), None)
             self.items.append({'store': 's%d' % int(store) if store else None,
-                               'text': None, 'name': None})
+                               'text': None, 'name': None, 'href': None})
+        elif tag == 'a' and self.items and self.items[-1]['href'] is None:
+            self.items[-1]['href'] = dict(attrs).get('href')
         elif tag == 'p' and self.items:
             item = self.items[-1]
             if item['name'] is None:
@@ -84,6 +87,7 @@ class RosterParser(HTMLParser):
             if name and store and name not in self.seen:
                 self.seen.add(name)
                 self.out.append((name, store))
+                self.entries.append({'name': name, 'store': store, 'href': item['href']})
 
 
 def parse_site(html):
@@ -92,6 +96,14 @@ def parse_site(html):
     parser.feed(html)
     parser.close()
     return parser.out
+
+
+def parse_site_entries(html):
+    """parse_site と同じ判定で、紹介ページへのリンク（href）も返す。"""
+    parser = RosterParser()
+    parser.feed(html)
+    parser.close()
+    return parser.entries
 
 
 def read_schedule():

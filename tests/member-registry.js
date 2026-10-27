@@ -380,3 +380,22 @@ test("graduation evidence may come from her own account or the official account 
     graduation: { lastServiceDate: "2026-10-16", evidenceUrl: "https://x.com/akibazettai/status/5" } }));
   assert.equal(api.createMemberRegistryAdapter(official, "2026-10-16").activeNames.length, 1);
 });
+test("a reused name resolves to its current holder while earlier generations stay known by ID", () => {
+  const old = newMember({ graduation: { lastServiceDate: "2026-09-06", evidenceUrl: "https://x.com/new_member/status/1" } });
+  const next = newMember({ memberId: "m-00000000000000000000000000000002", xProfileUrl: "https://x.com/next_member",
+    homeStore: "s2", homeStoreSource: "official", officialListing: "listed" });
+  const registry = api.createMemberRegistryAdapter(registryWith(old, next), "2026-10-01");
+  assert.equal(registry.member("新しい人").memberId, next.memberId);
+  assert.deepEqual(registry.activeNames, ["新しい人"]);
+  assert.deepEqual(registry.knownNames, ["新しい人"]);
+  assert.deepEqual(registry.graduatedNames, []);
+  assert.equal(registry.graduated("新しい人"), false);
+  assert.equal(registry.profileUrl("新しい人"), "https://x.com/next_member");
+  assert.equal(registry.homeStore["新しい人"], "s2");
+  assert.deepEqual(api.memberFilterNames(registry, { schedule: {} }), ["新しい人"]);
+  const inactive = newMember({ membership: "inactive", collection: "paused", inactiveFrom: "2026-09-07" });
+  assert.equal(api.createMemberRegistryAdapter(registryWith(inactive, next)).member("新しい人").memberId, next.memberId);
+  for (const earlier of [newMember(), newMember({ membership: "inactive", collection: "paused" })]) {
+    assert.throws(() => api.createMemberRegistryAdapter(registryWith(earlier, next)), /名簿/);
+  }
+});

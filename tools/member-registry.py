@@ -3,8 +3,8 @@
 members.json is authoritative; members.js is a deterministic public projection.
 Existing schedules, statistics and author bindings are never rewritten here.
 Commands: migrate, add-normal, set-account, set-status, set-display-name,
-          set-graduation, clear-graduation, reject-auto-graduation, check, export, report.
-          Run with --help for arguments.
+          set-graduation, clear-graduation, reject-auto-graduation, reject-auto-addition,
+          check, export, report. Run with --help for arguments.
 """
 import argparse
 import copy
@@ -40,7 +40,7 @@ ROOT_FIELDS = {'schemaVersion', 'legacySnapshot', 'members', 'unresolvedNames', 
                'automationOverrides'}
 # Manual decisions about automatic roster updates (collector-state roster-updates.json).
 # A manual graduation in members.json always wins; these entries only reject automatic ones.
-OVERRIDE_KINDS = {'graduation'}
+OVERRIDE_KINDS = {'graduation', 'addition'}
 POST_ID = re.compile(r'[1-9][0-9]{9,24}\Z')
 STATUS_FIELDS = {'membership', 'collection', 'inactiveFrom', 'statusRecordedAt'}
 MEMBER_FIELDS = {
@@ -229,6 +229,21 @@ def active_on(member, today=None):
     return member['membership'] == 'active' and not graduated(member, today)
 
 
+def retired_before(member, when):
+    """Whether `member` had left before `when` (her last day, or confirmed inactive date, passed)."""
+    day = day_key(when)
+    graduation = member['graduation']
+    if graduation is not None and graduation['lastServiceDate'] < day:
+        return True
+    return member['membership'] == 'inactive' and member['inactiveFrom'] is not None \
+        and member['inactiveFrom'] <= day
+
+
+def current_first(members_list):
+    """Holders of one name, the current (latest registered) holder first."""
+    return sorted(members_list, key=lambda m: timestamp(m['registeredAt']), reverse=True)
+
+
 def validate_overrides(value, ids):
     require(isinstance(value, list), 'invalid_automation_overrides')
     seen = set()
@@ -236,10 +251,14 @@ def validate_overrides(value, ids):
         require(isinstance(row, dict) and row.get('kind') in OVERRIDE_KINDS, 'invalid_automation_override')
         if row['kind'] == 'graduation':
             fields(row, {'kind', 'memberId', 'postId', 'decision', 'recordedAt'}, 'invalid_automation_override')
-            require(row['memberId'] in ids, 'invalid_automation_override')
+            require(row['memberId'] is not None and MEMBER_ID.fullmatch(row['memberId'] or ''),
+                    'invalid_automation_override')
             require(row['postId'] is None or isinstance(row['postId'], str) and POST_ID.fullmatch(row['postId']),
                     'invalid_automation_override')
             key = ('graduation', row['memberId'], row['postId'])
+        else:
+            fields(row, {'kind', 'name', 'decision', 'recordedAt'}, 'invalid_automation_override')
+            key = ('addition', valid_name(row['name']))
         require(row['decision'] == 'reject', 'invalid_automation_override')
         timestamp(row['recordedAt'])
         require(key not in seen, 'duplicate_automation_override')
@@ -249,6 +268,10 @@ def validate_overrides(value, ids):
 def rejected_graduation(registry, member_id, post_id):
     return any(row['kind'] == 'graduation' and row['memberId'] == member_id
                and row['postId'] in (None, post_id) for row in registry['automationOverrides'])
+
+
+def rejected_addition(registry, name):
+    return any(row['kind'] == 'addition' and row['name'] == name for row in registry['automationOverrides'])
 
 
 def validate_registry(value):
@@ -278,10 +301,9 @@ def validate_registry(value):
         require(len(member['aliases']) == len(set(member['aliases']))
                 and member['canonicalName'] not in member['aliases'], 'invalid_member_aliases')
         for name in names_of(member):
-            require(name not in names, 'member_name_collision')
-            names[name] = mid
+            names.setdefault(name, []).append(member)
         choice(member['role'], {'normal', 'kitchen', 'trainee', 'unknown'}, 'invalid_member_role')
-        choice(member['registrationSource'], {'legacy-roster', 'user-provided'},
+        choice(member['registrationSource'], {'legacy-roster', 'user-provided', 'official-site'},
                'invalid_registration_source')
         registered = timestamp(member['registeredAt'])
         validate_status(status_of(member))
@@ -310,6 +332,13 @@ def validate_registry(value):
             choice(member['homeStoreSource'], {'official', 'legacy-reviewed', 'user-provided'},
                    'invalid_home_source')
         choice(member['officialListing'], {'listed', 'unlisted', 'unknown'}, 'invalid_listing_status')
+    for name, holders in names.items():
+        # The café reuses names across generations. A name may be shared only when each
+        # earlier holder had already left before the next one was registered.
+        holders = sorted(holders, key=lambda m: timestamp(m['registeredAt']))
+        for older, newer in zip(holders, holders[1:]):
+            require(older['memberId'] != newer['memberId']
+                    and retired_before(older, timestamp(newer['registeredAt'])), 'member_name_collision')
     for member in value['members']:
         anchor = member['orderBefore']
         if anchor is not None:
@@ -342,8 +371,10 @@ def validate_registry(value):
         if resolved is None:
             require(name not in names, 'unresolved_name_requires_explicit_resolution')
         else:
+            # Legacy accounts stay recorded; a new official-site generation may take the name.
             require(isinstance(resolved, str) and resolved in ids
-                    and ids[resolved]['canonicalName'] == name and not row['legacyAccounts'],
+                    and ids[resolved]['canonicalName'] == name
+                    and (not row['legacyAccounts'] or ids[resolved]['registrationSource'] == 'official-site'),
                     'legacy_identity_review_required')
     reserved = set()
     for handle in value['reservedHandles']:
@@ -366,8 +397,10 @@ def empty_registry():
 
 def lookup(registry, selector):
     require(isinstance(selector, str), 'invalid_member_selector')
-    matches = [m for m in registry['members']
-               if selector == m['memberId'] or selector in names_of(m)]
+    matches = [m for m in registry['members'] if selector == m['memberId']]
+    if not matches:
+        # A reused name refers to its current (latest registered) holder.
+        matches = current_first([m for m in registry['members'] if selector in names_of(m)])[:1]
     require(len(matches) <= 1, 'ambiguous_member')
     return copy.deepcopy(matches[0]) if matches else None
 
@@ -498,38 +531,104 @@ def clear_graduation(registry, selector):
 
 
 def reject_auto_graduation(registry, selector, *, now, post_id=None):
-    """Keep an automatically detected graduation (one post, or all) out of the published roster."""
+    """Keep an automatically detected graduation (one post, or all) out of the published roster.
+
+    `selector` may also be the memberId of an automatically added member (not in this file)."""
     validate_registry(registry)
     found = lookup(registry, selector)
-    require(found is not None, 'unknown_member')
+    require(found is not None or isinstance(selector, str) and MEMBER_ID.fullmatch(selector), 'unknown_member')
     require(post_id is None or isinstance(post_id, str) and POST_ID.fullmatch(post_id), 'invalid_post_id')
     result = copy.deepcopy(registry)
-    result['automationOverrides'].append({'kind': 'graduation', 'memberId': found['memberId'],
+    result['automationOverrides'].append({'kind': 'graduation', 'memberId': found['memberId'] if found else selector,
                                           'postId': post_id, 'decision': 'reject', 'recordedAt': stamp(now)})
     return validate_transition(registry, result)
 
 
-def apply_automation(registry, graduations=()):
+def reject_auto_addition(registry, name, *, now):
+    """Keep an automatically detected new member with this name out of the published roster."""
+    validate_registry(registry)
+    result = copy.deepcopy(registry)
+    result['automationOverrides'].append({'kind': 'addition', 'name': valid_name(name), 'decision': 'reject',
+                                          'recordedAt': stamp(now)})
+    return validate_transition(registry, result)
+
+
+def official_member(entry):
+    """A member first listed on the official staff page (a new normal maid)."""
+    detected = timestamp(entry['detectedAt'])
+    member = new_member(entry['name'], entry['xProfileUrl'], detected, member_id=entry['memberId'],
+                        source='official-site')
+    member['accountTrust'] = 'official' if entry['xProfileUrl'] else None
+    member['homeStore'], member['homeStoreSource'] = entry['homeStore'], 'official'
+    member['officialListing'] = 'listed'
+    return member
+
+
+def _with_addition(registry, member):
+    result = copy.deepcopy(registry)
+    position = next((index for index, existing in enumerate(result['members'])
+                     if existing['role'] == 'kitchen'), len(result['members']))
+    result['members'].insert(position, member)
+    for row in result['unresolvedNames']:
+        if row['name'] == member['canonicalName'] and row['resolvedMemberId'] is None:
+            row['resolvedMemberId'] = member['memberId']
+    return validate_registry(result)
+
+
+def apply_automation(registry, graduations=(), additions=()):
     """Effective registry = committed registry + automatic updates from collector-state.
 
     Manual decisions always win: a member that already has a graduation in members.json,
-    or an override that rejects the post, keeps the committed value. Each automatic entry
-    is applied on its own; one that no longer fits (for example the account changed) is
-    skipped and reported instead of blocking the others. Returns (registry, applied, skipped).
+    a current member already holding the name of an automatic addition, or an override that
+    rejects the entry, keeps the committed value. Each automatic entry is applied on its own;
+    one that no longer fits (for example the account changed) is skipped and reported instead
+    of blocking the others. Additions come first so their graduations can apply.
+    Returns (registry, applied, skipped); every row carries its `kind`.
     """
     validate_registry(registry)
     result, applied, skipped = copy.deepcopy(registry), [], []
+    for entry in additions:
+        row = {**entry, 'kind': 'addition'}
+        if any(m['memberId'] == entry['memberId'] for m in result['members']):
+            skipped.append({**row, 'skipReason': 'already_applied'})
+            continue
+        if rejected_addition(result, entry['name']):
+            skipped.append({**row, 'skipReason': 'rejected_by_override'})
+            continue
+        detected = timestamp(entry['detectedAt'])
+        if any(entry['name'] in names_of(m) and not retired_before(m, detected) for m in result['members']):
+            # A manual registration (or a member still in place) holds this name.
+            skipped.append({**row, 'skipReason': 'name_in_use'})
+            continue
+        member = official_member(entry)
+        try:
+            result = _with_addition(result, member)
+        except RegistryError as exc:
+            if entry['xProfileUrl'] is None:
+                skipped.append({**row, 'skipReason': str(exc)})
+                continue
+            # Keep the member; only her account needs review.
+            member.update(xProfileUrl=None, accountTrust=None)
+            try:
+                result = _with_addition(result, member)
+            except RegistryError as again:
+                skipped.append({**row, 'skipReason': str(again)})
+                continue
+            row['accountDropped'] = str(exc)
+        applied.append(row)
     for entry in graduations:
+        row = {**entry, 'kind': 'graduation'}
         member = next((m for m in result['members'] if m['memberId'] == entry['memberId']), None)
         if member is None:
-            skipped.append({**entry, 'skipReason': 'unknown_member'})
+            skipped.append({**row, 'skipReason': 'unknown_member'})
             continue
         if member['graduation'] is not None:
-            skipped.append({**entry, 'skipReason': 'already_applied' if any(
-                row['memberId'] == entry['memberId'] for row in applied) else 'manual_graduation'})
+            skipped.append({**row, 'skipReason': 'already_applied' if any(
+                item['kind'] == 'graduation' and item['memberId'] == entry['memberId'] for item in applied)
+                else 'manual_graduation'})
             continue
         if rejected_graduation(result, entry['memberId'], entry['postId']):
-            skipped.append({**entry, 'skipReason': 'rejected_by_override'})
+            skipped.append({**row, 'skipReason': 'rejected_by_override'})
             continue
         candidate = copy.deepcopy(member)
         candidate['graduation'] = {'lastServiceDate': entry['lastServiceDate'],
@@ -537,10 +636,10 @@ def apply_automation(registry, graduations=()):
         try:
             validate_graduation(candidate)
         except RegistryError as exc:
-            skipped.append({**entry, 'skipReason': str(exc)})
+            skipped.append({**row, 'skipReason': str(exc)})
             continue
         member['graduation'] = candidate['graduation']
-        applied.append(entry)
+        applied.append(row)
     validate_registry(result)
     return result, applied, skipped
 
@@ -574,12 +673,25 @@ def binding_index(registry, binding_maps):
     return records, conflicts
 
 
+def resolution_order(registry):
+    """Registry order, except holders superseded by a later same-name generation come first,
+    so name-keyed lookups built by iteration end on the current holder."""
+    holders = {}
+    for member in registry['members']:
+        for name in names_of(member):
+            holders.setdefault(name, []).append(member)
+    superseded = {m['memberId'] for group in holders.values() if len(group) > 1
+                  for m in current_first(group)[1:]}
+    return ([m for m in registry['members'] if m['memberId'] in superseded]
+            + [m for m in registry['members'] if m['memberId'] not in superseded])
+
+
 def collection_population(registry, *binding_maps, today=None):
     validate_registry(registry)
     day = day_key(today)
     bindings, conflicts = binding_index(registry, binding_maps)
     targets, coverage = {}, {}
-    for member in registry['members']:
+    for member in resolution_order(registry):
         mid = member['memberId']
         handle = profile_handle(member['xProfileUrl']) if member['xProfileUrl'] else None
         bound = bindings.get(mid)
@@ -672,14 +784,16 @@ def javascript_bytes(registry):
 def display_projection(registry, today=None):
     validate_registry(registry)
     day = day_key(today)
+    ordered = resolution_order(registry)
     active = [m for m in registry['members'] if active_on(m, day)]
     return {
         'roster': [m['canonicalName'] for m in active],
-        'knownNames': [m['canonicalName'] for m in registry['members']],
-        'kitchenStaff': [m['canonicalName'] for m in registry['members'] if m['role'] == 'kitchen'],
-        'displayNames': {m['canonicalName']: m['displayName'] for m in registry['members']},
-        'aliases': {alias: m['canonicalName'] for m in registry['members'] for alias in names_of(m)},
-        'homeStore': {m['canonicalName']: m['homeStore'] for m in registry['members'] if m['homeStore']},
+        'knownNames': list(dict.fromkeys(m['canonicalName'] for m in registry['members'])),
+        'kitchenStaff': list(dict.fromkeys(m['canonicalName'] for m in registry['members']
+                                           if m['role'] == 'kitchen')),
+        'displayNames': {m['canonicalName']: m['displayName'] for m in ordered},
+        'aliases': {alias: m['canonicalName'] for m in ordered for alias in names_of(m)},
+        'homeStore': {m['canonicalName']: m['homeStore'] for m in ordered if m['homeStore']},
         'normalOrderBefore': {
             m['canonicalName']: lookup(registry, m['orderBefore'])['canonicalName']
             for m in registry['members'] if m['orderBefore']},
@@ -989,6 +1103,9 @@ def argument_parser():
                             help='keep an automatically detected graduation out of the published roster')
     reject.add_argument('--member', required=True)
     reject.add_argument('--post-id', help='reject only this announcement; omit to reject all automatic ones')
+    reject_add = sub.add_parser('reject-auto-addition',
+                                help='keep an automatically detected new member with this name off the roster')
+    reject_add.add_argument('--name', required=True)
     for command in ('check', 'export', 'report'):
         sub.add_parser(command)
     return parser
@@ -1041,6 +1158,8 @@ def main(argv=None, *, clock=lambda: dt.datetime.now(UTC)):
         elif args.command == 'reject-auto-graduation':
             registry = reject_auto_graduation(registry, args.member, now=clock(), post_id=args.post_id)
             affected = args.member
+        elif args.command == 'reject-auto-addition':
+            registry = reject_auto_addition(registry, args.name, now=clock())
         if args.baseline:
             validate_transition(load_registry(args.baseline), registry)
         report = registry_report(registry, *binding_maps, today=clock())
