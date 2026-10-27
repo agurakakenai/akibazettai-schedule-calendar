@@ -171,9 +171,9 @@ def validate_reanalysis_basis(state, authorization, source, images, half_month, 
     for key in prior_keys:
         revision = state['revisions'][key]
         previous_source = revision.get('source', state['sources'][revision['sourceKey']]['source'])
-        _require(all(source[field] == previous_source[field] for field in (
+        _require(all(source.get(field) == previous_source.get(field) for field in (
             'id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt',
-            'bodyHash', 'media', 'editTweetIds')), 'schedule_timing_source_changed')
+            'bodyHash', 'media', 'editTweetIds', 'authorTextHash')), 'schedule_timing_source_changed')
     _require([item['sha256'] for item in images] == [item['sha256'] for item in analysis['images']],
              'schedule_timing_source_changed')
     current = [row for row in state['schedules'] if any(

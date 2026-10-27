@@ -379,15 +379,19 @@ def validate_source(value):
     require_keys(value, ('id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt',
                          'observedAt', 'editTweetIds', 'bodyHash', 'payloadHash',
                          'discoveryHash', 'media',
-                         *(sorted(set(value) & {'replyToId', 'replyToAuthorId'})
+                         *(sorted(set(value) & {'replyToId', 'replyToAuthorId', 'authorTextHash'})
                            if isinstance(value, dict) else ())))
     validate_reply(value)
     identity(value['name'], value['authorScreenName'], value['authorId'])
     if value['url'] != public_url(value['authorScreenName'], value['id']):
         raise ValueError('invalid_schedule_source')
     validate_publication(value['id'], value['createdAt'], value['observedAt'])
-    for field in ('bodyHash', 'payloadHash', 'discoveryHash'):
+    # authorTextHash: the body plus the author's image ALT text, present only when ALT is read.
+    for field in ('bodyHash', 'payloadHash', 'discoveryHash',
+                  *(('authorTextHash',) if 'authorTextHash' in value else ())):
         valid_hash(value[field])
+    if 'authorTextHash' in value and (value['authorTextHash'] == value['bodyHash'] or not value['media']):
+        raise ValueError('invalid_schedule_source')
     edits = value['editTweetIds']
     if (not isinstance(edits, list) or not 1 <= len(edits) <= 8
             or edits[-1] != value['id'] or len(set(edits)) != len(edits)):
@@ -413,10 +417,11 @@ def validate_source(value):
 
 def source_key(source):
     validate_source(source)
-    # Purpose/model changes must not re-enable an already attempted input.
+    # Purpose/model changes must not re-enable an already attempted input. An ALT edit is an
+    # input change like a body edit; sources without ALT keep their historical key.
     return digest({key: source[key] for key in (
-        'authorId', 'id', 'editTweetIds', 'bodyHash', 'media', 'replyToId', 'replyToAuthorId')
-        if key in source})
+        'authorId', 'id', 'editTweetIds', 'bodyHash', 'media', 'replyToId', 'replyToAuthorId',
+        'authorTextHash') if key in source})
 
 
 def validate_analysis(value):
@@ -700,9 +705,9 @@ def select_revisions(state):
             raise ValueError('schedule_timing_contract_lineage')
         before_source = parent.get('source', state['sources'][parent['sourceKey']]['source'])
         source = revision.get('source', state['sources'][revision['sourceKey']]['source'])
-        if (any(source[field] != before_source[field] for field in (
+        if (any(source.get(field) != before_source.get(field) for field in (
                 'id', 'url', 'name', 'authorId', 'authorScreenName', 'createdAt',
-                'bodyHash', 'media', 'editTweetIds'))
+                'bodyHash', 'media', 'editTweetIds', 'authorTextHash'))
                 or [image['sha256'] for image in revision['analysis']['images']]
                 != [image['sha256'] for image in prior_analysis['images']]):
             raise ValueError('schedule_timing_source_changed')
@@ -950,7 +955,11 @@ def validate_state(value, private=True):
                     fact['source'] != timing().source_metadata(source, 'half-month-schedule')
                     for fact in schedule['workTiming']['facts']):
                 raise ValueError('schedule_timing_source_mismatch')
-        if len(source['media']) != len(revision['analysis']['images']):
+        if len(source['media']) != len(revision['analysis']['images']) and not (
+                # A body+ALT reading of an image post supplies no image: no row may cite one.
+                not revision['analysis']['images'] and 'authorTextHash' in source
+                and revision['analysis']['contract'] == READING_VERSION and 'reading' in schedule
+                and all(fact['evidence']['imageIndex'] is None for fact in schedule['reading']['days'].values())):
             raise ValueError('schedule_images_incomplete')
         bound = value['identityBindings'].get(schedule['name'])
         if not bound or any(bound[field] != source[field] for field in ('authorId', 'authorScreenName')):

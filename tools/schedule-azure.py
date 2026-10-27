@@ -274,19 +274,45 @@ def _validate_request_text(source, text):
     facts.validate_source(source)
     if not isinstance(text, str) or len(text.encode('utf-8')) > MAX_INPUT_BYTES:
         raise ValueError('azure_input_limit')
-    if facts.digest(text.encode('utf-8')) != source['bodyHash']:
+    # With image ALT text the request text is the body plus the author's ALT blocks.
+    if facts.digest(text.encode('utf-8')) != source.get('authorTextHash', source['bodyHash']):
         raise ValueError('schedule_body_mismatch')
+
+
+ALT_LABEL = '[画像{}のALT]'
+ALT_CONTEXT = ('Each ' + ALT_LABEL.format('N') + ' block after the post body is the same author\'s own '
+               'ALT text for ORIGINAL image N-1. Treat it as body text: evidence imageIndex=null, box=null.')
+
+
+def author_text(body, alts):
+    """The post body followed by each image's own non-empty ALT text, labelled by image number."""
+    blocks = [ALT_LABEL.format(index) + '\n' + alt for index, alt in enumerate(alts, 1) if alt]
+    return '\n\n'.join([body, *blocks]) if blocks else body
+
+
+def alt_text(source, text):
+    """The ALT blocks of an author text, split at the verified body hash (never a guessed prefix)."""
+    if 'authorTextHash' not in source:
+        return ''
+    prefix = '\n\n' + ALT_LABEL.split('{', 1)[0]
+    for match in re.finditer(re.escape(prefix), text):
+        if facts.digest(text[:match.start()].encode('utf-8')) == source['bodyHash']:
+            return text[match.start():]
+    raise ValueError('schedule_body_mismatch')
 
 
 def _request_context(source, text, metadata):
     created = facts.timestamp(source['createdAt']).astimezone(facts.JST)
-    return {'name': source['name'], 'authorId': source['authorId'],
-            'authorScreenName': source['authorScreenName'], 'postId': source['id'],
-            'postedAtJST': created.isoformat(), 'body': text,
-            'images': [{**item, 'index': index,
-                       'originalWidth': source['media'][index]['originalWidth'],
-                       'originalHeight': source['media'][index]['originalHeight']}
-                      for index, item in enumerate(metadata)]}
+    context = {'name': source['name'], 'authorId': source['authorId'],
+               'authorScreenName': source['authorScreenName'], 'postId': source['id'],
+               'postedAtJST': created.isoformat(), 'body': text,
+               'images': [{**item, 'index': index,
+                          'originalWidth': source['media'][index]['originalWidth'],
+                          'originalHeight': source['media'][index]['originalHeight']}
+                         for index, item in enumerate(metadata)]}
+    if 'authorTextHash' in source:
+        context['altText'] = ALT_CONTEXT
+    return context
 
 
 def check_caption_capacity(source, text, *, contract_version=VERSION):
@@ -337,8 +363,13 @@ def prepare_request(source, text, images, *, contract_version=VERSION, request_a
     return messages, proof
 
 
-def _reading_metadata(source, text, images):
+def _reading_metadata(source, text, images, *, text_only=False):
     _validate_request_text(source, text)
+    if text_only:
+        # Only an image post's own ALT text is read before (and without) its images.
+        if images != [] or not source['media'] or 'authorTextHash' not in source:
+            raise ValueError('invalid_reading_pack')
+        return []
     if not isinstance(images, list) or len(images) > 4 or len(images) != len(source['media']):
         raise ValueError('schedule_images_incomplete')
     return [probe_image(image['bytes'], image['mime']) for image in images]
@@ -352,8 +383,11 @@ def _reading_context(source, text, metadata):
 
 
 def reading_packs(source, text, images, *, stage='original', previous=None, seen=(), full_context=False):
-    """Private local packing; no client, classification call, or original/zoom mixing."""
-    metadata = _reading_metadata(source, text, images)
+    """Private local packing; no client, classification call, or original/zoom mixing.
+
+    stage='text' is the body+ALT request of an image post, made before its images are fetched.
+    """
+    metadata = _reading_metadata(source, text, images, text_only=stage == 'text')
     context = _reading_context(source, text, metadata)
     # The helper accounts for body, imageMap and attachments. Reserve the entire
     # actual prompt/schema/context envelope again, plus bounded part counters.
@@ -361,7 +395,11 @@ def reading_packs(source, text, images, *, stage='original', previous=None, seen
         {'role': 'system', 'content': READING_PROMPT},
         {'role': 'user', 'content': [{'type': 'text', 'text': json.dumps(context, ensure_ascii=False)}]},
     ], READING_VERSION)).encode('utf-8')) + 1024
-    if stage == 'original':
+    if stage == 'text':
+        # Body and ALT text only: one cheaper request without any image attachment.
+        packs = [dict(pack, textOnly=True) for pack in reading.pack_attachments(
+            text, [], request_overhead_bytes=overhead)]
+    elif stage == 'original':
         packs = reading.initial_reading(text, images, request_overhead_bytes=overhead)
     elif stage in ('detail', 'reread'):
         packs = reading.reread(text, images, previous, seen=seen, request_overhead_bytes=overhead)
@@ -378,12 +416,15 @@ def reading_packs(source, text, images, *, stage='original', previous=None, seen
 
 def prepare_reading_request(source, text, images, pack):
     """Deterministic wire hash; pack contains only the views actually submitted."""
-    metadata = _reading_metadata(source, text, images)
     if (not isinstance(pack, dict) or pack.get('text') != text
             or type(pack.get('part')) is not int or type(pack.get('parts')) is not int
             or not 1 <= pack['part'] <= pack['parts'] <= 256
-            or not isinstance(pack.get('images'), list)):
+            or not isinstance(pack.get('images'), list)
+            or type(pack.get('textOnly', False)) is not bool
+            or pack.get('textOnly') and (pack['images'] or pack.get('imageMap') or pack['parts'] != 1)):
         raise ValueError('invalid_reading_pack')
+    text_only = pack.get('textOnly', False) is True
+    metadata = _reading_metadata(source, text, images, text_only=text_only)
     attachments = pack['images']
     mapping = [reading._metadata(image) for image in attachments]
     image_facts([{'bytes': image['bytes'], 'mime': image['mime']} for image in attachments])
@@ -405,6 +446,8 @@ def prepare_reading_request(source, text, images, pack):
         raise ValueError('schedule_images_incomplete')
     context = _reading_context(source, text, metadata)
     context.update(imageMap=mapping, part=pack['part'], parts=pack['parts'])
+    if text_only:
+        context['attachments'] = 'none: read the body and ALT text only'
     content = [{'type': 'text', 'text': json.dumps(context, ensure_ascii=False)}]
     for image in attachments:
         content.append({'type': 'image_url', 'image_url': {
@@ -588,7 +631,9 @@ def _reading_operation(row, reply):
 
 
 ROW_LOCAL_ERRORS = frozenset({'reading_day_mismatch', 'ungrounded_reading_qualifier', 'reading_row_without_content',
-                              'schedule_timing_clock_ungrounded', 'invalid_reading_clock'})
+                              'schedule_timing_clock_ungrounded', 'invalid_reading_clock',
+                              # A body/ALT row whose line is not in the author's text is dropped alone.
+                              'ungrounded_reading_transcription'})
 
 
 def _grounded_row(row):
@@ -803,7 +848,35 @@ def normalize_reading(result, source, text, image_count, allowed_periods=None, *
     return schedules, complete
 
 
+def text_only_reading(result):
+    """A body+ALT request supplied no image, so nothing in its answer can cite one.
+
+    Every row becomes body evidence and must quote the author's text verbatim
+    (validate_evidence); an image year is only kept as a body year grounded in that text.
+    """
+    result = copy.deepcopy(result)
+    for period in result.get('periods') or [] if isinstance(result, dict) else []:
+        if not isinstance(period, dict):
+            continue
+        period['imageIndexes'] = []
+        if period.get('textYear') is None:
+            period['textYear'] = period.get('printedYear')
+        period['printedYear'] = None
+        for row in period.get('days') or [] if isinstance(period.get('days'), list) else []:
+            if isinstance(row, dict) and 'evidence' in row:
+                row['evidence'] = {'imageIndex': None, 'box': None}
+    return result
+
+
+def normalize_text_reading(result, source, text, allowed_periods=None):
+    if 'authorTextHash' not in source:
+        raise ValueError('invalid_reading_pack')
+    return normalize_reading(text_only_reading(result), source, text, 0, allowed_periods)
+
+
 def _normalize_reading_pack(result, source, text, images, allowed_periods, pack, proof):
+    if pack.get('textOnly'):
+        return normalize_text_reading(result, source, text, allowed_periods)
     schedules, complete = normalize_reading(result, source, text, len(images), allowed_periods,
                                             image_metadata=proof['images'])
     supplied = {image['originalIndex'] for image in pack['images']}

@@ -55,6 +55,17 @@ DATE_TOKEN = re.compile(r'(?<![0-9０-９])[0-9０-９]{1,2}\s*(?:日|[/／][0-9
 
 def plausible_schedule_text(text):
     return bool(SCHEDULE_WORDS.search(text)) or len(DATE_TOKEN.findall(text)) >= 2
+
+
+def alt_schedule_text(source, text):
+    """The author's ALT text itself lists at least two dates: read it before the images."""
+    return len(DATE_TOKEN.findall(azure.alt_text(source, text))) >= 2
+
+
+def alt_first(source, text, bundle):
+    """An unread image post whose ALT lists dates starts with one body+ALT request, no download."""
+    return bool(source['media'] and bundle.get('altText') is None and not bundle['issued']
+                and alt_schedule_text(source, text))
 azure = _module('schedule-azure.py', 'half_month_azure')
 official = _module('collect-shifts.py', 'half_month_official')
 personal = _module('collect-personal-shifts.py', 'half_month_personal')
@@ -78,6 +89,8 @@ def check_registry(guard, name=None):
 
 
 MAX_DOCUMENT_BYTES = 4_000_000
+# X limits image ALT text to 1,000 characters; anything longer is not a genuine ALT.
+MAX_ALT_CHARS = 1000
 TIMEOUT = 35
 PHOTO_HOST = 'pbs.twimg.com'
 POST_HOST = 'cdn.syndication.twimg.com'
@@ -286,10 +299,14 @@ def validate_post(candidate, payload, target, now, binding=None, *, payload_hash
         raise ValueError('non_photo_media')
     if len(photos) != len(details):
         raise ValueError('incomplete_photo_metadata')
-    media, urls, seen = [], [], set()
+    media, urls, seen, alts = [], [], set(), []
     for index, (photo, detail) in enumerate(zip(photos, details), 1):
         if not isinstance(photo, dict):
             raise ValueError('invalid_photo_metadata')
+        alt = detail.get('ext_alt_text')
+        if alt is not None and (not isinstance(alt, str) or len(alt) > MAX_ALT_CHARS):
+            raise ValueError('invalid_photo_metadata')
+        alts.append(alt.strip() if alt and alt.strip() else None)
         url = photo.get('url')
         asset, mime, _ = media_url(url)
         other_asset, other_mime, _ = media_url(detail.get('media_url_https'))
@@ -332,6 +349,12 @@ def validate_post(candidate, payload, target, now, binding=None, *, payload_hash
                   payloadHash=payload_hash or facts.digest(payload),
                   discoveryHash=candidate['discoveryHash'], media=media)
     source.update(reply)
+    # The author's own image ALT text is read like the body, within the same input budget.
+    # When body+ALT would not fit, the ALT text is not used and the post is read as before.
+    combined = azure.author_text(text, alts)
+    if combined != text and len(combined.encode('utf-8')) <= azure.MAX_INPUT_BYTES:
+        source['authorTextHash'] = facts.digest(combined.encode('utf-8'))
+        text = combined
     facts.validate_source(source)
     return source, text, urls
 
@@ -965,6 +988,7 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
             same_input = any(terminal_source(record, analyzer)
                              and record['source']['authorId'] == verified['authorId']
                              and record['source']['bodyHash'] == verified['bodyHash']
+                             and record['source'].get('authorTextHash') == verified.get('authorTextHash')
                              and record['source']['media'] == verified['media']
                              for record in state['sources'].values())
             if previous and terminal_source(previous, analyzer) or same_input:
@@ -996,6 +1020,7 @@ def collect(state, schedule, insights, accounts, client, source, analyzer, *,
                     identical = any(terminal_source(record, analyzer)
                                     and record['source']['authorId'] == verified['authorId']
                                     and record['source']['bodyHash'] == verified['bodyHash']
+                                    and record['source'].get('authorTextHash') == verified.get('authorTextHash')
                                     and record['imageHashes'] == image_hashes
                                     for record in state['sources'].values())
 
@@ -1163,20 +1188,29 @@ def _combined_reading(results):
             'complete': bool(complete), 'periods': list(periods.values())}
 
 
-def _reading_pack(text, views, spec):
+def _reading_pack(text, views, spec, *, text_only=False):
     mapping = {view['variantId']: view for view in views}
     selected = [mapping[key] for key in spec['ids']]
+    if text_only and selected:
+        raise ValueError('invalid_saved_reading_pack')
     # Repacking only measures the saved pack; its original part numbers bind the wire hash.
     pack = azure.reading.pack_attachments(text, selected)[0]
     if len(pack['images']) != len(selected):
         raise ValueError('invalid_saved_reading_pack')
     pack.update(part=spec['part'], parts=spec['parts'])
+    if text_only:
+        pack['textOnly'] = True
     return pack
 
 
 def read_evidence(state, source, text, images, analyzer, periods, cache, clock, save,
                   on_issued, *, allowed=lambda: True):
-    """Resume the finite original/detail plan; every raw result stays in encrypted cache."""
+    """Resume the finite original/detail plan; every raw result stays in encrypted cache.
+
+    An image post whose own ALT text lists dates is first read from body+ALT alone (one
+    text-only request, bundle altText='reading', results stage 'text'). Only when that
+    yields no schedule row are its images read by the unchanged original/detail plan.
+    """
     key = facts.source_key(source)
     value = cache.get(key)
     if value is None:
@@ -1207,22 +1241,35 @@ def read_evidence(state, source, text, images, analyzer, periods, cache, clock, 
         bundle['stage'] = stage
         persist()
 
-    if bundle['stage'] == 'fetch' and not images and not bundle['issued'] and not plausible_schedule_text(text):
+    if (bundle['stage'] == 'fetch' and not source['media'] and not bundle['issued']
+            and not plausible_schedule_text(text)):
         # A text-only post with no schedule word and fewer than two dates cannot carry a
         # half-month table; end it as not_schedule without spending an AI request.
         bundle['stage'], progress['reason'], progress['nextAt'] = 'done', 'not_schedule', None
         persist()
         return False
     if bundle['stage'] == 'fetch':
-        plan('original')
+        if alt_first(source, text, bundle):
+            # The author's ALT text lists dates: one cheaper body+ALT request before any image.
+            if images:
+                raise ValueError('invalid_saved_reading_pack')
+            packs = azure.reading_packs(source, text, [], stage='text')
+            bundle['packs'] = [{'ids': [], 'part': pack['part'], 'parts': pack['parts']} for pack in packs]
+            bundle['altText'], bundle['stage'] = 'reading', 'original'
+            persist()
+        else:
+            plan('original')
     if bundle['stage'] in ('held', 'done'):
         return False
     while bundle['stage'] in ('original', 'detail'):
         stage = bundle['stage']
+        text_only = stage == 'original' and bundle.get('altText') == 'reading'
+        label = 'text' if text_only else stage
         for spec in bundle['packs']:
             if not allowed():
                 raise Failure('time_limit')
-            pack = _reading_pack(text, [*azure.reading.original_views(images), *variants], spec)
+            pack = _reading_pack(text, [*azure.reading.original_views(images), *variants], spec,
+                                 text_only=text_only)
             messages, prepared = azure.prepare_reading_request(source, text, images, pack)
             messages.clear()
             request = prepared['requestHash']
@@ -1242,19 +1289,19 @@ def read_evidence(state, source, text, images, analyzer, periods, cache, clock, 
                     source, text, images, periods, issued, pack=pack)
             except azure.AnalysisFailure as exc:
                 if exc.reason == 'azure_invalid_output' and request in bundle['issued']:
-                    bundle['results'].append({'stage': stage, 'requestHash': request,
+                    bundle['results'].append({'stage': label, 'requestHash': request,
                                               'result': analyzer.last_reading, 'analysis': None})
                     persist()
                     continue
                 raise
-            bundle['results'].append({'stage': stage, 'requestHash': request,
+            bundle['results'].append({'stage': label, 'requestHash': request,
                                       'result': result, 'analysis': proof})
             persist()
             # Earlier chunks remain partial; the final chunk is applied after local aggregation.
             if spec is not bundle['packs'][-1] and schedules:
                 changed |= facts.apply_reading_revision(state, schedules, source, proof)
                 save()
-        results = [row for row in bundle['results'] if row['stage'] == stage]
+        results = [row for row in bundle['results'] if row['stage'] == label]
         valid = [row for row in results if row['analysis'] is not None]
         all_received = len(valid) == len(bundle['packs']) and bool(valid)
         combined = _combined_reading([row['result'] for row in valid])
@@ -1272,9 +1319,14 @@ def read_evidence(state, source, text, images, analyzer, periods, cache, clock, 
             if (not known_days <= detail_days or any(not azure.reading.covers_original(submitted, index)
                                                     for index in range(len(images)))):
                 combined['complete'] = False
-        schedules, complete = azure.normalize_reading(
-            combined, source, text, len(images), periods,
-            image_metadata=[azure.probe_image(image['bytes'], image['mime']) for image in images])
+        def normalize(value, metadata):
+            if text_only:
+                return azure.normalize_text_reading(value, source, text, periods)
+            return azure.normalize_reading(value, source, text, len(images), periods,
+                                           image_metadata=metadata)
+
+        schedules, complete = normalize(
+            combined, [azure.probe_image(image['bytes'], image['mime']) for image in images])
         if valid and all_received:
             proof = copy.deepcopy(valid[-1]['analysis'])
             if len(valid) > 1:
@@ -1285,14 +1337,19 @@ def read_evidence(state, source, text, images, analyzer, periods, cache, clock, 
                 save()
         elif valid:
             for row in valid:
-                partial, _ = azure.normalize_reading(
-                    row['result'], source, text, len(images), periods,
-                    image_metadata=row['analysis']['images'])
+                partial, _ = normalize(row['result'], row['analysis']['images'])
                 for table in partial:
                     table['reading']['complete'] = False
                 if partial:
                     changed |= facts.apply_reading_revision(state, partial, source, row['analysis'])
                     save()
+        if text_only and not schedules:
+            # The ALT text gave no schedule row (e.g. only a title): fetch and read the images
+            # exactly as before. The caller downloads them, then resumes from 'fetch'.
+            bundle['altText'], bundle['stage'], bundle['packs'] = 'fallback', 'fetch', []
+            progress['nextAt'] = None
+            persist()
+            return changed
         if ('replyToId' in source and all_received and schedules
                 and not azure.reading.needs_reread(combined, text)):
             bundle['stage'], progress['reason'] = 'done', 'reading_partial'
@@ -1300,7 +1357,7 @@ def read_evidence(state, source, text, images, analyzer, periods, cache, clock, 
             bundle['stage'], progress['reason'] = 'done', 'valid_schedule'
         elif complete and combined['periods']:
             bundle['stage'], progress['reason'] = 'done', 'reading_outside_period'
-        elif stage == 'original' and images:
+        elif stage == 'original' and images and not text_only:
             # Image-backed empty negatives are not terminal, even without caption keywords.
             previous = {**combined, 'classification': 'uncertain', 'complete': False}
             plan('detail', previous)
@@ -1406,8 +1463,8 @@ def expired_unissued_receipt(state, progress, cache, source, analyzer, now):
     usage = analyzer.usage.state
     # Any schedule AI request of the original run that could belong to this source blocks the
     # recovery. A request cannot be this source's reading if it is attributed to another known
-    # source or revision, is text-only (an image post is only ever read with its images), or was
-    # reserved before this post body was fetched.
+    # source or revision, is text-only (an image post without author ALT text is only ever read
+    # with its images), or was reserved before this post body was fetched.
     attributed = {item['requestHash'] for item in state['sources'].values() if item.get('requestHash')}
     for revision in state['revisions'].values():
         attributed.add(revision['analysis']['requestHash'])
@@ -1415,7 +1472,8 @@ def expired_unissued_receipt(state, progress, cache, source, analyzer, now):
     fetched = facts.timestamp(verified['observedAt'])
     if any(item['component'] == 'schedule' and item['runId'] == receipts[0]['runId']
            and item['requestHash'] not in attributed
-           and not (verified['media'] and item.get('money') and item['money'].get('imageInput') is False)
+           and not (verified['media'] and 'authorTextHash' not in verified
+                    and item.get('money') and item['money'].get('imageInput') is False)
            and not (item.get('reservedAt') and facts.timestamp(item['reservedAt']) < fetched)
            for item in usage['receipts'].values()):
         return refuse('recovery_ai_in_run')
@@ -1713,8 +1771,11 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                                             'nextAt': None, 'attemptedVariants': recovered['seen']}
                                 if progress['stage'] in ('done', 'held'):
                                     # Replay existing results offline, not the already issued requests.
+                                    # A body+ALT result ('text') replays within the original stage.
                                     progress['stage'] = (recovered['reading']['results'][-1]['stage']
                                                          if recovered['reading']['results'] else 'original')
+                                    if progress['stage'] == 'text':
+                                        progress['stage'] = 'original'
                                     recovered['reading']['stage'] = progress['stage']
                                     cache.put(key, recovered['source'], recovered['text'], recovered['images'],
                                               reading=recovered['reading'])
@@ -1741,6 +1802,12 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                                     selected, payload, targets[name], clock(), bindings.get(name),
                                     payload_hash=payload_hash)
                                 del payload
+                                if (facts.source_key(verified) != progress['cacheKey']
+                                        and 'authorTextHash' in verified and 'authorTextHash' not in old_source):
+                                    # Cached before ALT text was read: recover the same body-only input.
+                                    text = text[:len(text) - len(azure.alt_text(verified, text))]
+                                    verified = {key_: value_ for key_, value_ in verified.items()
+                                                if key_ != 'authorTextHash'}
                                 if facts.source_key(verified) != progress['cacheKey']:
                                     raise ValueError('evidence_recovery_identity_mismatch')
                                 audit = {'runId': source.run_id, 'reacquiredAt': facts.stamp(clock()),
@@ -1830,26 +1897,30 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                                         'reason': 'reading_pending', 'nextAt': None, 'attemptedVariants': []}
                             state['readings'][key] = progress
                             save()
-                        if bundle['stage'] == 'fetch':
-                            for url in bundle['urls'][len(images):]:
-                                failure_stage, failure_host, failure_image = 'fetch', PHOTO_HOST, len(images)
-                                guard(client, name)
-                                source.check('images')
-                                counts['images'] += 1
-                                images.append(client.image(url))
-                                cache.put(key, verified, text, images, reading=bundle)
-                            if len(images) != len(verified['media']):
-                                raise ValueError('schedule_images_incomplete')
-
                         def issued(request):
                             counts['analysis'] += 1
                             facts.record_source(state, verified, 'issued', 'reading_pending', clock(),
                                                 request, [facts.digest(bytes(image['bytes'])) for image in images])
                             save()
 
-                        failure_stage, failure_host, failure_image = progress['stage'], None, None
-                        changed |= read_evidence(state, verified, text, images, analyzer, periods, cache,
-                                                 clock, save, issued, allowed=allowed)
+                        # At most twice: an ALT-first reading without rows falls back to 'fetch' once.
+                        for _ in range(2):
+                            if bundle['stage'] == 'fetch' and not alt_first(verified, text, bundle):
+                                for url in bundle['urls'][len(images):]:
+                                    failure_stage, failure_host, failure_image = 'fetch', PHOTO_HOST, len(images)
+                                    guard(client, name)
+                                    source.check('images')
+                                    counts['images'] += 1
+                                    images.append(client.image(url))
+                                    cache.put(key, verified, text, images, reading=bundle)
+                                if len(images) != len(verified['media']):
+                                    raise ValueError('schedule_images_incomplete')
+                            failure_stage, failure_host, failure_image = progress['stage'], None, None
+                            changed |= read_evidence(state, verified, text, images, analyzer, periods, cache,
+                                                     clock, save, issued, allowed=allowed)
+                            if progress['stage'] != 'fetch':
+                                break
+                            bundle = cache.get(key)['reading']
                         progress.pop('failure', None)
                         for period in discovery:
                             reason = progress['reason']
