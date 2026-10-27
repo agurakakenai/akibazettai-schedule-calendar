@@ -22,7 +22,7 @@ SPEC = importlib.util.spec_from_file_location('source_usage_validation',
 usage = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(usage)
 KINDS = ('searches', 'posts', 'images')
-COMPONENTS = ('official', 'personal', 'schedule')
+COMPONENTS = ('official', 'personal', 'schedule', 'roster')
 HOSTS = ('search.yahoo.co.jp', 'cdn.syndication.twimg.com', 'pbs.twimg.com')
 HOST_KIND = dict(zip(HOSTS, KINDS))
 JST = usage.JST
