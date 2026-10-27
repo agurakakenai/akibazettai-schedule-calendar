@@ -497,6 +497,23 @@ class ExpiredUnissuedRecoveryTests(unittest.TestCase):
         self.assertEqual(self.http, before)
         self.assertEqual(self.usage.calls, 1)
 
+    def test_source_cached_before_alt_text_is_recovered_as_the_same_body_only_input(self):
+        key = self.reading()['cacheKey']
+        self.cache.records[key]['value'] = {
+            'source': {'id': self.first_id, 'authorId': base.AUTHOR},
+            'text': '', 'images': [], 'reading': None, 'variants': [], 'seen': []}
+        self.cache.save()
+        self.reopen()
+        # The re-fetched post now carries ALT text that this deploy reads: the old key still holds.
+        self.payloads[self.first_id]['mediaDetails'][0]['ext_alt_text'] = '9月前半 5日 7日 昼'
+        report, _ = self.run_real('202-1', resume=True, cycle_id='101-1')
+        self.assertEqual(report['diagnostics'], [])
+        self.assertEqual((self.reading()['cacheKey'], self.reading()['stage']), (key, 'done'))
+        value = self.cache.get(key)
+        self.assertNotIn('authorTextHash', value['source'])
+        self.assertNotIn('ALT', value['text'])
+        self.assertEqual(self.usage.calls, 1)
+
     def test_any_ai_reservation_in_original_run_refuses_reget_and_reanalysis(self):
         path = Path(self.temp.name) / 'ai.json'
         self.ai.atomic_json(path, self.ai.empty_state())

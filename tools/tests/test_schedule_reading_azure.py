@@ -215,8 +215,13 @@ class NormalizationTests(base.Offline):
         self.assertEqual(detail['transcriptionHash'], facts.digest(item['transcription'].encode()))
         self.assertNotIn(item['transcription'], json.dumps(schedules, ensure_ascii=False))
         item['transcription'] = '5日 昼 15:00'
-        with self.assertRaisesRegex(ValueError, 'transcription'):
-            self.normalize(result(item, indexes=()), context)
+        # A body row whose line is not in the author's text is dropped alone, never saved.
+        self.assertEqual(self.normalize(result(item, indexes=()), context), ([], False))
+        grounded = row(7, weekday='月', index=None, transcription='7日 昼')
+        context = fixture(photos=0, text='9月前半 7日 昼')
+        schedules, complete = self.normalize(result(grounded, item, indexes=()), context)
+        self.assertFalse(complete)
+        self.assertEqual([day['date'] for day in schedules[0]['days']], ['2026-09-07'])
 
     def test_full_month_year_weekdays_and_filter_after_validation(self):
         context = fixture(text='2026年9月予定')

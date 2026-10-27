@@ -123,6 +123,9 @@ def _authorize(state, authorization, source, image_metadata, usage, *, expected_
     facts.validate_state(state)
     ledger.validate_state(usage)
     saved.validate_accounting(state, usage, facts)
+    # A body+ALT reading supplied no image; its timing child could never be stored, so refuse
+    # before any reservation instead of paying for an unusable request.
+    _require(len(image_metadata) == len(source['media']), 'timing_original_images_required')
     previous = saved.validate_reanalysis_basis(
         state, authorization, source, image_metadata, facts,
         expected_apply_subject_hash=expected_apply_subject_hash)
