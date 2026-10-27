@@ -1145,6 +1145,8 @@ def invoke_half_month_collector(root, state, report, environment):
 
 
 ROSTER_STATUSES = {'ok': 0, 'no-new': 0, 'partial': 2, 'unavailable': 3}
+ROSTER_MISSING_STATUSES = {'missing', 'active_after_missing', 'activity_unreadable', 'rejected_by_override',
+                           'hiatus_notice', 'departed'}
 
 
 def materialize_registry(root, state_path, base_members):
@@ -1161,7 +1163,9 @@ def invoke_roster_automation(root, state, base_members, report, environment):
             '--personal-state', str(state / PERSONAL),
             '--source-state', str(state / SOURCE_USAGE), '--ai-state', str(state / AI_USAGE),
             '--run-id', 'roster-' + environment['GITHUB_RUN_ID'] + '-' + environment['GITHUB_RUN_ATTEMPT'],
-            '--report', str(report)]
+            '--report', str(report), '--observed', str(state / SNAPSHOT),
+            '--curated', str(root / 'tools' / 'data' / 'shifts.csv'),
+            '--schedule', str(root / 'data' / 'schedule.js')]
     if (state / HALF_MONTH).exists():
         argv.extend(['--half-month-state', str(state / HALF_MONTH)])
     try:
@@ -1176,7 +1180,18 @@ def invoke_roster_automation(root, state, base_members, report, environment):
 def validate_roster_report(path, code, roster):
     report, _ = read_json(path)
     fields = ('component', 'status', 'reason', 'changes', 'requests', 'scanned', 'candidates', 'exitCode')
-    keys(report, (*fields, 'staff'), fields)
+    keys(report, (*fields, 'staff', 'missing', 'notes'), fields)
+    for row in report.get('missing', []):
+        keys(row, ('name', 'checks', 'missingSince', 'lastActivity', 'status'),
+             ('name', 'checks', 'missingSince', 'lastActivity', 'status'))
+        require(isinstance(row['name'], str) and row['status'] in ROSTER_MISSING_STATUSES
+                and isinstance(row['missingSince'], str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', row['missingSince'])
+                and (row['lastActivity'] is None or isinstance(row['lastActivity'], str)
+                     and re.fullmatch(r'\d{4}-\d{2}-\d{2}', row['lastActivity'])), 'roster_report_invalid')
+        integer(row['checks'], 1, 9999)
+    for row in report.get('notes', []):
+        keys(row, ('name', 'status'), ('name', 'status'))
+        require(isinstance(row['name'], str) and row['status'] == 'relisted_unverified', 'roster_report_invalid')
     require(report['component'] == 'roster' and report['status'] in ROSTER_STATUSES
             and report['exitCode'] == code == ROSTER_STATUSES[report['status']], 'roster_status_mismatch')
     require(report['reason'] is None or isinstance(report['reason'], str) and SAFE_REASON.fullmatch(report['reason']),
@@ -1233,6 +1248,8 @@ def run_roster(root, collected, state_dir, work, base_members, environment, resu
         'status', 'reason', 'changes', 'requests', 'scanned', 'candidates')}
     if 'staff' in report:
         result['rosterAutomation']['staff'] = report['staff']
+    result['rosterAutomation']['missing'] = report.get('missing', [])
+    result['rosterAutomation']['notes'] = report.get('notes', [])
     applied = materialize_registry(root, collected / ROSTER, base_members.read_bytes())
     result['rosterAutomation']['applied'] = len(applied['applied'])
     result['rosterAutomation']['keptManual'] = [
@@ -2643,6 +2660,15 @@ def emit(result, environment):
                              f"listed={staff['listed']}; requests={staff['requests']}. "
                              "Leaving the page never removes anyone.\n")
             for row in roster['changes']:
+                if row['kind'] == 'departure':
+                    lines.append(f"\n- {row['name']}: left the official staff page with no activity since; off the "
+                                 f"roster, filters and collection targets from {row['effectiveFrom']}; last "
+                                 f"confirmed service {row['lastServiceDate']}; evidence <{row['evidenceUrl']}>.\n")
+                    continue
+                if row['kind'] == 'reinstatement':
+                    lines.append(f"\n- {row['name']}: listed again with the same X account; back on the roster "
+                                 f"(<{row['evidenceUrl']}>).\n")
+                    continue
                 if row['kind'] == 'addition':
                     account = (f"X {row['xProfileUrl']}" if row['xProfileUrl'] else
                                'no X account on her introduction page: not a collection target until one is set')
@@ -2654,12 +2680,27 @@ def emit(result, environment):
                              f"evidence <{row['evidenceUrl']}>.\n")
             for row in roster['keptManual']:
                 lines.append(f"\n- {row['name']}: manual roster kept ({row['reason']}).\n")
+            labels = {'missing': 'counting', 'active_after_missing': 'activity since, kept on the roster',
+                      'activity_unreadable': 'activity records unreadable, kept',
+                      'rejected_by_override': 'departure rejected manually, kept',
+                      'hiatus_notice': 'rest/hiatus notice found, kept', 'departed': 'departure recorded'}
+            for row in roster.get('missing', []):
+                lines.append(f"\n- Not listed on the official site (サイト未掲載): {row['name']}; "
+                             f"{row['checks']} check(s) since {row['missingSince']}; last activity "
+                             f"{row['lastActivity'] or 'none since'}; {labels[row['status']]}.\n")
+            for row in roster.get('notes', []):
+                lines.append(f"\n- Listed again without an X account to confirm the same person: {row['name']}; "
+                             "neither reinstated nor added.\n")
         else:
             lines.append(f"\nGraduation scan unavailable: {result.get('rosterFailureReason') or 'unknown'}; "
                          "the roster was not changed.\n")
         with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
             target.writelines(lines)
     for row in (roster or {}).get('changes', []):
+        if row['kind'] in ('departure', 'reinstatement'):
+            print(f"::notice::Automatic {row['kind']}: {row['name']}"
+                  + (f" off the roster from {row['effectiveFrom']}" if row['kind'] == 'departure' else ' back on the roster'))
+            continue
         if row['kind'] == 'addition':
             print(f"::notice::Automatic new member: {row['name']} ({row['homeStore']}) from {row['evidenceUrl']}"
                   + ('' if row['xProfileUrl'] else '; no X account, not collected'))

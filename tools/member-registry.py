@@ -4,7 +4,7 @@ members.json is authoritative; members.js is a deterministic public projection.
 Existing schedules, statistics and author bindings are never rewritten here.
 Commands: migrate, add-normal, set-account, set-status, set-display-name,
           set-graduation, clear-graduation, reject-auto-graduation, reject-auto-addition,
-          check, export, report. Run with --help for arguments.
+          reject-auto-departure, check, export, report. Run with --help for arguments.
 """
 import argparse
 import copy
@@ -40,7 +40,7 @@ ROOT_FIELDS = {'schemaVersion', 'legacySnapshot', 'members', 'unresolvedNames', 
                'automationOverrides'}
 # Manual decisions about automatic roster updates (collector-state roster-updates.json).
 # A manual graduation in members.json always wins; these entries only reject automatic ones.
-OVERRIDE_KINDS = {'graduation', 'addition'}
+OVERRIDE_KINDS = {'graduation', 'addition', 'departure'}
 POST_ID = re.compile(r'[1-9][0-9]{9,24}\Z')
 STATUS_FIELDS = {'membership', 'collection', 'inactiveFrom', 'statusRecordedAt'}
 MEMBER_FIELDS = {
@@ -53,12 +53,16 @@ PUBLIC_MEMBER_FIELDS = (
     'collection', 'inactiveFrom', 'xProfileUrl', 'homeStore', 'homeStoreSource',
     'officialListing', 'orderBefore', 'graduation',
 )
-# Graduation is recorded only from an explicit announcement by the member herself or
-# the official account; it is never inferred. lastServiceDate is the final day she
-# works. From the following JST day she leaves the roster, filters and collection
-# targets, while history and plans up to that day are kept.
+# Graduation is recorded from an explicit announcement by the member herself or the
+# official account. lastServiceDate is the final day she works. From the following JST
+# day she leaves the roster, filters and collection targets, while history and plans up
+# to that day are kept. An unannounced departure (she left the official staff page and
+# nothing shows her working since) is recorded by roster automation with the staff page
+# as evidence and offRosterFrom = the JST day it was detected: lastServiceDate is then her
+# last confirmed service and only plans from offRosterFrom on leave the plan view.
 GRADUATION_FIELDS = {'lastServiceDate', 'evidenceUrl'}
 OFFICIAL_HANDLE = 'akibazettai'
+STAFF_PAGE_URL = 'https://akibazettai.com/staff/'
 STATUS_URL = re.compile(r'https://x\.com/([A-Za-z0-9_]{1,15})/status/([1-9][0-9]{0,24})\Z')
 MAX_BYTES = 4 * 1024 * 1024
 
@@ -195,6 +199,13 @@ def validate_graduation(member):
     graduation = member['graduation']
     if graduation is None:
         return
+    require(isinstance(graduation, dict), 'invalid_graduation')
+    if 'offRosterFrom' in graduation:
+        fields(graduation, GRADUATION_FIELDS | {'offRosterFrom'}, 'invalid_graduation')
+        require(date_key(graduation['offRosterFrom']) > date_key(graduation['lastServiceDate']),
+                'invalid_graduation')
+        require(graduation['evidenceUrl'] == STAFF_PAGE_URL, 'invalid_graduation_evidence')
+        return
     fields(graduation, GRADUATION_FIELDS, 'invalid_graduation')
     date_key(graduation['lastServiceDate'])
     url = graduation['evidenceUrl']
@@ -202,6 +213,13 @@ def validate_graduation(member):
     require(match is not None, 'invalid_graduation_evidence')
     own = profile_handle(member['xProfileUrl']) if member['xProfileUrl'] else None
     require(match[1].lower() in {own, OFFICIAL_HANDLE}, 'graduation_evidence_not_self_or_official')
+
+
+def off_roster_from(graduation):
+    """First JST day off the roster: the day after the last service, or the detection day."""
+    if 'offRosterFrom' in graduation:
+        return graduation['offRosterFrom']
+    return (dt.date.fromisoformat(graduation['lastServiceDate']) + dt.timedelta(days=1)).isoformat()
 
 
 def jst_today():
@@ -222,7 +240,7 @@ def day_key(today=None):
 
 def graduated(member, today=None):
     graduation = member.get('graduation')
-    return graduation is not None and day_key(today) > graduation['lastServiceDate']
+    return graduation is not None and day_key(today) >= off_roster_from(graduation)
 
 
 def active_on(member, today=None):
@@ -233,7 +251,7 @@ def retired_before(member, when):
     """Whether `member` had left before `when` (her last day, or confirmed inactive date, passed)."""
     day = day_key(when)
     graduation = member['graduation']
-    if graduation is not None and graduation['lastServiceDate'] < day:
+    if graduation is not None and off_roster_from(graduation) <= day:
         return True
     return member['membership'] == 'inactive' and member['inactiveFrom'] is not None \
         and member['inactiveFrom'] <= day
@@ -256,6 +274,11 @@ def validate_overrides(value, ids):
             require(row['postId'] is None or isinstance(row['postId'], str) and POST_ID.fullmatch(row['postId']),
                     'invalid_automation_override')
             key = ('graduation', row['memberId'], row['postId'])
+        elif row['kind'] == 'departure':
+            fields(row, {'kind', 'memberId', 'decision', 'recordedAt'}, 'invalid_automation_override')
+            require(isinstance(row['memberId'], str) and MEMBER_ID.fullmatch(row['memberId']),
+                    'invalid_automation_override')
+            key = ('departure', row['memberId'])
         else:
             fields(row, {'kind', 'name', 'decision', 'recordedAt'}, 'invalid_automation_override')
             key = ('addition', valid_name(row['name']))
@@ -272,6 +295,10 @@ def rejected_graduation(registry, member_id, post_id):
 
 def rejected_addition(registry, name):
     return any(row['kind'] == 'addition' and row['name'] == name for row in registry['automationOverrides'])
+
+
+def rejected_departure(registry, member_id):
+    return any(row['kind'] == 'departure' and row['memberId'] == member_id for row in registry['automationOverrides'])
 
 
 def validate_registry(value):
@@ -553,6 +580,17 @@ def reject_auto_addition(registry, name, *, now):
     return validate_transition(registry, result)
 
 
+def reject_auto_departure(registry, selector, *, now):
+    """Keep an unannounced departure (left the staff page, no activity) off the published roster."""
+    validate_registry(registry)
+    found = lookup(registry, selector)
+    require(found is not None or isinstance(selector, str) and MEMBER_ID.fullmatch(selector), 'unknown_member')
+    result = copy.deepcopy(registry)
+    result['automationOverrides'].append({'kind': 'departure', 'memberId': found['memberId'] if found else selector,
+                                          'decision': 'reject', 'recordedAt': stamp(now)})
+    return validate_transition(registry, result)
+
+
 def official_member(entry):
     """A member first listed on the official staff page (a new normal maid)."""
     detected = timestamp(entry['detectedAt'])
@@ -575,7 +613,7 @@ def _with_addition(registry, member):
     return validate_registry(result)
 
 
-def apply_automation(registry, graduations=(), additions=()):
+def apply_automation(registry, graduations=(), additions=(), departures=()):
     """Effective registry = committed registry + automatic updates from collector-state.
 
     Manual decisions always win: a member that already has a graduation in members.json,
@@ -587,6 +625,39 @@ def apply_automation(registry, graduations=(), additions=()):
     """
     validate_registry(registry)
     result, applied, skipped = copy.deepcopy(registry), [], []
+    announced = {entry['memberId'] for entry in graduations
+                 if not rejected_graduation(registry, entry['memberId'], entry['postId'])}
+    pending_departures = []
+
+    def depart(entry):
+        row = {**entry, 'kind': 'departure'}
+        member = next((m for m in result['members'] if m['memberId'] == entry['memberId']), None)
+        if member is None:
+            return False
+        # Her own announcement or any manual record wins over an inferred departure.
+        reason = ('rejected_by_override' if rejected_departure(result, entry['memberId']) else
+                  'manual_graduation' if member['graduation'] is not None else
+                  'graduation_recorded' if entry['memberId'] in announced else
+                  'manual_status' if member['membership'] != 'active' else None)
+        if reason is None:
+            candidate = copy.deepcopy(member)
+            candidate['graduation'] = {'lastServiceDate': entry['lastServiceDate'], 'evidenceUrl': STAFF_PAGE_URL,
+                                       'offRosterFrom': entry['offRosterFrom']}
+            try:
+                validate_graduation(candidate)
+            except RegistryError as exc:
+                reason = str(exc)
+            else:
+                member['graduation'] = candidate['graduation']
+                applied.append(row)
+        if reason is not None:
+            skipped.append({**row, 'skipReason': reason})
+        return True
+
+    # Departures first, so a later generation listed under the same name can be added.
+    for entry in departures:
+        if entry.get('reinstatedAt') is None and not depart(entry):
+            pending_departures.append(entry)
     for entry in additions:
         row = {**entry, 'kind': 'addition'}
         if any(m['memberId'] == entry['memberId'] for m in result['members']):
@@ -616,6 +687,9 @@ def apply_automation(registry, graduations=(), additions=()):
                 continue
             row['accountDropped'] = str(exc)
         applied.append(row)
+    for entry in pending_departures:
+        if not depart(entry):
+            skipped.append({**entry, 'kind': 'departure', 'skipReason': 'unknown_member'})
     for entry in graduations:
         row = {**entry, 'kind': 'graduation'}
         member = next((m for m in result['members'] if m['memberId'] == entry['memberId']), None)
@@ -802,7 +876,7 @@ def display_projection(registry, today=None):
 
 def plan_policy(member, day):
     date_key(day)
-    if member.get('graduation') is not None and day > member['graduation']['lastServiceDate']:
+    if member.get('graduation') is not None and day >= off_roster_from(member['graduation']):
         return 'excluded_from_plan_view'
     if member['membership'] != 'inactive':
         return 'retained'
@@ -1106,6 +1180,9 @@ def argument_parser():
     reject_add = sub.add_parser('reject-auto-addition',
                                 help='keep an automatically detected new member with this name off the roster')
     reject_add.add_argument('--name', required=True)
+    reject_departure = sub.add_parser('reject-auto-departure',
+                                      help='keep an unannounced departure (left the staff page) off the roster')
+    reject_departure.add_argument('--member', required=True)
     for command in ('check', 'export', 'report'):
         sub.add_parser(command)
     return parser
@@ -1160,6 +1237,9 @@ def main(argv=None, *, clock=lambda: dt.datetime.now(UTC)):
             affected = args.member
         elif args.command == 'reject-auto-addition':
             registry = reject_auto_addition(registry, args.name, now=clock())
+        elif args.command == 'reject-auto-departure':
+            registry = reject_auto_departure(registry, args.member, now=clock())
+            affected = args.member
         if args.baseline:
             validate_transition(load_registry(args.baseline), registry)
         report = registry_report(registry, *binding_maps, today=clock())
