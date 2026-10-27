@@ -104,6 +104,9 @@ jobs:
       schedule_code: ${{ steps.collection.outputs.halfMonthCollectionCode }}
       schedule_reason: ${{ steps.collection.outputs.scheduleFailureReason }}
       schedule_capacity: ${{ steps.collection.outputs.scheduleCapacityLimit }}
+      roster_status: ${{ steps.collection.outputs.rosterCollectionStatus }}
+      roster_code: ${{ steps.collection.outputs.rosterCollectionCode }}
+      roster_reason: ${{ steps.collection.outputs.rosterFailureReason }}
     steps:
       # A queued collector must use current code, not the old triggering commit.
       - name: Check out current production code
@@ -169,6 +172,7 @@ jobs:
           DAILY_GUIDANCE_ENABLED: ${{ vars.DAILY_GUIDANCE_ENABLED || 'false' }}
           APPLY_SAVED_MANIFEST: ${{ inputs.saved_manifest }}
           HALF_MONTH_SCHEDULE_ENABLED: ${{ vars.HALF_MONTH_SCHEDULE_ENABLED || 'false' }}
+          ROSTER_AUTOMATION_ENABLED: ${{ vars.ROSTER_AUTOMATION_ENABLED || 'true' }}
           SCHEDULE_EVIDENCE_CACHE: ${{ runner.temp }}/_private-evidence/cache.bin
           SCHEDULE_EVIDENCE_KEY: ${{ steps.route.outputs.halfMonthCacheRequired == 'true' && secrets.SCHEDULE_EVIDENCE_KEY || '' }}
           # Cloud strips Azure configuration from Git, restore, and all non-AI children.
@@ -242,6 +246,15 @@ jobs:
           HALF_MONTH_SCHEDULE_ENABLED: ${{ vars.HALF_MONTH_SCHEDULE_ENABLED || 'false' }}
         run: python tools/cloud-collection.py --mode restore --output data/observed-shifts.json
       - uses: ./.github/actions/validate-site
+      # Automatic roster updates live on collector-state; they are applied to this checkout only
+      # (never committed to main) and the published registry is checked again before staging.
+      - name: Apply automatic roster updates to the published registry
+        run: |
+          if [[ -f data/roster-updates.json ]]; then
+            python tools/roster-automation.py publish --state data/roster-updates.json --root .
+            python tools/member-registry.py check > /dev/null
+            node tests/validate-schedule.js
+          fi
       - name: Stage only public frontend files
         run: python tools/pages.py stage --output _site --revision "$(git rev-parse HEAD)"
       - name: Upload public Pages artifact
@@ -340,6 +353,9 @@ jobs:
           SCHEDULE_CODE: ${{ needs.collect.outputs.schedule_code }}
           SCHEDULE_REASON: ${{ needs.collect.outputs.schedule_reason }}
           SCHEDULE_CAPACITY: ${{ needs.collect.outputs.schedule_capacity }}
+          ROSTER_STATUS: ${{ needs.collect.outputs.roster_status }}
+          ROSTER_CODE: ${{ needs.collect.outputs.roster_code }}
+          ROSTER_REASON: ${{ needs.collect.outputs.roster_reason }}
         run: |
           # Only fixed tokens reach the issue; never logs, messages, paths or data.
           # Each component (official, personal, schedule, publication) stays open until a later run
@@ -347,13 +363,13 @@ jobs:
           for NAME in COLLECT BUILD DEPLOY; do
             [[ "${!NAME}" =~ ^(success|failure|cancelled|skipped)$ ]] || printf -v "$NAME" '%s' unknown
           done
-          for NAME in REASON OFFICIAL_REASON PERSONAL_REASON SCHEDULE_REASON; do
+          for NAME in REASON OFFICIAL_REASON PERSONAL_REASON SCHEDULE_REASON ROSTER_REASON; do
             [[ "${!NAME}" =~ ^[a-z_]{1,64}$ ]] || printf -v "$NAME" '%s' none
           done
-          for NAME in OFFICIAL_STATUS PERSONAL_STATUS SCHEDULE_STATUS; do
+          for NAME in OFFICIAL_STATUS PERSONAL_STATUS SCHEDULE_STATUS ROSTER_STATUS; do
             [[ "${!NAME}" =~ ^[a-z-]{1,32}$ ]] || printf -v "$NAME" '%s' none
           done
-          for NAME in OFFICIAL_CODE PERSONAL_CODE SCHEDULE_CODE; do
+          for NAME in OFFICIAL_CODE PERSONAL_CODE SCHEDULE_CODE ROSTER_CODE; do
             [[ "${!NAME}" =~ ^-?[0-9]{1,3}$ ]] || printf -v "$NAME" '%s' -1
           done
           [[ "$COMPONENTS" =~ ^[a-z-]{1,64}$ ]] || COMPONENTS=none
@@ -368,7 +384,7 @@ jobs:
             --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")"
           if [[ -n "$NUMBER" && ! "$NUMBER" =~ ^[0-9]{1,9}$ ]]; then NUMBER=""; fi
           declare -A FAIL_REASON FAIL_COUNT FAIL_FIRST FAIL_RUN
-          KNOWN=(official personal schedule publication)
+          KNOWN=(official personal schedule roster publication)
           STATE_FOUND=false
           if [[ -n "$NUMBER" ]]; then
             STATE_LINE="$(gh issue view "$NUMBER" --json body --jq .body \
@@ -376,7 +392,7 @@ jobs:
             if [[ -n "$STATE_LINE" ]]; then
               STATE_FOUND=true
               for ITEM in ${STATE_LINE}; do
-                [[ "$ITEM" =~ ^(official|personal|schedule|publication)=([a-z_]{1,64}):([0-9]{1,6}):([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z):([0-9]{1,20})$ ]] || continue
+                [[ "$ITEM" =~ ^(official|personal|schedule|roster|publication)=([a-z_]{1,64}):([0-9]{1,6}):([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z):([0-9]{1,20})$ ]] || continue
                 FAIL_REASON[${BASH_REMATCH[1]}]="${BASH_REMATCH[2]}"
                 FAIL_COUNT[${BASH_REMATCH[1]}]="${BASH_REMATCH[3]}"
                 FAIL_FIRST[${BASH_REMATCH[1]}]="${BASH_REMATCH[4]}"
@@ -400,7 +416,7 @@ jobs:
           }
           PUBLISHED=false
           if [[ "$COLLECT" == success && "$BUILD" == success && "$DEPLOY" == success ]]; then PUBLISHED=true; fi
-          for C in official personal schedule; do
+          for C in official personal schedule roster; do
             UPPER="${C^^}"; STATUS_NAME="${UPPER}_STATUS"; CODE_NAME="${UPPER}_CODE"; REASON_NAME="${UPPER}_REASON"
             if [[ "-$COMPONENTS-" == *"-$C-"* ]]; then
               REASON_C="${!REASON_NAME}"; if [[ "$REASON_C" == none ]]; then REASON_C=component_failure; fi

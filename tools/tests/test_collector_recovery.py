@@ -474,7 +474,7 @@ gh() {
                            'EVENT': 'schedule', 'COLLECT': 'success', 'BUILD': 'success',
                            'DEPLOY': 'success', 'ATTENTION': 'false', 'REASON': '', 'COMPONENTS': '',
                            'SCHEDULE_CAPACITY': '',
-                           **{f'{name}_{field}': value for name in ('OFFICIAL', 'PERSONAL', 'SCHEDULE')
+                           **{f'{name}_{field}': value for name in ('OFFICIAL', 'PERSONAL', 'SCHEDULE', 'ROSTER')
                               for field, value in (('STATUS', ''), ('CODE', '-1'), ('REASON', ''))}}
             environment.update(values)
             result = subprocess.run(
@@ -542,6 +542,21 @@ gh() {
         self.assertIn('issue close 7', log)
         log = self.run_alert({**capacity, 'SCHEDULE_CAPACITY': 'x;$(touch pwned)'}, '', '')
         self.assertNotIn('issue create', log)
+
+    def test_roster_failure_is_its_own_component_until_a_roster_run_succeeds(self):
+        failing = {'ATTENTION': 'true', 'COMPONENTS': 'roster', 'ROSTER_STATUS': 'unavailable',
+                   'ROSTER_CODE': '3', 'ROSTER_REASON': 'staff_page_structure_changed'}
+        log = self.run_alert(failing)
+        self.assertIn('issue create', log)
+        self.assertIn('roster=staff_page_structure_changed:1:', log)
+        open_state = self.state('roster=staff_page_structure_changed:1:2026-10-28T01:00:00Z:41')
+        for values in ({'OFFICIAL_STATUS': 'ok', 'OFFICIAL_CODE': '0'},
+                       {'ROSTER_STATUS': 'not-run', 'ROSTER_CODE': '-1'}):
+            with self.subTest(values=values):
+                log = self.run_alert(values, '7', open_state)
+                self.assertNotIn('issue close', log)
+        log = self.run_alert({'ROSTER_STATUS': 'no-new', 'ROSTER_CODE': '0'}, '7', open_state)
+        self.assertIn('issue close 7', log)
 
     def test_single_issue_is_created_updated_closed_and_untrusted_tokens_dropped(self):
         cases = [

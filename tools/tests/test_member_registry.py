@@ -454,6 +454,16 @@ class GraduationTests(unittest.TestCase):
                                '--evidence-url', 'https://x.com/someone_else/status/1')
             self.assertEqual((code, result['error']), (2, 'graduation_evidence_not_self_or_official'))
             self.assertEqual(path.read_bytes(), before)
+            code, result = cli('reject-auto-graduation', '--member', NAME, '--post-id', '2109664298628944019')
+            self.assertEqual(code, 0)
+            override = registry.load_registry(path)['automationOverrides']
+            self.assertEqual([(row['kind'], row['postId'], row['decision']) for row in override],
+                             [('graduation', '2109664298628944019', 'reject')])
+            self.assertEqual(cli('reject-auto-graduation', '--member', NAME, '--post-id', 'x')[1]['error'],
+                             'invalid_post_id')
+            self.assertEqual(cli('clear-graduation', '--member', NAME)[0], 0)
+            self.assertIsNone(registry.load_registry(path)['members'][0]['graduation'])
+            self.assertEqual(cli('clear-graduation', '--member', NAME)[1]['error'], 'no_manual_graduation')
 
     def test_published_graduations_are_the_confirmed_announcements(self):
         value = registry.load_registry(TOOLS.parent / 'data' / 'members.json')

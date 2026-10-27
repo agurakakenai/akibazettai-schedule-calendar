@@ -62,9 +62,10 @@ AI_USAGE = 'ai-usage.json'
 HALF_MONTH = 'half-month-schedules.json'
 SOURCE_USAGE = 'source-usage.json'
 ANALYSIS_BUFFER = 'official-analysis-buffer.json'
+ROSTER = 'roster-updates.json'
 LEASE = 'lease.json'
 OWNER_FILE = 'state-owner.json'
-FILES = {SNAPSHOT, HTTP_STATE, PERSONAL, AI_USAGE, HALF_MONTH, SOURCE_USAGE, OWNER_FILE, LEASE}
+FILES = {SNAPSHOT, HTTP_STATE, PERSONAL, AI_USAGE, HALF_MONTH, SOURCE_USAGE, ROSTER, OWNER_FILE, LEASE}
 DAILY_SCHEDULE = '30 3-6,8-11 * * *'
 JST = dt.timezone(dt.timedelta(hours=9))
 MANAGER = 'cloud-collection/v1'
@@ -149,6 +150,14 @@ def load_half_month_saved():
 def load_source_state():
     spec = importlib.util.spec_from_file_location(
         'cloud_source_state', ROOT / 'tools' / 'source-state.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_roster_automation():
+    spec = importlib.util.spec_from_file_location(
+        'cloud_roster_automation', ROOT / 'tools' / 'roster-automation.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -491,6 +500,15 @@ def validate_source_usage(path):
     state, raw = read_json(path)
     scan_private(state)
     load_source_state().validate_state(state)
+    return state, raw
+
+
+def validate_roster(path):
+    state, raw = read_json(path)
+    try:
+        load_roster_automation().validate_state(state)
+    except ValueError:
+        raise CloudError('invalid_roster_updates') from None
     return state, raw
 
 
@@ -894,6 +912,8 @@ class StateRepository:
                 extra_states[name] = validate(self.path / name)[0]
         validate_half_month_links(extra_states.get(HALF_MONTH), extra_states.get(SOURCE_USAGE),
                                   usage, personal_state)
+        if (self.path / ROSTER).exists():
+            validate_roster(self.path / ROSTER)
         if leased:
             validate_lease(self.path / LEASE, collector)
         else:
@@ -906,7 +926,7 @@ class StateRepository:
             self.git('add', '--', PERSONAL, reason='state_stage_failed')
         if has_ai:
             self.git('add', '--', AI_USAGE, reason='state_stage_failed')
-        for name in (HALF_MONTH, SOURCE_USAGE):
+        for name in (HALF_MONTH, SOURCE_USAGE, ROSTER):
             if (self.path / name).exists():
                 self.git('add', '--', name, reason='state_stage_failed')
         if leased:
@@ -941,13 +961,13 @@ def checked_paths(root, output, recovery):
         require(not path.is_symlink(), 'unsafe_recovery_path')
     if recovery.exists():
         require(recovery.is_dir() and {p.name for p in recovery.iterdir()} <= {
-            SNAPSHOT, HTTP_STATE, PERSONAL, AI_USAGE, HALF_MONTH, SOURCE_USAGE},
+            SNAPSHOT, HTTP_STATE, PERSONAL, AI_USAGE, HALF_MONTH, SOURCE_USAGE, ROSTER},
                 'unsafe_recovery_path')
     return output, recovery
 
 
 def copy_pair(source, destination, collector, *, include_personal=False, personal=None,
-              include_ai=False, include_half_month=False, include_source=False):
+              include_ai=False, include_half_month=False, include_source=False, include_roster=False):
     _, canonical = validate_snapshot(source / SNAPSHOT, collector)
     _, transport = validate_transport(source / HTTP_STATE, collector)
     personal_state, extra = validate_personal(source / PERSONAL, personal) if include_personal else (None, None)
@@ -959,6 +979,8 @@ def copy_pair(source, destination, collector, *, include_personal=False, persona
         half_month_state, extra_states[HALF_MONTH] = validate_half_month(source / HALF_MONTH)
     if include_source:
         source_state, extra_states[SOURCE_USAGE] = validate_source_usage(source / SOURCE_USAGE)
+    if include_roster:
+        _, extra_states[ROSTER] = validate_roster(source / ROSTER)
     validate_half_month_links(half_month_state, source_state, usage, personal_state)
     atomic_bytes(destination / SNAPSHOT, canonical)
     atomic_bytes(destination / HTTP_STATE, transport)
@@ -973,7 +995,7 @@ def copy_pair(source, destination, collector, *, include_personal=False, persona
 
 
 def save_recovery(source, destination, collector, *, include_personal=False, personal=None,
-                  include_ai=False, include_half_month=False, include_source=False):
+                  include_ai=False, include_half_month=False, include_source=False, include_roster=False):
     invalid = False
     validators = [(SNAPSHOT, validate_snapshot), (HTTP_STATE, validate_transport)]
     if include_personal:
@@ -989,6 +1011,8 @@ def save_recovery(source, destination, collector, *, include_personal=False, per
         validators.append((HALF_MONTH, lambda path, _: validate_half_month(path)))
     if include_source:
         validators.append((SOURCE_USAGE, lambda path, _: validate_source_usage(path)))
+    if include_roster:
+        validators.append((ROSTER, lambda path, _: validate_roster(path)))
     for name, validate in validators:
         try:
             _, raw = validate(source / name, collector)
@@ -1118,6 +1142,92 @@ def invoke_half_month_collector(root, state, report, environment):
         raise CloudError('half_month_process_failed') from None
     record_child_failure(process, report, 'schedule')
     return process.returncode
+
+
+ROSTER_STATUSES = {'ok': 0, 'no-new': 0, 'partial': 2, 'unavailable': 3}
+
+
+def materialize_registry(root, state_path, base_members):
+    """Write committed registry + recorded automatic updates into this checkout only."""
+    try:
+        return load_roster_automation().publish(state_path, root, stamp_assets=False, base_bytes=base_members)
+    except ValueError:
+        raise CloudError('roster_publication_failed') from None
+
+
+def invoke_roster_automation(root, state, base_members, report, environment):
+    argv = [sys.executable, '-I', '-B', str(root / 'tools' / 'roster-automation.py'), 'run',
+            '--state', str(state / ROSTER), '--members', str(base_members),
+            '--personal-state', str(state / PERSONAL),
+            '--source-state', str(state / SOURCE_USAGE), '--ai-state', str(state / AI_USAGE),
+            '--run-id', 'roster-' + environment['GITHUB_RUN_ID'] + '-' + environment['GITHUB_RUN_ATTEMPT'],
+            '--report', str(report)]
+    if (state / HALF_MONTH).exists():
+        argv.extend(['--half-month-state', str(state / HALF_MONTH)])
+    try:
+        process = child_process(argv, cwd=root, environment=safe_environment(environment, azure=True),
+                                timeout=900)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    record_child_failure(process, report, 'roster')
+    return process.returncode
+
+
+def validate_roster_report(path, code, roster):
+    report, _ = read_json(path)
+    keys(report, ('component', 'status', 'reason', 'changes', 'requests', 'scanned', 'candidates', 'exitCode'),
+         ('component', 'status', 'reason', 'changes', 'requests', 'scanned', 'candidates', 'exitCode'))
+    require(report['component'] == 'roster' and report['status'] in ROSTER_STATUSES
+            and report['exitCode'] == code == ROSTER_STATUSES[report['status']], 'roster_status_mismatch')
+    require(report['reason'] is None or isinstance(report['reason'], str) and SAFE_REASON.fullmatch(report['reason']),
+            'roster_report_invalid')
+    keys(report['requests'], ('searches', 'posts', 'analysis'), ('searches', 'posts', 'analysis'))
+    for value in (*report['requests'].values(), report['scanned'], report['candidates']):
+        integer(value, 0, 1000)
+    require(isinstance(report['changes'], list), 'roster_report_invalid')
+    for row in report['changes']:
+        try:
+            roster.validate_change(row)
+        except ValueError:
+            raise CloudError('roster_report_invalid') from None
+    return report
+
+
+def run_roster(root, collected, state_dir, work, base_members, environment, result, bundle):
+    """Graduation scan once per JST day. Its failure never blocks the other components."""
+    roster = load_roster_automation()
+    if not base_members.is_file():
+        result.update(rosterCollectionStatus='unavailable', rosterCollectionCode=3,
+                      rosterFailureReason='registry_missing')
+        return
+    report_path = work / 'roster-report.json'
+    code = invoke_roster_automation(root, collected, base_members, report_path, environment)
+    report = None
+    if code in (0, 2, 3):
+        try:
+            validate_roster(collected / ROSTER)
+            report = validate_roster_report(report_path, code, roster)
+        except CloudError:
+            report = None
+    if report is None:
+        # Keep the last valid automatic updates; issued receipts stay in their ledgers.
+        if bundle['include_roster']:
+            atomic_bytes(collected / ROSTER, (state_dir / ROSTER).read_bytes())
+        else:
+            (collected / ROSTER).unlink(missing_ok=True)
+        failure = child_failure(report_path, 'roster', code)
+        result.update(rosterCollectionStatus='unavailable', rosterCollectionCode=3,
+                      rosterFailureReason=failure.get('reason', 'roster_local_failure'))
+        return
+    bundle['include_roster'] = True
+    result.update(rosterCollectionStatus=report['status'], rosterCollectionCode=code,
+                  rosterFailureReason=report['reason'] if report['status'] == 'unavailable' else '')
+    result['rosterAutomation'] = {key: report[key] for key in (
+        'status', 'reason', 'changes', 'requests', 'scanned', 'candidates')}
+    applied = materialize_registry(root, collected / ROSTER, base_members.read_bytes())
+    result['rosterAutomation']['applied'] = len(applied['applied'])
+    result['rosterAutomation']['keptManual'] = [
+        {'name': row['name'], 'reason': row['skipReason']} for row in applied['skipped']]
 
 
 def analysis_arguments(state, environment, *, allow_zero=False):
@@ -1758,7 +1868,17 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 atomic_bytes(state_dir / PERSONAL, personal_raw)
                 has_personal = True
         bundle = {'include_personal': has_personal, 'personal': personal, 'include_ai': has_ai,
-                  'include_half_month': has_half_month, 'include_source': has_source}
+                  'include_half_month': has_half_month, 'include_source': has_source,
+                  'include_roster': (state_dir / ROSTER).exists()}
+        if bundle['include_roster']:
+            validate_roster(state_dir / ROSTER)
+        base_members = work / 'members-base.json'
+        if writing and (root / 'data' / 'members.json').is_file():
+            # Collectors read the committed registry plus the recorded automatic updates.
+            # Only this disposable checkout is rewritten; main is never committed.
+            atomic_bytes(base_members, (root / 'data' / 'members.json').read_bytes())
+            if bundle['include_roster']:
+                materialize_registry(root, state_dir / ROSTER, base_members.read_bytes())
         result = {
             'sourceCodeSHA': source, 'stateCommit': repo.head,
             'stateSource': 'branch' if repo.head else 'seed',
@@ -1771,6 +1891,7 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
             'personalCollectionCode': -1, 'personalStateSource': personal_source,
             'halfMonthCollectionStatus': half_month_state['lastRun']['status'] if half_month_state else 'never',
             'halfMonthCollectionCode': -1,
+            'rosterCollectionStatus': 'not-run', 'rosterCollectionCode': -1,
             'continuationReady': 'false',
             'continuationMode': args.mode if args.mode in ('personal', 'both', 'schedule') else 'personal',
         }
@@ -2042,6 +2163,14 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                     remove_tree(checked)
                 result.setdefault('componentFailures', []).append(failure)
                 return failure
+
+            roster_enabled = environment.get('ROSTER_AUTOMATION_ENABLED', 'false') == 'true'
+            if (roster_enabled and args.mode in ('personal', 'both') and not applying and not expected
+                    and not continuing and not half_continuing and has_source and has_ai and has_personal
+                    and load_roster_automation().due(
+                        validate_roster(collected / ROSTER)[0] if bundle['include_roster'] else None,
+                        collector.utc_now())):
+                run_roster(root, collected, state_dir, work, base_members, environment, result, bundle)
 
             if correction_dates and collect_official:
                 # One timeline search covers every requested day (a repeated identical URL would be
@@ -2491,6 +2620,28 @@ def emit(result, environment):
             target.writelines(lines)
     if acquisition and not acquisition['complete']:
         print('::warning::Personal collection remains incomplete; see work-date coverage in the job summary.')
+    roster = result.get('rosterAutomation')
+    if environment.get('GITHUB_STEP_SUMMARY') and (roster or result.get('rosterCollectionStatus') == 'unavailable'):
+        lines = ['\n## Automatic roster updates (collector-state; main is not committed)\n']
+        if roster:
+            lines.append(f"\nGraduation scan: status={roster['status']}; reason={roster['reason'] or 'none'}; "
+                         f"members searched={roster['scanned']}; candidates={roster['candidates']}; "
+                         f"search/post/AI={roster['requests']['searches']}/{roster['requests']['posts']}/"
+                         f"{roster['requests']['analysis']}; automatic updates applied={roster['applied']}.\n")
+            for row in roster['changes']:
+                lines.append(f"\n- {row['name']}: last service {row['lastServiceDate']}; off the roster, "
+                             f"filters and collection targets from {row['effectiveFrom']}; "
+                             f"evidence <{row['evidenceUrl']}>.\n")
+            for row in roster['keptManual']:
+                lines.append(f"\n- {row['name']}: manual roster kept ({row['reason']}).\n")
+        else:
+            lines.append(f"\nGraduation scan unavailable: {result.get('rosterFailureReason') or 'unknown'}; "
+                         "the roster was not changed.\n")
+        with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
+            target.writelines(lines)
+    for row in (roster or {}).get('changes', []):
+        print(f"::notice::Automatic graduation: {row['name']} off the roster from {row['effectiveFrom']} "
+              f"(evidence {row['evidenceUrl']})")
     failures = [row for row in result.get('componentFailures', []) if isinstance(row, dict)]
     unexpected = [row for row in result.get('unexpectedFailures', []) if isinstance(row, dict)]
     unexpected += [{'component': 'schedule', 'id': row['postId'], 'stage': row['stage'],
@@ -2538,9 +2689,15 @@ def emit(result, environment):
     for row in unexpected:
         print('::warning::Collector candidate isolated after an unexpected error; ' + safe_row(row))
     components = sorted({row['component'] for row in failures + unexpected
-                         if row.get('component') in COMPONENTS})
+                         if row.get('component') in COMPONENTS}
+                        | ({'roster'} if result.get('rosterCollectionStatus') == 'unavailable' else set()))
     result['attention'] = 'true' if (components or result.get('collectionStatus') == 'failed') else 'false'
     result['failedComponents'] = '-'.join(components)
+    if result.get('rosterCollectionStatus') == 'unavailable':
+        reason = result.get('rosterFailureReason')
+        result['rosterFailureReason'] = reason if isinstance(reason, str) and SAFE_REASON.fullmatch(reason) \
+            else 'roster_unavailable'
+        print('::warning::Automatic roster update was unavailable; the roster was not changed.')
     for component in COMPONENTS:
         # The first contained reason per component lets the alert track the same cause across runs.
         reasons = [row['reason'] for row in failures if row.get('component') == component
@@ -2573,7 +2730,8 @@ def emit(result, environment):
                    'personalCollectionStatus', 'personalCollectionCode', 'personalStateSource',
                    'halfMonthCollectionStatus', 'halfMonthCollectionCode',
                    'officialFailureReason', 'personalFailureReason', 'scheduleFailureReason',
-                   'scheduleCapacityLimit',
+                   'scheduleCapacityLimit', 'rosterCollectionStatus', 'rosterCollectionCode',
+                   'rosterFailureReason',
                    'reason', 'continuationReady', 'continuationMode', 'attention', 'failedComponents')
         lines = []
         for key in allowed:

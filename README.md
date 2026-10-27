@@ -15,6 +15,8 @@ py -B -X utf8 tools\member-registry.py set-display-name --member "<memberIdま�
 py -B -X utf8 tools\member-registry.py set-status --member "<memberIdまたは名前>" --collection paused
 py -B -X utf8 tools\member-registry.py set-status --member "<memberIdまたは名前>" --membership inactive
 py -B -X utf8 tools\member-registry.py set-graduation --member "<memberIdまたは名前>" --last-service-date "<YYYY-MM-DD>" --evidence-url "https://x.com/<本人または akibazettai>/status/<id>"
+py -B -X utf8 tools\member-registry.py clear-graduation --member "<memberIdまたは名前>"
+py -B -X utf8 tools\member-registry.py reject-auto-graduation --member "<memberIdまたは名前>" [--post-id "<投稿ID>"]
 py -B -X utf8 tools\member-registry.py check
 py -B -X utf8 tools\member-registry.py report
 ```
@@ -31,6 +33,18 @@ py -B -X utf8 tools\member-registry.py report
 - 在籍者数（未確認予定の注記や確率の注記にある「在籍N名」）
 
 告知済みで日付が先の卒業も、その日を過ぎれば自動で切り替わります。`membership`・`statusHistory`は書き換えず、過去のシフト履歴・出典・名前対応と、卒業日までの予定は残します。卒業日より後の予定はplan-only表示から外します。collectorの名簿確認（`RegistryGuard`）は起動時のJST日付で固定するので、日付をまたぐrunの途中で対象が変わることはありません。歴史的統計（`data/store-insights.js`）は卒業前の記録を含むため再集計しません。
+
+### 卒業の自動検出（本人の告知だけ）
+
+名簿の更新を待たずに、**本人の告知から卒業日を自動で記録**します。確認なしで反映します。
+
+- **探す**: 本人の当日取得と同じ枠（`personal`／`both`の定期run）で、JST1日1回、在籍メイドの本人アカウントを`id:<handle> 卒業`で検索します。1日最大6人を、前回検索が古い順に回します（全員を約1週間で一巡）。投稿の取得は1runで最大3件、AIは最大2件です。検索・投稿の取得は共有の取得台帳（component `roster`）に、AIは既存の共有AI台帳（component `personal`、月額上限・hold・`PRICE_VERSION`は従来どおり）に記録します。
+- **使う投稿**: 本人の投稿だけです。自分への返信は使い、他人への返信やリポストは使いません。検索結果の本文と、取得した本文の両方に「卒業」と**明記された日付**（`10月27日`、`10/27`、曜日付きの`16日（金）`）が必要です。日付のない告知（例：つぼみさんの9月の告知）、`明日`・`本日`だけの投稿は使いません。
+- **判定**: 既存のtext profile（gpt-6-luna、reasoning low）で「本人の卒業か」と「最後のお給仕の日」を返させ、**AIが返した日付が本文から機械的に読み取った日付に含まれる**ときだけ採用します。他人の卒業、卒業イベントなどの予定は採用しません。AIは1投稿1回だけで、結果（不採用・失敗を含む）を記録し、二重に発行しません。
+- **記録**: 結果は`collector-state`ブランチの`roster-updates.json`に、根拠URL・投稿ID・本文のSHA-256と変更履歴（誰を・いつから・根拠URL）として残します。**mainへの自動commitはしません。**公開のbuild jobがテストの後にこの記録を`data/members.json`／`members.js`へ当てて（`tools/roster-automation.py publish`）、検証してから公開します。収集runでも同じ記録を当てた名簿を使うので、同じrunの本人取得から対象外になります。
+- **効果**: 手動の`set-graduation`と同じで、最後のお給仕の日の翌日から所属メイド欄・半月予定と本人当日の取得対象から外し、過去の予定と卒業日までの予定は残します。
+- **手動が優先**: `members.json`に手動の卒業日があれば、自動の記録は使いません。自動の結果を取り消すときは`reject-auto-graduation`（`--post-id`でその投稿だけ、省略でその人の自動検出すべて）を通常のPRで反映します。手動の卒業日は`clear-graduation`で消せます。
+- **見える化**: 自動で変えた内容はrunのjob summary（「Automatic roster updates」）と`::notice::`に、名前・最後のお給仕の日・除外開始日・根拠URLで出します。取得が止まったときは名簿を変えず、通知Issueのcomponent `roster`で知らせます（次に`roster`が成功したrunで閉じます）。リポジトリ変数`ROSTER_AUTOMATION_ENABLED=false`で止められます。
 
 停止操作は手元の保存予定から残る将来予定を示します。`--plans`で`name/date/shift`参照配列を指定することもできます。これは最新canonicalをネット取得した結果ではありません。`--bindings`で保存済みの本人・半月stateを指定すれば同定も照合できます。省略時の`binding_not_loaded`や`eligible_not_collected`は、本人確認・投稿取得の完了を意味しません。
 

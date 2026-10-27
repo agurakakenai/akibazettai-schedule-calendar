@@ -3,7 +3,8 @@
 members.json is authoritative; members.js is a deterministic public projection.
 Existing schedules, statistics and author bindings are never rewritten here.
 Commands: migrate, add-normal, set-account, set-status, set-display-name,
-          set-graduation, check, export, report. Run with --help for arguments.
+          set-graduation, clear-graduation, reject-auto-graduation, check, export, report.
+          Run with --help for arguments.
 """
 import argparse
 import copy
@@ -35,7 +36,12 @@ RESERVED_ROUTES = {
     'notifications', 'privacy', 'search', 'settings', 'share', 'signup', 'tos',
     'widgets', 'akibazettai',
 }
-ROOT_FIELDS = {'schemaVersion', 'legacySnapshot', 'members', 'unresolvedNames', 'reservedHandles'}
+ROOT_FIELDS = {'schemaVersion', 'legacySnapshot', 'members', 'unresolvedNames', 'reservedHandles',
+               'automationOverrides'}
+# Manual decisions about automatic roster updates (collector-state roster-updates.json).
+# A manual graduation in members.json always wins; these entries only reject automatic ones.
+OVERRIDE_KINDS = {'graduation'}
+POST_ID = re.compile(r'[1-9][0-9]{9,24}\Z')
 STATUS_FIELDS = {'membership', 'collection', 'inactiveFrom', 'statusRecordedAt'}
 MEMBER_FIELDS = {
     'memberId', 'canonicalName', 'displayName', 'aliases', 'role', 'xProfileUrl',
@@ -222,6 +228,29 @@ def graduated(member, today=None):
 def active_on(member, today=None):
     return member['membership'] == 'active' and not graduated(member, today)
 
+
+def validate_overrides(value, ids):
+    require(isinstance(value, list), 'invalid_automation_overrides')
+    seen = set()
+    for row in value:
+        require(isinstance(row, dict) and row.get('kind') in OVERRIDE_KINDS, 'invalid_automation_override')
+        if row['kind'] == 'graduation':
+            fields(row, {'kind', 'memberId', 'postId', 'decision', 'recordedAt'}, 'invalid_automation_override')
+            require(row['memberId'] in ids, 'invalid_automation_override')
+            require(row['postId'] is None or isinstance(row['postId'], str) and POST_ID.fullmatch(row['postId']),
+                    'invalid_automation_override')
+            key = ('graduation', row['memberId'], row['postId'])
+        require(row['decision'] == 'reject', 'invalid_automation_override')
+        timestamp(row['recordedAt'])
+        require(key not in seen, 'duplicate_automation_override')
+        seen.add(key)
+
+
+def rejected_graduation(registry, member_id, post_id):
+    return any(row['kind'] == 'graduation' and row['memberId'] == member_id
+               and row['postId'] in (None, post_id) for row in registry['automationOverrides'])
+
+
 def validate_registry(value):
     fields(value, ROOT_FIELDS)
     require(type(value['schemaVersion']) is int and value['schemaVersion'] == 1,
@@ -322,6 +351,7 @@ def validate_registry(value):
                 'invalid_reserved_handle')
         require(handle not in handles and handle not in reserved, 'reserved_handle_collision')
         reserved.add(handle)
+    validate_overrides(value['automationOverrides'], ids)
     return value
 
 
@@ -331,7 +361,7 @@ def load_registry(path):
 
 def empty_registry():
     return {'schemaVersion': 1, 'legacySnapshot': None, 'members': [],
-            'unresolvedNames': [], 'reservedHandles': []}
+            'unresolvedNames': [], 'reservedHandles': [], 'automationOverrides': []}
 
 
 def lookup(registry, selector):
@@ -454,6 +484,65 @@ def set_graduation(registry, selector, *, last_service_date, evidence_url):
     member = next(m for m in result['members'] if m['memberId'] == found['memberId'])
     member['graduation'] = {'lastServiceDate': date_key(last_service_date), 'evidenceUrl': evidence_url}
     return validate_transition(registry, result)
+
+
+def clear_graduation(registry, selector):
+    """Remove a manually recorded graduation; history and plans were never removed."""
+    validate_registry(registry)
+    found = lookup(registry, selector)
+    require(found is not None, 'unknown_member')
+    require(found['graduation'] is not None, 'no_manual_graduation')
+    result = copy.deepcopy(registry)
+    next(m for m in result['members'] if m['memberId'] == found['memberId'])['graduation'] = None
+    return validate_transition(registry, result)
+
+
+def reject_auto_graduation(registry, selector, *, now, post_id=None):
+    """Keep an automatically detected graduation (one post, or all) out of the published roster."""
+    validate_registry(registry)
+    found = lookup(registry, selector)
+    require(found is not None, 'unknown_member')
+    require(post_id is None or isinstance(post_id, str) and POST_ID.fullmatch(post_id), 'invalid_post_id')
+    result = copy.deepcopy(registry)
+    result['automationOverrides'].append({'kind': 'graduation', 'memberId': found['memberId'],
+                                          'postId': post_id, 'decision': 'reject', 'recordedAt': stamp(now)})
+    return validate_transition(registry, result)
+
+
+def apply_automation(registry, graduations=()):
+    """Effective registry = committed registry + automatic updates from collector-state.
+
+    Manual decisions always win: a member that already has a graduation in members.json,
+    or an override that rejects the post, keeps the committed value. Each automatic entry
+    is applied on its own; one that no longer fits (for example the account changed) is
+    skipped and reported instead of blocking the others. Returns (registry, applied, skipped).
+    """
+    validate_registry(registry)
+    result, applied, skipped = copy.deepcopy(registry), [], []
+    for entry in graduations:
+        member = next((m for m in result['members'] if m['memberId'] == entry['memberId']), None)
+        if member is None:
+            skipped.append({**entry, 'skipReason': 'unknown_member'})
+            continue
+        if member['graduation'] is not None:
+            skipped.append({**entry, 'skipReason': 'already_applied' if any(
+                row['memberId'] == entry['memberId'] for row in applied) else 'manual_graduation'})
+            continue
+        if rejected_graduation(result, entry['memberId'], entry['postId']):
+            skipped.append({**entry, 'skipReason': 'rejected_by_override'})
+            continue
+        candidate = copy.deepcopy(member)
+        candidate['graduation'] = {'lastServiceDate': entry['lastServiceDate'],
+                                   'evidenceUrl': entry['evidenceUrl']}
+        try:
+            validate_graduation(candidate)
+        except RegistryError as exc:
+            skipped.append({**entry, 'skipReason': str(exc)})
+            continue
+        member['graduation'] = candidate['graduation']
+        applied.append(entry)
+    validate_registry(result)
+    return result, applied, skipped
 
 
 def binding_index(registry, binding_maps):
@@ -894,6 +983,12 @@ def argument_parser():
     graduation.add_argument('--last-service-date', required=True, help='YYYY-MM-DD (JST), the final day she works')
     graduation.add_argument('--evidence-url', required=True,
                             help='https://x.com/<her handle or akibazettai>/status/<id>')
+    clear = sub.add_parser('clear-graduation', help='remove a manually recorded graduation')
+    clear.add_argument('--member', required=True)
+    reject = sub.add_parser('reject-auto-graduation',
+                            help='keep an automatically detected graduation out of the published roster')
+    reject.add_argument('--member', required=True)
+    reject.add_argument('--post-id', help='reject only this announcement; omit to reject all automatic ones')
     for command in ('check', 'export', 'report'):
         sub.add_parser(command)
     return parser
@@ -939,6 +1034,12 @@ def main(argv=None, *, clock=lambda: dt.datetime.now(UTC)):
         elif args.command == 'set-graduation':
             registry = set_graduation(registry, args.member, last_service_date=args.last_service_date,
                                       evidence_url=args.evidence_url)
+            affected = args.member
+        elif args.command == 'clear-graduation':
+            registry = clear_graduation(registry, args.member)
+            affected = args.member
+        elif args.command == 'reject-auto-graduation':
+            registry = reject_auto_graduation(registry, args.member, now=clock(), post_id=args.post_id)
             affected = args.member
         if args.baseline:
             validate_transition(load_registry(args.baseline), registry)

@@ -1349,6 +1349,150 @@ class CloudTests(unittest.TestCase):
             return 2
         return invoke
 
+    def roster_child(self, *, code=0, graduate='あむ', invalid=False):
+        calls = []
+
+        def invoke(root, state, base_members, report, environment):
+            roster = cloud.load_roster_automation()
+            calls.append(environment['GITHUB_RUN_ID'])
+            self.assertEqual(base_members.read_bytes(), (ROOT / 'data' / 'members.json').read_bytes())
+            self.assertNotIn('CLOUD_COLLECTION_RUN_ID', cloud.safe_environment(environment))
+            loaded = roster.load_state(state / cloud.ROSTER)
+            value = loaded[0] if loaded else roster.empty_state()
+            registry = roster.members.load_registry(base_members)
+            member = next(m for m in registry['members'] if m['canonicalName'] == graduate)
+            handle = roster.members.profile_handle(member['xProfileUrl'])
+            change = {'at': '2026-09-30T00:10:00Z', 'runId': 'roster-12345-1', 'kind': 'graduation',
+                      'memberId': member['memberId'], 'name': graduate, 'lastServiceDate': '2026-09-29',
+                      'effectiveFrom': '2026-09-30', 'evidenceUrl': f'https://x.com/{handle}/status/2100000000000000001',
+                      'postId': '2100000000000000001'}
+            value['graduations'].append({
+                'memberId': member['memberId'], 'name': graduate, 'lastServiceDate': '2026-09-29',
+                'evidenceUrl': change['evidenceUrl'], 'postId': change['postId'], 'authorId': '1234567890123',
+                'bodySha256': '0' * 64, 'postCreatedAt': '2026-09-20T00:00:00Z',
+                'detectedAt': change['at'], 'runId': change['runId']})
+            value['changes'].append(change)
+            value['lastRun'] = {'at': '2026-09-30T00:10:00Z', 'date': '2026-09-30', 'runs': 1,
+                                'status': 'ok', 'reason': None}
+            if invalid:
+                value['graduations'][0]['evidenceUrl'] = 'https://x.com/akibazettai/status/2100000000000000001'
+                collector.atomic_json(state / cloud.ROSTER, value)
+            else:
+                roster.save_state(state / cloud.ROSTER, value)
+            collector.atomic_json(report, {
+                'component': 'roster', 'status': 'ok', 'reason': None, 'changes': [change],
+                'requests': {'searches': 2, 'posts': 1, 'analysis': 1}, 'scanned': 2, 'candidates': 1,
+                'exitCode': 0})
+            return code
+        return invoke, calls
+
+    def quiet_personal_child(self, module, seen=None):
+        def invoke(root, state, report, environment):
+            if seen is not None:
+                seen.append(cloud.load_member_registry().load_registry(root / 'data' / 'members.json'))
+            snapshot = module.read_state(state / cloud.PERSONAL)
+            snapshot['lastRun'] = {'status': 'no-results', 'requests': {'searches': 0, 'posts': 0}}
+            collector.atomic_json(state / cloud.PERSONAL, snapshot)
+            collector.atomic_json(report, {'component': 'personal', 'status': 'no-results', 'exitCode': 0,
+                                           'requests': snapshot['lastRun']['requests']})
+            return 0
+        return invoke
+
+    def test_roster_scan_runs_once_a_day_records_on_state_and_publishes_only_the_checkout(self):
+        module, clock = self.finite_personal_fixture()
+        self.personal_slot()
+        committed = (self.root / 'data' / 'members.json').read_bytes()
+        child, calls = self.roster_child()
+        seen = []
+        with mock.patch.object(cloud, 'invoke_roster_automation', side_effect=child), \
+                mock.patch.object(cloud, 'invoke_personal_collector', side_effect=self.quiet_personal_child(module)):
+            disabled = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                         collector=collector, personal=module)
+        self.assertEqual((calls, disabled['rosterCollectionStatus']), ([], 'not-run'))
+        self.assertNotIn(cloud.ROSTER, self.remote_names())
+        self.environment['ROSTER_AUTOMATION_ENABLED'] = 'true'
+        self.personal_slot(7)
+        with mock.patch.object(cloud, 'invoke_roster_automation', side_effect=child), \
+                mock.patch.object(cloud, 'invoke_personal_collector',
+                                  side_effect=self.quiet_personal_child(module, seen)):
+            result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                       collector=collector, personal=module)
+        self.assertEqual(calls, ['12345'])
+        self.assertEqual((result['rosterCollectionStatus'], result['rosterCollectionCode']), ('ok', 0))
+        self.assertEqual(result['rosterAutomation']['changes'][0]['name'], 'あむ')
+        self.assertEqual(result['rosterAutomation']['applied'], 1)
+        saved = self.remote_json(cloud.ROSTER)[0]
+        self.assertEqual(saved['graduations'][0]['lastServiceDate'], '2026-09-29')
+        # The personal child in the same run already sees the graduation.
+        amu = next(m for m in seen[0]['members'] if m['canonicalName'] == 'あむ')
+        self.assertEqual(amu['graduation']['lastServiceDate'], '2026-09-29')
+        self.assertEqual(self.git(self.root, 'show', 'HEAD:data/members.json'), committed)
+        # Same JST day: not due again; the recorded update is still applied for collectors.
+        seen.clear()
+        self.personal_slot(10)
+        with mock.patch.object(cloud, 'invoke_roster_automation', side_effect=child), \
+                mock.patch.object(cloud, 'invoke_personal_collector',
+                                  side_effect=self.quiet_personal_child(module, seen)):
+            again = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                      collector=collector, personal=module)
+        self.assertEqual((calls, again['rosterCollectionStatus']), (['12345'], 'not-run'))
+        amu = next(m for m in seen[0]['members'] if m['canonicalName'] == 'あむ')
+        self.assertIsNotNone(amu['graduation'])
+        # Restore hands the state to the build job, which applies it after the tests.
+        (self.root / 'data' / 'members.json').write_bytes(committed)
+        self.args.mode = 'restore'
+        cloud.orchestrate(self.args, root=self.root, environment=self.environment, collector=collector,
+                          personal=module)
+        self.assertEqual((self.root / 'data' / 'members.json').read_bytes(), committed)
+        restored = self.root / 'data' / cloud.ROSTER
+        self.assertEqual(json.loads(restored.read_bytes()), saved)
+        published = cloud.load_roster_automation().publish(restored, self.root, stamp_assets=False)
+        self.assertEqual([row['name'] for row in published['applied']], ['あむ'])
+
+    def test_roster_failure_keeps_previous_updates_and_is_alerted_without_failing_the_run(self):
+        module, clock = self.finite_personal_fixture()
+        self.personal_slot()
+        self.environment['ROSTER_AUTOMATION_ENABLED'] = 'true'
+        for options, reason in (({'code': 1}, 'roster_local_failure'), ({'invalid': True}, 'roster_local_failure')):
+            with self.subTest(options=options):
+                child, calls = self.roster_child(**options)
+                with mock.patch.object(cloud, 'invoke_roster_automation', side_effect=child), \
+                        mock.patch.object(cloud, 'invoke_personal_collector',
+                                          side_effect=self.quiet_personal_child(module)):
+                    result = cloud.orchestrate(self.args, root=self.root, environment=self.environment,
+                                               collector=collector, personal=module)
+                self.assertEqual(result['persistenceStatus'], 'saved')
+                self.assertEqual((result['rosterCollectionStatus'], result['rosterFailureReason']),
+                                 ('unavailable', reason))
+                self.assertNotIn(cloud.ROSTER, self.remote_names())
+                output = self.base / 'github-output.txt'
+                output.unlink(missing_ok=True)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cloud.emit(result, {'GITHUB_OUTPUT': str(output)})
+                written = output.read_text(encoding='utf-8')
+                self.assertIn('failedComponents=roster\n', written)
+                self.assertIn('rosterCollectionStatus=unavailable\n', written)
+                self.assertIn('rosterFailureReason=roster_local_failure\n', written)
+                self.personal_slot(7 if options.get('code') else 10)
+
+    def test_roster_child_cli_uses_base_registry_its_own_run_id_and_no_publication(self):
+        state = self.base / 'state'
+        state.mkdir()
+        with mock.patch.object(cloud, 'child_process', return_value=mock.Mock(returncode=0)) as child:
+            cloud.invoke_roster_automation(self.root, state, self.base / 'members-base.json',
+                                           self.base / 'report.json',
+                                           {**self.environment, 'AZURE_OPENAI_API_KEY': 'k',
+                                            'CLOUD_COLLECTION_RUN_ID': '12345-1'})
+        argv = child.call_args.args[0]
+        self.assertEqual(argv[3:5], [str(self.root / 'tools' / 'roster-automation.py'), 'run'])
+        parsed = cloud.load_roster_automation().argument_parser().parse_args(argv[4:])
+        self.assertEqual((parsed.run_id, parsed.members), ('roster-12345-1', self.base / 'members-base.json'))
+        self.assertEqual(parsed.source_state, state / cloud.SOURCE_USAGE)
+        environment = child.call_args.kwargs['environment']
+        self.assertEqual(environment['AZURE_OPENAI_API_KEY'], 'k')
+        self.assertNotIn('GH_TOKEN', environment)
+        self.assertNotIn('CLOUD_COLLECTION_RUN_ID', environment)
+
     def test_real_seven_am_slot_identity_is_separate_from_both_accounting_run_ids(self):
         module, _ = self.finite_personal_fixture()
         slot_id = 'personal:2026-09-23T07:00+09:00'
