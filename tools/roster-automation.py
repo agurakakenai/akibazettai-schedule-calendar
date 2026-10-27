@@ -9,6 +9,15 @@ used. Results live in roster-updates.json on collector-state (post ID, URL, body
 main is never committed. data/members.json stays authoritative for manual decisions:
 a manual graduation wins, and `member-registry.py reject-auto-graduation` rejects one.
 
+New members come from the official staff page (https://akibazettai.com/staff/), read once a
+day with check-roster.py's parser. A name is added only when it newly appears there (or was
+never known at all) and nobody currently holds it; a name reused from an earlier generation
+becomes a separate member with a new ID, never a reactivation. Her store comes from the
+page's store tab and her X account from her introduction page when listed there; without
+one she is added but not collected. Disappearing from the page never removes anyone. A
+failed or structurally changed page changes nothing and is reported for the alert.
+A manual registration wins, and `member-registry.py reject-auto-addition` rejects one.
+
 Commands:
   run      collector child: search, verify and record (shared source/AI ledgers)
   publish  apply the recorded updates to data/members.json, members.js and asset stamps
@@ -18,6 +27,7 @@ import calendar
 import copy
 import datetime as dt
 import hashlib
+import html as html_module
 import http.client
 import importlib.util
 import json
@@ -29,6 +39,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +48,11 @@ JST = dt.timezone(dt.timedelta(hours=9))
 FILE = 'roster-updates.json'
 SEARCH_HOST = 'search.yahoo.co.jp'
 POST_HOST = 'cdn.syndication.twimg.com'
+STAFF_URL = 'https://akibazettai.com/staff/'
+STAFF_DETAIL = re.compile(r'https://akibazettai\.com/staff/[A-Za-z0-9_-]{1,80}/\Z')
+MAX_STAFF_BYTES = 2_000_000
+MIN_STAFF_ENTRIES = 10
+MAX_ADDITIONS = 5
 OFFICIAL_AUTHOR_ID = '822429861218131969'
 CONTRACT = 'roster-graduation-v1'
 MAX_SEARCHES, MAX_POSTS, MAX_ANALYSIS = 6, 3, 2
@@ -101,6 +117,7 @@ members = _module('roster_member_registry', 'member-registry.py')
 yahoo = _module('roster_yahoo', 'yahoo-search.py')
 ledger = _module('roster_analysis_state', 'analysis-state.py')
 source_state = _module('roster_source_state', 'source-state.py')
+site = _module('roster_check_roster', 'check-roster.py')
 
 
 class RosterError(ValueError):
@@ -151,7 +168,8 @@ def keys(value, required, optional=()):
 
 
 def empty_state():
-    return {'schemaVersion': 1, 'graduations': [], 'changes': [], 'scan': {}, 'posts': {}, 'lastRun': None}
+    return {'schemaVersion': 1, 'graduations': [], 'additions': [], 'changes': [], 'scan': {}, 'posts': {},
+            'staff': None, 'lastRun': None}
 
 
 def status_url(handle, tid):
@@ -175,22 +193,46 @@ def validate_graduation(row):
     require(RUN_ID.fullmatch(row['runId'] or '') is not None)
 
 
-def validate_change(row):
-    keys(row, ('at', 'runId', 'kind', 'memberId', 'name', 'lastServiceDate', 'effectiveFrom',
-               'evidenceUrl', 'postId'))
-    timestamp(row['at'])
-    require(RUN_ID.fullmatch(row['runId'] or '') is not None and row['kind'] == 'graduation')
+def profile_or_none(value):
+    require(value is None or members.normalize_profile_url(value) == value)
+
+
+def validate_addition(row):
+    keys(row, ('memberId', 'name', 'homeStore', 'xProfileUrl', 'detailUrl', 'pageSha256', 'detectedAt', 'runId'))
     require(isinstance(row['memberId'], str) and members.MEMBER_ID.fullmatch(row['memberId']))
     members.valid_name(row['name'])
-    last = dt.date.fromisoformat(day_text(row['lastServiceDate']))
-    require(day_text(row['effectiveFrom']) == (last + dt.timedelta(days=1)).isoformat())
-    require(members.STATUS_URL.fullmatch(row['evidenceUrl'] or '') is not None
-            and POST_ID.fullmatch(row['postId'] or '') is not None)
+    require(row['homeStore'] in ('s1', 's2', 's3', 's4'))
+    profile_or_none(row['xProfileUrl'])
+    require(isinstance(row['detailUrl'], str) and STAFF_DETAIL.fullmatch(row['detailUrl']))
+    require(HEX.fullmatch(row['pageSha256'] or '') is not None)
+    timestamp(row['detectedAt'])
+    require(RUN_ID.fullmatch(row['runId'] or '') is not None)
+
+
+def validate_change(row):
+    require(isinstance(row, dict) and row.get('kind') in ('graduation', 'addition'))
+    if row['kind'] == 'addition':
+        keys(row, ('at', 'runId', 'kind', 'memberId', 'name', 'homeStore', 'xProfileUrl', 'evidenceUrl'))
+        require(row['homeStore'] in ('s1', 's2', 's3', 's4'))
+        profile_or_none(row['xProfileUrl'])
+        require(isinstance(row['evidenceUrl'], str) and STAFF_DETAIL.fullmatch(row['evidenceUrl']))
+    else:
+        keys(row, ('at', 'runId', 'kind', 'memberId', 'name', 'lastServiceDate', 'effectiveFrom',
+                   'evidenceUrl', 'postId'))
+        last = dt.date.fromisoformat(day_text(row['lastServiceDate']))
+        require(day_text(row['effectiveFrom']) == (last + dt.timedelta(days=1)).isoformat())
+        require(members.STATUS_URL.fullmatch(row['evidenceUrl'] or '') is not None
+                and POST_ID.fullmatch(row['postId'] or '') is not None)
+    timestamp(row['at'])
+    require(RUN_ID.fullmatch(row['runId'] or '') is not None)
+    require(isinstance(row['memberId'], str) and members.MEMBER_ID.fullmatch(row['memberId']))
+    members.valid_name(row['name'])
 
 
 def validate_state(value):
     try:
-        keys(value, ('schemaVersion', 'graduations', 'changes', 'scan', 'posts', 'lastRun'))
+        # additions/staff arrived after the first graduation-only saves; both stay optional.
+        keys(value, ('schemaVersion', 'graduations', 'changes', 'scan', 'posts', 'lastRun'), ('additions', 'staff'))
         require(type(value['schemaVersion']) is int and value['schemaVersion'] == 1)
         require(isinstance(value['graduations'], list) and isinstance(value['changes'], list))
         seen = set()
@@ -198,6 +240,21 @@ def validate_state(value):
             validate_graduation(row)
             require(row['postId'] not in seen)
             seen.add(row['postId'])
+        require(isinstance(value.get('additions', []), list))
+        added = set()
+        for row in value.get('additions', []):
+            validate_addition(row)
+            require(row['memberId'] not in added)
+            added.add(row['memberId'])
+        staff = value.get('staff')
+        if staff is not None:
+            keys(staff, ('checkedAt', 'pageSha256', 'names'))
+            timestamp(staff['checkedAt'])
+            require(HEX.fullmatch(staff['pageSha256'] or '') is not None)
+            require(isinstance(staff['names'], list) and len(staff['names']) <= 500
+                    and len(set(staff['names'])) == len(staff['names']))
+            for name in staff['names']:
+                members.valid_name(name)
         require(len(value['changes']) <= HISTORY_LIMIT)
         for row in value['changes']:
             validate_change(row)
@@ -252,8 +309,9 @@ def save_state(path, value):
 
 def effective_registry(base, state):
     """Committed registry with the recorded automatic updates applied (manual wins)."""
-    graduations = state['graduations'] if state else []
-    return members.apply_automation(base, graduations)
+    if not state:
+        return members.apply_automation(base)
+    return members.apply_automation(base, state['graduations'], state.get('additions', []))
 
 
 def due(state, now):
@@ -644,6 +702,112 @@ def collect_graduations(state, base, bindings, client, analyzer, *, now, run_id,
     return changes, counts
 
 
+class StaffUnavailable(Exception):
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+class StaffClient:
+    """Plain GETs to the official site only: the staff list and introduction pages."""
+
+    def __init__(self, *, opener=None, sleep=time.sleep):
+        self.opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        self.sleep = sleep
+        self.requests = 0
+
+    def get(self, url):
+        require(url == STAFF_URL or STAFF_DETAIL.fullmatch(url) is not None, 'staff_route_refused')
+        if self.requests:
+            self.sleep(2)
+        self.requests += 1
+        try:
+            with self.opener.open(urllib.request.Request(url), timeout=45) as response:
+                if response.getcode() != 200:
+                    raise StaffUnavailable('staff_page_unavailable')
+                body = response.read(MAX_STAFF_BYTES + 1)
+        except (urllib.error.URLError, OSError, http.client.HTTPException, Stop):
+            raise StaffUnavailable('staff_page_unavailable') from None
+        if len(body) > MAX_STAFF_BYTES:
+            raise StaffUnavailable('staff_page_structure_changed')
+        return body.decode('utf-8', 'replace')
+
+
+def introduction_profile(document, name):
+    """Her X profile from her own introduction page, only when the page is hers."""
+    heading = re.search(r'<div id="staffDetail"[^>]*>\s*<h3>([^<]{1,40})</h3>', document)
+    if heading is None or html_module.unescape(heading.group(1)).strip() != name:
+        return None
+    match = re.search(r'<em>\s*(?:Twitter|X|Ｘ)\s*</em>\s*<p>\s*<a href="(https://(?:twitter|x)\.com/'
+                      r'[A-Za-z0-9_]{1,15}/?)"', document)
+    if match is None:
+        return None
+    try:
+        return members.normalize_profile_url(match.group(1))
+    except members.RegistryError:
+        return None
+
+
+def check_staff(state, base, client, *, now, run_id, clock):
+    """Record names newly listed on the official staff page as new members."""
+    registry, _, _ = effective_registry(base, state)
+    document = client.get(STAFF_URL)
+    if 'id="maidList"' not in document:
+        raise StaffUnavailable('staff_page_structure_changed')
+    entries = site.parse_site_entries(document)
+    previous = state.get('staff')
+    try:
+        for entry in entries:
+            members.valid_name(entry['name'])
+    except members.RegistryError:
+        raise StaffUnavailable('staff_page_structure_changed') from None
+    if len(entries) < MIN_STAFF_ENTRIES or previous and len(entries) < len(previous['names']) // 2:
+        raise StaffUnavailable('staff_page_structure_changed')
+    listed_before = set(previous['names']) if previous else None
+    known = {name for member in registry['members'] for name in members.names_of(member)}
+    known |= {row['name'] for row in registry['unresolvedNames']}
+    handles = {members.profile_handle(m['xProfileUrl']) for m in registry['members'] if m['xProfileUrl']}
+    handles |= set(registry['reservedHandles'])
+    handles |= {members.profile_handle(account['profileUrl'])
+                for row in registry['unresolvedNames'] for account in row['legacyAccounts']}
+    changes = []
+    for entry in entries:
+        name = entry['name']
+        if any(name in members.names_of(m) and not members.retired_before(m, now) for m in registry['members']):
+            continue
+        # A name still listed since the previous check is the same person (for example a
+        # graduate the page has not removed yet); only a newly listed or never-known name is new.
+        if name in known and (listed_before is None or name in listed_before):
+            continue
+        if members.rejected_addition(registry, name) or len(changes) >= MAX_ADDITIONS:
+            continue
+        detail = entry['href'] if isinstance(entry['href'], str) and STAFF_DETAIL.fullmatch(entry['href']) else None
+        if detail is None:
+            raise StaffUnavailable('staff_page_structure_changed')
+        page = client.get(detail)
+        profile = introduction_profile(page, name)
+        if profile is not None and members.profile_handle(profile) in handles:
+            profile = None
+        detected = clock()
+        member_id = 'm-' + uuid.uuid5(uuid.NAMESPACE_URL,
+                                      f'akibazettai:official-site:{name}:{stamp(detected)}').hex
+        addition = {'memberId': member_id, 'name': name, 'homeStore': entry['store'], 'xProfileUrl': profile,
+                    'detailUrl': detail, 'pageSha256': digest(page), 'detectedAt': stamp(detected),
+                    'runId': run_id}
+        state['additions'].append(addition)
+        change = {'at': stamp(detected), 'runId': run_id, 'kind': 'addition', 'memberId': member_id, 'name': name,
+                  'homeStore': entry['store'], 'xProfileUrl': profile, 'evidenceUrl': detail}
+        state['changes'].append(change)
+        del state['changes'][:-HISTORY_LIMIT]
+        changes.append(change)
+        if profile is not None:
+            handles.add(members.profile_handle(profile))
+        known.add(name)
+    state['staff'] = {'checkedAt': stamp(clock()), 'pageSha256': digest(document),
+                      'names': [entry['name'] for entry in entries]}
+    return changes, len(entries)
+
+
 class AnalyzerGate:
     """Adds the non-reserving ledger preflight used before any post GET."""
 
@@ -677,16 +841,32 @@ def read_bindings(*paths):
 
 
 def run(args, *, clock=lambda: dt.datetime.now(UTC), sleep=time.sleep, environment=None,
-        source_factory=None, usage_factory=None, analyzer_factory=None, opener=None):
+        source_factory=None, usage_factory=None, analyzer_factory=None, opener=None, staff_opener=None,
+        staff_check=True):
     environment = os.environ if environment is None else environment
     require(RUN_ID.fullmatch(args.run_id or '') is not None, 'invalid_roster_run_id')
     started = clock()
     loaded = load_state(args.state)
     state = loaded[0] if loaded else empty_state()
+    state.setdefault('additions', [])
+    state.setdefault('staff', None)
     base = members.load_registry(args.members)
     bindings = read_bindings(args.personal_state, args.half_month_state)
     report = {'component': 'roster', 'status': 'no-new', 'reason': None, 'changes': [],
-              'requests': {'searches': 0, 'posts': 0, 'analysis': 0}, 'scanned': 0, 'candidates': 0}
+              'requests': {'searches': 0, 'posts': 0, 'analysis': 0}, 'scanned': 0, 'candidates': 0,
+              'staff': {'status': 'ok', 'reason': None, 'listed': 0, 'requests': 0}}
+    # The official staff page first: a failure there changes nothing and is alerted, while
+    # the graduation scan still runs.
+    staff = StaffClient(opener=staff_opener, sleep=sleep)
+    try:
+        if staff_check:
+            _, report['staff']['listed'] = check_staff(state, base, staff, now=started, run_id=args.run_id,
+                                                       clock=clock)
+        else:
+            report['staff']['status'] = 'skipped'
+    except StaffUnavailable as exc:
+        report['staff'].update(status='unavailable', reason=exc.reason)
+    report['staff']['requests'] = staff.requests
     source_factory = source_factory or (lambda: source_state.SharedSource(
         args.source_state, run_id=args.run_id, component='roster', clock=clock, sleep=sleep))
     usage_factory = usage_factory or (lambda: ledger.SharedUsage(
@@ -718,6 +898,11 @@ def run(args, *, clock=lambda: dt.datetime.now(UTC), sleep=time.sleep, environme
     except (source_state.SourceFailure, ledger.UsageFailure) as exc:
         report.update(status='unavailable', reason=str(exc.reason) if REASON.fullmatch(str(exc.reason))
                       else 'ledger_unavailable')
+    report['changes'] = [row for row in state['changes'] if row['runId'] == args.run_id]
+    if report['status'] == 'no-new' and report['changes']:
+        report['status'] = 'ok'
+    if report['staff']['status'] == 'unavailable' and report['status'] != 'unavailable':
+        report.update(status='unavailable', reason=report['staff']['reason'])
     previous = state['lastRun']
     today = started.astimezone(JST).date().isoformat()
     state['lastRun'] = {'at': stamp(clock()), 'date': today,
@@ -753,21 +938,22 @@ def publish(state_path, root, *, stamp_assets=True, base_bytes=None):
 
 def summary_lines(applied, skipped, report=None):
     lines = ['## Automatic roster updates (collector-state, not committed to main)\n']
-    if report:
-        lines.append(f"\nGraduation scan: status={report['status']}; reason={report['reason'] or 'none'}; "
-                     f"members searched={report['scanned']}; candidates={report['candidates']}; "
-                     f"search/post/AI={report['requests']['searches']}/{report['requests']['posts']}/"
-                     f"{report['requests']['analysis']}.\n")
-        for row in report['changes']:
-            lines.append(f"\n- New: {row['name']} graduates after {row['lastServiceDate']}; removed from the "
-                         f"roster and targets from {row['effectiveFrom']}; evidence <{row['evidenceUrl']}>.\n")
     for row in applied:
+        if row['kind'] == 'addition':
+            account = (f"X {row['xProfileUrl']}" if row['xProfileUrl']
+                       else 'no X account on her introduction page, so she is not a collection target yet')
+            lines.append(f"\n- Applied: new member {row['name']} ({row['homeStore']}) from the official staff page "
+                         f"<{row['detailUrl']}>; {account}"
+                         + (f"; account kept for review ({row['accountDropped']})" if 'accountDropped' in row else '')
+                         + '.\n')
+            continue
         effective = (dt.date.fromisoformat(row['lastServiceDate']) + dt.timedelta(days=1)).isoformat()
         lines.append(f"\n- Applied: {row['name']} last service {row['lastServiceDate']}, off the roster from "
                      f"{effective}; <{row['evidenceUrl']}>.\n")
     for row in skipped:
+        evidence = row.get('evidenceUrl') or row.get('detailUrl')
         lines.append(f"\n- Kept manual roster for {row['name']} ({row['skipReason']}); automatic evidence "
-                     f"<{row['evidenceUrl']}>.\n")
+                     f"<{evidence}>.\n")
     return lines
 
 

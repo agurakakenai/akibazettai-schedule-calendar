@@ -17,6 +17,7 @@ py -B -X utf8 tools\member-registry.py set-status --member "<memberIdまたは�
 py -B -X utf8 tools\member-registry.py set-graduation --member "<memberIdまたは名前>" --last-service-date "<YYYY-MM-DD>" --evidence-url "https://x.com/<本人または akibazettai>/status/<id>"
 py -B -X utf8 tools\member-registry.py clear-graduation --member "<memberIdまたは名前>"
 py -B -X utf8 tools\member-registry.py reject-auto-graduation --member "<memberIdまたは名前>" [--post-id "<投稿ID>"]
+py -B -X utf8 tools\member-registry.py reject-auto-addition --name "<名前>"
 py -B -X utf8 tools\member-registry.py check
 py -B -X utf8 tools\member-registry.py report
 ```
@@ -45,6 +46,18 @@ py -B -X utf8 tools\member-registry.py report
 - **効果**: 手動の`set-graduation`と同じで、最後のお給仕の日の翌日から所属メイド欄・半月予定と本人当日の取得対象から外し、過去の予定と卒業日までの予定は残します。
 - **手動が優先**: `members.json`に手動の卒業日があれば、自動の記録は使いません。自動の結果を取り消すときは`reject-auto-graduation`（`--post-id`でその投稿だけ、省略でその人の自動検出すべて）を通常のPRで反映します。手動の卒業日は`clear-graduation`で消せます。
 - **見える化**: 自動で変えた内容はrunのjob summary（「Automatic roster updates」）と`::notice::`に、名前・最後のお給仕の日・除外開始日・根拠URLで出します。取得が止まったときは名簿を変えず、通知Issueのcomponent `roster`で知らせます（次に`roster`が成功したrunで閉じます）。リポジトリ変数`ROSTER_AUTOMATION_ENABLED=false`で止められます。
+
+### 昇格（新メイド）の自動追加（公式サイトのメイドさん紹介）
+
+同じ自動更新の枠で、JST1日1回、[公式サイトのメイドさん紹介](https://akibazettai.com/staff/)を取得します。読み取りは`tools/check-roster.py`の`parse_site`と同じ解析（`parse_site_entries`は紹介ページへのリンクも返します）で、確認なしで反映します。
+
+- **追加する名前**: 前回の取得になかった名前が新しく載り、その名前を今持っている在籍メンバーがいないときだけです。名簿にも旧名一覧にもない名前は、初回の取得でも追加します。名簿にある名前を初回にまとめて追加することはありません。卒業日を過ぎても公式サイトに残っているメイド（例：ゆめさん）は、載り続けている間は同じ人として扱い、追加も再有効化もしません。
+- **同じ名前の再利用**: 名前は世代をまたいで使い回されます。前の持ち主が卒業済み（最後のお給仕の日が新メンバーの登録日より前）、または退在籍日の確定した`inactive`のときだけ、**別IDの新メンバー**として追加します。昔のメンバーを再有効化することはありません。名前で引くと今の持ち主になり、昔のメンバーは記録・IDとして残ります。旧名一覧（`unresolvedNames`）の名前なら、旧アカウントの記録を残したまま新メンバーに対応付けます。収集の本人確認記録は名前で保存されているため、前の持ち主の記録が残っている名前では新メンバーが`account_identity_mismatch`として取得対象から外れます（取り違えを防ぐための停止で、確認後に手動で解消します）。
+- **所属店とX**: 所属店は店舗タブ（`shopNum01`〜`04` → `s1`〜`s4`）から取ります。Xアカウントは、本人の紹介ページ（見出しが同じ名前のページ）にあれば使います（`accountTrust: official`）。紹介ページにない場合や、既存・旧・予約のアカウントと重なる場合は空のまま追加し、**取得対象には含めません**。その旨をjob summaryに出します。役割は`normal`で登録します。
+- **外さない**: 公式サイトから消えたことだけでは在籍を外しません（従来どおり）。
+- **失敗したとき**: 取得できない、`maidList`がない、掲載が10名未満、前回の半分未満に減った、紹介ページへのリンクが読めない、といった場合は**名簿を変えず**、前回の取得結果も更新しません。component `roster`の通知Issueで知らせます。
+- **記録・反映・見える化**: 卒業の自動検出と同じです。`collector-state`の`roster-updates.json`に、紹介ページのURL・本文のSHA-256・検出時刻・変更履歴を残します。公開時だけ名簿に当て、mainへの自動commitはしません。job summaryと`::notice::`に、追加した名前・所属店・X（または取得対象外）を出します。
+- **手動が優先**: 同じ名前を手動で登録（`add-normal`）すれば、手動のメンバーを使います。自動の追加を取り消すときは`reject-auto-addition --name "<名前>"`を通常のPRで反映します。自動で追加されたメンバーの自動卒業は、`reject-auto-graduation --member <memberId>`で取り消せます。
 
 停止操作は手元の保存予定から残る将来予定を示します。`--plans`で`name/date/shift`参照配列を指定することもできます。これは最新canonicalをネット取得した結果ではありません。`--bindings`で保存済みの本人・半月stateを指定すれば同定も照合できます。省略時の`binding_not_loaded`や`eligible_not_collected`は、本人確認・投稿取得の完了を意味しません。
 
@@ -814,7 +827,7 @@ py tools/build-insights.py
 見落とし方を4通り作って、全部つかまえることを確かめてあります（roster から抜く／
 配属を書き換える／卒業した人を残す／並びを入れ替える）。
 
-**公式サイトへのネットワーク照合は任意実行**です。名簿をいじるときと、時々流してください。一方、`HTMLParser` によるローカル解析と名簿差分の回帰は `tools/tests/test_check_roster.py` に入っています。保存HTMLの店舗・名前・順序やHTMLの表記ゆれをネットワークなしで検査し、外部サイトの停止とは切り離しています。
+**公式サイトへのネットワーク照合は任意実行**です。名簿をいじるときと、時々流してください（新しく載った名前の追加だけは、上の「昇格（新メイド）の自動追加」で毎日自動に行います）。一方、`HTMLParser` によるローカル解析と名簿差分の回帰は `tools/tests/test_check_roster.py` に入っています。保存HTMLの店舗・名前・順序やHTMLの表記ゆれをネットワークなしで検査し、外部サイトの停止とは切り離しています。
 
 ### 刻印は、コミットだけで確かめられます
 

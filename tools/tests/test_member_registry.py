@@ -484,6 +484,59 @@ class GraduationTests(unittest.TestCase):
         self.assertTrue(set(confirmed) <= set(registry.display_projection(value, '2026-10-28')['knownNames']))
 
 
+class GenerationTests(unittest.TestCase):
+    def reused(self, old_changes, registered=LATER + dt.timedelta(days=30)):
+        value = fixture()
+        value['members'][0].update(old_changes)
+        newer = registry.new_member(NAME, 'https://x.com/fixture_next', registered, member_id='m-' + 'b' * 32,
+                                    source='official-site')
+        value['members'].append(newer)
+        return value
+
+    def test_a_name_is_shared_only_after_the_earlier_holder_left(self):
+        graduated = {'graduation': {'lastServiceDate': '2026-09-20', 'evidenceUrl': EVIDENCE}}
+        value = registry.validate_registry(self.reused(graduated))
+        self.assertEqual(registry.lookup(value, NAME)['memberId'], 'm-' + 'b' * 32)
+        self.assertEqual(registry.lookup(value, value['members'][0]['memberId'])['canonicalName'], NAME)
+        targets, coverage = registry.collection_population(value, {}, today='2026-10-10')
+        self.assertEqual(set(targets), {'m-' + 'b' * 32})
+        self.assertEqual(coverage[value['members'][0]['memberId']]['reason'], 'graduated')
+        self.assertEqual(registry.display_projection(value, '2026-10-10')['knownNames'], [NAME])
+        inactive = {'membership': 'inactive', 'collection': 'paused', 'inactiveFrom': '2026-09-20'}
+        registry.validate_registry(self.reused(inactive))
+        for changes, registered in (
+                ({}, LATER + dt.timedelta(days=30)),
+                (graduated, dt.datetime(2026, 9, 20, 5, tzinfo=registry.UTC)),
+                ({'membership': 'inactive', 'collection': 'paused'}, LATER + dt.timedelta(days=30))):
+            with self.subTest(changes=changes), self.assertRaisesRegex(registry.RegistryError, 'member_name_collision'):
+                registry.validate_registry(self.reused(changes, registered))
+
+    def test_automatic_addition_keeps_the_member_when_only_her_account_collides(self):
+        value = fixture()
+        entry = {'memberId': 'm-' + 'c' * 32, 'name': '試験後輩', 'homeStore': 's2', 'xProfileUrl': URL,
+                 'detailUrl': 'https://akibazettai.com/staff/detail_x/', 'pageSha256': '0' * 64,
+                 'detectedAt': '2026-10-01T00:00:00Z', 'runId': 'roster-1-1'}
+        effective, applied, skipped = registry.apply_automation(value, additions=[entry])
+        self.assertEqual(skipped, [])
+        self.assertEqual(applied[0]['accountDropped'], 'member_handle_collision')
+        added = registry.lookup(effective, '試験後輩')
+        self.assertEqual((added['xProfileUrl'], added['accountTrust'], added['registrationSource']),
+                         (None, None, 'official-site'))
+
+    def test_cli_rejects_an_automatic_addition_by_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'members.json'
+            registry.save_registry(path, fixture(), None)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = registry.main(['--registry', str(path), 'reject-auto-addition', '--name', '新しい子'],
+                                     clock=lambda: LATER)
+            self.assertEqual(code, 0)
+            self.assertEqual(registry.load_registry(path)['automationOverrides'][0],
+                             {'kind': 'addition', 'name': '新しい子', 'decision': 'reject',
+                              'recordedAt': registry.stamp(LATER)})
+
+
 class MigrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

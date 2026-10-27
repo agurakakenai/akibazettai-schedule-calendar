@@ -4842,6 +4842,28 @@ class PersonalSavedTests(unittest.TestCase):
             self.saved.validate_imports({str(index): {} for index in range(1001)}, self.personal)
 
 
+class RosterReportTests(unittest.TestCase):
+    def test_report_accepts_staff_and_addition_changes_but_not_private_or_inconsistent_values(self):
+        roster = cloud.load_roster_automation()
+        addition = {'at': '2026-10-29T01:00:00Z', 'runId': 'roster-1-1', 'kind': 'addition',
+                    'memberId': 'm-' + 'a' * 32, 'name': '新人', 'homeStore': 's1', 'xProfileUrl': None,
+                    'evidenceUrl': 'https://akibazettai.com/staff/detail_new/'}
+        report = {'component': 'roster', 'status': 'ok', 'reason': None, 'changes': [addition],
+                  'requests': {'searches': 1, 'posts': 0, 'analysis': 0}, 'scanned': 1, 'candidates': 0,
+                  'exitCode': 0, 'staff': {'status': 'ok', 'reason': None, 'listed': 37, 'requests': 2}}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'report.json'
+            path.write_text(json.dumps(report, ensure_ascii=False), encoding='utf-8')
+            self.assertEqual(cloud.validate_roster_report(path, 0, roster)['changes'], [addition])
+            for change in ({'status': 'unavailable'}, {'staff': {**report['staff'], 'status': 'broken'}},
+                           {'changes': [{**addition, 'evidenceUrl': 'https://example.com/x/'}]},
+                           {'staff': {**report['staff'], 'reason': 'C:\\private'}}):
+                with self.subTest(change=change):
+                    path.write_text(json.dumps({**report, **change}, ensure_ascii=False), encoding='utf-8')
+                    with self.assertRaises(cloud.CloudError):
+                        cloud.validate_roster_report(path, 0, roster)
+
+
 class HalfMonthCohortTests(unittest.TestCase):
     def cohort(self, *periods):
         return {'collection': {'periods': [list(period) for period in periods]}}

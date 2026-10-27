@@ -1175,8 +1175,8 @@ def invoke_roster_automation(root, state, base_members, report, environment):
 
 def validate_roster_report(path, code, roster):
     report, _ = read_json(path)
-    keys(report, ('component', 'status', 'reason', 'changes', 'requests', 'scanned', 'candidates', 'exitCode'),
-         ('component', 'status', 'reason', 'changes', 'requests', 'scanned', 'candidates', 'exitCode'))
+    fields = ('component', 'status', 'reason', 'changes', 'requests', 'scanned', 'candidates', 'exitCode')
+    keys(report, (*fields, 'staff'), fields)
     require(report['component'] == 'roster' and report['status'] in ROSTER_STATUSES
             and report['exitCode'] == code == ROSTER_STATUSES[report['status']], 'roster_status_mismatch')
     require(report['reason'] is None or isinstance(report['reason'], str) and SAFE_REASON.fullmatch(report['reason']),
@@ -1184,6 +1184,13 @@ def validate_roster_report(path, code, roster):
     keys(report['requests'], ('searches', 'posts', 'analysis'), ('searches', 'posts', 'analysis'))
     for value in (*report['requests'].values(), report['scanned'], report['candidates']):
         integer(value, 0, 1000)
+    if 'staff' in report:
+        staff = report['staff']
+        keys(staff, ('status', 'reason', 'listed', 'requests'), ('status', 'reason', 'listed', 'requests'))
+        require(staff['status'] in ('ok', 'unavailable', 'skipped') and (staff['reason'] is None or isinstance(
+            staff['reason'], str) and SAFE_REASON.fullmatch(staff['reason'])), 'roster_report_invalid')
+        integer(staff['listed'], 0, 1000)
+        integer(staff['requests'], 0, 100)
     require(isinstance(report['changes'], list), 'roster_report_invalid')
     for row in report['changes']:
         try:
@@ -1224,6 +1231,8 @@ def run_roster(root, collected, state_dir, work, base_members, environment, resu
                   rosterFailureReason=report['reason'] if report['status'] == 'unavailable' else '')
     result['rosterAutomation'] = {key: report[key] for key in (
         'status', 'reason', 'changes', 'requests', 'scanned', 'candidates')}
+    if 'staff' in report:
+        result['rosterAutomation']['staff'] = report['staff']
     applied = materialize_registry(root, collected / ROSTER, base_members.read_bytes())
     result['rosterAutomation']['applied'] = len(applied['applied'])
     result['rosterAutomation']['keptManual'] = [
@@ -2628,7 +2637,18 @@ def emit(result, environment):
                          f"members searched={roster['scanned']}; candidates={roster['candidates']}; "
                          f"search/post/AI={roster['requests']['searches']}/{roster['requests']['posts']}/"
                          f"{roster['requests']['analysis']}; automatic updates applied={roster['applied']}.\n")
+            staff = roster.get('staff')
+            if staff:
+                lines.append(f"\nOfficial staff page: status={staff['status']}; reason={staff['reason'] or 'none'}; "
+                             f"listed={staff['listed']}; requests={staff['requests']}. "
+                             "Leaving the page never removes anyone.\n")
             for row in roster['changes']:
+                if row['kind'] == 'addition':
+                    account = (f"X {row['xProfileUrl']}" if row['xProfileUrl'] else
+                               'no X account on her introduction page: not a collection target until one is set')
+                    lines.append(f"\n- New member {row['name']} ({row['homeStore']}) from the official staff page "
+                                 f"<{row['evidenceUrl']}>; {account}.\n")
+                    continue
                 lines.append(f"\n- {row['name']}: last service {row['lastServiceDate']}; off the roster, "
                              f"filters and collection targets from {row['effectiveFrom']}; "
                              f"evidence <{row['evidenceUrl']}>.\n")
@@ -2640,6 +2660,10 @@ def emit(result, environment):
         with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
             target.writelines(lines)
     for row in (roster or {}).get('changes', []):
+        if row['kind'] == 'addition':
+            print(f"::notice::Automatic new member: {row['name']} ({row['homeStore']}) from {row['evidenceUrl']}"
+                  + ('' if row['xProfileUrl'] else '; no X account, not collected'))
+            continue
         print(f"::notice::Automatic graduation: {row['name']} off the roster from {row['effectiveFrom']} "
               f"(evidence {row['evidenceUrl']})")
     failures = [row for row in result.get('componentFailures', []) if isinstance(row, dict)]

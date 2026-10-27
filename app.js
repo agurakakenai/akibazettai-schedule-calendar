@@ -136,7 +136,7 @@
     if (!fields(value, ["schemaVersion", "members", "unresolvedNames"]) || value.schemaVersion !== 1 ||
         !Array.isArray(value.members) || !Array.isArray(value.unresolvedNames)) invalid();
     const ids = new Map();
-    const names = new Set();
+    const names = new Map();
     const handles = new Set();
     for (const member of value.members) {
       if (!fields(member, ["memberId", "canonicalName", "displayName", "aliases", "role", "membership",
@@ -157,8 +157,7 @@
             : !["s1", "s2", "s3", "s4"].includes(member.homeStore) ||
               !["official", "legacy-reviewed", "user-provided"].includes(member.homeStoreSource))) invalid();
       for (const name of new Set([member.canonicalName, member.displayName, ...member.aliases])) {
-        if (names.has(name)) invalid();
-        names.add(name);
+        names.set(name, [...(names.get(name) ?? []), member]);
       }
       if (member.xProfileUrl !== null) {
         const match = typeof member.xProfileUrl === "string" &&
@@ -177,6 +176,11 @@
       }
       ids.set(member.memberId, member);
     }
+    // Names are reused across generations; a shared name may have at most one holder who has
+    // not left (an announced graduation or a confirmed inactive date).
+    for (const holders of names.values()) {
+      if (holders.filter((member) => !retiredMember(member)).length > 1) invalid();
+    }
     for (const member of value.members) {
       if (member.orderBefore !== null && (typeof member.orderBefore !== "string" ||
           member.role !== "normal" || ids.get(member.orderBefore)?.role !== "normal")) invalid();
@@ -191,9 +195,13 @@
     }
     for (const name of value.unresolvedNames) {
       if (!nameOK(name) || names.has(name)) invalid();
-      names.add(name);
+      names.set(name, []);
     }
     return value;
+  }
+
+  function retiredMember(member) {
+    return member.graduation !== null || (member.membership === "inactive" && member.inactiveFrom !== null);
   }
 
   function createMemberRegistryAdapter(value, today = tokyoToday()) {
@@ -202,25 +210,31 @@
       Object.freeze({ ...member, aliases: Object.freeze([...member.aliases]),
         graduation: member.graduation && Object.freeze({ ...member.graduation }) })));
     const byId = new Map(members.map((member) => [member.memberId, member]));
-    const byName = new Map(members.flatMap((member) =>
-      [...new Set([member.canonicalName, member.displayName, ...member.aliases])].map((name) => [name, member])));
+    // A reused name resolves to its current holder; earlier generations stay known by ID.
+    const byName = new Map();
+    const resolutionOrder = [...members.filter(retiredMember), ...members.filter((member) => !retiredMember(member))];
+    for (const member of resolutionOrder) {
+      for (const name of new Set([member.canonicalName, member.displayName, ...member.aliases])) {
+        byName.set(name, member);
+      }
+    }
     const ordered = [];
     const append = (member) => {
       members.filter((candidate) => candidate.orderBefore === member.memberId).forEach(append);
       ordered.push(member);
     };
     members.filter((member) => member.orderBefore === null).forEach(append);
-    const names = (select) => Object.freeze(ordered.filter(select).map((member) => member.canonicalName));
+    const names = (select) => Object.freeze([...new Set(ordered.filter(select).map((member) => member.canonicalName))]);
     // From the day after her announced last service day, she leaves the roster and filters.
     const graduated = (member) => Boolean(member?.graduation) && today > member.graduation.lastServiceDate;
     return Object.freeze({
       members,
       activeNames: names((member) => member.membership === "active" && !graduated(member)),
-      graduatedNames: names(graduated),
+      graduatedNames: names((member) => graduated(member) && byName.get(member.canonicalName) === member),
       knownNames: names(() => true),
       kitchenStaff: names((member) => member.role === "kitchen"),
       unresolvedNames: Object.freeze([...value.unresolvedNames]),
-      homeStore: Object.freeze(Object.fromEntries(members.filter((member) => member.homeStore)
+      homeStore: Object.freeze(Object.fromEntries(resolutionOrder.filter((member) => member.homeStore)
         .map((member) => [member.canonicalName, member.homeStore]))),
       displayNames: Object.freeze(Object.fromEntries([...byName].map(([name, member]) => [name, member.displayName]))),
       normalOrderBefore: Object.freeze(Object.fromEntries(members.filter((member) => member.orderBefore)

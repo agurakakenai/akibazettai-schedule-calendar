@@ -216,6 +216,7 @@ class RunTests(unittest.TestCase):
         def sleep(seconds):
             elapsed[0] += seconds
         return roster.run(args, clock=clock, sleep=sleep, environment=ENV, opener=self.source,
+                          staff_check=False,
                           analyzer_factory=lambda usage, environment: roster.GraduationAnalyzer(
                               usage, environment, opener=self.ai))
 
@@ -319,7 +320,7 @@ class RunTests(unittest.TestCase):
                                   half_month_state=None, source_state=self.source_path, ai_state=self.ai_path,
                                   run_id='roster-1-1', report=None)
         report = roster.run(args, clock=lambda: self.now, sleep=lambda seconds: None, environment=ENV,
-                            opener=Denied({}, {}),
+                            opener=Denied({}, {}), staff_check=False,
                             analyzer_factory=lambda usage, environment: roster.GraduationAnalyzer(
                                 usage, environment, opener=self.ai))
         self.assertEqual((report['status'], report['reason'], report['exitCode']), ('unavailable', 'access_denied', 3))
@@ -413,6 +414,217 @@ class OverlayTests(unittest.TestCase):
         self.assertTrue(roster.due(state, NOW))
         state['lastRun']['runs'] = roster.RUNS_PER_DAY
         self.assertFalse(roster.due(state, NOW))
+
+
+class StaffOpener:
+    def __init__(self, pages):
+        self.pages, self.urls = pages, []
+
+    def open(self, request, timeout=None):
+        self.urls.append(request.full_url)
+        page = self.pages.get(request.full_url)
+        if page is None:
+            raise roster.urllib.error.URLError('offline')
+        return Reply(page.encode('utf-8'))
+
+
+STAFF_NOW = dt.datetime(2026, 10, 29, 1, 0, tzinfo=UTC)
+FILLERS = [f'試験{number}' for number in range(1, 10)]
+
+
+def staff_registry():
+    value = registry()
+    for index, name in enumerate(FILLERS):
+        value['members'].append(members.new_member(name, f'https://x.com/filler_{index}', NOW - dt.timedelta(days=300),
+                                                    member_id='m-' + f'{index + 3:032x}'))
+    value['members'][0]['graduation'] = {'lastServiceDate': '2026-10-27',
+                                         'evidenceUrl': 'https://x.com/yume_test/status/2109661316923396251'}
+    value['unresolvedNames'].append({'name': 'いろは', 'resolvedMemberId': None, 'legacyAccounts': [
+        {'profileUrl': 'https://x.com/iroha_old', 'status': 'legacy-retired-account'}]})
+    return members.validate_registry(value)
+
+
+def staff_page(names):
+    items = ''.join(
+        f'<li class="shopNum0{store}"><a href="https://akibazettai.com/staff/{slug}/"><figure>'
+        f'<img alt="{name}"/></figure><p>{name}</p></a></li>' for name, store, slug in names)
+    return f'<html><ul id="shopList"><li class="all">すべて</li></ul><ul id="maidList">{items}</ul></html>'
+
+
+def detail_page(name, handle=None):
+    account = (f'<li><em>Twitter</em><p><a href="https://twitter.com/{handle}" target="_blank">@{handle}</a></p></li>'
+               if handle else '')
+    return (f'<div id="staffDetail" class="shopNum01 "><h3>{name}</h3><figure></figure>'
+            f'<ul id="staffInfo"><li><em>猫　種</em><p>みけ</p></li>{account}</ul></div>')
+
+
+class StaffTests(unittest.TestCase):
+    def setUp(self):
+        self.base = staff_registry()
+        self.state = roster.empty_state()
+        self.now = STAFF_NOW
+        self.listing = [('ゆめ', 2, 'detail_yume'), ('あむ', 3, 'detail_amu'),
+                        *((name, 1, f'detail_f{index}') for index, name in enumerate(FILLERS))]
+        self.pages = {}
+
+    def check(self, listing=None, *, run_id='roster-1-1'):
+        self.pages[roster.STAFF_URL] = staff_page(self.listing if listing is None else listing)
+        opener = StaffOpener(self.pages)
+        client = roster.StaffClient(opener=opener, sleep=lambda seconds: None)
+        changes, listed = roster.check_staff(self.state, self.base, client, now=self.now, run_id=run_id,
+                                             clock=lambda: self.now)
+        roster.validate_state(self.state)
+        return changes, opener.urls
+
+    def detail(self, slug, name, handle=None):
+        self.pages[f'https://akibazettai.com/staff/{slug}/'] = detail_page(name, handle)
+
+    def effective(self):
+        return roster.effective_registry(self.base, self.state)
+
+    def test_new_name_is_added_with_store_and_official_x_but_listed_graduate_is_not(self):
+        self.detail('detail_new', '新人', 'new_maid')
+        changes, urls = self.check([*self.listing, ('新人', 4, 'detail_new')])
+        self.assertEqual([(row['kind'], row['name'], row['homeStore'], row['xProfileUrl']) for row in changes],
+                         [('addition', '新人', 's4', 'https://x.com/new_maid')])
+        self.assertEqual(urls, [roster.STAFF_URL, 'https://akibazettai.com/staff/detail_new/'])
+        effective, applied, skipped = self.effective()
+        member = members.lookup(effective, '新人')
+        self.assertEqual((member['registrationSource'], member['accountTrust'], member['homeStore'],
+                          member['homeStoreSource'], member['officialListing'], member['role']),
+                         ('official-site', 'official', 's4', 'official', 'listed', 'normal'))
+        self.assertIn(member['memberId'], members.collection_population(effective, today='2026-10-29')[0])
+        self.assertIn('新人', members.display_projection(effective, '2026-10-29')['roster'])
+        # Graduated ゆめ is still listed on the page: she is neither re-added nor reactivated.
+        self.assertEqual(len([m for m in effective['members'] if m['canonicalName'] == 'ゆめ']), 1)
+        self.assertNotIn('ゆめ', members.display_projection(effective, '2026-10-29')['roster'])
+        lines = ''.join(roster.summary_lines(applied, skipped))
+        self.assertIn('new member 新人 (s4)', lines)
+        # The next day nothing new: she is now a current member.
+        self.now += dt.timedelta(days=1)
+        self.assertEqual(self.check([*self.listing, ('新人', 4, 'detail_new')])[0], [])
+
+    def test_first_check_takes_known_names_as_baseline_and_leaving_removes_nobody(self):
+        self.assertEqual(self.check()[0], [])
+        self.assertEqual(self.state['staff']['names'][0], 'ゆめ')
+        dropped = [row for row in self.listing if row[0] != 'あむ']
+        self.assertEqual(self.check(dropped)[0], [])
+        effective, _, _ = self.effective()
+        self.assertIn('あむ', members.display_projection(effective, '2026-10-29')['roster'])
+
+    def test_reused_names_become_new_members_without_touching_earlier_generations(self):
+        self.check()
+        without_yume = [row for row in self.listing if row[0] != 'ゆめ']
+        self.check(without_yume)
+        self.now += dt.timedelta(days=30)
+        self.detail('detail_yume2', 'ゆめ', 'yume_second')
+        self.detail('detail_iroha', 'いろは')
+        changes, _ = self.check([*without_yume, ('ゆめ', 1, 'detail_yume2'), ('いろは', 2, 'detail_iroha')])
+        self.assertEqual([(row['name'], row['xProfileUrl']) for row in changes],
+                         [('ゆめ', 'https://x.com/yume_second'), ('いろは', None)])
+        effective, applied, _ = self.effective()
+        holders = [m for m in effective['members'] if m['canonicalName'] == 'ゆめ']
+        self.assertEqual(len(holders), 2)
+        old = next(m for m in holders if m['memberId'] == YUME_ID)
+        self.assertEqual((old['membership'], old['graduation']['lastServiceDate']), ('active', '2026-10-27'))
+        new = members.lookup(effective, 'ゆめ')
+        self.assertNotEqual(new['memberId'], YUME_ID)
+        targets, coverage = members.collection_population(effective, today='2026-11-28')
+        self.assertIn(new['memberId'], targets)
+        self.assertNotIn(YUME_ID, targets)
+        self.assertEqual(coverage[YUME_ID]['reason'], 'graduated')
+        iroha = members.lookup(effective, 'いろは')
+        self.assertEqual(coverage[iroha['memberId']]['reason'], 'account_unknown')
+        self.assertNotIn(iroha['memberId'], targets)
+        row = next(r for r in effective['unresolvedNames'] if r['name'] == 'いろは')
+        self.assertEqual(row['resolvedMemberId'], iroha['memberId'])
+        self.assertEqual(row['legacyAccounts'][0]['profileUrl'], 'https://x.com/iroha_old')
+        lines = ''.join(roster.summary_lines(applied, []))
+        self.assertIn('not a collection target yet', lines)
+        projection = members.display_projection(effective, '2026-11-28')
+        self.assertEqual(projection['knownNames'].count('ゆめ'), 1)
+        self.assertEqual(projection['aliases']['ゆめ'], 'ゆめ')
+
+    def test_account_collision_and_foreign_introduction_page_keep_no_account(self):
+        self.check()
+        self.detail('detail_a', '新人', 'amu_test')
+        self.detail('detail_b', '別人', 'someone')
+        self.detail('detail_c', 'みく', 'iroha_old')
+        changes, _ = self.check([*self.listing, ('新人', 1, 'detail_a'), ('みく', 2, 'detail_c'),
+                                 ('ことね', 3, 'detail_b')])
+        self.assertEqual({row['name']: row['xProfileUrl'] for row in changes},
+                         {'新人': None, 'みく': None, 'ことね': None})
+
+    def test_unavailable_or_changed_page_changes_nothing(self):
+        self.check()
+        before = copy.deepcopy(self.state)
+        cases = [('<html>maintenance</html>', 'staff_page_structure_changed'),
+                 (staff_page(self.listing[:3]), 'staff_page_structure_changed'),
+                 (None, 'staff_page_unavailable')]
+        for page, reason in cases:
+            with self.subTest(reason=reason):
+                self.pages = {} if page is None else {roster.STAFF_URL: page}
+                client = roster.StaffClient(opener=StaffOpener(self.pages), sleep=lambda seconds: None)
+                with self.assertRaises(roster.StaffUnavailable) as raised:
+                    roster.check_staff(self.state, self.base, client, now=self.now, run_id='roster-2-1',
+                                       clock=lambda: self.now)
+                self.assertEqual(raised.exception.reason, reason)
+                self.assertEqual(self.state, before)
+        # A new name whose introduction page cannot be read is retried later, not added without it.
+        self.pages = {roster.STAFF_URL: staff_page([*self.listing, ('新人', 1, 'detail_missing')])}
+        client = roster.StaffClient(opener=StaffOpener(self.pages), sleep=lambda seconds: None)
+        with self.assertRaises(roster.StaffUnavailable):
+            roster.check_staff(self.state, self.base, client, now=self.now, run_id='roster-2-1',
+                               clock=lambda: self.now)
+        self.assertEqual(self.state['additions'], [])
+
+    def test_manual_registration_and_rejection_win_over_automatic_additions(self):
+        self.detail('detail_new', '新人', 'new_maid')
+        self.check([*self.listing, ('新人', 4, 'detail_new')])
+        manual = members.add_member(self.base, '新人', 'https://x.com/new_maid_manual', STAFF_NOW + dt.timedelta(hours=1))
+        effective, applied, skipped = roster.effective_registry(manual, self.state)
+        self.assertEqual((applied, skipped[0]['skipReason']), ([], 'name_in_use'))
+        self.assertEqual(members.lookup(effective, '新人')['xProfileUrl'], 'https://x.com/new_maid_manual')
+        rejected = members.reject_auto_addition(self.base, '新人', now=STAFF_NOW)
+        effective, applied, skipped = roster.effective_registry(rejected, self.state)
+        self.assertIsNone(members.lookup(effective, '新人'))
+        self.assertEqual(skipped[0]['skipReason'], 'rejected_by_override')
+        # A rejected name is not fetched again.
+        self.now += dt.timedelta(days=1)
+        self.base = rejected
+        self.state['additions'].clear()
+        changes, urls = self.check([*self.listing, ('新人', 4, 'detail_new'), ('二人目', 4, 'detail_two')][:-1])
+        self.assertEqual((changes, urls), ([], [roster.STAFF_URL]))
+
+    def test_run_reports_staff_failure_for_the_alert_while_the_scan_continues(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            path = root / 'members.json'
+            members.atomic_write(path, members.json_bytes(self.base))
+            sources.initialize(root / 'source.json', {'budgets': {}, 'paused': None}, source_hash='0' * 64,
+                               at=NOW - dt.timedelta(days=1))
+            ai = ledger.empty_state()
+            ai['money'] = ledger.costs.empty()
+            ledger.atomic_json(root / 'ai.json', ai)
+            args = argparse.Namespace(state=root / 'state.json', members=path, personal_state=None,
+                                      half_month_state=None, source_state=root / 'source.json',
+                                      ai_state=root / 'ai.json', run_id='roster-1-1', report=root / 'report.json')
+            searched = SourceOpener({}, {})
+            elapsed = [0.0]
+
+            def clock():
+                elapsed[0] += 1
+                return STAFF_NOW + dt.timedelta(seconds=elapsed[0])
+
+            report = roster.run(args, clock=clock, sleep=lambda s: elapsed.__setitem__(0, elapsed[0] + s),
+                                environment=ENV, opener=searched, staff_opener=StaffOpener({}),
+                                analyzer_factory=lambda usage, environment: roster.GraduationAnalyzer(
+                                    usage, environment, opener=mock.MagicMock()))
+            self.assertEqual((report['status'], report['reason'], report['exitCode']),
+                             ('unavailable', 'staff_page_unavailable', 3))
+            self.assertEqual(report['staff']['status'], 'unavailable')
+            self.assertGreater(report['requests']['searches'], 0)
+            self.assertEqual(roster.load_state(root / 'state.json')[0]['additions'], [])
 
 
 if __name__ == '__main__':
