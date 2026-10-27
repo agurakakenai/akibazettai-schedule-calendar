@@ -471,8 +471,8 @@ class StaffTests(unittest.TestCase):
         self.pages[roster.STAFF_URL] = staff_page(self.listing if listing is None else listing)
         opener = StaffOpener(self.pages)
         client = roster.StaffClient(opener=opener, sleep=lambda seconds: None)
-        changes, listed = roster.check_staff(self.state, self.base, client, now=self.now, run_id=run_id,
-                                             clock=lambda: self.now)
+        changes, listed, _ = roster.check_staff(self.state, self.base, client, now=self.now, run_id=run_id,
+                                                clock=lambda: self.now)
         roster.validate_state(self.state)
         return changes, opener.urls
 
@@ -625,6 +625,240 @@ class StaffTests(unittest.TestCase):
             self.assertEqual(report['staff']['status'], 'unavailable')
             self.assertGreater(report['requests']['searches'], 0)
             self.assertEqual(roster.load_state(root / 'state.json')[0]['additions'], [])
+
+
+MAHIRO_ID = 'm-' + 'e' * 32
+
+
+class FakeSearch:
+    """SourceClient stand-in for hiatus searches: query text -> search entries."""
+
+    def __init__(self, results=None):
+        self.results, self.queries = results or {}, []
+        self.requests = {'searches': 0, 'posts': 0}
+
+    def get(self, kind, url, limit):
+        query = roster.urllib.parse.parse_qs(roster.urllib.parse.urlsplit(url).query)['p'][0]
+        self.queries.append(query)
+        self.requests[kind] += 1
+        return search_document(self.results.get(query, []))
+
+
+class DepartureTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.dir = Path(folder.name)
+        self.base = staff_registry()
+        self.base['members'].append(members.new_member('まひろ', 'https://x.com/mahiro_test', NOW - dt.timedelta(days=300),
+                                                       member_id=MAHIRO_ID))
+        self.base['members'][-1]['officialListing'] = 'listed'
+        members.validate_registry(self.base)
+        self.state = roster.empty_state()
+        self.listing = [('ゆめ', 2, 'detail_yume'), ('あむ', 3, 'detail_amu'),
+                        *((name, 1, f'detail_f{index}') for index, name in enumerate(FILLERS))]
+        self.pages = {}
+        self.day = dt.datetime(2026, 10, 28, 1, 0, tzinfo=UTC)
+        (self.dir / 'shifts.csv').write_text(
+            '"date","store","shift","maid","tweet_id"\n"2026-08-30","2号店 A.D.1912","よる","まひろ","2093990152196825329"\n'
+            '"2026-08-23","1号店","よる","まひろ","2091464862073586121"\n', encoding='utf-8')
+        self.half = {'schedules': [{'name': 'まひろ', 'days': [{'date': f'2026-09-{day}', 'shifts': ['夜']}
+                                                              for day in (16, 20, 27)]}]}
+        self.personal = {'posts': []}
+        self.write()
+
+    def write(self):
+        (self.dir / 'half.json').write_text(json.dumps(self.half, ensure_ascii=False), encoding='utf-8')
+        (self.dir / 'personal.json').write_text(json.dumps(self.personal, ensure_ascii=False), encoding='utf-8')
+        (self.dir / 'observed.json').write_text(json.dumps({'posts': []}), encoding='utf-8')
+
+    def activity(self):
+        return roster.load_activity(observed=self.dir / 'observed.json', curated=self.dir / 'shifts.csv',
+                                    personal=self.dir / 'personal.json', half_month=self.dir / 'half.json')
+
+    def check(self, listing=None):
+        self.pages[roster.STAFF_URL] = staff_page(self.listing if listing is None else listing)
+        client = roster.StaffClient(opener=StaffOpener(self.pages), sleep=lambda seconds: None)
+        result = roster.check_staff(self.state, self.base, client, now=self.day, run_id='roster-1-1',
+                                    clock=lambda: self.day)
+        roster.validate_state(self.state)
+        return result
+
+    def evaluate(self, search=None):
+        search = search or FakeSearch()
+        changes, rows = roster.evaluate_departures(self.state, self.base, search, self.activity(), now=self.day,
+                                                   run_id='roster-1-1', clock=lambda: self.day)
+        roster.validate_state(self.state)
+        return changes, rows, search
+
+    def days(self, count, listing=None):
+        results = []
+        for _ in range(count):
+            self.check(listing)
+            results.append(self.evaluate())
+            self.day += dt.timedelta(days=1)
+        self.day -= dt.timedelta(days=1)
+        return results
+
+    def test_mahiro_leaves_after_three_missing_checks_with_her_last_confirmed_service(self):
+        first, second, third = self.days(3)
+        for changes, rows, _ in (first, second):
+            self.assertEqual(changes, [])
+            self.assertEqual([(row['name'], row['status']) for row in rows], [('まひろ', 'missing')])
+        changes, rows, search = third
+        self.assertEqual([(row['kind'], row['name'], row['lastServiceDate'], row['effectiveFrom']) for row in changes],
+                         [('departure', 'まひろ', '2026-08-30', '2026-10-30')])
+        self.assertEqual(search.queries, ['id:mahiro_test 休止', 'id:mahiro_test お休み', 'id:akibazettai まひろ 休止'])
+        departure = self.state['departures'][0]
+        self.assertEqual((departure['lastServiceSource'], departure['missingSince'], departure['checks']),
+                         ('curated', '2026-10-28', 3))
+        effective, applied, _ = roster.effective_registry(self.base, self.state)
+        mahiro = members.lookup(effective, 'まひろ')
+        self.assertEqual(mahiro['graduation'], {'lastServiceDate': '2026-08-30', 'evidenceUrl': roster.STAFF_URL,
+                                                'offRosterFrom': '2026-10-30'})
+        self.assertEqual(mahiro['membership'], 'active')
+        self.assertIn(MAHIRO_ID, members.collection_population(effective, today='2026-10-29')[0])
+        self.assertNotIn(MAHIRO_ID, members.collection_population(effective, today='2026-10-30')[0])
+        self.assertNotIn('まひろ', members.display_projection(effective, '2026-10-30')['roster'])
+        self.assertEqual(members.plan_policy(mahiro, '2026-09-27'), 'retained')
+        self.assertEqual(members.plan_policy(mahiro, '2026-10-30'), 'excluded_from_plan_view')
+        self.assertIn('left the official staff page', ''.join(roster.summary_lines(applied, [])))
+        # She is not counted again once departed.
+        self.day += dt.timedelta(days=1)
+        self.check()
+        self.assertEqual(self.state['absences'], {})
+
+    def test_temporary_absence_and_broken_pages_never_count_toward_departure(self):
+        self.days(2)
+        self.day += dt.timedelta(days=1)
+        self.check([*self.listing, ('まひろ', 2, 'detail_mahiro')])
+        self.assertEqual(self.state['absences'], {})
+        self.day += dt.timedelta(days=1)
+        self.check()
+        self.assertEqual(self.state['absences'][MAHIRO_ID]['checks'], 1)
+        before = copy.deepcopy(self.state)
+        for page in (staff_page(self.listing[:3]), '<html>maintenance</html>', staff_page([])):
+            self.day += dt.timedelta(days=1)
+            self.pages[roster.STAFF_URL] = page
+            with self.assertRaises(roster.StaffUnavailable):
+                roster.check_staff(self.state, self.base, roster.StaffClient(opener=StaffOpener(self.pages),
+                                                                             sleep=lambda s: None),
+                                   now=self.day, run_id='roster-1-1', clock=lambda: self.day)
+            self.assertEqual(self.state, before)
+        # The same JST day is counted once.
+        self.check()
+        self.check()
+        self.assertEqual(self.state['absences'][MAHIRO_ID]['checks'], 2)
+
+    def test_activity_after_she_went_missing_keeps_her(self):
+        for label, change in (
+                ('personal', lambda: self.personal['posts'].append(
+                    {'name': 'まひろ', 'date': '2026-10-29', 'events': [{'kind': 'absence'}], 'links': []})),
+                ('plan', lambda: self.half['schedules'][0]['days'].append({'date': '2026-11-03', 'shifts': ['昼']}))):
+            with self.subTest(label=label):
+                self.setUp()
+                change()
+                self.write()
+                changes, rows, search = self.days(3)[-1]
+                self.assertEqual(changes, [])
+                self.assertEqual(rows[0]['status'], 'active_after_missing')
+                self.assertEqual(search.queries, [])
+        self.setUp()
+        (self.dir / 'observed.json').write_text(json.dumps({'posts': [
+            {'date': '2026-10-29', 'names': ['まひろ'], 'notices': []}]}, ensure_ascii=False), encoding='utf-8')
+        self.assertEqual(self.days(3)[-1][1][0]['status'], 'active_after_missing')
+
+    def test_rest_or_hiatus_notice_keeps_her(self):
+        created = dt.datetime(2026, 10, 1, 3, 0, tzinfo=UTC)
+        for query, item in (('id:mahiro_test お休み', entry(created, 'しばらくお休みします', handle='mahiro_test')),
+                            ('id:akibazettai まひろ 休止', entry(created, 'まひろは活動休止中です', handle='akibazettai',
+                                                              uid=roster.OFFICIAL_AUTHOR_ID))):
+            with self.subTest(query=query):
+                self.setUp()
+                self.days(2)
+                self.day += dt.timedelta(days=1)
+                self.check()
+                changes, rows, search = self.evaluate(FakeSearch({query: [item]}))
+                self.assertEqual(changes, [])
+                self.assertEqual(rows[0]['status'], 'hiatus_notice')
+                self.assertTrue(self.state['absences'][MAHIRO_ID]['hiatusUrl'].endswith('/status/' + item['id']))
+                # Rechecked only after HIATUS_RECHECK_DAYS.
+                self.day += dt.timedelta(days=1)
+                self.check()
+                self.assertEqual(self.evaluate()[2].queries, [])
+
+    def test_unreadable_activity_records_or_manual_records_keep_her(self):
+        self.days(2)
+        self.day += dt.timedelta(days=1)
+        self.check()
+        (self.dir / 'personal.json').write_text('{broken', encoding='utf-8')
+        changes, rows, _ = self.evaluate()
+        self.assertEqual((changes, rows[0]['status']), ([], 'activity_unreadable'))
+        self.write()
+        rejected = members.reject_auto_departure(self.base, 'まひろ', now=self.day)
+        changes, rows = roster.evaluate_departures(self.state, rejected, FakeSearch(), self.activity(),
+                                                   now=self.day, run_id='roster-1-1', clock=lambda: self.day)
+        self.assertEqual((changes, rows[0]['status']), ([], 'rejected_by_override'))
+        self.evaluate()
+        manual = members.set_graduation(self.base, 'まひろ', last_service_date='2026-09-27',
+                                        evidence_url='https://x.com/akibazettai/status/2110000000000000001')
+        effective, applied, skipped = roster.effective_registry(manual, self.state)
+        self.assertEqual(members.lookup(effective, 'まひろ')['graduation']['lastServiceDate'], '2026-09-27')
+        self.assertEqual(skipped[0]['skipReason'], 'manual_graduation')
+        announced = copy.deepcopy(self.state)
+        announced['graduations'].append({
+            'memberId': MAHIRO_ID, 'name': 'まひろ', 'lastServiceDate': '2026-10-05',
+            'evidenceUrl': 'https://x.com/mahiro_test/status/2110000000000000002', 'postId': '2110000000000000002',
+            'authorId': YUME_UID, 'bodySha256': '0' * 64, 'postCreatedAt': '2026-10-01T00:00:00Z',
+            'detectedAt': '2026-10-30T00:00:00Z', 'runId': 'roster-1-1'})
+        effective, applied, skipped = roster.effective_registry(self.base, announced)
+        self.assertEqual(members.lookup(effective, 'まひろ')['graduation']['lastServiceDate'], '2026-10-05')
+        self.assertIn('graduation_recorded', [row['skipReason'] for row in skipped])
+
+    def test_relisting_reinstates_only_the_same_account_and_otherwise_adds_a_new_generation(self):
+        self.days(3)
+        self.assertEqual(len(self.state['departures']), 1)
+        departed = copy.deepcopy(self.state)
+        relisted = [*self.listing, ('まひろ', 2, 'detail_mahiro')]
+        for handle, outcome in (('mahiro_test', 'reinstatement'), ('mahiro_next', 'addition'), (None, 'note')):
+            with self.subTest(handle=handle):
+                self.state = copy.deepcopy(departed)
+                self.day = dt.datetime(2026, 11, 20, 1, 0, tzinfo=UTC)
+                self.pages['https://akibazettai.com/staff/detail_mahiro/'] = detail_page('まひろ', handle)
+                changes, _, notes = self.check(relisted)
+                effective, _, _ = roster.effective_registry(self.base, self.state)
+                holders = [m for m in effective['members'] if m['canonicalName'] == 'まひろ']
+                current = members.lookup(effective, 'まひろ')
+                if outcome == 'reinstatement':
+                    self.assertEqual([row['kind'] for row in changes], ['reinstatement'])
+                    self.assertEqual((len(holders), current['memberId'], current['graduation']), (1, MAHIRO_ID, None))
+                    self.assertIsNotNone(self.state['departures'][0]['reinstatedAt'])
+                elif outcome == 'addition':
+                    self.assertEqual([row['kind'] for row in changes], ['addition'])
+                    self.assertEqual(len(holders), 2)
+                    self.assertNotEqual(current['memberId'], MAHIRO_ID)
+                    self.assertEqual(current['xProfileUrl'], 'https://x.com/mahiro_next')
+                else:
+                    self.assertEqual((changes, notes), ([], [{'name': 'まひろ', 'status': 'relisted_unverified'}]))
+                    self.assertEqual(len(holders), 1)
+                    self.assertIsNotNone(current['graduation'])
+
+    def test_registry_validates_inferred_departures(self):
+        member = copy.deepcopy(self.base['members'][-1])
+        for graduation, ok in (
+                ({'lastServiceDate': '2026-08-30', 'evidenceUrl': roster.STAFF_URL, 'offRosterFrom': '2026-10-30'}, True),
+                ({'lastServiceDate': '2026-10-30', 'evidenceUrl': roster.STAFF_URL, 'offRosterFrom': '2026-10-30'}, False),
+                ({'lastServiceDate': '2026-08-30', 'evidenceUrl': 'https://x.com/mahiro_test/status/2110000000000000001',
+                  'offRosterFrom': '2026-10-30'}, False),
+                ({'lastServiceDate': '2026-08-30', 'evidenceUrl': roster.STAFF_URL}, False)):
+            with self.subTest(graduation=graduation):
+                member['graduation'] = graduation
+                if ok:
+                    members.validate_graduation(member)
+                    self.assertEqual(members.off_roster_from(graduation), '2026-10-30')
+                else:
+                    with self.assertRaises(members.RegistryError):
+                        members.validate_graduation(member)
 
 
 if __name__ == '__main__':

@@ -399,3 +399,23 @@ test("a reused name resolves to its current holder while earlier generations sta
     assert.throws(() => api.createMemberRegistryAdapter(registryWith(earlier, next)), /名簿/);
   }
 });
+test("an inferred departure leaves the roster from the day it was detected and keeps earlier plans", () => {
+  const graduation = { lastServiceDate: "2026-08-30", evidenceUrl: "https://akibazettai.com/staff/", offRosterFrom: "2026-10-30" };
+  const member = newMember({ graduation });
+  const value = registryWith(member);
+  assert.deepEqual(api.createMemberRegistryAdapter(value, "2026-10-29").activeNames, ["新しい人"]);
+  const registry = api.createMemberRegistryAdapter(value, "2026-10-30");
+  assert.deepEqual(registry.activeNames, []);
+  assert.equal(registry.graduated("新しい人"), true);
+  const manual = { "2026-09-27": { 夜: [{ name: "新しい人" }] }, "2026-10-31": { 夜: [{ name: "新しい人" }] } };
+  const schedule = api.buildEffectiveSchedule(manual, undefined, { registry });
+  assert.equal(schedule["2026-09-27"].夜.length, 1, "plans before the detection day stay");
+  assert.equal(schedule["2026-10-31"].夜.length, 0);
+  assert.deepEqual(api.memberFilterNames(registry, { schedule, dateFrom: "2026-09-01", dateTo: "2026-09-30" }), []);
+  for (const broken of [{ ...graduation, offRosterFrom: "2026-08-30" },
+    { ...graduation, evidenceUrl: "https://x.com/new_member/status/1" },
+    { lastServiceDate: "2026-08-30", evidenceUrl: "https://akibazettai.com/staff/" },
+    { ...graduation, note: "x" }]) {
+    assert.throws(() => api.createMemberRegistryAdapter(registryWith(newMember({ graduation: broken }))), /名簿/);
+  }
+});

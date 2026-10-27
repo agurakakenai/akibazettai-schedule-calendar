@@ -166,13 +166,23 @@
         handles.add(match[1]);
       }
       if (member.graduation !== null) {
-        // Only her own or the official announcement can set a last service day.
+        // Only her own or the official announcement can set a last service day; an inferred
+        // departure cites the official staff page and the day it took effect.
         const own = member.xProfileUrl?.split("/").at(-1) ?? null;
-        const evidence = fields(member.graduation, ["lastServiceDate", "evidenceUrl"]) &&
-          typeof member.graduation.evidenceUrl === "string" &&
-          /^https:\/\/x\.com\/([A-Za-z0-9_]{1,15})\/status\/[1-9][0-9]{0,24}$/.exec(member.graduation.evidenceUrl);
-        if (!evidence || !validDateKey(member.graduation.lastServiceDate) ||
-            ![own, "akibazettai"].includes(evidence[1].toLowerCase())) invalid();
+        const departed = member.graduation && typeof member.graduation === "object" &&
+          Object.hasOwn(member.graduation, "offRosterFrom");
+        if (departed) {
+          if (!fields(member.graduation, ["lastServiceDate", "evidenceUrl", "offRosterFrom"]) ||
+              !validDateKey(member.graduation.lastServiceDate) || !validDateKey(member.graduation.offRosterFrom) ||
+              member.graduation.offRosterFrom <= member.graduation.lastServiceDate ||
+              member.graduation.evidenceUrl !== "https://akibazettai.com/staff/") invalid();
+        } else {
+          const evidence = fields(member.graduation, ["lastServiceDate", "evidenceUrl"]) &&
+            typeof member.graduation.evidenceUrl === "string" &&
+            /^https:\/\/x\.com\/([A-Za-z0-9_]{1,15})\/status\/[1-9][0-9]{0,24}$/.exec(member.graduation.evidenceUrl);
+          if (!evidence || !validDateKey(member.graduation.lastServiceDate) ||
+              ![own, "akibazettai"].includes(evidence[1].toLowerCase())) invalid();
+        }
       }
       ids.set(member.memberId, member);
     }
@@ -225,8 +235,11 @@
     };
     members.filter((member) => member.orderBefore === null).forEach(append);
     const names = (select) => Object.freeze([...new Set(ordered.filter(select).map((member) => member.canonicalName))]);
-    // From the day after her announced last service day, she leaves the roster and filters.
-    const graduated = (member) => Boolean(member?.graduation) && today > member.graduation.lastServiceDate;
+    // From the day after her announced last service day (or the day an unannounced departure
+    // was detected), she leaves the roster and filters.
+    const offRosterFrom = (member) => member?.graduation
+      ? member.graduation.offRosterFrom ?? addDays(member.graduation.lastServiceDate, 1) : null;
+    const graduated = (member) => Boolean(member?.graduation) && today >= offRosterFrom(member);
     return Object.freeze({
       members,
       activeNames: names((member) => member.membership === "active" && !graduated(member)),
@@ -242,6 +255,7 @@
       member: (name) => byName.get(name) ?? null,
       graduated: (name) => graduated(byName.get(name)),
       lastServiceDate: (name) => byName.get(name)?.graduation?.lastServiceDate ?? null,
+      offRosterFrom: (name) => offRosterFrom(byName.get(name)),
       canonicalName: (name) => byName.get(name)?.canonicalName ?? name,
       profileUrl: (name) => byName.get(name)?.xProfileUrl ?? null,
       aliases: () => new Map([...byName].map(([name, member]) => [name, member.canonicalName]))
@@ -660,8 +674,8 @@
     const included = (name, key) => {
       if (includeInactivePlans || !registry) return true;
       const member = registry.member(name);
-      const last = registry.lastServiceDate?.(name);
-      return (!member?.inactiveFrom || key < member.inactiveFrom) && (!last || key <= last);
+      const off = registry.offRosterFrom?.(name);
+      return (!member?.inactiveFrom || key < member.inactiveFrom) && (!off || key < off);
     };
     const projection = (entry, key) => {
       const review = memberPlanReview(registry, entry.name, key, today);

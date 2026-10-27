@@ -1488,6 +1488,9 @@ class CloudTests(unittest.TestCase):
         parsed = cloud.load_roster_automation().argument_parser().parse_args(argv[4:])
         self.assertEqual((parsed.run_id, parsed.members), ('roster-12345-1', self.base / 'members-base.json'))
         self.assertEqual(parsed.source_state, state / cloud.SOURCE_USAGE)
+        self.assertEqual((parsed.observed, parsed.curated, parsed.schedule),
+                         (state / cloud.SNAPSHOT, self.root / 'tools' / 'data' / 'shifts.csv',
+                          self.root / 'data' / 'schedule.js'))
         environment = child.call_args.kwargs['environment']
         self.assertEqual(environment['AZURE_OPENAI_API_KEY'], 'k')
         self.assertNotIn('GH_TOKEN', environment)
@@ -4855,8 +4858,20 @@ class RosterReportTests(unittest.TestCase):
             path = Path(folder) / 'report.json'
             path.write_text(json.dumps(report, ensure_ascii=False), encoding='utf-8')
             self.assertEqual(cloud.validate_roster_report(path, 0, roster)['changes'], [addition])
+            departure = {'at': '2026-10-30T01:00:00Z', 'runId': 'roster-1-1', 'kind': 'departure',
+                         'memberId': 'm-' + 'e' * 32, 'name': 'まひろ', 'lastServiceDate': '2026-08-30',
+                         'effectiveFrom': '2026-10-30', 'evidenceUrl': 'https://akibazettai.com/staff/'}
+            missing = [{'name': 'まひろ', 'checks': 3, 'missingSince': '2026-10-28', 'lastActivity': None,
+                        'status': 'departed'}]
+            path.write_text(json.dumps({**report, 'changes': [departure], 'missing': missing,
+                                        'notes': [{'name': 'まひろ', 'status': 'relisted_unverified'}]},
+                                       ensure_ascii=False), encoding='utf-8')
+            self.assertEqual(cloud.validate_roster_report(path, 0, roster)['missing'], missing)
             for change in ({'status': 'unavailable'}, {'staff': {**report['staff'], 'status': 'broken'}},
                            {'changes': [{**addition, 'evidenceUrl': 'https://example.com/x/'}]},
+                           {'changes': [{**departure, 'effectiveFrom': '2026-08-30'}]},
+                           {'missing': [{**missing[0], 'status': 'gone'}]},
+                           {'notes': [{'name': 'まひろ', 'status': 'other'}]},
                            {'staff': {**report['staff'], 'reason': 'C:\\private'}}):
                 with self.subTest(change=change):
                     path.write_text(json.dumps({**report, **change}, ensure_ascii=False), encoding='utf-8')

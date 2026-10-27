@@ -535,6 +535,13 @@ class GenerationTests(unittest.TestCase):
             self.assertEqual(registry.load_registry(path)['automationOverrides'][0],
                              {'kind': 'addition', 'name': '新しい子', 'decision': 'reject',
                               'recordedAt': registry.stamp(LATER)})
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = registry.main(['--registry', str(path), 'reject-auto-departure', '--member', NAME],
+                                     clock=lambda: LATER)
+            self.assertEqual(code, 0)
+            self.assertEqual(registry.load_registry(path)['automationOverrides'][1],
+                             {'kind': 'departure', 'memberId': registry.load_registry(path)['members'][0]['memberId'],
+                              'decision': 'reject', 'recordedAt': registry.stamp(LATER)})
 
 
 class MigrationTests(unittest.TestCase):

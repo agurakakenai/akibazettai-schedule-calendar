@@ -53,6 +53,13 @@ STAFF_DETAIL = re.compile(r'https://akibazettai\.com/staff/[A-Za-z0-9_-]{1,80}/\
 MAX_STAFF_BYTES = 2_000_000
 MIN_STAFF_ENTRIES = 10
 MAX_ADDITIONS = 5
+# An unannounced departure needs this many consecutive healthy staff-page checks (one per
+# JST day) without her, and no activity of hers since she first went missing.
+MISSING_CHECKS = 3
+SERVICE_SOURCES = ('official', 'curated', 'personal', 'none')
+HIATUS_WORDS = ('休止', 'お休み', 'おやすみ', '休養', '休業', '休み期間')
+HIATUS_RECHECK_DAYS = 30
+HIATUS_LOOKBACK_DAYS = 60
 OFFICIAL_AUTHOR_ID = '822429861218131969'
 CONTRACT = 'roster-graduation-v1'
 MAX_SEARCHES, MAX_POSTS, MAX_ANALYSIS = 6, 3, 2
@@ -168,8 +175,8 @@ def keys(value, required, optional=()):
 
 
 def empty_state():
-    return {'schemaVersion': 1, 'graduations': [], 'additions': [], 'changes': [], 'scan': {}, 'posts': {},
-            'staff': None, 'lastRun': None}
+    return {'schemaVersion': 1, 'graduations': [], 'additions': [], 'departures': [], 'absences': {},
+            'changes': [], 'scan': {}, 'posts': {}, 'staff': None, 'lastRun': None}
 
 
 def status_url(handle, tid):
@@ -209,9 +216,42 @@ def validate_addition(row):
     require(RUN_ID.fullmatch(row['runId'] or '') is not None)
 
 
+def validate_departure(row):
+    keys(row, ('memberId', 'name', 'lastServiceDate', 'lastServiceSource', 'offRosterFrom', 'missingSince',
+               'checks', 'xProfileUrl', 'detectedAt', 'runId', 'reinstatedAt', 'reinstateUrl'))
+    require(isinstance(row['memberId'], str) and members.MEMBER_ID.fullmatch(row['memberId']))
+    members.valid_name(row['name'])
+    require(day_text(row['lastServiceDate']) < day_text(row['offRosterFrom']))
+    require(row['lastServiceSource'] in SERVICE_SOURCES)
+    require(day_text(row['missingSince']) <= row['offRosterFrom'])
+    require(type(row['checks']) is int and MISSING_CHECKS <= row['checks'] <= 9999)
+    profile_or_none(row['xProfileUrl'])
+    timestamp(row['detectedAt'])
+    require(RUN_ID.fullmatch(row['runId'] or '') is not None)
+    require((row['reinstatedAt'] is None) == (row['reinstateUrl'] is None))
+    if row['reinstatedAt'] is not None:
+        timestamp(row['reinstatedAt'])
+        require(STAFF_DETAIL.fullmatch(row['reinstateUrl']) is not None)
+
+
+def validate_absence(row):
+    keys(row, ('missingSince', 'checks', 'lastCheckDate', 'hiatusUrl', 'hiatusCheckedAt'))
+    day_text(row['missingSince'])
+    require(type(row['checks']) is int and 1 <= row['checks'] <= 9999)
+    require(day_text(row['lastCheckDate']) >= row['missingSince'])
+    require(row['hiatusUrl'] is None or members.STATUS_URL.fullmatch(row['hiatusUrl']) is not None)
+    require(row['hiatusCheckedAt'] is None or timestamp(row['hiatusCheckedAt']))
+
+
 def validate_change(row):
-    require(isinstance(row, dict) and row.get('kind') in ('graduation', 'addition'))
-    if row['kind'] == 'addition':
+    require(isinstance(row, dict) and row.get('kind') in ('graduation', 'addition', 'departure', 'reinstatement'))
+    if row['kind'] == 'departure':
+        keys(row, ('at', 'runId', 'kind', 'memberId', 'name', 'lastServiceDate', 'effectiveFrom', 'evidenceUrl'))
+        require(day_text(row['lastServiceDate']) < day_text(row['effectiveFrom']) and row['evidenceUrl'] == STAFF_URL)
+    elif row['kind'] == 'reinstatement':
+        keys(row, ('at', 'runId', 'kind', 'memberId', 'name', 'evidenceUrl'))
+        require(isinstance(row['evidenceUrl'], str) and STAFF_DETAIL.fullmatch(row['evidenceUrl']))
+    elif row['kind'] == 'addition':
         keys(row, ('at', 'runId', 'kind', 'memberId', 'name', 'homeStore', 'xProfileUrl', 'evidenceUrl'))
         require(row['homeStore'] in ('s1', 's2', 's3', 's4'))
         profile_or_none(row['xProfileUrl'])
@@ -232,7 +272,8 @@ def validate_change(row):
 def validate_state(value):
     try:
         # additions/staff arrived after the first graduation-only saves; both stay optional.
-        keys(value, ('schemaVersion', 'graduations', 'changes', 'scan', 'posts', 'lastRun'), ('additions', 'staff'))
+        keys(value, ('schemaVersion', 'graduations', 'changes', 'scan', 'posts', 'lastRun'),
+             ('additions', 'staff', 'departures', 'absences'))
         require(type(value['schemaVersion']) is int and value['schemaVersion'] == 1)
         require(isinstance(value['graduations'], list) and isinstance(value['changes'], list))
         seen = set()
@@ -247,6 +288,16 @@ def validate_state(value):
             require(row['memberId'] not in added)
             added.add(row['memberId'])
         staff = value.get('staff')
+        require(isinstance(value.get('departures', []), list) and isinstance(value.get('absences', {}), dict))
+        departed = set()
+        for row in value.get('departures', []):
+            validate_departure(row)
+            require(row['memberId'] not in departed or row['reinstatedAt'] is not None)
+            if row['reinstatedAt'] is None:
+                departed.add(row['memberId'])
+        for member_id, row in value.get('absences', {}).items():
+            require(members.MEMBER_ID.fullmatch(member_id) is not None)
+            validate_absence(row)
         if staff is not None:
             keys(staff, ('checkedAt', 'pageSha256', 'names'))
             timestamp(staff['checkedAt'])
@@ -311,7 +362,8 @@ def effective_registry(base, state):
     """Committed registry with the recorded automatic updates applied (manual wins)."""
     if not state:
         return members.apply_automation(base)
-    return members.apply_automation(base, state['graduations'], state.get('additions', []))
+    return members.apply_automation(base, state['graduations'], state.get('additions', []),
+                                    state.get('departures', []))
 
 
 def due(state, now):
@@ -770,7 +822,9 @@ def check_staff(state, base, client, *, now, run_id, clock):
     handles |= set(registry['reservedHandles'])
     handles |= {members.profile_handle(account['profileUrl'])
                 for row in registry['unresolvedNames'] for account in row['legacyAccounts']}
-    changes = []
+    changes, notes = [], []
+    pages = {}
+    departed = {row['memberId']: row for row in state.get('departures', []) if row['reinstatedAt'] is None}
     for entry in entries:
         name = entry['name']
         if any(name in members.names_of(m) and not members.retired_before(m, now) for m in registry['members']):
@@ -779,12 +833,35 @@ def check_staff(state, base, client, *, now, run_id, clock):
         # graduate the page has not removed yet); only a newly listed or never-known name is new.
         if name in known and (listed_before is None or name in listed_before):
             continue
+        detail = entry['href'] if isinstance(entry['href'], str) and STAFF_DETAIL.fullmatch(entry['href']) else None
+        returning = [departed[m['memberId']] for m in registry['members']
+                     if m['memberId'] in departed and name in members.names_of(m)]
+        if returning:
+            # Listed again after an inferred departure: the same X account means the same person.
+            if detail is None:
+                raise StaffUnavailable('staff_page_structure_changed')
+            pages[detail] = pages.get(detail) or client.get(detail)
+            listed_profile = introduction_profile(pages[detail], name)
+            same = next((row for row in returning if row['xProfileUrl'] and row['xProfileUrl'] == listed_profile),
+                        None)
+            if same is not None:
+                at = clock()
+                same.update(reinstatedAt=stamp(at), reinstateUrl=detail)
+                change = {'at': stamp(at), 'runId': run_id, 'kind': 'reinstatement', 'memberId': same['memberId'],
+                          'name': name, 'evidenceUrl': detail}
+                state['changes'].append(change)
+                del state['changes'][:-HISTORY_LIMIT]
+                changes.append(change)
+                state.get('absences', {}).pop(same['memberId'], None)
+                continue
+            if listed_profile is None:
+                notes.append({'name': name, 'status': 'relisted_unverified'})
+                continue
         if members.rejected_addition(registry, name) or len(changes) >= MAX_ADDITIONS:
             continue
-        detail = entry['href'] if isinstance(entry['href'], str) and STAFF_DETAIL.fullmatch(entry['href']) else None
         if detail is None:
             raise StaffUnavailable('staff_page_structure_changed')
-        page = client.get(detail)
+        page = pages.get(detail) or client.get(detail)
         profile = introduction_profile(page, name)
         if profile is not None and members.profile_handle(profile) in handles:
             profile = None
@@ -803,9 +880,209 @@ def check_staff(state, base, client, *, now, run_id, clock):
         if profile is not None:
             handles.add(members.profile_handle(profile))
         known.add(name)
+    track_absences(state, registry, {entry['name'] for entry in entries}, previous, now)
     state['staff'] = {'checkedAt': stamp(clock()), 'pageSha256': digest(document),
                       'names': [entry['name'] for entry in entries]}
-    return changes, len(entries)
+    return changes, len(entries), notes
+
+
+def track_absences(state, registry, listed, previous, now):
+    """Count healthy daily checks on which a once-listed current member is missing."""
+    today = now.astimezone(JST).date().isoformat()
+    absences = state.setdefault('absences', {})
+    listed_before = set(previous['names']) if previous else set()
+    current = set()
+    for member in registry['members']:
+        names = members.names_of(member)
+        if not members.active_on(member, now) or names & listed:
+            continue
+        if member['officialListing'] != 'listed' and not names & listed_before:
+            continue  # never on the page: nothing has disappeared
+        current.add(member['memberId'])
+        row = absences.get(member['memberId']) or {
+            'missingSince': today, 'checks': 0, 'lastCheckDate': today, 'hiatusUrl': None, 'hiatusCheckedAt': None}
+        if row['checks'] == 0 or row['lastCheckDate'] != today:
+            row['checks'] += 1
+            row['lastCheckDate'] = today
+        absences[member['memberId']] = row
+    for member_id in list(absences):
+        if member_id not in current:
+            del absences[member_id]  # listed again, departed or no longer current: start over
+
+
+def read_window_value(path, key):
+    """A `window.KEY = ...` data file; JSON first, then node in an isolated context."""
+    text = Path(path).read_text(encoding='utf-8-sig')
+    prefix = re.search(r'window\.' + re.escape(key) + r'\s*=\s*', text)
+    if not prefix:
+        raise ValueError('missing_input_assignment')
+    try:
+        return json.loads(text[prefix.end():].strip().removesuffix(';'))
+    except ValueError:
+        pass
+    import shutil
+    import subprocess
+    script = ("const fs=require('node:fs'),vm=require('node:vm');const input=JSON.parse(fs.readFileSync(0,'utf8'));"
+              "const context=vm.createContext({window:Object.create(null)},{codeGeneration:{strings:false,wasm:false}});"
+              "vm.runInContext(input.text,context,{timeout:750});"
+              "process.stdout.write(vm.runInContext('JSON.stringify(window.'+input.key+')',context,{timeout:750}));")
+    node = shutil.which('node')
+    if node is None:
+        raise ValueError('node_unavailable')
+    options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
+    result = subprocess.run([node, '-e', script], input=json.dumps({'key': key, 'text': text}),
+                            capture_output=True, encoding='utf-8', timeout=8, check=True,
+                            env={k: v for k, v in os.environ.items() if not k.upper().startswith('AZURE_OPENAI_')},
+                            **options)
+    return json.loads(result.stdout)
+
+
+WORK_KINDS = ('placement', 'late', 'return')
+
+
+def load_activity(*, observed=None, curated=None, personal=None, half_month=None, schedule=None):
+    """Dated mentions per name: confirmed work (official, curated, her own work posts) and
+    anything else that shows she is still scheduled (plans, absence notices)."""
+    rows, unreadable = [], []
+
+    def add(name, day, kind, confirmed):
+        if isinstance(name, str) and isinstance(day, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', day):
+            rows.append({'name': name, 'date': day, 'kind': kind, 'confirmed': confirmed})
+
+    def source(label, path, read):
+        if path is None or not Path(path).is_file():
+            return
+        try:
+            read(path)
+        except (OSError, ValueError, KeyError, TypeError, UnicodeError, RecursionError, AttributeError):
+            unreadable.append(label)
+        except Exception:  # node or subprocess failures stay contained as unreadable input
+            unreadable.append(label)
+
+    def read_observed(path):
+        for post in strict_json(members.read_bytes(path)).get('posts', []):
+            for name in post.get('names', []):
+                add(name, post.get('date'), 'official', True)
+            for notice in post.get('notices', []) or []:
+                add(notice.get('name'), post.get('date'), 'official', False)
+
+    def read_curated(path):
+        import csv
+        with Path(path).open(encoding='utf-8-sig', newline='') as stream:
+            for row in csv.DictReader(stream):
+                add(row.get('maid'), row.get('date'), 'curated', True)
+
+    def read_personal(path):
+        for post in strict_json(members.read_bytes(path)).get('posts', []):
+            work = (any(event.get('kind') in WORK_KINDS for event in post.get('events', []) or [])
+                    or any(link.get('status') == 'work' for link in post.get('links', []) or []))
+            add(post.get('name'), post.get('date'), 'personal', work)
+
+    def read_half_month(path):
+        value = strict_json(members.read_bytes(path))
+        for item in [*value.get('schedules', []), *value.get('partialSchedules', [])]:
+            for day in item.get('days', []):
+                add(item.get('name'), day.get('date'), 'plan', False)
+
+    def read_schedule(path):
+        for day, shifts in (read_window_value(path, 'SCHEDULE_DATA').get('schedule') or {}).items():
+            for entries in shifts.values():
+                for entry in entries:
+                    add(entry.get('name'), day, 'plan', False)
+
+    source('observed', observed, read_observed)
+    source('curated', curated, read_curated)
+    source('personal', personal, read_personal)
+    source('half_month', half_month, read_half_month)
+    source('schedule', schedule, read_schedule)
+    return {'rows': rows, 'unreadable': unreadable}
+
+
+def hiatus_notice(client, member, since):
+    """Her own or the official account's rest/hiatus post since shortly before she went missing."""
+    name = member['canonicalName']
+    queries = []
+    handle = members.profile_handle(member['xProfileUrl']) if member['xProfileUrl'] else None
+    if handle:
+        queries += [(handle, f'id:{handle} 休止'), (handle, f'id:{handle} お休み')]
+    queries.append((members.OFFICIAL_HANDLE, f'id:{members.OFFICIAL_HANDLE} {name} 休止'))
+    for author, query in queries:
+        url = 'https://' + SEARCH_HOST + '/realtime/search?' + urllib.parse.urlencode({'p': query, 'ei': 'UTF-8'})
+        document = client.get('searches', url, MAX_SEARCHES + len(queries))
+        try:
+            page = yahoo.search_page(document.decode('utf-8', 'strict'))
+            found = yahoo.candidate_entries(page)
+        except (UnicodeError, ValueError):
+            raise Stop('invalid_search_response')
+        for entry in found:
+            if not isinstance(entry, dict) or str(entry.get('screenName', '')).casefold() != author.casefold():
+                continue
+            tid, epoch = str(entry.get('id', '')), str(entry.get('createdAt', ''))
+            if not POST_ID.fullmatch(tid) or not re.fullmatch(r'\d{10}', epoch):
+                continue
+            if dt.datetime.fromtimestamp(int(epoch), UTC) < since:
+                continue
+            text = hint_text(entry)
+            if any(word in text for word in HIATUS_WORDS) and (author != members.OFFICIAL_HANDLE or name in text):
+                return status_url(str(entry['screenName']), tid)
+    return None
+
+
+def evaluate_departures(state, base, client, activity, *, now, run_id, clock):
+    """Adopt a departure for a member missing from the page with nothing showing her since."""
+    registry, _, _ = effective_registry(base, state)
+    today = now.astimezone(JST).date()
+    by_id = {member['memberId']: member for member in registry['members']}
+    changes, rows = [], []
+    for member_id, absence in sorted(state.get('absences', {}).items(), key=lambda item: item[1]['missingSince']):
+        member = by_id.get(member_id)
+        if member is None or not members.active_on(member, now):
+            continue
+        names = members.names_of(member)
+        mine = [row for row in activity['rows'] if row['name'] in names]
+        later = sorted(row['date'] for row in mine if row['date'] >= absence['missingSince'])
+        row = {'name': member['canonicalName'], 'checks': absence['checks'], 'missingSince': absence['missingSince'],
+               'lastActivity': later[-1] if later else None, 'status': 'missing'}
+        rows.append(row)
+        if absence['checks'] < MISSING_CHECKS:
+            continue
+        if later:
+            row['status'] = 'active_after_missing'
+            continue
+        if activity['unreadable']:
+            row['status'] = 'activity_unreadable'
+            continue
+        if members.rejected_departure(registry, member_id):
+            row['status'] = 'rejected_by_override'
+            continue
+        recent = absence['hiatusCheckedAt'] and timestamp(absence['hiatusCheckedAt']) > now - dt.timedelta(
+            days=HIATUS_RECHECK_DAYS)
+        if not recent:
+            since = dt.datetime.combine(dt.date.fromisoformat(absence['missingSince']), dt.time(), JST) \
+                - dt.timedelta(days=HIATUS_LOOKBACK_DAYS)
+            absence['hiatusUrl'] = hiatus_notice(client, member, since)
+            absence['hiatusCheckedAt'] = stamp(clock())
+        if absence['hiatusUrl']:
+            row['status'] = 'hiatus_notice'
+            continue
+        confirmed = sorted((row_['date'], row_['kind']) for row_ in mine
+                           if row_['confirmed'] and row_['date'] < today.isoformat())
+        last, kind = confirmed[-1] if confirmed else ((today - dt.timedelta(days=1)).isoformat(), 'none')
+        detected = clock()
+        state.setdefault('departures', []).append({
+            'memberId': member_id, 'name': member['canonicalName'], 'lastServiceDate': last,
+            'lastServiceSource': kind, 'offRosterFrom': today.isoformat(), 'missingSince': absence['missingSince'],
+            'checks': absence['checks'], 'xProfileUrl': member['xProfileUrl'], 'detectedAt': stamp(detected),
+            'runId': run_id, 'reinstatedAt': None, 'reinstateUrl': None})
+        change = {'at': stamp(detected), 'runId': run_id, 'kind': 'departure', 'memberId': member_id,
+                  'name': member['canonicalName'], 'lastServiceDate': last, 'effectiveFrom': today.isoformat(),
+                  'evidenceUrl': STAFF_URL}
+        state['changes'].append(change)
+        del state['changes'][:-HISTORY_LIMIT]
+        changes.append(change)
+        row['status'] = 'departed'
+        state['absences'].pop(member_id, None)
+    return changes, rows
 
 
 class AnalyzerGate:
@@ -850,18 +1127,24 @@ def run(args, *, clock=lambda: dt.datetime.now(UTC), sleep=time.sleep, environme
     state = loaded[0] if loaded else empty_state()
     state.setdefault('additions', [])
     state.setdefault('staff', None)
+    state.setdefault('departures', [])
+    state.setdefault('absences', {})
     base = members.load_registry(args.members)
     bindings = read_bindings(args.personal_state, args.half_month_state)
+    activity = load_activity(observed=getattr(args, 'observed', None), curated=getattr(args, 'curated', None),
+                             personal=args.personal_state, half_month=args.half_month_state,
+                             schedule=getattr(args, 'schedule', None))
     report = {'component': 'roster', 'status': 'no-new', 'reason': None, 'changes': [],
               'requests': {'searches': 0, 'posts': 0, 'analysis': 0}, 'scanned': 0, 'candidates': 0,
-              'staff': {'status': 'ok', 'reason': None, 'listed': 0, 'requests': 0}}
+              'staff': {'status': 'ok', 'reason': None, 'listed': 0, 'requests': 0}, 'missing': [],
+              'notes': []}
     # The official staff page first: a failure there changes nothing and is alerted, while
     # the graduation scan still runs.
     staff = StaffClient(opener=staff_opener, sleep=sleep)
     try:
         if staff_check:
-            _, report['staff']['listed'] = check_staff(state, base, staff, now=started, run_id=args.run_id,
-                                                       clock=clock)
+            _, report['staff']['listed'], report['notes'] = check_staff(
+                state, base, staff, now=started, run_id=args.run_id, clock=clock)
         else:
             report['staff']['status'] = 'skipped'
     except StaffUnavailable as exc:
@@ -884,6 +1167,8 @@ def run(args, *, clock=lambda: dt.datetime.now(UTC), sleep=time.sleep, environme
             except ValueError:
                 analyzer = None
             try:
+                _, report['missing'] = evaluate_departures(state, base, client, activity, now=started,
+                                                           run_id=args.run_id, clock=clock)
                 changes, counts = collect_graduations(state, base, bindings, client, analyzer, now=started,
                                                       run_id=args.run_id, clock=clock, deadline=deadline)
                 report.update(changes=changes, **counts)
@@ -947,11 +1232,16 @@ def summary_lines(applied, skipped, report=None):
                          + (f"; account kept for review ({row['accountDropped']})" if 'accountDropped' in row else '')
                          + '.\n')
             continue
+        if row['kind'] == 'departure':
+            lines.append(f"\n- Applied: {row['name']} left the official staff page ({row['checks']} checks from "
+                         f"{row['missingSince']}) with no activity since; off the roster from {row['offRosterFrom']}; "
+                         f"last confirmed service {row['lastServiceDate']} ({row['lastServiceSource']}).\n")
+            continue
         effective = (dt.date.fromisoformat(row['lastServiceDate']) + dt.timedelta(days=1)).isoformat()
         lines.append(f"\n- Applied: {row['name']} last service {row['lastServiceDate']}, off the roster from "
                      f"{effective}; <{row['evidenceUrl']}>.\n")
     for row in skipped:
-        evidence = row.get('evidenceUrl') or row.get('detailUrl')
+        evidence = row.get('evidenceUrl') or row.get('detailUrl') or STAFF_URL
         lines.append(f"\n- Kept manual roster for {row['name']} ({row['skipReason']}); automatic evidence "
                      f"<{evidence}>.\n")
     return lines
@@ -969,6 +1259,9 @@ def argument_parser():
     collect.add_argument('--ai-state', type=Path, required=True)
     collect.add_argument('--run-id', required=True)
     collect.add_argument('--report', type=Path)
+    collect.add_argument('--observed', type=Path, help='official observed-shifts state')
+    collect.add_argument('--curated', type=Path, help='tools/data/shifts.csv')
+    collect.add_argument('--schedule', type=Path, help='data/schedule.js')
     apply = sub.add_parser('publish')
     apply.add_argument('--state', type=Path, required=True)
     apply.add_argument('--root', type=Path, default=ROOT)
