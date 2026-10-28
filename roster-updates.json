@@ -1,10 +1,10 @@
 {
   "absences": {
     "m-c87af267d8a0559e8bad6f4cfa97f42c": {
-      "checks": 1,
+      "checks": 2,
       "hiatusCheckedAt": null,
       "hiatusUrl": null,
-      "lastCheckDate": "2026-10-28",
+      "lastCheckDate": "2026-10-29",
       "missingSince": "2026-10-28"
     }
   },
@@ -13,19 +13,41 @@
   "departures": [],
   "graduations": [],
   "lastRun": {
-    "at": "2026-10-28T01:04:00Z",
-    "date": "2026-10-28",
+    "at": "2026-10-28T20:45:17Z",
+    "date": "2026-10-29",
     "reason": null,
     "runs": 1,
     "status": "no-new"
   },
-  "posts": {},
+  "posts": {
+    "2110751394890387915": {
+      "bodySha256": "16c7c545c7389e2ed335b4d7ce6ad19eeaaa4935adfe61dbabb15e2f9e807cd8",
+      "checkedAt": "2026-10-28T20:44:18Z",
+      "memberId": "m-e6dd70d843675b128af9c702308105fe",
+      "reason": "not_self_graduation"
+    },
+    "2114904766820294686": {
+      "bodySha256": "7421f3871e332aec57f040ad806f4d1bde674f8794cb78c090f32bd2ea3f23d7",
+      "checkedAt": "2026-10-28T20:45:17Z",
+      "memberId": "m-240da7165b485bea91e99f6b125516f0",
+      "reason": "not_self_graduation"
+    }
+  },
   "scan": {
     "m-0ac77d2c2c375ccdbc96b7fe00de71f1": {
       "searchedAt": "2026-10-28T01:03:36Z"
     },
+    "m-12ffb37064165a0ba7ef2e61112eada5": {
+      "searchedAt": "2026-10-28T20:44:03Z"
+    },
     "m-1564c8333470539eba8ee6de06c072fb": {
       "searchedAt": "2026-10-28T01:03:24Z"
+    },
+    "m-240da7165b485bea91e99f6b125516f0": {
+      "searchedAt": "2026-10-28T20:43:38Z"
+    },
+    "m-339a0462aa12593c84c6792ced80ab9f": {
+      "searchedAt": "2026-10-28T20:43:15Z"
     },
     "m-593629d17a3f5bd6ac15fb208dc8d4ae": {
       "searchedAt": "2026-10-28T01:03:48Z"
@@ -33,16 +55,25 @@
     "m-8b7b2ef945305e42b68d22153d016659": {
       "searchedAt": "2026-10-28T01:03:12Z"
     },
+    "m-a2dcb0787b3c5e3791182922e298caf6": {
+      "searchedAt": "2026-10-28T20:43:51Z"
+    },
+    "m-a407b2f8f183583c83e92577eca313be": {
+      "searchedAt": "2026-10-28T20:44:15Z"
+    },
     "m-abbe3fcf24825e22a47a5a1b92de90c8": {
       "searchedAt": "2026-10-28T01:04:00Z"
     },
     "m-b7bb579c4b5752bca12eb13f76322123": {
       "searchedAt": "2026-10-28T01:03:00Z"
+    },
+    "m-e6dd70d843675b128af9c702308105fe": {
+      "searchedAt": "2026-10-28T20:43:27Z"
     }
   },
   "schemaVersion": 1,
   "staff": {
-    "checkedAt": "2026-10-28T01:02:58Z",
+    "checkedAt": "2026-10-28T20:43:13Z",
     "names": [
       "ひかり",
       "あむ",
