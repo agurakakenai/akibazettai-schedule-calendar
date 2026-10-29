@@ -1,0 +1,63 @@
+name: Resume half-month after a timed wait
+
+# Read-only check every 30 minutes. It never collects, deploys, uses AI or contacts X itself;
+# when a saved half-month wait (e.g. the one-hour stop after an image 403) has expired it
+# dispatches the existing "Validate and deploy" continuation for that exact state SHA once.
+on:
+  schedule:
+    - cron: "10,40 * * * *"
+
+permissions:
+  contents: read
+
+# Deliberately outside the "pages" group: a pending check must never replace a pending
+# production run there. The dispatched continuation itself joins "pages" as usual.
+concurrency:
+  group: half-month-wait-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Dispatch an expired half-month wait once
+    if: >-
+      github.repository == 'agurakakenai/akibazettai-schedule-calendar' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Check out current production code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Check the saved half-month wait without a lease
+        id: due
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_PROMPT_DISABLED: "1"
+          GIT_TERMINAL_PROMPT: "0"
+          DAILY_GUIDANCE_ENABLED: ${{ vars.DAILY_GUIDANCE_ENABLED || 'false' }}
+          HALF_MONTH_SCHEDULE_ENABLED: ${{ vars.HALF_MONTH_SCHEDULE_ENABLED || 'false' }}
+        run: python tools/cloud-collection.py --mode half-month-due
+      - name: Dispatch the checked checkpoint once
+        if: steps.due.outputs.halfMonthDue == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKPOINT_SHA: ${{ steps.due.outputs.stateCommit }}
+        run: |
+          [[ "$CHECKPOINT_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          for STATUS in queued pending waiting in_progress; do
+            COUNT="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/deploy-pages.yml/runs?branch=main&status=$STATUS&per_page=100" \
+              --jq '[.workflow_runs[] | select(.event != "pull_request")] | length' |
+              awk '{ total += $1 } END { print total + 0 }')"
+            if (( COUNT > 0 )); then
+              echo "A production run is $STATUS; checkpoint $CHECKPOINT_SHA is left for the next check." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          done
+          gh api --method POST repos/agurakakenai/akibazettai-schedule-calendar/actions/workflows/deploy-pages.yml/dispatches \
+            -f ref=main -f "inputs[mode]=schedule" -f "inputs[continuation_state]=$CHECKPOINT_SHA"
+          echo "Half-month continuation requested for checkpoint $CHECKPOINT_SHA." >> "$GITHUB_STEP_SUMMARY"

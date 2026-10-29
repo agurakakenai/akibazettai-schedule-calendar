@@ -402,6 +402,163 @@ class HalfMonthRecoveryTests(unittest.TestCase):
         self.assertEqual([row['status'] for row in recovered['receipts'].values()
                           if row['runId'] == '12345-1'], ['reserved'])
 
+    def wait_state(self, next_at, checked, *, stage='fetch', confirmed=False, reason='waiting'):
+        stamp = lambda value: hcollector.iso(value) if isinstance(value, dt.datetime) else value
+        return {'collection': {'chainId': '12345-1', 'names': ['あむ'], 'periods': [['2026-10-01', '2026-10-15']],
+                               'reason': reason, 'ready': reason == 'time_limit', 'cursor': 1,
+                               'nextAt': stamp(next_at)},
+                'pending': [{'id': '1', 'name': 'あむ', 'nextAttemptAt': stamp(next_at)}],
+                'readings': {'k': {'sourceId': '1', 'cacheKey': 'k', 'stage': stage,
+                                   'reason': 'paused', 'nextAt': stamp(next_at)}},
+                'sources': {'k': {'source': {'media': [{'kind': 'photo'}]}}},
+                'checkedAt': stamp(checked),
+                'coverage': {'2026-10-01': {'あむ': {'confirmedIds': ['9'] if confirmed else []}}}}
+
+    def image_stop(self, at, until):
+        source = copy.deepcopy(self.h.source_state)
+        source['paused'] = {'host': 'pbs.twimg.com', 'reason': 'access_denied', 'httpStatus': 403,
+                            'at': hcollector.iso(at), 'retryAt': hcollector.iso(until)}
+        return source
+
+    def test_expired_wait_is_due_once_and_a_new_403_waits_a_full_hour_again(self):
+        hour = dt.timedelta(hours=1)
+        run = self.now - dt.timedelta(minutes=70)
+        due = lambda state, source, now: hcloud.half_month_wait_due(state, self.h.usage, source, now, hcollector)
+        # A run at `run` got a 403: the host and the candidate wait one hour.
+        stopped = self.image_stop(run + dt.timedelta(minutes=2), run + dt.timedelta(minutes=2) + hour)
+        state = self.wait_state(run + dt.timedelta(minutes=2) + hour, run)
+        self.assertFalse(due(state, stopped, run + dt.timedelta(minutes=30)), 'no attempt inside the stop')
+        self.assertTrue(due(state, stopped, self.now), 'due soon after the stop expired')
+        # The dispatched run started at `now` and was denied again: a new full hour, no loop.
+        again = self.wait_state(self.now + dt.timedelta(minutes=1) + hour, self.now)
+        restopped = self.image_stop(self.now + dt.timedelta(minutes=1), self.now + dt.timedelta(minutes=1) + hour)
+        for later in (dt.timedelta(minutes=10), dt.timedelta(minutes=40)):
+            self.assertFalse(due(again, restopped, self.now + later))
+        self.assertTrue(due(again, restopped, self.now + dt.timedelta(minutes=62)))
+
+    def test_nothing_due_is_a_no_op(self):
+        now, before = self.now, self.now - dt.timedelta(minutes=5)
+        usage = copy.deepcopy(self.h.usage)
+        usage['paused'] = {'reason': 'azure_auth_stopped', 'httpStatus': 401, 'at': '2026-10-04T12:00:00Z'}
+        for label, state, ledger in (
+                ('wait still running', self.wait_state(now + dt.timedelta(minutes=5), before), self.h.usage),
+                # A later run already saw the expired wait and did not act on it: never re-dispatch.
+                ('already checked after the wait', self.wait_state(before, now), self.h.usage),
+                ('untimed candidate', self.wait_state(None, before - dt.timedelta(hours=1)), self.h.usage),
+                ('person confirmed', self.wait_state(before, before - dt.timedelta(hours=1), confirmed=True),
+                 self.h.usage),
+                ('reading finished', self.wait_state(before, before - dt.timedelta(hours=1), stage='held'),
+                 self.h.usage),
+                ('time_limit uses the publication dispatch',
+                 self.wait_state(before, before - dt.timedelta(hours=1), reason='time_limit'), self.h.usage),
+                ('AI paused', self.wait_state(before, before - dt.timedelta(hours=1)), usage)):
+            with self.subTest(label):
+                self.assertFalse(hcloud.half_month_wait_due(state, ledger, self.h.source_state, now, hcollector))
+        state = self.wait_state(before, before - dt.timedelta(hours=1))
+        stopped = self.image_stop(before, now + dt.timedelta(minutes=30))
+        self.assertFalse(hcloud.half_month_wait_due(state, self.h.usage, stopped, now, hcollector))
+        state = self.wait_state(before, before - dt.timedelta(hours=1), stage='original')
+        self.assertTrue(hcloud.half_month_wait_due(state, self.h.usage, stopped, now, hcollector),
+                        'cached images need no HTTP, so an image-host stop does not block the AI reading')
+
+    def due_check(self):
+        self.fx.environment.update(HALF_MONTH_SCHEDULE_ENABLED='true')
+        commands = []
+        original = hcloud.child_process
+
+        def record(argv, **kwargs):
+            commands.append(argv)
+            return original(argv, **kwargs)
+        with mock.patch.object(hcollector, 'utc_now', side_effect=lambda: self.now), \
+                mock.patch.object(hcloud, 'child_process', side_effect=record), \
+                mock.patch.object(hcloud, 'invoke_half_month_collector', side_effect=AssertionError('child')):
+            result = hcloud.half_month_due(root=self.fx.root, environment=self.fx.environment, collector=hcollector)
+        self.assertFalse(any('push' in command or 'commit' in command for command in commands))
+        return result
+
+    def test_wait_check_is_read_only_and_reports_the_exact_state_commit(self):
+        self.seed('waiting')
+        head = self.fx.git(self.fx.remote, 'rev-parse', hcloud.REF).decode().strip()
+        with mock.patch.object(hcloud, 'half_month_wait_due', return_value=True) as wait:
+            result = self.due_check()
+        self.assertEqual((result['halfMonthDue'], result['stateCommit'], result['reason']),
+                         ('true', head, 'wait_expired'))
+        self.assertEqual(wait.call_args.args[3], self.now)
+        with mock.patch.object(hcloud, 'half_month_wait_due', return_value=False):
+            result = self.due_check()
+        self.assertEqual((result['halfMonthDue'], result['reason']), ('false', 'not_due'))
+        self.assertEqual(self.fx.git(self.fx.remote, 'rev-parse', hcloud.REF).decode().strip(), head)
+        self.assertNotIn(hcloud.LEASE, self.fx.remote_names())
+        outputs, summary = self.fx.base / 'due-outputs.txt', self.fx.base / 'due-summary.md'
+        with contextlib.redirect_stdout(io.StringIO()):
+            hcloud.emit_half_month_due({'halfMonthDue': 'true', 'stateCommit': head, 'reason': 'wait_expired',
+                                        'nextAt': None},
+                                       {'GITHUB_OUTPUT': str(outputs), 'GITHUB_STEP_SUMMARY': str(summary)})
+            hcloud.emit_half_month_due({'halfMonthDue': 'true', 'stateCommit': 'x; echo', 'reason': 'Bad Reason'},
+                                       {'GITHUB_OUTPUT': str(outputs)})
+        self.assertEqual(outputs.read_text(encoding='utf-8').splitlines(), [
+            'halfMonthDue=true', 'stateCommit=' + head, 'reason=wait_expired',
+            'halfMonthDue=false', 'stateCommit=', 'reason=invalid_reason'])
+        self.assertIn('due=true', summary.read_text(encoding='utf-8'))
+
+    def test_wait_check_never_dispatches_when_disabled_or_leased(self):
+        self.seed('waiting')
+        self.fx.environment.update(HALF_MONTH_SCHEDULE_ENABLED='false')
+        result = hcloud.half_month_due(root=self.fx.root, environment=self.fx.environment, collector=hcollector)
+        self.assertEqual((result['halfMonthDue'], result['reason']), ('false', 'half_month_disabled'))
+        self.fx.bare_commit({hcloud.LEASE: self.fx.lease()})
+        with mock.patch.object(hcloud, 'half_month_wait_due', return_value=True):
+            result = self.due_check()
+        self.assertEqual((result['halfMonthDue'], result['reason']), ('false', 'lease_present'))
+
+    def test_checked_wait_continuation_runs_and_an_unexpired_one_is_refused(self):
+        self.seed('waiting')
+        head = self.fx.git(self.fx.remote, 'rev-parse', hcloud.REF).decode().strip()
+        self.fx.environment['CONTINUATION_STATE'] = head
+        with mock.patch.object(hcloud, 'half_month_wait_due', return_value=False), \
+                self.assertRaisesRegex(hcloud.CloudError, 'continuation_not_ready'):
+            self.run_half()
+        self.assertEqual(self.fx.git(self.fx.remote, 'rev-parse', hcloud.REF).decode().strip(), head)
+        with mock.patch.object(hcloud, 'half_month_wait_due', return_value=True):
+            result, seen = self.run_half()
+        self.assertEqual(seen, [('12345-1', '12345-1', 'true', '12345-1')])
+        self.assertEqual(result['persistenceStatus'], 'saved')
+        self.assertNotIn(hcloud.LEASE, self.fx.remote_names())
+        # The same checkpoint cannot run twice: the state moved on, so it is a no-op.
+        with mock.patch.object(hcloud, 'half_month_wait_due', return_value=True):
+            result, seen = self.run_half()
+        self.assertEqual((result['collectionStatus'], seen), ('stale-continuation', []))
+
+    def test_image_reading_stall_needs_pending_images_and_24_hours_without_a_read(self):
+        state = self.wait_state(None, None)
+        receipt = lambda completed, image=True, reason='events': {
+            'component': 'schedule', 'money': {'imageInput': image}, 'reason': reason,
+            'issuedAt': hcollector.iso(completed - dt.timedelta(seconds=30)), 'completedAt': hcollector.iso(completed)}
+        started = self.now - dt.timedelta(minutes=20)
+        old = {'receipts': {'a': receipt(self.now - dt.timedelta(hours=25)),
+                            'b': receipt(self.now - dt.timedelta(minutes=5), image=False),
+                            'c': receipt(self.now - dt.timedelta(minutes=4), reason='azure_timeout')}}
+        health = hcloud.half_month_image_health(state, old, self.now, started, hcollector)
+        self.assertEqual(health, {'pendingImages': 1, 'stalled': True, 'readThisRun': False,
+                                  'lastImageReadingAt': hcollector.iso(self.now - dt.timedelta(hours=25))})
+        self.assertTrue(hcloud.half_month_image_health(state, {'receipts': {}}, self.now, started, hcollector)['stalled'])
+        fresh = {'receipts': {**old['receipts'], 'd': receipt(self.now - dt.timedelta(minutes=3))}}
+        health = hcloud.half_month_image_health(state, fresh, self.now, started, hcollector)
+        self.assertEqual((health['stalled'], health['readThisRun']), (False, True))
+        state['readings']['k']['stage'] = 'done'
+        self.assertFalse(hcloud.half_month_image_health(state, old, self.now, started, hcollector)['stalled'])
+        outputs, summary = self.fx.base / 'stall-outputs.txt', self.fx.base / 'stall-summary.md'
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            hcloud.emit({'halfMonthImageHealth': {'pendingImages': 3, 'lastImageReadingAt': None,
+                                                  'stalled': True, 'readThisRun': False}},
+                        {'GITHUB_OUTPUT': str(outputs), 'GITHUB_STEP_SUMMARY': str(summary)})
+        self.assertIn('scheduleImageStall=true', outputs.read_text(encoding='utf-8'))
+        self.assertIn('scheduleImageRead=false', outputs.read_text(encoding='utf-8'))
+        self.assertIn('pending image-backed readings=3; last successful image reading=never',
+                      summary.read_text(encoding='utf-8'))
+        self.assertIn('::warning::Half-month image-backed candidates are pending', printed.getvalue())
+
 
 class AlertWorkflowTests(unittest.TestCase):
     def script(self):
@@ -542,6 +699,33 @@ gh() {
         self.assertIn('issue close 7', log)
         log = self.run_alert({**capacity, 'SCHEDULE_CAPACITY': 'x;$(touch pwned)'}, '', '')
         self.assertNotIn('issue create', log)
+
+    def test_image_reading_stall_is_raised_and_closed_only_by_a_later_image_read(self):
+        stalled = {'SCHEDULE_STATUS': 'partial', 'SCHEDULE_CODE': '2', 'SCHEDULE_IMAGE_STALL': 'true'}
+        log = self.run_alert(stalled)
+        self.assertIn('issue create', log)
+        self.assertIn('schedule=image_reading_stalled:1:', log)
+        open_state = self.state('schedule=image_reading_stalled:2:2026-10-26T15:30:00Z:41')
+        log = self.run_alert(stalled, '7', open_state)
+        self.assertIn('schedule=image_reading_stalled:3:2026-10-26T15:30:00Z:42', log)
+        for values in ({'OFFICIAL_STATUS': 'ok', 'OFFICIAL_CODE': '0'},
+                       {'SCHEDULE_STATUS': 'partial', 'SCHEDULE_CODE': '2', 'SCHEDULE_IMAGE_STALL': 'false'},
+                       {'SCHEDULE_STATUS': 'ok', 'SCHEDULE_CODE': '0', 'SCHEDULE_IMAGE_READ': 'false'},
+                       {'SCHEDULE_STATUS': 'ok', 'SCHEDULE_CODE': '0', 'SCHEDULE_IMAGE_READ': 'true;x'},
+                       {'SCHEDULE_STATUS': 'ok', 'SCHEDULE_CODE': '0', 'SCHEDULE_IMAGE_READ': 'true',
+                        'DEPLOY': 'failure'}):
+            with self.subTest(values=values):
+                log = self.run_alert(values, '7', open_state)
+                self.assertNotIn('issue close', log)
+                self.assertNotIn('issue create', log)
+        log = self.run_alert({'SCHEDULE_STATUS': 'partial', 'SCHEDULE_CODE': '2', 'SCHEDULE_IMAGE_READ': 'true'},
+                             '7', open_state)
+        self.assertIn('issue close 7', log)
+        # Other schedule causes keep their existing recovery rule.
+        capacity = self.state('schedule=queue_limit:1:2026-10-25T19:30:00Z:41')
+        self.assertIn('issue close 7', self.run_alert({'SCHEDULE_STATUS': 'ok', 'SCHEDULE_CODE': '0'}, '7', capacity))
+        self.assertNotIn('issue create', self.run_alert({'SCHEDULE_STATUS': 'partial', 'SCHEDULE_CODE': '2',
+                                                         'SCHEDULE_IMAGE_STALL': 'true;$(touch pwned)'}))
 
     def test_roster_failure_is_its_own_component_until_a_roster_run_succeeds(self):
         failing = {'ATTENTION': 'true', 'COMPONENTS': 'roster', 'ROSTER_STATUS': 'unavailable',

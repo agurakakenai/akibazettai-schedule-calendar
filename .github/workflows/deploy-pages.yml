@@ -104,6 +104,8 @@ jobs:
       schedule_code: ${{ steps.collection.outputs.halfMonthCollectionCode }}
       schedule_reason: ${{ steps.collection.outputs.scheduleFailureReason }}
       schedule_capacity: ${{ steps.collection.outputs.scheduleCapacityLimit }}
+      schedule_image_stall: ${{ steps.collection.outputs.scheduleImageStall }}
+      schedule_image_read: ${{ steps.collection.outputs.scheduleImageRead }}
       roster_status: ${{ steps.collection.outputs.rosterCollectionStatus }}
       roster_code: ${{ steps.collection.outputs.rosterCollectionCode }}
       roster_reason: ${{ steps.collection.outputs.rosterFailureReason }}
@@ -353,6 +355,8 @@ jobs:
           SCHEDULE_CODE: ${{ needs.collect.outputs.schedule_code }}
           SCHEDULE_REASON: ${{ needs.collect.outputs.schedule_reason }}
           SCHEDULE_CAPACITY: ${{ needs.collect.outputs.schedule_capacity }}
+          SCHEDULE_IMAGE_STALL: ${{ needs.collect.outputs.schedule_image_stall }}
+          SCHEDULE_IMAGE_READ: ${{ needs.collect.outputs.schedule_image_read }}
           ROSTER_STATUS: ${{ needs.collect.outputs.roster_status }}
           ROSTER_CODE: ${{ needs.collect.outputs.roster_code }}
           ROSTER_REASON: ${{ needs.collect.outputs.roster_reason }}
@@ -375,6 +379,9 @@ jobs:
           [[ "$COMPONENTS" =~ ^[a-z-]{1,64}$ ]] || COMPONENTS=none
           # A reached queue bound (e.g. queue_limit, reading_capacity) is surfaced, never silently absorbed.
           [[ "$SCHEDULE_CAPACITY" =~ ^[a-z_]{1,64}(-[a-z_]{1,64}){0,3}$ ]] || SCHEDULE_CAPACITY=""
+          # Pending image-backed half-month readings with no image read for 24 hours (not a silent 'partial').
+          [[ "$SCHEDULE_IMAGE_STALL" == true ]] || SCHEDULE_IMAGE_STALL=false
+          [[ "$SCHEDULE_IMAGE_READ" == true ]] || SCHEDULE_IMAGE_READ=false
           [[ "$EVENT" =~ ^[a-z_]{1,32}$ ]] || EVENT=unknown
           RUN_ID=0
           if [[ "$RUN_URL" =~ /runs/([0-9]{1,20})$ ]]; then RUN_ID="${BASH_REMATCH[1]}"; fi
@@ -421,8 +428,13 @@ jobs:
             if [[ "-$COMPONENTS-" == *"-$C-"* ]]; then
               REASON_C="${!REASON_NAME}"; if [[ "$REASON_C" == none ]]; then REASON_C=component_failure; fi
               failed "$C" "$REASON_C"
+            elif [[ "$C" == schedule && "$SCHEDULE_IMAGE_STALL" == true ]]; then
+              failed schedule image_reading_stalled
             elif [[ "$C" == schedule && -n "$SCHEDULE_CAPACITY" ]]; then
               failed schedule "${SCHEDULE_CAPACITY%%-*}"
+            elif [[ "$C" == schedule && "${FAIL_REASON[schedule]:-}" == image_reading_stalled \
+                    && "$SCHEDULE_IMAGE_READ" != true ]]; then
+              : # Only a later schedule run that actually read an image closes an image-reading stall.
             elif [[ "$PUBLISHED" == true && "${!CODE_NAME}" =~ ^[0-9]+$ \
                     && "${!STATUS_NAME}" =~ ^(ok|partial|no-new|no-results|budget-exhausted|outside-window|paused)$ ]]; then
               recovered "$C"

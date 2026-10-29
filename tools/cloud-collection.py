@@ -1,6 +1,8 @@
 """Data-only collector-state orchestration for trusted GitHub Actions main runs.
 
-CLI: --mode restore|collect|personal|both|daily-guidance|apply-saved
+CLI: --mode restore|collect|personal|both|daily-guidance|apply-saved|half-month-due
+half-month-due is a read-only check (no lease, HTTP to sources or AI) that reports whether a
+saved half-month wait has expired so the frequent wait workflow can dispatch one continuation.
 collect remains official-only; daily-guidance requires the activation flag and
 the exact existing scheduled event. apply-saved requires an explicit main input.
 Optional: --recovery-dir .cloud-collection-recovery (not a Pages artifact).
@@ -75,6 +77,9 @@ STATE_OWNER = {
 }
 MAX_JSON_BYTES = 16 * 1024 * 1024
 SHA_RE = re.compile(r'[0-9a-f]{40}\Z')
+# A pending image-backed half-month reading with no successful image reading for this long is
+# raised on the alert issue instead of passing as an ordinary 'partial' run.
+IMAGE_STALL = dt.timedelta(hours=24)
 RECOVERY = (
     '失敗runの公式JSON・共有HTTPstate・本人JSON・共有AI台帳（導入済みの場合）が揃っていることを'
     '検査し、cooldownと本人pause/budget・AI予約を確認してください。'
@@ -1756,6 +1761,107 @@ def restored_half_month_continuation(state, usage, source, now, collector):
     return not any(source_module.paused_for(source, kind, now) for kind in ('searches', 'posts'))
 
 
+def half_month_wait_due(state, usage, source, now, collector):
+    """Whether a saved 'waiting' cohort has candidate work whose timed wait has now expired.
+
+    Only a wait that a run set after the cohort was last checked counts (e.g. the one-hour stop
+    after an image 403, or a 6-hour retry). A candidate the collector did not act on therefore
+    never re-dispatches on every check, and no wait is shortened: the host stop, Retry-After,
+    the AI pause/backoff and the monthly money gate are all still respected here and again by
+    the collector itself.
+    """
+    progress = (state or {}).get('collection')
+    if (not progress or progress['reason'] != 'waiting' or progress['ready']
+            or usage is None or source is None or not unfinished_half_month(state, now)):
+        return False
+    if (usage['paused'] or usage['retryAt'] and collector.timestamp(usage['retryAt']) > now
+            or load_analysis_state().usage_counts(usage, progress['chainId'], now, None)['remaining'] == 0):
+        return False
+    checked = collector.timestamp(state['checkedAt']) if state.get('checkedAt') else None
+    source_module = load_source_state()
+    names, starts = set(progress['names']), [period[0] for period in progress['periods']]
+    readings = {row['sourceId']: row for row in state.get('readings', {}).values()}
+    for item in state['pending']:
+        if item['name'] not in names or not item.get('replyCandidate') and all(
+                state['coverage'].get(start, {}).get(item['name'], {}).get('confirmedIds')
+                for start in starts):
+            continue
+        row = readings.get(item['id'])
+        if row is not None and row['stage'] in ('done', 'held'):
+            continue
+        waits = [collector.timestamp(value) for value in (item['nextAttemptAt'], row and row['nextAt']) if value]
+        if not waits or max(waits) > now or checked is not None and checked >= max(waits):
+            continue
+        kind = 'posts' if row is None else 'images' if row['stage'] == 'fetch' else None
+        if kind is None or source_module.paused_for(source, kind, now) is None:
+            return True
+    return False
+
+
+def half_month_image_health(state, usage, now, run_started, collector):
+    """Pending image-backed readings and the latest schedule AI reading that received images."""
+    ledger = load_analysis_state()
+    pending = {item['id'] for item in state['pending']}
+    images = sum(1 for row in state.get('readings', {}).values()
+                 if row['sourceId'] in pending and row['stage'] not in ('done', 'held')
+                 and (state['sources'].get(row['cacheKey']) or {}).get('source', {}).get('media'))
+    read = [collector.timestamp(receipt['completedAt']) for receipt in usage['receipts'].values()
+            if receipt['component'] == 'schedule' and receipt.get('money', {}).get('imageInput') is True
+            and receipt['issuedAt'] is not None and receipt['completedAt'] is not None
+            and receipt['reason'] in ledger.SUCCESS_REASONS | {'azure_pending'}]
+    last = max(read, default=None)
+    return {'pendingImages': images,
+            'lastImageReadingAt': collector.iso(last) if last else None,
+            'stalled': bool(images and (last is None or now - last >= IMAGE_STALL)),
+            'readThisRun': bool(last is not None and last >= run_started)}
+
+
+def half_month_due(*, root=ROOT, environment=None, collector=None):
+    """Read-only check run by the frequent half-month wait workflow; never takes a lease."""
+    environment = dict(os.environ if environment is None else environment)
+    collector = collector or load_collector()
+    now = collector.utc_now()
+    result = {'halfMonthDue': 'false', 'stateCommit': '', 'reason': 'not_due', 'nextAt': None}
+    if (environment.get('HALF_MONTH_SCHEDULE_ENABLED') != 'true'
+            or environment.get('DAILY_GUIDANCE_ENABLED') != 'true'):
+        result['reason'] = 'half_month_disabled'
+        return result
+    if now < dt.datetime(2026, 10, 1, 0, 30, tzinfo=JST):
+        result['reason'] = 'half_month_not_started'
+        return result
+    work = root / ('.cc-work-' + uuid.uuid4().hex[:16])
+    work.mkdir()
+    state_dir = work / 'state'
+    state_dir.mkdir()
+    repo = StateRepository(state_dir, environment)
+    try:
+        repo.initialize(root, writing=False)
+        if not repo.head:
+            result['reason'] = 'no_state'
+            return result
+        result['stateCommit'] = repo.head
+        if (state_dir / LEASE).exists():
+            # A held lease needs the documented manual recovery, never another run.
+            result['reason'] = 'lease_present'
+            return result
+        if not all((state_dir / name).exists() for name in (HALF_MONTH, SOURCE_USAGE, AI_USAGE)):
+            result['reason'] = 'no_half_month_state'
+            return result
+        half_state, _ = validate_half_month(state_dir / HALF_MONTH)
+        source, _ = validate_source_usage(state_dir / SOURCE_USAGE)
+        usage, _ = validate_ai_usage(state_dir / AI_USAGE)
+        progress = half_state.get('collection') or {}
+        result['nextAt'] = progress.get('nextAt')
+        if half_month_wait_due(half_state, usage, source, now, collector):
+            result.update(halfMonthDue='true', reason='wait_expired')
+        elif restored_half_month_continuation(half_state, usage, source, now, collector):
+            # A time_limit checkpoint whose dispatch was suppressed by a queued run.
+            result.update(halfMonthDue='true', reason='time_limit')
+        return result
+    finally:
+        remove_tree(work)
+
+
 def half_month_dependencies(root, environment):
     """Children run as `python -I -B`; prove that exact interpreter sees the image/cache deps.
 
@@ -1794,6 +1900,7 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
     collect_official = args.mode in ('collect', 'both', 'daily-guidance')
     collect_personal = args.mode in ('personal', 'both', 'daily-guidance')
     collector = collector or load_collector()
+    run_started = collector.utc_now()
     half_start = dt.datetime(2026, 10, 1, 0, 30, tzinfo=JST)
     slot = (scheduled_collection_slot(args.mode, environment)
             if scheduled and args.mode in ('personal', 'schedule') else None)
@@ -1964,7 +2071,10 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
         if expected:
             require((args.mode != 'schedule' and continuing and progress['reason'] == 'time_limit')
                     or (args.mode in ('both', 'schedule') and half_continuing
-                        and half_progress['ready'] and half_progress['reason'] == 'time_limit'),
+                        and half_progress['ready'] and half_progress['reason'] == 'time_limit')
+                    # The wait workflow dispatches exactly this checkpoint once its timed wait expired.
+                    or (args.mode == 'schedule' and half_continuing and half_month_wait_due(
+                        half_month_state, usage_state, source_usage_state, collector.utc_now(), collector)),
                     'continuation_not_ready')
         if slot and args.mode == 'personal' and slot['slotId'] in personal_state.get('collectionSlots', []) and not continuing:
             result.update(collectionStatus='duplicate-slot', collectionCode=0, persistenceStatus='unchanged')
@@ -2514,6 +2624,9 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 continuation.update(reason='analysis_held', ready=False, nextAt=current_usage['retryAt'])
                 personal_state['recovery'].update(reason='analysis_held', nextAt=current_usage['retryAt'])
                 collector.atomic_json(state_dir / PERSONAL, personal_state)
+            if collect_half_month and half_month_state is not None:
+                result['halfMonthImageHealth'] = half_month_image_health(
+                    half_month_state, current_usage, collector.utc_now(), run_started, collector)
         (state_dir / LEASE).unlink()
         result['stateCommit'] = repo.persist(collector, leased=False, personal=personal)
         continuation = (result.get('halfMonthContinuation') if args.mode == 'schedule'
@@ -2628,7 +2741,7 @@ def emit(result, environment):
             if continuation:
                 lines.append(f"\nHalf-month checkpoint: cursor={continuation['cursor']}/"
                              f"{len(continuation['names'])}; reason={continuation['reason']}; "
-                             f"next={'after successful publication' if continuation['ready'] else continuation.get('nextAt') or 'next scheduled half-month slot; no immediate dispatch'}.\n")
+                             f"next={'after successful publication' if continuation['ready'] else (continuation['nextAt'] + ' (the half-month wait check resumes it within 30 minutes after this time)') if continuation.get('nextAt') else 'next scheduled half-month slot; no immediate dispatch'}.\n")
         with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
             target.writelines(lines)
     if environment.get('GITHUB_STEP_SUMMARY') and result.get('halfMonthDiagnostics'):
@@ -2786,6 +2899,20 @@ def emit(result, environment):
             target.writelines(notes)
     if result['scheduleCapacityLimit']:
         print('::warning::Half-month queue capacity was reached: ' + result['scheduleCapacityLimit'])
+    image_health = result.get('halfMonthImageHealth')
+    if image_health:
+        result['scheduleImageStall'] = 'true' if image_health['stalled'] else 'false'
+        result['scheduleImageRead'] = 'true' if image_health['readThisRun'] else 'false'
+        if environment.get('GITHUB_STEP_SUMMARY'):
+            with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
+                target.write(f"\n## Half-month image reading\n\n- pending image-backed readings="
+                             f"{image_health['pendingImages']}; last successful image reading="
+                             f"{image_health['lastImageReadingAt'] or 'never'}; read in this run="
+                             f"{result['scheduleImageRead']}; stalled (no image reading for 24 hours)="
+                             f"{result['scheduleImageStall']}.\n")
+        if image_health['stalled']:
+            print('::warning::Half-month image-backed candidates are pending but no image was read for 24 hours '
+                  '(alert token image_reading_stalled).')
     output = environment.get('GITHUB_OUTPUT')
     if output:
         # Only fixed names and single-line values; no report/paths/token payloads.
@@ -2795,7 +2922,8 @@ def emit(result, environment):
                    'personalCollectionStatus', 'personalCollectionCode', 'personalStateSource',
                    'halfMonthCollectionStatus', 'halfMonthCollectionCode',
                    'officialFailureReason', 'personalFailureReason', 'scheduleFailureReason',
-                   'scheduleCapacityLimit', 'rosterCollectionStatus', 'rosterCollectionCode',
+                   'scheduleCapacityLimit', 'scheduleImageStall', 'scheduleImageRead',
+                   'rosterCollectionStatus', 'rosterCollectionCode',
                    'rosterFailureReason',
                    'reason', 'continuationReady', 'continuationMode', 'attention', 'failedComponents')
         lines = []
@@ -2809,13 +2937,42 @@ def emit(result, environment):
     print(json.dumps(result, ensure_ascii=True, sort_keys=True))
 
 
+def emit_half_month_due(result, environment):
+    output = environment.get('GITHUB_OUTPUT')
+    commit = result.get('stateCommit') or ''
+    due = result.get('halfMonthDue') == 'true' and bool(SHA_RE.fullmatch(commit))
+    reason = result.get('reason') if SAFE_REASON.fullmatch(str(result.get('reason'))) else 'invalid_reason'
+    if output:
+        with Path(output).open('a', encoding='utf-8', newline='\n') as target:
+            target.write('halfMonthDue=' + ('true' if due else 'false') + '\n')
+            target.write('stateCommit=' + (commit if SHA_RE.fullmatch(commit) else '') + '\n')
+            target.write('reason=' + reason + '\n')
+    if environment.get('GITHUB_STEP_SUMMARY'):
+        next_at = result.get('nextAt')
+        with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
+            target.write(f"## Half-month wait check\n\n- due={'true' if due else 'false'}; reason={reason}; "
+                         f"saved next wait={next_at if isinstance(next_at, str) and re.fullmatch(r'[0-9TZ:+.-]{1,40}', next_at) else 'none'}.\n")
+    print(json.dumps({**result, 'halfMonthDue': 'true' if due else 'false', 'reason': reason},
+                     ensure_ascii=True, sort_keys=True))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=(
-        'restore', 'collect', 'personal', 'both', 'schedule', 'daily-guidance', 'apply-saved', 'cost-sync'), required=True)
+        'restore', 'collect', 'personal', 'both', 'schedule', 'daily-guidance', 'apply-saved', 'cost-sync',
+        'half-month-due'), required=True)
     parser.add_argument('--output', type=Path, default=Path('data') / SNAPSHOT)
     parser.add_argument('--recovery-dir', type=Path, default=Path('.cloud-collection-recovery'))
     args = parser.parse_args(argv)
+    if args.mode == 'half-month-due':
+        try:
+            emit_half_month_due(half_month_due(), os.environ)
+            return 0
+        except (Exception, KeyboardInterrupt) as exc:
+            reason = str(exc) if isinstance(exc, CloudError) else 'local_or_validation_failure'
+            emit_half_month_due({'reason': reason if re.fullmatch(r'[a-z_]+', reason)
+                                 else 'local_or_validation_failure'}, os.environ)
+            return 1
     try:
         result = orchestrate(args)
         emit(result, os.environ)

@@ -1273,6 +1273,8 @@ Azure実費は既存定期処理の最初の機会にJST日1回、**前日まで
 
 画像hostの拒否中は`image_host_paused`として半月の画像付き候補を保留し、既知の同候補を後続runで繰り返し本文取得・試行回数加算しません。独立したYahoo検索と本文のみの候補は上限内で継続できます。画像の必要枚数はdownload前に共通source入口で確認し、拒否hostへの通信は0です。Actionsの既存job summaryは各componentの実HTTP数・最終正常取得・pending数、拒否host・発生日時・理由を表示し、継続停止やpendingを抱えた取得0をwarningにします。配信成功の緑を取得完了とは扱わず、サイトの既存根拠を消したり大型status一覧を戻したりしません。
 
+画像（`pbs.twimg.com`）の403は、従来どおりその場でhostを1時間（`Retry-After`がより長ければその時刻まで）停止し、残りの候補もその間はHTTPを出さずに同じ時刻まで待ちます。UA・proxy・別URL・別variantでの回避や停止中の再試行はしません。停止明けの再開は上記の30分ごとの待機確認が行います。複数画像の投稿で1枚目を取得済み・2枚目が403になった場合、取得済みの画像は暗号cacheに残り、次の試行では足りない画像だけを取得します。全画像が揃うまでAIへ送らず、部分的な画像だけを完全な表として確定しません。
+
 画像は元postが持つ`pbs.twimg.com/media/`のJPEG/PNGだけで、redirectは追従しません。timeout35秒、8MiB/枚・12MiB/post、長辺8192px・20MP/枚・40MP/post、総request17MiBまでです。実bytesのtype/寸法を確認し、metadataのoriginal寸法と取得variantの寸法を分けます。必要な全画像のsource/AI枠を先に確認し、不足が分かっていれば部分downloadを始めません。4枚超や途中失敗で完全な表を装いません。
 
 このrepositoryはpublicなので、collector-stateも秘密の保管先ではありません。**原文・画像bytes・data URI・raw model応答を平文でGit、logs、recovery、artifactへ残しません。**半月の跨run再読だけは、checkout外の期限付きAES-GCM cacheを使用します。32-byte keyはrepo secret `SCHEDULE_EVIDENCE_KEY`から必要なrestore/半月childだけへ渡し、暗号化した`cache.bin`だけを7日artifactとして保持します。各recordの期限を再保存で延長せず、最大64MiB、認証・サイズ・path検証を行います。同repoのmain workflowのartifactだけを選び、失敗runの発行済みvariantも重複AI防止のため保持します。鍵不備やcache不正は明示エラーにし、別URLや別modelで迂回しません。Pagesにはcacheもqueue/会計も含めず、ブラウザーから本人画像を自動取得・embedしません。
@@ -1370,6 +1372,8 @@ HTTPの前にleaseをremoteへ保存します。収集後、成功・部分失�
 
 保存済みcohortの期間が当日の発見期間を含まなくなった場合（例：10月のcohortのまま11/1を迎えた場合）、そのcohortは再開せず、その日の新しいcycleを開始します。日付が変わって範囲外になったcohortへの継続dispatchは`stale-continuation`として何もせず、次のslotの新しいcycleに委ねます。time_limitで`ready=true`のcheckpointは`nextAt`を空にして公開直後に続行でき、cursorが末尾でも検索・候補作業が残っていれば継続対象です。それ以外は未来の時刻だけを使い、過去の確認時刻は「今すぐ処理可能」として扱います。画像hostだけが停止している間も、検索・本文で進められる作業があれば継続を起動します（画像作業は候補ごとに保留され、それ自体ではtime_limitに達しません）。
 
+半月の待機明けは、別workflow「Resume half-month after a timed wait」（[half-month-retry.yml](.github/workflows/half-month-retry.yml)、UTC `10,40 * * * *`＝30分ごと）が拾います。このworkflowは`cloud-collection.py --mode half-month-due`で`collector-state`を**読むだけ**です（lease・source HTTP・AI・Pages公開・秘密の使用はなし）。保存済みcohortが`waiting`で、未確定者のpending候補に「前回の半月run開始後に設定された待機時刻」（画像403の1時間停止、6時間の再試行など）があり、それが過ぎていて、必要なhostの停止・AIのpause/backoff・月予算がいずれも許すときだけ、そのstate SHAを`continuation_state`にした`mode=schedule`を1回dispatchします。本番run（PR以外）が待機・実行中ならdispatchせず次回に回します。dispatchされたrunは既存の継続と同じlease/CAS・暗号cache・request hashで動き、stateが先に進んでいれば`stale-continuation`で何もしません。前回runが既に見た待機は再dispatchしないため、何も起きない確認が続いても空runの連鎖にはなりません。何も期限切れでない確認はcheckoutと読取りだけで終わり、本番の`pages`queueにも入りません（保留中の本番runを置き換えません）。これにより、画像403の後も半月の試行は1日1〜5回ではなく、停止明けから30分以内（概ね1時間に1回、1日最大約24回）に再開します。leaseが残っている間はdispatchせず、手動回復を待ちます。
+
 半月の`readings`（投稿ごとの読取り進捗）は上限480件です。各cycleの開始時に、終わった（done/held）読取りのうち、候補がpendingに無く、source記録が終端（valid/negative/issued）またはその候補がcandidateHistoryにあり、未完了・未精算のAI receiptから参照されていないものを退避（削除）します。再登録はsources/candidateHistoryが、AIの重複はAI台帳のrequest hashが防ぐため、退避しても同じ投稿の再GET・再AIは起きません。処理中に上限へ達した場合は古い投稿の退避可能分から空け、空けられなければ新しい読取りを作らず`reading_capacity`で6時間後まで待機します（取得・AIは行いません）。2026-10-18〜25は終わった読取りが240件（旧上限）に達し、新しい読取りが1件増えるたびに保存前検証で失敗していました。
 
 半月の候補キュー（pending）は全体600件・1人12件までです（旧240件・6件）。上限に達したときは、読み終わった（done/held）候補を古い順にcandidateHistoryへ移して空けます（同じ投稿は再登録されません。画像cache期限切れで回復待ちの候補は残します）。それでも空かない場合だけ、従来どおり優先度の低い候補を後回し（`queue_limit`）にします。読み終わった候補はその人の期間の再検索を止めません。自撮りなどを「判読保留」と読んだ候補が残っていても、6時間ごとの確認で後から出た本当の予定表投稿を見つけます。未確定の部分予定表（partialSchedules）は新しい480件だけを公開投影し、元のrevisionは保持します。上限に達したこと（`queue_limit`・`queue_limit_replaced`・`reading_capacity`）はjob summaryの「Half-month queue capacity」と通知Issueの半月の項目に出し、黙って捨てません。
@@ -1381,6 +1385,8 @@ Azureが4xxを返した場合は、応答JSONの`error.code`（なければ`erro
 新しいrunでは`budget_wait`を実入力の予約額で再判定し、旧予約方式の月末待機だけで除外しません。期限切れcacheの再取得は、canonicalの未発行記録・空のattemptedVariants/issued/seen・共有source台帳の成功済み本文receipt（request hashと完了時刻）・その元runにschedule AI予約がないことをすべて確認できた候補に限定します。元runと異なるrun IDで、通常のURL・間隔・cooldownを守って本文と画像を1回取得し、同じsource keyであることを照合します。元receiptとholdは変更せず、元cacheの期限・failure・再取得runとpayload hashを暗号cacheの監査記録へ保持します。本人性やAI未発行の証明ができない候補、発行済みAI候補はheldを維持し、再GET・再AIしません。
 
 失敗・包含・候補隔離・deploy失敗は、Issue「Collector needs attention」1件を作成または本文更新して知らせます（重複作成しません）。Issueは構成要素（公式・本人・半月・公開）ごとに状態を持ち、失敗した構成要素が**その後の同じ構成要素の成功run**で回復するまで閉じません。別の構成要素だけを収集したrun（例：半月の失敗中に成功した公式・本人run）では閉じません。本文には構成要素ごとの原因token・同じ原因の連続失敗回数・初回失敗日時（UTC）・最新の失敗runを載せ、原因が変わると回数を1から数え直します。状態は本文先頭の固定形式のコメント行に保存し、形式に合わない値は捨てます。Issueには固定tokenとrunのURLだけを書き、ログや本文は転記しません。
+
+半月の画像付き候補（画像の読取りが未完了のreading）がpendingなのに、画像を入力したscheduleのAI読取り（`imageInput=true`の成功receipt）が**24時間無い**場合は、半月runのjob summary「Half-month image reading」とwarningに出し、Issueの半月（schedule）項目を`image_reading_stalled`で開きます（10/25以降の画像読取り0件が`partial`のまま気付かれなかったため）。この項目は、その後の半月runで**画像の読取りが実際に成功したとき**だけ閉じます。画像を読まなかった半月runの成功や、公式・本人runでは閉じません。
 
 #### 承認済み保存根拠の適用
 
@@ -1410,7 +1416,7 @@ AI importの`sourceHash`は、deployment・model/version・用途の実績を保
 
 #### 保存失敗時の回復
 
-1. `gh workflow disable deploy-pages.yml` で繰り返し起動を止め、失敗runのログと`collector-recovery-<run-id>` artifactを確認します。このrecovery artifactはPagesには入りません。
+1. `gh workflow disable deploy-pages.yml` で繰り返し起動を止め、失敗runのログと`collector-recovery-<run-id>` artifactを確認します。このrecovery artifactはPagesには入りません。半月の待機確認workflow（`half-month-retry.yml`）はleaseが残っている間dispatchしません。
 2. そのrunの公式snapshot・共有HTTP-stateと、移行後は本人snapshot・共有`ai-usage.json`も取得し、JSONの形式・作者/日時・pending/resolved・本人予算とpause・AI予約/receipt・`Retry-After`を確認します。失敗後に別のrunを空stateで始めて制限を無視しないでください。
 3. `collector-state`だけの作業コピーで最新remoteを取得し、`state-owner.json`が同じ管理情報であること、leaseが失敗runのものであることを照合します。data branchのスクリプトは実行しません。
 4. 検査した一式のstate JSONを復元し、所有markerを維持したまま該当leaseだけを削除して、通常のcommit/pushを行います。本人snapshotだけを古いseedへ戻して予算・pauseを消さないでください。競合したら取り直して照合し、forceしません。
