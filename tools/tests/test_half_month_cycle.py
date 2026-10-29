@@ -235,6 +235,51 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(len(set(self.gets['images'])), 2)
         self.assertEqual(self.usage.calls, 1)
 
+    def test_image_403_stops_one_hour_then_resumes_only_the_missing_image(self):
+        self.payloads[base.post_id()] = base.payload(photos=2)
+        original_factory = self.client
+        denied = []
+        def factory():
+            client = original_factory()
+            normal = client.image.side_effect
+            def image(url):
+                if len(self.gets['images']) == 1 and not denied:
+                    # The second photo is denied once; SourceClient has already stopped the host.
+                    denied.append(url)
+                    self.gets['images'].append(url)
+                    raise collector.Failure('shared_host_cooldown', status=403,
+                                            retry_at=self.now + dt.timedelta(hours=1))
+                return normal(url)
+            client.image.side_effect = image
+            return client
+        self.client = factory
+        report, _ = self.run_cycle()
+        retry = facts.stamp(self.now + dt.timedelta(hours=1))
+        self.assertEqual(report['reasons'], ['paused'])
+        self.assertEqual(len(self.gets['images']), 2, 'one fetched photo and one 403; no retry loop')
+        self.assertEqual((self.usage.calls, self.state['schedules']), (0, []))
+        progress = next(iter(self.state['readings'].values()))
+        self.assertEqual((progress['stage'], progress['nextAt']), ('fetch', retry))
+        self.assertEqual(self.state['pending'][0]['nextAttemptAt'], retry)
+        self.assertEqual(len(self.cache.get(progress['cacheKey'])['images']), 1,
+                         'the fetched photo stays in the encrypted cache; a partial set is not a table')
+        self.assertEqual((report['diagnostics'][0]['httpStatus'], report['diagnostics'][0]['retryAt'],
+                          report['diagnostics'][0]['imageIndex']), (403, retry, 1))
+        gets = copy.deepcopy(self.gets)
+        self.now += dt.timedelta(minutes=30)
+        self.reopen()
+        self.run_cycle(resume=True)
+        self.assertEqual((self.gets, self.usage.calls), (gets, 0), 'nothing is requested inside the stop')
+        self.now += dt.timedelta(minutes=31)
+        self.reopen()
+        self.model.structured.return_value = reading_fixture.result(indexes=(0, 1))
+        recovered, _ = self.run_cycle(resume=True)
+        self.assertEqual(recovered['diagnostics'], [])
+        self.assertEqual(self.gets['images'], [*gets['images'], denied[0]])
+        self.assertEqual(len(self.gets['posts']), 1)
+        self.assertEqual(self.usage.calls, 1)
+        self.assertEqual(len(self.state['schedules']), 1)
+
     def test_multi_person_finite_snapshot_no_one_search_post_cap(self):
         self.registry['members'].append(collector.members.new_member(
             '新人', 'https://x.com/new_member', base.NOW, member_id='m-' + '2' * 32))

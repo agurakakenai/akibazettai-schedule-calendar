@@ -340,5 +340,70 @@ gh() {
         self.assertNotIn('SCHEDULE_EVIDENCE_KEY', block)
 
 
+RETRY_WORKFLOW = (ROOT / '.github' / 'workflows' / 'half-month-retry.yml').read_text(encoding='utf-8')
+
+
+class HalfMonthWaitWorkflowTests(unittest.TestCase):
+    def dispatch_script(self):
+        step = RETRY_WORKFLOW.split('- name: Dispatch the checked checkpoint once', 1)[1]
+        raw = step.split('        run: |\n', 1)[1]
+        return '\n'.join(line[10:] for line in raw.splitlines() if line.startswith('          '))
+
+    def test_check_is_frequent_read_only_and_outside_the_pages_queue(self):
+        self.assertEqual(re.findall(r'^\s+- cron: "([^"]+)"$', RETRY_WORKFLOW, re.M), ['10,40 * * * *'])
+        self.assertNotIn('workflow_dispatch', RETRY_WORKFLOW.split('permissions:', 1)[0])
+        self.assertIn('  group: half-month-wait-check\n  cancel-in-progress: false', RETRY_WORKFLOW)
+        self.assertNotIn('group: pages', RETRY_WORKFLOW)
+        self.assertIn("github.repository == 'agurakakenai/akibazettai-schedule-calendar'", RETRY_WORKFLOW)
+        self.assertIn("github.ref == 'refs/heads/main'", RETRY_WORKFLOW)
+        self.assertIn('run: python tools/cloud-collection.py --mode half-month-due', RETRY_WORKFLOW)
+        self.assertIn("if: steps.due.outputs.halfMonthDue == 'true'", RETRY_WORKFLOW)
+        self.assertIn('persist-credentials: false', RETRY_WORKFLOW)
+        self.assertIn('actions: write', RETRY_WORKFLOW)
+        for forbidden in ('contents: write', 'AZURE_OPENAI_', 'SCHEDULE_EVIDENCE_KEY', 'secrets.',
+                          'upload-artifact', 'deploy-pages@', 'issues: write'):
+            self.assertNotIn(forbidden, RETRY_WORKFLOW)
+        # The scheduled production collector routing is unchanged.
+        self.assertNotIn('10,40', WORKFLOW)
+
+    def test_dispatches_the_checked_sha_once_only_when_no_production_run_is_active(self):
+        if os.name == 'nt':
+            git = shutil.which('git')
+            bash = Path(git).parent.parent / 'bin' / 'bash.exe' if git else None
+            if bash is None or not bash.is_file():
+                self.skipTest('Git Bash is unavailable')
+        else:
+            bash = shutil.which('bash')
+            if not bash:
+                self.skipTest('Bash is unavailable')
+        mock_gh = '''
+gh() {
+  case "$*" in
+    *"--method POST"*) echo "$*" >> "$DISPATCH_LOG"; return 0;;
+    *"status=$BUSY&"*) echo 1;;
+    *) echo 0;;
+  esac
+}
+'''
+        for busy, sha, calls, success in (('none', 'b' * 40, 1, True), ('in_progress', 'b' * 40, 0, True),
+                                          ('queued', 'b' * 40, 0, True), ('none', 'not-a-sha', 0, False)):
+            with self.subTest(busy=busy, sha=sha), tempfile.TemporaryDirectory() as folder:
+                result = subprocess.run(
+                    [str(bash), '--noprofile', '--norc', '-e', '-o', 'pipefail', '-s'],
+                    input=mock_gh + self.dispatch_script(), text=True, capture_output=True, cwd=folder,
+                    timeout=15, env={**os.environ, 'CHECKPOINT_SHA': sha, 'BUSY': busy,
+                                     'GITHUB_REPOSITORY': REPOSITORY, 'GITHUB_STEP_SUMMARY': 'summary.txt',
+                                     'DISPATCH_LOG': 'dispatch.txt', 'BASH_ENV': ''},
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                self.assertEqual(result.returncode == 0, success, result.stderr)
+                log = Path(folder) / 'dispatch.txt'
+                lines = log.read_text().splitlines() if log.exists() else []
+                self.assertEqual(len(lines), calls)
+                if calls:
+                    self.assertIn('inputs[mode]=schedule', lines[0])
+                    self.assertIn('inputs[continuation_state]=' + 'b' * 40, lines[0])
+                    self.assertIn('workflows/deploy-pages.yml/dispatches', lines[0])
+
+
 if __name__ == '__main__':
     unittest.main()
