@@ -1,23 +1,41 @@
 {
-  "absences": {
-    "m-c87af267d8a0559e8bad6f4cfa97f42c": {
-      "checks": 2,
-      "hiatusCheckedAt": null,
-      "hiatusUrl": null,
-      "lastCheckDate": "2026-10-29",
-      "missingSince": "2026-10-28"
-    }
-  },
+  "absences": {},
   "additions": [],
-  "changes": [],
-  "departures": [],
+  "changes": [
+    {
+      "at": "2026-10-29T20:46:56Z",
+      "effectiveFrom": "2026-10-30",
+      "evidenceUrl": "https://akibazettai.com/staff/",
+      "kind": "departure",
+      "lastServiceDate": "2026-09-27",
+      "memberId": "m-c87af267d8a0559e8bad6f4cfa97f42c",
+      "name": "まひろ",
+      "runId": "roster-40951945624-1"
+    }
+  ],
+  "departures": [
+    {
+      "checks": 3,
+      "detectedAt": "2026-10-29T20:46:56Z",
+      "lastServiceDate": "2026-09-27",
+      "lastServiceSource": "personal",
+      "memberId": "m-c87af267d8a0559e8bad6f4cfa97f42c",
+      "missingSince": "2026-10-28",
+      "name": "まひろ",
+      "offRosterFrom": "2026-10-30",
+      "reinstateUrl": null,
+      "reinstatedAt": null,
+      "runId": "roster-40951945624-1",
+      "xProfileUrl": "https://x.com/mahiro1_zettai"
+    }
+  ],
   "graduations": [],
   "lastRun": {
-    "at": "2026-10-28T20:45:17Z",
-    "date": "2026-10-29",
+    "at": "2026-10-29T20:47:33Z",
+    "date": "2026-10-30",
     "reason": null,
     "runs": 1,
-    "status": "no-new"
+    "status": "ok"
   },
   "posts": {
     "2110751394890387915": {
@@ -52,6 +70,9 @@
     "m-593629d17a3f5bd6ac15fb208dc8d4ae": {
       "searchedAt": "2026-10-28T01:03:48Z"
     },
+    "m-6167fd9eec5953bd931f332b28e3841e": {
+      "searchedAt": "2026-10-29T20:47:33Z"
+    },
     "m-8b7b2ef945305e42b68d22153d016659": {
       "searchedAt": "2026-10-28T01:03:12Z"
     },
@@ -64,8 +85,14 @@
     "m-abbe3fcf24825e22a47a5a1b92de90c8": {
       "searchedAt": "2026-10-28T01:04:00Z"
     },
+    "m-b4575cfa95ec535e833d5a4c69a67a5e": {
+      "searchedAt": "2026-10-29T20:47:20Z"
+    },
     "m-b7bb579c4b5752bca12eb13f76322123": {
       "searchedAt": "2026-10-28T01:03:00Z"
+    },
+    "m-d9d7ea5d5d485c0a8d6e3954a31b6e4e": {
+      "searchedAt": "2026-10-29T20:47:08Z"
     },
     "m-e6dd70d843675b128af9c702308105fe": {
       "searchedAt": "2026-10-28T20:43:27Z"
@@ -73,7 +100,7 @@
   },
   "schemaVersion": 1,
   "staff": {
-    "checkedAt": "2026-10-28T20:43:13Z",
+    "checkedAt": "2026-10-29T20:46:30Z",
     "names": [
       "ひかり",
       "あむ",
