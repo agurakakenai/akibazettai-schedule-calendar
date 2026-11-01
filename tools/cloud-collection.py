@@ -1862,6 +1862,56 @@ def half_month_due(*, root=ROOT, environment=None, collector=None):
         remove_tree(work)
 
 
+MEMBER_STATES = ('confirmed', 'queued', 'image_wait', 'image_wait_and_queued', 'reading', 'reading_held',
+                 'no_candidate')
+
+
+def half_month_member_status(state, names, period, now, collector):
+    """Per active member of one half: what her candidates actually wait for (not one coverage token).
+
+    queued = post not fetched yet, or fetched with images not yet tried (順番待ち);
+    imageWait = an image fetch waiting for a host stop or retry time (画像待ち).
+    """
+    facts = load_half_month_state()
+    opened = facts.publication_start(period)
+    coverage = state['coverage'].get(period[0], {})
+    readings = {row['sourceId']: row for row in state.get('readings', {}).values()}
+    kinds = ('queued', 'imageWait', 'imageDue', 'reading', 'readingHeld', 'outOfPeriod')
+    totals, labels, rows = dict.fromkeys(kinds, 0), dict.fromkeys(MEMBER_STATES, 0), []
+    for name in names:
+        row = coverage.get(name)
+        if row is None:
+            continue
+        if row['confirmedIds']:
+            labels['confirmed'] += 1
+            continue
+        counts = dict.fromkeys(kinds, 0)
+        for item in state['pending']:
+            if item['name'] != name:
+                continue
+            reading = readings.get(item['id'])
+            waits = [collector.timestamp(value) for value in (item['nextAttemptAt'], (reading or {}).get('nextAt'))
+                     if value]
+            if collector.timestamp(item['searchCreatedAt']).astimezone(JST).date() < opened:
+                kind = 'outOfPeriod'
+            elif reading is None:
+                kind = 'queued'
+            elif reading['stage'] == 'fetch':
+                kind = 'imageWait' if waits and max(waits) > now else 'imageDue'
+            else:
+                kind = 'readingHeld' if reading['stage'] in ('held', 'done') else 'reading'
+            counts[kind] += 1
+        queued = counts['queued'] + counts['imageDue']
+        label = ('image_wait_and_queued' if counts['imageWait'] and queued else
+                 'image_wait' if counts['imageWait'] else 'queued' if queued else
+                 'reading' if counts['reading'] else 'reading_held' if counts['readingHeld'] else 'no_candidate')
+        labels[label] += 1
+        for kind in kinds:
+            totals[kind] += counts[kind]
+        rows.append({'name': name, 'state': label, 'coverage': row['reason'], **counts})
+    return {'period': period[0], 'states': labels, 'candidates': totals, 'members': rows}
+
+
 def half_month_dependencies(root, environment):
     """Children run as `python -I -B`; prove that exact interpreter sees the image/cache deps.
 
@@ -2453,7 +2503,10 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                     'confirmed': sum(bool(coverage.get(name, {}).get('confirmedIds')) for name in active_names),
                     'pending': len(half_month_state['pending']),
                     'readings': len(half_month_state.get('readings', {})),
-                    'retiredReadings': report.get('retiredReadings', 0)}
+                    'retiredReadings': report.get('retiredReadings', 0),
+                    'scopeRetired': report.get('scopeRetired', 0)}
+                result['halfMonthMembers'] = half_month_member_status(
+                    half_month_state, sorted(active_names), period, collector.utc_now(), collector)
                 capacity = report.get('capacity', {})
                 require(isinstance(capacity, dict) and all(
                     key in HALF_MONTH_CAPACITY_TOKENS and type(value) is int and value > 0
@@ -2737,6 +2790,25 @@ def emit(result, environment):
         if half:
             lines.append(f"\nHalf-month {half['period']}: {half['searched']}/{half['targets']} searched, "
                          f"{half['confirmed']} confirmed, {half['pending']} pending candidates.\n")
+            if half.get('scopeRetired'):
+                lines.append(f"\nRetired without HTTP or AI (published before every open half, or of a member "
+                             f"off the roster): {half['scopeRetired']} candidates.\n")
+            members = result.get('halfMonthMembers')
+            if members:
+                states, kinds = members['states'], members['candidates']
+                lines.append(
+                    f"\nHalf-month {members['period']} member status (by actual candidate state, not one token): "
+                    + '; '.join(f'{key}={states[key]}' for key in MEMBER_STATES) + ".\n"
+                    f"\nCandidates of unconfirmed members: queued, post not fetched yet={kinds['queued']}; "
+                    f"post fetched, images not tried yet={kinds['imageDue']}; "
+                    f"image wait (host stop or retry time)={kinds['imageWait']}; "
+                    f"AI reading in progress={kinds['reading']}; reading held={kinds['readingHeld']}; "
+                    f"published before this half={kinds['outOfPeriod']}.\n")
+                for row in members['members']:
+                    lines.append(f"\n- {row['name']}: state={row['state']}; queued={row['queued']}; "
+                                 f"imagesNotTried={row['imageDue']}; imageWait={row['imageWait']}; "
+                                 f"reading={row['reading']}; held={row['readingHeld']}; "
+                                 f"coverage reason={row['coverage']}.\n")
             continuation = result.get('halfMonthContinuation')
             if continuation:
                 lines.append(f"\nHalf-month checkpoint: cursor={continuation['cursor']}/"

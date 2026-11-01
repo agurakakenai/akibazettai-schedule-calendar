@@ -255,7 +255,7 @@ class CycleTests(unittest.TestCase):
         self.client = factory
         report, _ = self.run_cycle()
         retry = facts.stamp(self.now + dt.timedelta(hours=1))
-        self.assertEqual(report['reasons'], ['paused'])
+        self.assertEqual(report['reasons'], ['image_host_paused'])
         self.assertEqual(len(self.gets['images']), 2, 'one fetched photo and one 403; no retry loop')
         self.assertEqual((self.usage.calls, self.state['schedules']), (0, []))
         progress = next(iter(self.state['readings'].values()))
@@ -342,8 +342,12 @@ class CycleTests(unittest.TestCase):
         self.assertNotIn('卒業', report['continuation']['names'])
         self.assertNotIn('graduate', self.gets['searches'])
         self.assertIn(base.TARGET['handle'], self.gets['searches'])
-        self.assertTrue(all(people['卒業']['reason'] == 'paused' and people['卒業']['lastSearchedAt'] is None
-                            for people in self.state['coverage'].values()))
+        for start, people in self.state['coverage'].items():
+            if start >= today.isoformat():
+                # Off the roster before this half began: no coverage row at all.
+                self.assertNotIn('卒業', people)
+            else:
+                self.assertEqual((people['卒業']['reason'], people['卒業']['lastSearchedAt']), ('paused', None))
         self.assertEqual({row['name'] for row in self.state['schedules']}, {'あむ'})
 
     def test_graduate_is_still_searched_on_her_last_service_day(self):
@@ -447,7 +451,8 @@ class CycleTests(unittest.TestCase):
                 self.usage = Usage(self.clock)
                 self.analyzer = azure.AzureAnalyzer(self.usage, clock=self.clock, client=self.model)
                 self.gets = {'searches': [], 'posts': [], 'images': []}
-                created = base.CREATED if local_day == 30 else self.now - dt.timedelta(days=1)
+                created = (dt.datetime(2026, 9, 14, 1, tzinfo=facts.UTC) if local_day == 30
+                           else self.now - dt.timedelta(days=1))
                 self.documents = {base.TARGET['handle']: base.document(base.entry(created))}
                 self.payloads = {base.post_id(created): base.payload(created)}
                 response = reading_fixture.result(
@@ -498,6 +503,10 @@ class CycleTests(unittest.TestCase):
     def test_delayed_new_service_date_anchors_scope_but_not_receipts_or_cache_ttl(self):
         self.now = dt.datetime(2026, 9, 30, 15, 30, tzinfo=facts.UTC)
         started = self.now
+        # A second-half table published after the second half's publication start (13th).
+        created = dt.datetime(2026, 9, 14, 1, tzinfo=facts.UTC)
+        self.documents = {base.TARGET['handle']: base.document(base.entry(created))}
+        self.payloads = {base.post_id(created): base.payload(created)}
         self.model.structured.return_value = reading_fixture.result(
             reading_fixture.row(20, weekday='日', transcription='20日 昼'), half='second')
         report, code = self.run_cycle(service_date='2026-09-30')
@@ -978,6 +987,10 @@ class SharedAccountingCycleTests(unittest.TestCase):
         opening = self.opening()
         self.now = dt.datetime(2026, 9, 30, 15, 30, tzinfo=facts.UTC)
         started = self.now
+        created = dt.datetime(2026, 9, 14, 1, tzinfo=facts.UTC)
+        entry, payload = base.entry(created=created), base.payload(created=created)
+        self.documents = {base.TARGET['handle']: base.document(entry)}
+        self.payloads = {entry['id']: payload}
         self.responses[1] = reading_fixture.result(
             reading_fixture.row(20, weekday='日', transcription='20日 昼'), half='second')
         report, code = self.invoke('--service-date', '2026-09-30')
@@ -1014,7 +1027,7 @@ class SharedAccountingCycleTests(unittest.TestCase):
     def test_source_host_refusal_preserves_host_stop_and_never_reaches_azure(self):
         self.source_status = 403
         report, _ = self.invoke()
-        self.assertEqual(report['reasons'], ['paused'])
+        self.assertEqual(report['reasons'], ['image_host_paused'])
         state = collector.source_safety.load_state(self.source_path, required=True)
         self.assertTrue(collector.source_safety.paused_for(state, 'images', self.now))
         self.assertFalse(collector.source_safety.paused_for(state, 'searches', self.now))
@@ -1028,7 +1041,7 @@ class SharedAccountingCycleTests(unittest.TestCase):
         self.assertEqual(diagnostic['failedAt'], facts.stamp(self.now))
         self.assertGreater(facts.timestamp(diagnostic['retryAt']), self.now)
         self.assertEqual((diagnostic['stage'], diagnostic['nextStage'], diagnostic['reason']),
-                         ('fetch', 'fetch', 'paused'))
+                         ('fetch', 'fetch', 'image_host_paused'))
         before = list(self.http_calls)
         waiting, _ = self.invoke('--resume')
         self.assertEqual(waiting['diagnostics'], [diagnostic])

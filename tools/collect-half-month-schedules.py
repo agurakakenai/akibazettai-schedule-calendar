@@ -543,9 +543,12 @@ class SourceClient:
 
 
 def refresh_coverage(state, reasons, now, manual, *, registry=None, terminal_confirmed=False,
-                     periods=None):
+                     periods=None, by_roster=False):
+    """by_roster (finite cycles): drop a graduate's rows for halves that begin after she left."""
     periods = facts.target_periods(now) if periods is None else periods
     merged = facts.effective_schedule(manual, state, registry=registry)
+    off_roster = (lambda name, period: not serves_period(registry, name, period)) if by_roster else (
+        lambda name, period: False)
     for start, end in periods:
         people = state['coverage'].setdefault(start, {})
         date, empty_day = facts.day(start), False
@@ -553,7 +556,15 @@ def refresh_coverage(state, reasons, now, manual, *, registry=None, terminal_con
             rows = merged.get(date.isoformat(), {})
             empty_day |= not any(rows.get(shift) for shift in ('昼', '夜'))
             date += dt.timedelta(days=1)
+        for name in [name for name in people if name not in reasons]:
+            if off_roster(name, (start, end)) and not people[name]['confirmedIds']:
+                people.pop(name)
         for name, reason in reasons.items():
+            if off_roster(name, (start, end)) and not any(
+                    item['name'] == name and item['period']['from'] == start for item in state['schedules']):
+                # Off the roster before this half began: no search, coverage or reason for it.
+                people.pop(name, None)
+                continue
             row = people.setdefault(name, {
                 'name': name, 'handle': reason['handle'], 'to': end,
                 'lastSearchedAt': None, 'nextCheckAt': None,
@@ -668,10 +679,54 @@ def evict_finished(state, now, name=None, capacity=None):
     return True
 
 
-def enqueue(state, candidates, now, analyzer=None, capacity=None):
+def serves_period(registry, name, period):
+    """Whether `name` is still on the roster on the first day of `period`.
+
+    A recorded graduation whose off-roster day is on or before the period start excludes her
+    from that half (its search, coverage and candidates); her last half is kept.
+    """
+    if registry is None:
+        return True
+    member = members.lookup(registry, name)
+    graduation = (member or {}).get('graduation')
+    return graduation is None or members.off_roster_from(graduation) > period[0]
+
+
+def ai_issued(state, item, cache=None):
+    """Whether an AI request may already belong to this candidate; such candidates are kept."""
+    for record in state['sources'].values():
+        if record['source']['id'] == item['id'] and (record['status'] != 'pending' or record.get('requestHash')):
+            return True
+    for key, row in state.get('readings', {}).items():
+        if row['sourceId'] != item['id']:
+            continue
+        if row['stage'] != 'fetch':
+            return True
+        cached = (cache.records.get(key) or {}) if cache is not None else {}
+        if ((cached.get('value') or {}).get('reading') or {}).get('issued'):
+            return True
+    return False
+
+
+def retire_candidate(state, item, reason, now):
+    """Move an AI-unissued candidate to candidateHistory (never re-queued); nothing is deleted.
+
+    A started reading (post or some images already in the encrypted cache) is held, so it is
+    neither fetched again nor read; it is retired later like any finished reading.
+    """
+    state['candidateHistory'][facts.candidate_key(item)] = {
+        'candidate': dict(item), 'reason': reason, 'checkedAt': facts.stamp(now)}
+    state['pending'] = [row for row in state['pending'] if row['id'] != item['id']]
+    for progress in state.get('readings', {}).values():
+        if progress['sourceId'] == item['id'] and progress['stage'] == 'fetch':
+            progress.update(stage='held', reason=reason, nextAt=None)
+
+
+def enqueue(state, candidates, now, analyzer=None, capacity=None, cache=None):
     known = {item['id'] for item in state['pending']}
     dropped = set()
-    for candidate in sorted(candidates, key=lambda item: (item['priority'], -int(item['id']))):
+    # Newest first, so a full per-person queue keeps the newest posts.
+    for candidate in sorted(candidates, key=lambda item: -int(item['id'])):
         if candidate['id'] in known:
             continue
         if facts.candidate_key(candidate) in state['candidateHistory']:
@@ -688,12 +743,13 @@ def enqueue(state, candidates, now, analyzer=None, capacity=None):
         people = [item for item in state['pending'] if item['name'] == name]
         count = len(people)
         if count >= facts.PENDING_PER_NAME:
-            rank = lambda item: (item['priority'], -int(item['id']))
-            worst = max(people, key=rank)
-            if rank(candidate) < rank(worst):
-                state['candidateHistory'][facts.candidate_key(worst)] = {
-                    'candidate': dict(worst), 'reason': 'queue_limit', 'checkedAt': facts.stamp(now)}
-                state['pending'].remove(worst)
+            # A new post never falls off behind older ones: push out an older candidate that no
+            # AI request belongs to (one without a schedule keyword first, then the oldest).
+            older = [item for item in people if int(item['id']) < int(candidate['id'])
+                     and not ai_issued(state, item, cache)]
+            if older:
+                retire_candidate(state, max(older, key=lambda item: (item['priority'], -int(item['id']))),
+                                 'queue_limit', now)
                 count -= 1
                 if capacity is not None:
                     capacity['queueLimitReplaced'] = capacity.get('queueLimitReplaced', 0) + 1
@@ -1529,7 +1585,7 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
     anchor = min(facts.day(start) for start, _ in discovery)
     periods = sorted(set(facts.target_periods(anchor)) | set(discovery))
     refresh_coverage(state, reasons, started, manual, registry=registry,
-                     terminal_confirmed=True, periods=periods)
+                     terminal_confirmed=True, periods=periods, by_roster=True)
     # A resumed cohort keeps its saved scope, but the real JST date decides which of its
     # periods are still open. One day of grace lets a delayed slot or a continuation that
     # crosses midnight finish the half that has just ended. A candidate created before
@@ -1598,6 +1654,23 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
             for item in state['pending']:
                 if item['id'] == progress['sourceId']:
                     item['nextAttemptAt'] = None
+    def scope_since(name):
+        """Earliest publication start (1st/13th rule) of an open period this person still serves."""
+        return min((facts.publication_start(period) for period in open_periods
+                    if serves_period(registry, name, period)), default=None)
+
+    # A candidate published before every open period it could describe (or of a graduate who
+    # serves none of them) is retired once, without HTTP or AI, so old posts no longer fill the
+    # per-person queue or use image attempts. Candidates an AI request may belong to are kept.
+    scope_retired = 0
+    if open_periods:
+        for item in list(state['pending']):
+            since = scope_since(item['name'])
+            if ((item['name'] in targets or since is None)
+                    and (since is None or facts.timestamp(item['searchCreatedAt']).astimezone(facts.JST).date() < since)
+                    and not ai_issued(state, item, cache)):
+                retire_candidate(state, item, 'stale_candidate', started)
+                scope_retired += 1
     counts = {'searches': 0, 'posts': 0, 'images': 0, 'analysis': 0}
     # Finished readings are retired once sources/candidateHistory/the AI ledger already block
     # any re-fetch or re-analysis, so live progress never accumulates up to READINGS_LIMIT.
@@ -1608,8 +1681,11 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
     old_deadline = getattr(analyzer.usage, 'deadline', None)
     analyzer.usage.deadline = lambda: allowed() and (old_deadline is None or old_deadline())
 
+    def served(name):
+        return [period for period in discovery if serves_period(registry, name, period)]
+
     def confirmed(name):
-        return all(state['coverage'][start][name]['confirmedIds'] for start, _ in discovery)
+        return all(state['coverage'][start][name]['confirmedIds'] for start, _ in served(name))
 
     def guard(client, name):
         check_registry(registry_guard, name)
@@ -1628,8 +1704,15 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
         return facts.timestamp(item['searchCreatedAt']).astimezone(facts.JST).date()
 
     def relevant(item):
-        # Published on or after an open period's publication start (1st/13th).
-        return any(created(item) >= facts.publication_start(period) for period in open_periods)
+        # Published on or after the publication start (1st/13th rule) of an open period she serves.
+        return any(created(item) >= facts.publication_start(period) for period in open_periods
+                   if serves_period(registry, item['name'], period))
+
+    def newest_period_first(item):
+        # Posts for the latest open half before those only for the half that is just ending.
+        latest = max((period for period in open_periods if serves_period(registry, item['name'], period)),
+                     default=None)
+        return latest is None or created(item) < facts.publication_start(latest)
 
     def waiting(item):
         rows = [record for record in state['readings'].values() if record['sourceId'] == item['id']]
@@ -1639,6 +1722,8 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
         """Open, unconfirmed periods whose check is due and no queued candidate may cover."""
         result = []
         for period in open_periods:
+            if not serves_period(registry, name, period):
+                continue
             row = state['coverage'][period[0]][name]
             if row['confirmedIds'] or (row['nextCheckAt'] is not None
                                        and facts.timestamp(row['nextCheckAt']) > clock()):
@@ -1706,9 +1791,9 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                             candidates, truncated = discover(
                                 document, {name: targets[name]}, clock(), bindings, registry=registry,
                                 other_bindings=(state['identityBindings'], existing_bindings or {}),
-                                candidate_since=candidate_since)
+                                candidate_since=max(candidate_since, scope_since(name) or candidate_since))
                             del document
-                            dropped = enqueue(state, candidates, clock(), analyzer, capacity)
+                            dropped = enqueue(state, candidates, clock(), analyzer, capacity, cache)
                             for start, _ in due:
                                 row = state['coverage'][start][name]
                                 row.update(lastSearchedAt=facts.stamp(clock()),
@@ -1716,7 +1801,9 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                                            reason='queue_limit' if name in dropped else 'candidate_limit' if truncated else
                                            'post_unverified' if candidates else 'source_not_found')
                             save()
-                    for selected in sorted(pending, key=lambda item: (item['priority'], -int(item['id']))):
+                    # Posts for the latest open half first; then schedule-keyword posts; newest first.
+                    for selected in sorted(pending, key=lambda item: (
+                            newest_period_first(item), item['priority'], -int(item['id']))):
                         progress = None
                         failure_stage, failure_host, failure_image = 'source', POST_HOST, None
                         guard(client, name)
@@ -1906,6 +1993,10 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                             save()
 
                         # At most twice: an ALT-first reading without rows falls back to 'fetch' once.
+                        if (phase == 'rest' and bundle['stage'] == 'fetch' and not alt_first(verified, text, bundle)
+                                and len(images) < len(bundle['urls'])):
+                            # Never spend image attempts on a post outside every open period.
+                            continue
                         for _ in range(2):
                             if bundle['stage'] == 'fetch' and not alt_first(verified, text, bundle):
                                 for url in bundle['urls'][len(images):]:
@@ -1939,7 +2030,7 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                                                     else 'not_schedule', clock(),
                                                     image_hashes=[facts.digest(bytes(image['bytes'])) for image in images])
                         refresh_coverage(state, reasons, clock(), manual, registry=registry,
-                                         terminal_confirmed=True, periods=periods)
+                                         terminal_confirmed=True, periods=periods, by_roster=True)
                         save()
                         client.close()
                     if phase == 'rest':
@@ -1963,6 +2054,9 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                         reason = 'image_fetch_failed'
                     elif reason == 'reading_pending' and progress is None:
                         reason = 'source_failed'
+                    elif reason == 'paused' and failure_host == PHOTO_HOST:
+                        # Only the image host is stopped; searches and other posts are not paused.
+                        reason = 'image_host_paused'
                     errors.append(reason)
                     _set_reason(state, name, discovery, reason)
                     if selected is not None:
@@ -1974,7 +2068,9 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                             progress['stage'] = 'held'
                     else:
                         for start, _ in discovery:
-                            state['coverage'][start][name]['nextCheckAt'] = facts.stamp(next_at) if next_at else None
+                            if name in state['coverage'].get(start, {}):
+                                state['coverage'][start][name]['nextCheckAt'] = (
+                                    facts.stamp(next_at) if next_at else None)
                     if selected is not None:
                         status = getattr(exc, 'status', None)
                         failure = {
@@ -2013,10 +2109,12 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
     pending_progress = [record for record in state['readings'].values()
                         if record['stage'] not in ('done', 'held') and record['sourceId'] in pending_ids]
     unresolved = [name for name in current['names'] if name in reasons
+                  and any(serves_period(registry, name, period) for period in open_periods or discovery)
                   and (name not in targets or not confirmed(name))]
     next_times = [row['nextAt'] for row in pending_progress if row['nextAt']]
     next_times += [state['coverage'][start][name]['nextCheckAt'] for name in current['names'] if name in targets
-                   for start, _ in open_periods if not state['coverage'][start][name]['confirmedIds']
+                   for start, _ in open_periods if name in state['coverage'].get(start, {})
+                   and not state['coverage'][start][name]['confirmedIds']
                    and state['coverage'][start][name]['nextCheckAt']
                    and not any(item['name'] == name for item in state['pending'])]
     # Work that is possible right now: a due open-period search or an actionable candidate. A
@@ -2048,7 +2146,7 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
     report.update(continuation=copy.deepcopy(current),
                   nextStage='complete' if current['reason'] == 'complete' else 'resume' if remaining else 'waiting',
                   nextEligible=current['nextAt'], reasons=sorted(set(errors)), unresolvedCount=len(unresolved),
-                  retiredReadings=retired, readings=len(state['readings']),
+                  retiredReadings=retired, readings=len(state['readings']), scopeRetired=scope_retired,
                   capacity={key: value for key, value in sorted(capacity.items()) if value})
     for record in state['readings'].values():
         failure = record.get('failure')
@@ -2180,7 +2278,8 @@ def run(args, *, clock=official.utc_now, sleep=time.sleep, environment=None):
         _, reasons, _ = target_population(
             state, {}, {}, [], personal_state['identityBindings'], registry=registry,
             today=registry_guard.today)
-        refresh_coverage(state, reasons, clock(), {}, registry=registry, terminal_confirmed=cycle)
+        refresh_coverage(state, reasons, clock(), {}, registry=registry, terminal_confirmed=cycle,
+                         by_roster=cycle)
         state['lastRun'] = {'status': status}
         facts.validate_state(state)
         official.atomic_json(args.snapshot, state)

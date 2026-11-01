@@ -572,7 +572,7 @@ class ExpiredUnissuedRecoveryTests(unittest.TestCase):
         self.assertGreater(facts.timestamp(saved['paused']['retryAt']), self.now)
         self.assertEqual({key: receipts[key] for key in self.before['receipts']}, self.before['receipts'])
         self.assertEqual(self.usage.calls, 0)
-        self.assertEqual(self.reading()['reason'], 'paused')
+        self.assertEqual(self.reading()['reason'], 'image_host_paused')
         before = dict(self.http)
         self.run_real('202-1', resume=True, cycle_id='101-1')
         self.assertEqual(self.http, before)

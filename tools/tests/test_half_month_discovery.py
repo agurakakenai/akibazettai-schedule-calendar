@@ -3,10 +3,14 @@
 Old first-half pending candidates and a rebased cohort (cursor == len(names)) blocked every
 second-half search. Synthetic sources only; Luna is mocked and no live network is reachable.
 """
+import contextlib
 import datetime as dt
 import email.message
 import io
 import json
+from pathlib import Path
+import shutil
+import tempfile
 import unittest
 from unittest import mock
 import urllib.error
@@ -589,8 +593,224 @@ class PriorityTests(DiscoveryBase):
         # あむ has a queued second-half candidate, so only the newcomer is searched.
         self.assertEqual([arg for kind, arg in order if kind == 'search'], ['new_member'])
         self.assertLess(order.index(('search', 'new_member')), order.index(('post', second['id'])))
-        self.assertLess(order.index(('post', second['id'])), order.index(('post', first['id'])))
-        self.assertLess(order.index(('post', newcomer['id'])), order.index(('post', first['id'])))
+        self.assertIn(('post', newcomer['id']), order)
+        # The first-half table can no longer describe an open half: retired without HTTP or AI.
+        self.assertNotIn(('post', first['id']), order)
+        self.assertNotIn(first['id'], {item['id'] for item in self.state['pending']})
+        self.assertEqual({row['candidate']['id']: row['reason'] for row in self.state['candidateHistory'].values()
+                          }.get(first['id']), 'stale_candidate')
+
+
+def jst(month, day, hour=10):
+    return dt.datetime(2026, month, day, hour, tzinfo=facts.JST).astimezone(facts.UTC)
+
+
+class CandidateScopeTests(DiscoveryBase):
+    """11/01 findings: old posts filled each 12-candidate queue and used the scarce image attempts."""
+
+    GRADUATE_ID = '2080944098043977778'
+
+    def candidates(self, *specs, name='あむ', handle='amu_zettai', uid=None):
+        entries = []
+        for created, suffix, priority in specs:
+            entry = self.post(created, suffix, '雑談', handle=handle)
+            if uid is not None:
+                entry['userId'] = uid
+            entries.append(entry)
+        found, _ = collector.discover(base.document(*entries), {name: {'name': name, 'handle': handle}},
+                                      self.now, {}, registry=self.registry, candidate_since=dt.date(2026, 9, 1))
+        by_id = {item['id']: item for item in found}
+        result = []
+        for (_, _, priority), entry in zip(specs, entries):
+            by_id[entry['id']]['priority'] = priority
+            result.append(by_id[entry['id']])
+        return result
+
+    def reading(self, item, stage, reason):
+        key = facts.digest(('reading-' + item['id']).encode())
+        self.state.setdefault('readings', {})[key] = {
+            'sourceId': item['id'], 'cacheKey': key, 'stage': stage,
+            'reason': reason, 'nextAt': None, 'attemptedVariants': []}
+
+    def pending_ids(self):
+        return [item['id'] for item in self.state['pending']]
+
+    def history(self):
+        return {row['candidate']['id']: row['reason'] for row in self.state['candidateHistory'].values()}
+
+    def test_candidates_published_before_every_open_half_are_retired_once_without_http_or_ai(self):
+        self.now = at(13)
+        self.documents = {'amu_zettai': base.document()}
+        self.run_cycle(cycle_id='3700-1')
+        self.now = at(17)
+        old, fetched, issued, fresh = self.candidates((at(5), 1, 0), (at(6), 2, 0), (at(7), 3, 0), (at(14), 4, 1))
+        self.state['pending'].extend([old, fetched, issued, fresh])
+        self.reading(fetched, 'fetch', 'image_host_paused')
+        self.reading(issued, 'held', 'reading_uncertain')
+        facts.validate_state(self.state)
+        self.model.structured.return_value = self.second_half_result()
+        self.reopen()
+        self.calls.clear()
+        report, _ = self.run_cycle(resume=True, cycle_id='3700-1')
+        self.assertEqual(report['scopeRetired'], 2)
+        self.assertEqual((self.history().get(old['id']), self.history().get(fetched['id'])),
+                         ('stale_candidate', 'stale_candidate'))
+        # A candidate an AI request may belong to stays as it is.
+        self.assertNotIn(issued['id'], self.history())
+        self.assertIn(issued['id'], self.pending_ids())
+        # Its started reading is no longer live: held, then retired like any finished reading.
+        self.assertFalse([row for row in self.state['readings'].values()
+                          if row['sourceId'] == fetched['id'] and row['stage'] not in ('held', 'done')])
+        for item in (old, fetched, issued):
+            self.assertNotIn(('post', item['id']), self.calls)
+        self.assertTrue(all('SYNTHETIC_4_' in arg for kind, arg in self.calls if kind == 'image'))
+        self.assertEqual(self.calls.count(('post', fresh['id'])), 1)
+        self.assertEqual(self.usage.calls, 1)
+        self.assertTrue(self.state['coverage'][SECOND_HALF]['あむ']['confirmedIds'])
+        # Retired once: a later search cannot queue it again, and the next run retires nothing.
+        collector.enqueue(self.state, [old], self.now)
+        self.assertNotIn(old['id'], self.pending_ids())
+        self.reopen()
+        report, _ = self.run_cycle(resume=True, cycle_id='3700-1')
+        self.assertEqual(report['scopeRetired'], 0)
+        facts.validate_state(self.state)
+
+    def test_full_queue_pushes_out_older_unissued_candidates_so_new_posts_are_kept(self):
+        self.now = at(20)
+        queue = self.candidates(*[(at(14, 9) + dt.timedelta(minutes=index), 20 + index, 0)
+                                  for index in range(facts.PENDING_PER_NAME)])
+        queue[3]['priority'] = 1
+        self.state['pending'].extend(queue)
+        self.reading(queue[0], 'original', 'reading_pending')
+        facts.validate_state(self.state)
+        capacity = {}
+        newer = self.candidates((at(19), 90, 0))[0]
+        self.assertEqual(collector.enqueue(self.state, [newer], self.now, None, capacity), set())
+        # The new post is kept; an older one without a schedule keyword goes first.
+        self.assertIn(newer['id'], self.pending_ids())
+        self.assertNotIn(queue[3]['id'], self.pending_ids())
+        self.assertEqual(self.history()[queue[3]['id']], 'queue_limit')
+        newest = self.candidates((at(19, 11), 91, 0))[0]
+        collector.enqueue(self.state, [newest], self.now, None, capacity)
+        # Then the oldest; the candidate with an AI reading in progress is never pushed out.
+        self.assertIn(newest['id'], self.pending_ids())
+        self.assertNotIn(queue[1]['id'], self.pending_ids())
+        self.assertIn(queue[0]['id'], self.pending_ids())
+        self.assertEqual(capacity['queueLimitReplaced'], 2)
+        self.assertEqual(len(self.pending_ids()), facts.PENDING_PER_NAME)
+        # A post older than every unissued queued candidate is the one deferred.
+        older = self.candidates((at(13, 9), 92, 0))[0]
+        self.assertEqual(collector.enqueue(self.state, [older], self.now, None, capacity), {'あむ'})
+        self.assertNotIn(older['id'], self.pending_ids())
+        # A batch keeps the newest posts.
+        batch = self.candidates(*[(at(19, 12) + dt.timedelta(minutes=index), 60 + index, 1)
+                                  for index in range(facts.PENDING_PER_NAME + 2)])
+        collector.enqueue(self.state, batch, self.now)
+        self.assertEqual(sorted(self.pending_ids(), key=int),
+                         sorted([queue[0]['id'], *[item['id'] for item in batch[3:]]], key=int))
+        facts.validate_state(self.state)
+
+    def test_posts_for_the_latest_open_half_are_read_first_newest_and_keyword_first(self):
+        self.now = at(29)
+        self.documents = {'amu_zettai': base.document()}
+        self.run_cycle(cycle_id='3800-1')
+        self.assertEqual(self.state['collection']['periods'], [['2026-11-01', '2026-11-15'], ['2026-10-16', '2026-10-31']])
+        self.now = jst(11, 1)
+        ending, plain, table, old = self.candidates((at(20), 1, 0), (at(29, 12), 2, 1), (at(30), 3, 0), (at(10), 4, 0))
+        self.state['pending'].extend([ending, plain, table, old])
+        self.model.structured.return_value = {'classification': 'uncertain', 'complete': False, 'periods': []}
+        self.reopen()
+        self.calls.clear()
+        self.run_cycle(resume=True, cycle_id='3800-1')
+        posts = [arg for kind, arg in self.calls if kind == 'post']
+        self.assertEqual(posts, [table['id'], plain['id'], ending['id']])
+        images = [arg for kind, arg in self.calls if kind == 'image']
+        self.assertEqual(len(images), 3)
+        self.assertFalse(any('SYNTHETIC_4_' in url for url in images))
+        self.assertEqual(self.history()[old['id']], 'stale_candidate')
+
+    def test_graduate_leaves_the_halves_after_her_last_day(self):
+        self.registry['members'].append(collector.members.new_member(
+            '卒業', 'https://x.com/graduate', base.NOW, member_id='m-' + '2' * 32))
+        self.registry['members'][-1]['graduation'] = {
+            'lastServiceDate': '2026-10-31', 'evidenceUrl': 'https://x.com/graduate/status/2109664298628944019'}
+        self.now = at(29)
+        self.documents = {'amu_zettai': base.document(), 'graduate': base.document()}
+        report, _ = self.run_cycle(cycle_id='3900-1')
+        self.assertIn('卒業', report['continuation']['names'])
+        self.assertIn('graduate', self.searches())
+        self.assertIn('卒業', self.state['coverage']['2026-10-16'])
+        self.assertNotIn('卒業', self.state['coverage']['2026-11-01'])
+        mine = self.candidates((at(20), 1, 0), (at(29, 9), 2, 0), name='卒業', handle='graduate', uid=self.GRADUATE_ID)
+        self.state['pending'].extend(mine)
+        facts.validate_state(self.state)
+        self.now = jst(11, 2)
+        self.reopen()
+        self.calls.clear()
+        report, _ = self.run_cycle(resume=True, cycle_id='3900-1')
+        self.assertNotIn('graduate', self.searches())
+        self.assertFalse(any(call == ('post', item['id']) for item in mine for call in self.calls))
+        self.assertEqual({self.history()[item['id']] for item in mine}, {'stale_candidate'})
+        self.assertFalse(any(item['name'] == '卒業' for item in self.state['pending']))
+        self.assertNotIn('卒業', self.state['coverage']['2026-11-01'])
+        self.assertEqual(report['unresolvedCount'], 1)
+        facts.validate_state(self.state)
+
+
+class MemberStatusSummaryTests(unittest.TestCase):
+    def test_image_wait_and_queued_candidates_are_reported_separately(self):
+        now = jst(11, 2)
+        stamp = facts.stamp
+        rows = {}
+
+        def candidate(name, suffix, created, wait=None):
+            return {'id': base.post_id(created, suffix), 'name': name, 'searchCreatedAt': stamp(created),
+                    'nextAttemptAt': stamp(wait) if wait else None}
+
+        def reading(item, stage, wait=None):
+            key = facts.digest(item['id'].encode())
+            rows[key] = {'sourceId': item['id'], 'cacheKey': key, 'stage': stage, 'reason': 'image_host_paused',
+                         'nextAt': stamp(wait) if wait else None, 'attemptedVariants': []}
+        later = now + dt.timedelta(minutes=40)
+        pending = [candidate('いち', 1, jst(10, 29)), candidate('に', 2, jst(10, 30), later),
+                   candidate('に', 3, jst(10, 30)), candidate('に', 4, jst(10, 31)), candidate('さん', 5, jst(10, 29), later),
+                   candidate('よん', 6, jst(10, 29)), candidate('よん', 7, jst(10, 30)), candidate('ご', 8, jst(10, 29)),
+                   candidate('ろく', 9, jst(10, 10))]
+        reading(pending[1], 'fetch', later)
+        reading(pending[3], 'fetch')
+        reading(pending[4], 'fetch', later)
+        reading(pending[7], 'held')
+        coverage = {name: {'confirmedIds': ['1'] if name == 'いち' else [], 'reason': reason}
+                    for name, reason in (('いち', 'valid_schedule'), ('に', 'image_host_paused'),
+                                         ('さん', 'image_host_paused'), ('よん', 'post_unverified'),
+                                         ('ご', 'reading_uncertain'), ('ろく', 'post_unverified'),
+                                         ('なな', 'source_not_found'))}
+        state = {'coverage': {'2026-11-01': coverage}, 'pending': pending, 'readings': rows}
+        names = ['いち', 'に', 'さん', 'よん', 'ご', 'ろく', 'なな', '卒業']
+        status = cloud.half_month_member_status(state, names, ('2026-11-01', '2026-11-15'), now, legacy.collector)
+        self.assertEqual(status['states'], {'confirmed': 1, 'queued': 1, 'image_wait': 1, 'image_wait_and_queued': 1,
+                                            'reading': 0, 'reading_held': 1, 'no_candidate': 2})
+        self.assertEqual(status['candidates'], {'queued': 3, 'imageWait': 2, 'imageDue': 1, 'reading': 0,
+                                                'readingHeld': 1, 'outOfPeriod': 1})
+        by_name = {row['name']: row for row in status['members']}
+        self.assertEqual((by_name['に']['state'], by_name['に']['queued'], by_name['に']['imageWait'],
+                          by_name['に']['imageDue']), ('image_wait_and_queued', 1, 1, 1))
+        self.assertEqual((by_name['よん']['state'], by_name['さん']['state'], by_name['ろく']['outOfPeriod']),
+                         ('queued', 'image_wait', 1))
+        self.assertNotIn('いち', by_name)
+        self.assertNotIn('卒業', by_name)
+        summary = Path(tempfile.mkdtemp(prefix='member-summary-')) / 'summary.md'
+        self.addCleanup(shutil.rmtree, summary.parent, True)
+        with contextlib.redirect_stdout(io.StringIO()):
+            cloud.emit({'halfMonthAcquisition': {'period': '2026-11-01', 'searched': 7, 'targets': 7, 'confirmed': 1,
+                                                 'pending': 9, 'scopeRetired': 4},
+                        'halfMonthMembers': status}, {'GITHUB_STEP_SUMMARY': str(summary)})
+        text = summary.read_text(encoding='utf-8')
+        self.assertIn('confirmed=1; queued=1; image_wait=1; image_wait_and_queued=1', text)
+        self.assertIn('queued, post not fetched yet=3; post fetched, images not tried yet=1; '
+                      'image wait (host stop or retry time)=2', text)
+        self.assertIn('- に: state=image_wait_and_queued; queued=1; imagesNotTried=1; imageWait=1', text)
+        self.assertIn('Retired without HTTP or AI', text)
 
 
 class AzureErrorTokenTests(unittest.TestCase):
