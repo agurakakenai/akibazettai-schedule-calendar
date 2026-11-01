@@ -192,7 +192,7 @@ function shiftsFor(name) {
     assert.equal(JSON.stringify(data.schedule[date]), JSON.stringify(day),
       `${date}: the original manual data must remain unchanged`);
   }
-  assert.ok(allPlans.every(plan => ["2026-09-16", "2026-10-16"].includes(plan.source.period.from)));
+  assert.ok(allPlans.every(plan => ["2026-09-16", "2026-10-16", "2026-11-01"].includes(plan.source.period.from)));
   assert.equal(new Set(plans.map(plan => plan.source.name)).size, 36);
   assert.equal(plans.length, 37);
   assert.equal(plans.reduce((total, plan) => total + plan.days.length, 0), 230);
@@ -308,6 +308,49 @@ function shiftsFor(name) {
     item => item.id), ["2109785827832467849"]);
   const oct21 = [...new Set(Object.values(data.schedule["2026-10-21"]).flat().map(entry => entry.name))].sort();
   assert.deepEqual(oct21, ["あらた", "いと", "うな", "かなた", "ちま", "はぴる", "ひかり", "みえる", "みりあ", "るるか"].sort());
+
+  // November first half: visually reviewed originals for members the cloud reader could not confirm.
+  const november = allPlans.filter(plan => plan.source.period.from === "2026-11-01");
+  assert.ok(november.every(plan => plan.source.period.to === "2026-11-15"));
+  assert.equal(november.length, 19);
+  assert.equal(new Set(november.map(plan => plan.source.name)).size, 19);
+  assert.equal(november.reduce((total, plan) => total + plan.days.length, 0), 112);
+  assert.equal(november.reduce((total, plan) =>
+    total + plan.days.reduce((count, day) => count + day.shifts.length, 0), 0), 134);
+  const nov = (name) => november.find(plan => plan.source.name === name);
+  const novCompact = (name) => Array.from(nov(name).days, day => `${day.date.slice(8)}${day.shifts.join("")}`);
+  for (const name of ["あくび", "つぼみ", "ゆめ", "まひろ", "いと", "うな", "こい", "すくい", "あめる"]) {
+    assert.equal(nov(name), undefined, `${name}: graduated or already confirmed automatically`);
+  }
+  assert.deepEqual(novCompact("ちゆ"), ["02昼夜", "03夜", "08昼夜", "09昼", "10昼夜", "12昼夜", "13昼", "15昼夜"],
+    "October rows printed on the same calendar stay out of this period");
+  assert.deepEqual(novCompact("ちま"), ["02夜", "03昼夜", "07夜", "09昼", "10昼", "12昼", "13昼"]);
+  assert.ok(nov("ちま").days.every(day => !day.explicitStart && !day.explicitEnd), "icon calendar has no hours");
+  assert.deepEqual(novCompact("ひかり"), ["01夜", "02昼", "03昼", "05昼", "12夜", "13昼", "14夜"],
+    "clock-only rows: 16-22 is 夜, 12-18 is 昼");
+  const kanata8 = nov("かなた").days.find(day => day.date === "2026-11-08");
+  assert.deepEqual([kanata8.explicitStart, kanata8.qualifier], ["16:00", "early"]);
+  const kanata4 = data.schedule["2026-11-04"]["夜"].find(entry => entry.name === "かなた").workTiming.facts
+    .find(fact => fact.boundary === "start");
+  assert.equal(kanata4.explicitTime, "17:30");
+  assert.equal(kanata4.qualifier, "late");
+  assert.deepEqual(Array.from(nov("みりあ").days.filter(day => day.qualifier === "long"), day => day.date.slice(8)),
+    ["08", "15"]);
+  // Supplements beside an automatic reading of a different post: the table post for あらた,
+  // and もなか's own continuation reply.
+  assert.equal(nov("あらた").source.id, "2115096185786466336");
+  assert.deepEqual(novCompact("あらた"), ["01夜", "03昼", "04昼", "05昼夜", "09昼夜", "11昼", "12昼夜", "14昼", "15昼"]);
+  const monaka = nov("もなか");
+  assert.equal(monaka.source.confirmation.replyTo, "2115104845510344735");
+  assert.deepEqual(novCompact("もなか"), ["10昼", "12昼夜", "13昼", "15昼"]);
+  assert.equal(monaka.days.find(day => day.date === "2026-11-13").explicitEnd, "18:00");
+  const nono = nov("のの");
+  assert.ok(nono.source.confirmation.replyTo);
+  assert.deepEqual(novCompact("のの"), ["01昼", "03昼夜", "09夜"]);
+  assert.ok(nono.days.every(day => /一旦/.test(day.reviewNote)));
+  const nov12 = [...new Set(Object.values(data.schedule["2026-11-12"]).flat().map(entry => entry.name))].sort();
+  assert.deepEqual(nov12, ["あらた", "こん", "ちま", "ちゆ", "にゃな", "はぴる", "ひかり", "ぴあの", "みえる",
+    "みりあ", "もなか"].sort());
 }
 
 assert.deepEqual(
