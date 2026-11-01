@@ -11,6 +11,17 @@
       "memberId": "m-c87af267d8a0559e8bad6f4cfa97f42c",
       "name": "まひろ",
       "runId": "roster-40951945624-1"
+    },
+    {
+      "at": "2026-11-01T20:11:15Z",
+      "effectiveFrom": "2026-11-13",
+      "evidenceUrl": "https://x.com/ito_zettai/status/2115820966031110642",
+      "kind": "graduation",
+      "lastServiceDate": "2026-11-12",
+      "memberId": "m-f6768cd8f9415efe879fa396ccafaec4",
+      "name": "いと",
+      "postId": "2115820966031110642",
+      "runId": "roster-41344689953-1"
     }
   ],
   "departures": [
@@ -29,13 +40,26 @@
       "xProfileUrl": "https://x.com/mahiro1_zettai"
     }
   ],
-  "graduations": [],
+  "graduations": [
+    {
+      "authorId": "2080944098043977728",
+      "bodySha256": "0e2d0e5a2994352e09db71d150f152e760eb71fec76643807f034f36c959e4cf",
+      "detectedAt": "2026-11-01T20:11:15Z",
+      "evidenceUrl": "https://x.com/ito_zettai/status/2115820966031110642",
+      "lastServiceDate": "2026-11-12",
+      "memberId": "m-f6768cd8f9415efe879fa396ccafaec4",
+      "name": "いと",
+      "postCreatedAt": "2026-10-29T15:00:03Z",
+      "postId": "2115820966031110642",
+      "runId": "roster-41344689953-1"
+    }
+  ],
   "lastRun": {
-    "at": "2026-10-31T19:41:29Z",
-    "date": "2026-11-01",
+    "at": "2026-11-01T20:12:15Z",
+    "date": "2026-11-02",
     "reason": null,
     "runs": 1,
-    "status": "no-new"
+    "status": "ok"
   },
   "posts": {
     "2105681113981309218": {
@@ -56,6 +80,12 @@
       "memberId": "m-e6dd70d843675b128af9c702308105fe",
       "reason": "not_self_graduation"
     },
+    "2114733799351169282": {
+      "bodySha256": "cc0c8f7609a4183bd999004928d5a9f52ebca4493cb668996942992f4f0a702b",
+      "checkedAt": "2026-11-01T20:12:15Z",
+      "memberId": "m-f6768cd8f9415efe879fa396ccafaec4",
+      "reason": "not_self_graduation"
+    },
     "2114734125429211594": {
       "bodySha256": "c0bcd3521da8d8f3471a99ba29e394a96c3908099f3a80e8f493d78d5c645a26",
       "checkedAt": "2026-10-31T19:41:29Z",
@@ -73,6 +103,12 @@
       "checkedAt": "2026-10-31T19:40:30Z",
       "memberId": "m-c19cb919a9885157819dba3164a4c728",
       "reason": "not_self_graduation"
+    },
+    "2115820966031110642": {
+      "bodySha256": "0e2d0e5a2994352e09db71d150f152e760eb71fec76643807f034f36c959e4cf",
+      "checkedAt": "2026-11-01T20:11:15Z",
+      "memberId": "m-f6768cd8f9415efe879fa396ccafaec4",
+      "reason": "adopted"
     }
   },
   "scan": {
@@ -103,8 +139,17 @@
     "m-24430e94d9be5303bb165149ae3fbe48": {
       "searchedAt": "2026-10-31T19:39:38Z"
     },
+    "m-270f112220705fc5a8f592407d7196a5": {
+      "searchedAt": "2026-11-01T20:11:11Z"
+    },
+    "m-2f98570f1960585a8f5e9f303ea97031": {
+      "searchedAt": "2026-11-01T20:10:23Z"
+    },
     "m-339a0462aa12593c84c6792ced80ab9f": {
       "searchedAt": "2026-10-28T20:43:15Z"
+    },
+    "m-37423c8cbbe95a46a52018f6c1bf46bb": {
+      "searchedAt": "2026-11-01T20:10:47Z"
     },
     "m-384bb8c9ee075780a1aa25ff7f22a509": {
       "searchedAt": "2026-10-30T20:17:39Z"
@@ -126,6 +171,12 @@
     },
     "m-8e4cba39c32d5ad4a051f772968b4081": {
       "searchedAt": "2026-10-30T20:18:15Z"
+    },
+    "m-8ff8adf3882151c2b4a6a5ac401e7057": {
+      "searchedAt": "2026-11-01T20:10:35Z"
+    },
+    "m-9e1f38560c775139bd9e8c696c8b0c5e": {
+      "searchedAt": "2026-11-01T20:10:59Z"
     },
     "m-a2dcb0787b3c5e3791182922e298caf6": {
       "searchedAt": "2026-10-28T20:43:51Z"
@@ -154,13 +205,16 @@
     "m-e6dd70d843675b128af9c702308105fe": {
       "searchedAt": "2026-10-28T20:43:27Z"
     },
+    "m-f6768cd8f9415efe879fa396ccafaec4": {
+      "searchedAt": "2026-11-01T20:10:11Z"
+    },
     "m-f6a31d664ede53ccac3f68d6e7cd069d": {
       "searchedAt": "2026-10-30T20:18:40Z"
     }
   },
   "schemaVersion": 1,
   "staff": {
-    "checkedAt": "2026-10-31T19:39:24Z",
+    "checkedAt": "2026-11-01T20:10:09Z",
     "names": [
       "ひかり",
       "あむ",
