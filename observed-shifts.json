@@ -1,25 +1,25 @@
 {
-  "checkedAt": "2026-11-06T11:16:01Z",
+  "checkedAt": "2026-11-06T18:10:54Z",
   "complete": false,
   "cooldowns": {
-    "pbs.twimg.com": "2026-11-06T18:26:10.622116Z"
+    "pbs.twimg.com": "2026-11-06T18:26:10Z"
   },
   "lastRun": {
-    "attemptedCount": 3,
+    "attemptedCount": 0,
     "complete": false,
     "dateBasis": "JST service day, 05:00 boundary",
     "dateFrom": "2026-11-05",
     "dateTo": "2026-11-06",
     "deferredCount": 0,
     "discoveredCount": 38,
-    "eligibleCount": 3,
+    "eligibleCount": 0,
     "failures": [],
-    "fetchedCount": 3,
-    "finishedAt": "2026-11-06T11:17:10Z",
+    "fetchedCount": 0,
+    "finishedAt": "2026-11-06T18:10:58Z",
     "lastSuccessMeaning": "Both searches and every selected post handled without failure or deferral",
     "maxPosts": 20,
-    "newNameCount": 12,
-    "newPostCount": 2,
+    "newNameCount": 0,
+    "newPostCount": 0,
     "pendingCount": 36,
     "pendingOutsideRangeCount": 36,
     "rejected": [
@@ -218,19 +218,15 @@
       {
         "id": "2097883444034596954",
         "reason": "outside_date_range"
-      },
-      {
-        "id": "2118534003062182111",
-        "reason": "not_shift_post"
       }
     ],
     "requests": {
-      "posts": 3,
+      "posts": 0,
       "searches": 2
     },
     "skippedCuratedCount": 0,
-    "skippedObservedCount": 5,
-    "skippedResolvedCount": 1,
+    "skippedObservedCount": 7,
+    "skippedResolvedCount": 2,
     "sourceCount": 2,
     "sourcePageLimit": 2,
     "sources": [
