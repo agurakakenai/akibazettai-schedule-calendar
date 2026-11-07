@@ -1,38 +1,27 @@
 {
-  "checkedAt": "2026-11-07T10:32:01Z",
+  "checkedAt": "2026-11-07T16:56:23Z",
   "complete": false,
   "cooldowns": {
-    "pbs.twimg.com": "2026-11-07T17:00:54.638270Z"
+    "pbs.twimg.com": "2026-11-07T17:00:54Z"
   },
   "lastRun": {
-    "attemptedCount": 10,
+    "attemptedCount": 0,
     "complete": false,
     "dateBasis": "JST service day, 05:00 boundary",
     "dateFrom": "2026-11-06",
     "dateTo": "2026-11-07",
     "deferredCount": 0,
-    "discoveredCount": 43,
-    "eligibleCount": 10,
-    "failures": [
-      {
-        "id": "2118979920672288797",
-        "reason": "azure_edit_metadata",
-        "url": "https://x.com/akibazettai/status/2118979920672288797"
-      },
-      {
-        "id": "2118980078499688728",
-        "reason": "azure_edit_metadata",
-        "url": "https://x.com/akibazettai/status/2118980078499688728"
-      }
-    ],
-    "fetchedCount": 10,
-    "finishedAt": "2026-11-07T10:34:13Z",
+    "discoveredCount": 41,
+    "eligibleCount": 0,
+    "failures": [],
+    "fetchedCount": 0,
+    "finishedAt": "2026-11-07T16:56:27Z",
     "lastSuccessMeaning": "Both searches and every selected post handled without failure or deferral",
     "maxPosts": 20,
-    "newNameCount": 33,
-    "newPostCount": 5,
+    "newNameCount": 0,
+    "newPostCount": 0,
     "pendingCount": 38,
-    "pendingOutsideRangeCount": 36,
+    "pendingOutsideRangeCount": 38,
     "rejected": [
       {
         "id": "2118267560856850653",
@@ -67,15 +56,7 @@
         "reason": "outside_date_range"
       },
       {
-        "id": "2117907179546312722",
-        "reason": "outside_date_range"
-      },
-      {
         "id": "2117816579782234202",
-        "reason": "outside_date_range"
-      },
-      {
-        "id": "2117815766204789104",
         "reason": "outside_date_range"
       },
       {
@@ -233,40 +214,20 @@
       {
         "id": "2097883444034596954",
         "reason": "outside_date_range"
-      },
-      {
-        "id": "2118891044561662307",
-        "reason": "not_shift_post"
-      },
-      {
-        "id": "2118894788267438526",
-        "reason": "not_shift_post"
-      },
-      {
-        "id": "2118978600531829244",
-        "reason": "not_shift_post"
-      },
-      {
-        "id": "2118979146722480191",
-        "reason": "not_shift_post"
-      },
-      {
-        "id": "2118979374066348246",
-        "reason": "not_shift_post"
       }
     ],
     "requests": {
-      "posts": 10,
+      "posts": 0,
       "searches": 2
     },
     "skippedCuratedCount": 0,
-    "skippedObservedCount": 2,
-    "skippedResolvedCount": 1,
+    "skippedObservedCount": 5,
+    "skippedResolvedCount": 6,
     "sourceCount": 2,
     "sourcePageLimit": 2,
     "sources": [
       {
-        "candidateCount": 26,
+        "candidateCount": 21,
         "status": "ok",
         "url": "https://search.yahoo.co.jp/realtime/search?p=%E3%82%A2%E3%82%AD%E3%83%90%E7%B5%B6%E5%AF%BE%E9%A0%98%E5%9F%9F&ei=UTF-8"
       },
