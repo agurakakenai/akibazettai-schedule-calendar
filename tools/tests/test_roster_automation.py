@@ -630,6 +630,84 @@ class StaffTests(unittest.TestCase):
 MAHIRO_ID = 'm-' + 'e' * 32
 
 
+def grown_state(path, size, **fields):
+    """A collector-state JSON file padded to `size` bytes, like a long-running personal state."""
+    value = {'identityBindings': {}, 'posts': [], **fields}
+    raw = json.dumps(value, ensure_ascii=False)
+    filler = size - len(raw.encode('utf-8')) - len(', "padding": ""')
+    value['padding'] = 'x' * filler
+    path.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+    assert path.stat().st_size == size, path.stat().st_size
+    return path
+
+
+class StateReaderTests(unittest.TestCase):
+    """2026-11-02: personal-shifts.json passed the registry's 4 MiB limit and stopped every roster run."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.dir = Path(folder.name)
+
+    def test_collector_state_beyond_the_registry_limit_is_read(self):
+        self.assertGreater(roster.STATE_MAX_BYTES, members.MAX_BYTES)
+        self.assertEqual(roster.STATE_MAX_BYTES, 16 * 1024 * 1024)
+        size = 4_981_344  # the production personal-shifts.json that stopped the step
+        bound = {'authorId': YUME_UID, 'authorScreenName': 'yume_test', 'verifiedAt': '2026-10-01T00:00:00Z'}
+        personal = grown_state(self.dir / 'personal.json', size, identityBindings={'ゆめ': bound}, posts=[
+            {'name': 'ゆめ', 'date': '2026-10-20', 'events': [{'kind': 'placement'}], 'links': []}])
+        half = grown_state(self.dir / 'half.json', members.MAX_BYTES + 1, schedules=[
+            {'name': 'あむ', 'days': [{'date': '2026-11-03', 'shifts': ['昼']}]}])
+        with self.assertRaisesRegex(members.RegistryError, 'unsafe_registry_input'):
+            members.read_bytes(personal)
+        self.assertEqual(roster.read_bindings(personal, half), {'ゆめ': {'authorId': YUME_UID}})
+        activity = roster.load_activity(personal=personal, half_month=half)
+        self.assertEqual(activity['unreadable'], [])
+        self.assertIn({'name': 'ゆめ', 'date': '2026-10-20', 'kind': 'personal', 'confirmed': True}, activity['rows'])
+        self.assertIn({'name': 'あむ', 'date': '2026-11-03', 'kind': 'plan', 'confirmed': False}, activity['rows'])
+
+    def test_state_reader_still_refuses_oversized_irregular_and_linked_files(self):
+        oversized = grown_state(self.dir / 'big.json', roster.STATE_MAX_BYTES + 1)
+        with self.assertRaisesRegex(roster.RosterError, 'state_too_large'):
+            roster.read_state_bytes(oversized)
+        with self.assertRaisesRegex(roster.RosterError, 'state_too_large'):
+            roster.read_bindings(oversized)
+        self.assertEqual(roster.load_activity(personal=oversized)['unreadable'], ['personal'])
+        with self.assertRaisesRegex(roster.RosterError, 'unsafe_state_input'):
+            roster.read_state_bytes(self.dir)
+        target = grown_state(self.dir / 'target.json', 1024)
+        link = self.dir / 'link.json'
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError):
+            self.skipTest('symlinks are not available on this host')
+        for read in (roster.read_state_bytes, roster.read_bindings, roster.load_state):
+            with self.subTest(read=read.__name__), self.assertRaisesRegex(roster.RosterError, 'unsafe_state_input'):
+                read(link)
+        self.assertEqual(roster.load_activity(personal=link)['unreadable'], ['personal'])
+
+    def test_full_run_with_grown_personal_state_scans_instead_of_stopping(self):
+        case = RunTests('test_self_announced_dated_graduation_is_recorded_once_with_evidence')
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        personal = grown_state(case.root / 'personal.json', 4_981_344)
+        args = argparse.Namespace(state=case.state_path, members=case.members, personal_state=personal,
+                                  half_month_state=None, source_state=case.source_path, ai_state=case.ai_path,
+                                  run_id='roster-1-1', report=case.root / 'report.json')
+        elapsed = [0.0]
+
+        def clock():
+            elapsed[0] += 1
+            return NOW + dt.timedelta(seconds=elapsed[0])
+        report = roster.run(args, clock=clock, sleep=lambda s: elapsed.__setitem__(0, elapsed[0] + s),
+                            environment=ENV, opener=SourceOpener(case.searches, case.posts), staff_check=False,
+                            analyzer_factory=lambda usage, environment: roster.GraduationAnalyzer(
+                                usage, environment, opener=case.ai))
+        self.assertEqual((report['status'], report['reason'], report['activityUnreadable']), ('ok', None, []))
+        self.assertEqual(report['changes'][0]['name'], 'ゆめ')
+        self.assertEqual(json.loads(args.report.read_text(encoding='utf-8'))['activityUnreadable'], [])
+
+
 class FakeSearch:
     """SourceClient stand-in for hiatus searches: query text -> search entries."""
 

@@ -34,6 +34,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import time
 import urllib.error
@@ -340,12 +341,36 @@ def strict_json(raw):
     return members.strict_json(raw.decode('utf-8-sig') if isinstance(raw, bytes) else raw)
 
 
+# Collector-state files (personal, half-month, observed, roster updates) are not the member
+# registry: they grow with every collected post. They share cloud-collection.py's
+# MAX_JSON_BYTES, the limit the state branch is already validated against when it is
+# checked out, instead of the registry's 4 MiB (personal-shifts.json passed 4 MiB on
+# 2026-11-02 and stopped this step).
+STATE_MAX_BYTES = 16 * 1024 * 1024
+
+
+def read_state_bytes(path, limit=STATE_MAX_BYTES):
+    """Bounded read of a collector-state file; symlinks and non-regular files are refused."""
+    path = Path(path)
+    require(not path.is_symlink(), 'unsafe_state_input')
+    try:
+        info = path.stat()
+    except OSError:
+        raise RosterError('state_unavailable') from None
+    require(stat.S_ISREG(info.st_mode), 'unsafe_state_input')
+    require(info.st_size <= limit, 'state_too_large')
+    with path.open('rb') as stream:
+        raw = stream.read(limit + 1)
+    require(len(raw) <= limit, 'state_too_large')
+    return raw
+
+
 def load_state(path, required=False):
     path = Path(path)
-    if not path.exists():
+    if not path.exists() and not path.is_symlink():
         require(not required, 'missing_roster_updates')
         return None
-    raw = members.read_bytes(path)
+    raw = read_state_bytes(path)
     return validate_state(strict_json(raw)), raw
 
 
@@ -960,7 +985,7 @@ def load_activity(*, observed=None, curated=None, personal=None, half_month=None
             unreadable.append(label)
 
     def read_observed(path):
-        for post in strict_json(members.read_bytes(path)).get('posts', []):
+        for post in strict_json(read_state_bytes(path)).get('posts', []):
             for name in post.get('names', []):
                 add(name, post.get('date'), 'official', True)
             for notice in post.get('notices', []) or []:
@@ -973,13 +998,13 @@ def load_activity(*, observed=None, curated=None, personal=None, half_month=None
                 add(row.get('maid'), row.get('date'), 'curated', True)
 
     def read_personal(path):
-        for post in strict_json(members.read_bytes(path)).get('posts', []):
+        for post in strict_json(read_state_bytes(path)).get('posts', []):
             work = (any(event.get('kind') in WORK_KINDS for event in post.get('events', []) or [])
                     or any(link.get('status') == 'work' for link in post.get('links', []) or []))
             add(post.get('name'), post.get('date'), 'personal', work)
 
     def read_half_month(path):
-        value = strict_json(members.read_bytes(path))
+        value = strict_json(read_state_bytes(path))
         for item in [*value.get('schedules', []), *value.get('partialSchedules', [])]:
             for day in item.get('days', []):
                 add(item.get('name'), day.get('date'), 'plan', False)
@@ -1110,7 +1135,7 @@ def read_bindings(*paths):
     for path in paths:
         if path is None or not Path(path).is_file():
             continue
-        value = strict_json(members.read_bytes(path))
+        value = strict_json(read_state_bytes(path))
         for name, bound in (value.get('identityBindings') or {}).items():
             if isinstance(bound, dict) and POST_ID.fullmatch(str(bound.get('authorId', ''))):
                 bindings.setdefault(name, {'authorId': str(bound['authorId'])})
@@ -1137,7 +1162,7 @@ def run(args, *, clock=lambda: dt.datetime.now(UTC), sleep=time.sleep, environme
     report = {'component': 'roster', 'status': 'no-new', 'reason': None, 'changes': [],
               'requests': {'searches': 0, 'posts': 0, 'analysis': 0}, 'scanned': 0, 'candidates': 0,
               'staff': {'status': 'ok', 'reason': None, 'listed': 0, 'requests': 0}, 'missing': [],
-              'notes': []}
+              'notes': [], 'activityUnreadable': list(activity['unreadable'])}
     # The official staff page first: a failure there changes nothing and is alerted, while
     # the graduation scan still runs.
     staff = StaffClient(opener=staff_opener, sleep=sleep)

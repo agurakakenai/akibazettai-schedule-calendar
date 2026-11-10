@@ -4867,7 +4867,13 @@ class RosterReportTests(unittest.TestCase):
                                         'notes': [{'name': 'まひろ', 'status': 'relisted_unverified'}]},
                                        ensure_ascii=False), encoding='utf-8')
             self.assertEqual(cloud.validate_roster_report(path, 0, roster)['missing'], missing)
+            path.write_text(json.dumps({**report, 'activityUnreadable': ['personal']}, ensure_ascii=False),
+                            encoding='utf-8')
+            self.assertEqual(cloud.validate_roster_report(path, 0, roster)['activityUnreadable'], ['personal'])
+            # The roster child reads collector-state with the same bound the state branch is checked against.
+            self.assertEqual(roster.STATE_MAX_BYTES, cloud.MAX_JSON_BYTES)
             for change in ({'status': 'unavailable'}, {'staff': {**report['staff'], 'status': 'broken'}},
+                           {'activityUnreadable': ['C:\\private']}, {'activityUnreadable': 'personal'},
                            {'changes': [{**addition, 'evidenceUrl': 'https://example.com/x/'}]},
                            {'changes': [{**departure, 'effectiveFrom': '2026-08-30'}]},
                            {'missing': [{**missing[0], 'status': 'gone'}]},
