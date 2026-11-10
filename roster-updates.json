@@ -55,11 +55,11 @@
     }
   ],
   "lastRun": {
-    "at": "2026-11-01T20:12:15Z",
-    "date": "2026-11-02",
+    "at": "2026-11-10T21:37:24Z",
+    "date": "2026-11-11",
     "reason": null,
     "runs": 1,
-    "status": "ok"
+    "status": "no-new"
   },
   "posts": {
     "2105681113981309218": {
@@ -72,6 +72,12 @@
       "bodySha256": "e4bee27bedb582c5c176f9086f7945a294edd9a8505cc5b4bf875109e468bdb8",
       "checkedAt": "2026-10-30T20:18:44Z",
       "memberId": "m-8e4cba39c32d5ad4a051f772968b4081",
+      "reason": "not_self_graduation"
+    },
+    "2110748821680750985": {
+      "bodySha256": "955da3c559a6183cc701289dfffdc3c2c5fa77751a85717315889a13bd5ca02a",
+      "checkedAt": "2026-11-10T21:37:24Z",
+      "memberId": "m-914cdf30c89d5fcca7252779037b7e8f",
       "reason": "not_self_graduation"
     },
     "2110751394890387915": {
@@ -128,7 +134,10 @@
       "searchedAt": "2026-10-28T20:44:03Z"
     },
     "m-1564c8333470539eba8ee6de06c072fb": {
-      "searchedAt": "2026-10-28T01:03:24Z"
+      "searchedAt": "2026-11-10T21:37:21Z"
+    },
+    "m-1aeb2778b78d55639d9c5dd0904a6577": {
+      "searchedAt": "2026-11-10T21:36:21Z"
     },
     "m-1de0d6959a345ba1b15faec1174ec313": {
       "searchedAt": "2026-10-31T19:39:26Z"
@@ -160,6 +169,9 @@
     "m-6167fd9eec5953bd931f332b28e3841e": {
       "searchedAt": "2026-10-29T20:47:33Z"
     },
+    "m-68b067119fc85fada747c50c8556e9fd": {
+      "searchedAt": "2026-11-10T21:36:45Z"
+    },
     "m-7a129d767b5f523ba157a9d249cc48d9": {
       "searchedAt": "2026-10-31T19:39:50Z"
     },
@@ -167,13 +179,16 @@
       "searchedAt": "2026-10-30T20:18:03Z"
     },
     "m-8b7b2ef945305e42b68d22153d016659": {
-      "searchedAt": "2026-10-28T01:03:12Z"
+      "searchedAt": "2026-11-10T21:37:09Z"
     },
     "m-8e4cba39c32d5ad4a051f772968b4081": {
       "searchedAt": "2026-10-30T20:18:15Z"
     },
     "m-8ff8adf3882151c2b4a6a5ac401e7057": {
       "searchedAt": "2026-11-01T20:10:35Z"
+    },
+    "m-914cdf30c89d5fcca7252779037b7e8f": {
+      "searchedAt": "2026-11-10T21:36:32Z"
     },
     "m-9e1f38560c775139bd9e8c696c8b0c5e": {
       "searchedAt": "2026-11-01T20:10:59Z"
@@ -191,7 +206,7 @@
       "searchedAt": "2026-10-29T20:47:20Z"
     },
     "m-b7bb579c4b5752bca12eb13f76322123": {
-      "searchedAt": "2026-10-28T01:03:00Z"
+      "searchedAt": "2026-11-10T21:36:57Z"
     },
     "m-c19cb919a9885157819dba3164a4c728": {
       "searchedAt": "2026-10-31T19:40:02Z"
@@ -214,7 +229,7 @@
   },
   "schemaVersion": 1,
   "staff": {
-    "checkedAt": "2026-11-01T20:10:09Z",
+    "checkedAt": "2026-11-10T21:36:19Z",
     "names": [
       "ひかり",
       "あむ",
@@ -254,6 +269,6 @@
       "みりん",
       "けだま"
     ],
-    "pageSha256": "7bedfb8975d870e8338db105d5e5e99318333efe311f8b3915823fbf287d85c9"
+    "pageSha256": "f42eae27a045d92c0b3d590c05b51e54f032a0cc4844952d6b9329ca9b8dcf06"
   }
 }
