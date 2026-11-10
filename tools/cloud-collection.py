@@ -1152,6 +1152,7 @@ def invoke_half_month_collector(root, state, report, environment):
 ROSTER_STATUSES = {'ok': 0, 'no-new': 0, 'partial': 2, 'unavailable': 3}
 ROSTER_MISSING_STATUSES = {'missing', 'active_after_missing', 'activity_unreadable', 'rejected_by_override',
                            'hiatus_notice', 'departed'}
+ROSTER_ACTIVITY_SOURCES = {'observed', 'curated', 'personal', 'half_month', 'schedule'}
 
 
 def materialize_registry(root, state_path, base_members):
@@ -1185,7 +1186,10 @@ def invoke_roster_automation(root, state, base_members, report, environment):
 def validate_roster_report(path, code, roster):
     report, _ = read_json(path)
     fields = ('component', 'status', 'reason', 'changes', 'requests', 'scanned', 'candidates', 'exitCode')
-    keys(report, (*fields, 'staff', 'missing', 'notes'), fields)
+    keys(report, (*fields, 'staff', 'missing', 'notes', 'activityUnreadable'), fields)
+    unreadable = report.get('activityUnreadable', [])
+    require(isinstance(unreadable, list) and set(unreadable) <= ROSTER_ACTIVITY_SOURCES
+            and len(set(unreadable)) == len(unreadable), 'roster_report_invalid')
     for row in report.get('missing', []):
         keys(row, ('name', 'checks', 'missingSince', 'lastActivity', 'status'),
              ('name', 'checks', 'missingSince', 'lastActivity', 'status'))
@@ -1255,6 +1259,7 @@ def run_roster(root, collected, state_dir, work, base_members, environment, resu
         result['rosterAutomation']['staff'] = report['staff']
     result['rosterAutomation']['missing'] = report.get('missing', [])
     result['rosterAutomation']['notes'] = report.get('notes', [])
+    result['rosterAutomation']['activityUnreadable'] = report.get('activityUnreadable', [])
     applied = materialize_registry(root, collected / ROSTER, base_members.read_bytes())
     result['rosterAutomation']['applied'] = len(applied['applied'])
     result['rosterAutomation']['keptManual'] = [
@@ -2876,11 +2881,16 @@ def emit(result, environment):
             for row in roster.get('notes', []):
                 lines.append(f"\n- Listed again without an X account to confirm the same person: {row['name']}; "
                              "neither reinstated nor added.\n")
+            if roster.get('activityUnreadable'):
+                lines.append("\nActivity records unreadable this run: " + ', '.join(roster['activityUnreadable'])
+                             + "; unannounced departures are not decided until they can be read.\n")
         else:
             lines.append(f"\nGraduation scan unavailable: {result.get('rosterFailureReason') or 'unknown'}; "
                          "the roster was not changed.\n")
         with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
             target.writelines(lines)
+    if (roster or {}).get('activityUnreadable'):
+        print('::warning::Roster activity records unreadable: ' + '-'.join(roster['activityUnreadable']))
     for row in (roster or {}).get('changes', []):
         if row['kind'] in ('departure', 'reinstatement'):
             print(f"::notice::Automatic {row['kind']}: {row['name']}"

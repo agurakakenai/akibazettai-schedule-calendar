@@ -47,6 +47,7 @@ py -B -X utf8 tools\member-registry.py report
 - **効果**: 手動の`set-graduation`と同じで、最後のお給仕の日の翌日から所属メイド欄・半月予定と本人当日の取得対象から外し、過去の予定と卒業日までの予定は残します。
 - **手動が優先**: `members.json`に手動の卒業日があれば、自動の記録は使いません。自動の結果を取り消すときは`reject-auto-graduation`（`--post-id`でその投稿だけ、省略でその人の自動検出すべて）を通常のPRで反映します。手動の卒業日は`clear-graduation`で消せます。
 - **見える化**: 自動で変えた内容はrunのjob summary（「Automatic roster updates」）と`::notice::`に、名前・最後のお給仕の日・除外開始日・根拠URLで出します。取得が止まったときは名簿を変えず、通知Issueのcomponent `roster`で知らせます（次に`roster`が成功したrunで閉じます）。リポジトリ変数`ROSTER_AUTOMATION_ENABLED=false`で止められます。
+- **読み込みの上限**: `collector-state`の本人・半月・公式・自動更新の記録は、名簿（`members.json`、4 MiB）とは別の上限（16 MiB、`cloud-collection.py`の`MAX_JSON_BYTES`と同じ）で読みます。シンボリックリンクや通常ファイル以外は拒否します。記録が読めない日は、告知なしの卒業を判定せず、summaryに「Activity records unreadable」と出します（2026-11-02に本人の記録が4 MiBを超え、名簿の上限で止まったための対策です）。
 
 ### 昇格（新メイド）の自動追加（公式サイトのメイドさん紹介）
 
