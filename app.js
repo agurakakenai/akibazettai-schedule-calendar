@@ -316,9 +316,9 @@
   }
 
   const WORK_TIMING_TERMS = {
-    short: { shift: "昼", boundary: "end", time: "16:00", label: "短め" },
+    short: { shift: "昼", boundary: "end", time: "16:00", label: "みじかめ" },
     long: { shift: "昼", boundary: "end", time: "18:00", label: "ながめ" },
-    early: { shift: "夜", boundary: "start", time: "16:00", label: "早め" },
+    early: { shift: "夜", boundary: "start", time: "16:00", label: "はやめ" },
     late: { shift: "夜", boundary: "start", time: "18:00", label: "おそめ" }
   };
 
@@ -399,6 +399,31 @@
     return `${label}（明示語に基づく補足。店舗の呼称では${term.shift}${term.time}${term.boundary === "start" ? "入り" : "まで"}）`;
   }
 
+  // The half-month reading only names a length when its own hour for this
+  // shift's boundary maps to a WORK_TIMING_TERMS rule (or its qualifier agrees).
+  // undefined = the reading says nothing about this boundary, so an older
+  // workTimingNote may still speak; null = the reading covers it but no rule applies.
+  function readingShiftLength(note, shift, bothShifts) {
+    if (!note || !["昼", "夜"].includes(shift) || bothShifts || note.qualifier === "all_day") return undefined;
+    const boundary = shift === "昼" ? "end" : "start";
+    const hour = note.hours.find(value => value.boundary === boundary);
+    if (!hour) return undefined;
+    const term = WORK_TIMING_TERMS[note.qualifier];
+    const qualifier = term && term.shift === shift && term.boundary === boundary ? note.qualifier : null;
+    return workTimingLabel({ status: "set", shift, boundary, qualifier, explicitTime: hour.time });
+  }
+
+  function shiftLengthPresentation(workTimingNote, readingNote) {
+    const fromReading = readingNote?.word !== undefined;
+    const word = (fromReading ? readingNote.word : workTimingLabel(workTimingNote)) ?? null;
+    const hours = readingNote?.hours?.map(hour => hour.label) ?? [];
+    const descriptions = [
+      ...(!fromReading && word ? [workTimingDescription(workTimingNote)] : []),
+      ...(hours.length ? [`${fromReading && word ? `${word}・` : ""}半月予定表 ${hours.join("・")}`] : [])
+    ];
+    return { word, source: fromReading ? "reading" : "work-timing", descriptions };
+  }
+
   function workTimingPresentation(value, key, shift) {
     return { schemaVersion: 1, facts: value.facts
       .filter((fact) => (!key || fact.serviceDate === key) && (!shift || fact.shift === shift))
@@ -464,6 +489,10 @@
             (fact.status !== "excluded" || fact.explicitTime === hour.time ||
               (fact.qualifier !== null && fact.qualifier === readingNote.qualifier)))));
         }
+        const other = options.shift === "昼" ? "夜" : "昼";
+        const bothShifts = Boolean(options.schedule?.[options.dateKey]?.[other]?.find(row => row.name === entry.name)
+          ?.halfMonthSources?.some(proof => proof.id === source.id));
+        readingNote.word = readingShiftLength(readingNote, options.shift, bothShifts);
       }
       return workTimingNote || readingNote ? { ...entry, ...(workTimingNote ? { workTimingNote } : {}),
         ...(readingNote ? { readingNote } : {}) } : entry;
@@ -3257,6 +3286,8 @@
       validateWorkTiming,
       workTimingLabel,
       workTimingDescription,
+      shiftLengthPresentation,
+      readingShiftLength,
       resolveWorkTiming,
       buildEffectiveSchedule,
       halfMonthPeriod,
@@ -3633,14 +3664,6 @@
 
   function appendReading(target, presentation) {
     if (!presentation) return;
-    for (const hour of presentation.hours) {
-      const note = document.createElement("span");
-      note.className = "entry-update reading-hours";
-      note.dataset.basis = hour.basis;
-      note.dataset.boundary = hour.boundary;
-      note.textContent = hour.label;
-      target.append(note);
-    }
     if (presentation.partial) {
       const note = document.createElement("span");
       note.className = "entry-update";
@@ -3725,14 +3748,13 @@
     return "お給仕予定" + (notice.uncertain ? "・保留" : "");
   }
 
-  function appendWorkTiming(target, fact) {
-    const label = workTimingLabel(fact);
-    if (!label) return;
+  // 「あめる (ながめ)」のように名前の直後へ一語だけ。時刻は title / aria-label 側に残す。
+  function appendShiftLength(target, length) {
+    if (!length.word) return;
     const note = document.createElement("span");
-    note.className = "entry-update work-timing-note";
-    note.textContent = label;
-    note.dataset.boundary = fact.boundary;
-    note.dataset.sourceKind = fact.source.sourceKind;
+    note.className = "shift-length-note";
+    note.textContent = `(${length.word})`;
+    note.dataset.source = length.source;
     note.setAttribute("aria-hidden", "true");
     target.append(note);
   }
@@ -3858,9 +3880,11 @@
       name.tabIndex = -1;
     }
     item.append(name);
-    const timingDescription = workTimingDescription(entry.workTimingNote);
-    appendWorkTiming(item, entry.workTimingNote);
-    appendReading(item, readingPresentation(entry));
+    const reading = readingPresentation(entry);
+    const length = shiftLengthPresentation(entry.workTimingNote, reading);
+    const timingDescription = length.descriptions.join("。");
+    appendShiftLength(item, length);
+    appendReading(item, reading);
     const descriptions = note ? [note] : [];
     if (entry.memberReview) {
       const review = document.createElement("span");
@@ -3870,7 +3894,7 @@
       descriptions.push(entry.memberReview);
     }
     if (timingDescription) {
-      descriptions.push(timingDescription);
+      descriptions.push(...length.descriptions);
       if (name.href) {
         name.title += `。${timingDescription}`;
         name.setAttribute("aria-label", name.title);
@@ -4997,7 +5021,8 @@
       ? stop.storeIds.map((id) => storeShort(insights, id)).join("・")
       : stop.storeId ? storeShort(insights, stop.storeId) : "未発表";
     item.append(when, where);
-    appendWorkTiming(item, stop.workTimingNote);
+    const length = shiftLengthPresentation(stop.workTimingNote, stop.readingNote);
+    appendShiftLength(item, length);
     appendReading(item, stop.readingNote);
     const evidence = document.createElement("span");
     evidence.className = "maid-plan-evidence";
@@ -5045,7 +5070,7 @@
       event.textContent = stop.eventLabel;
       item.append(event);
     }
-    const timingDescription = workTimingDescription(stop.workTimingNote);
+    const timingDescription = length.descriptions.join("。");
     const explanation = stopExplanation(stop) + (timingDescription ? `${timingDescription}。` : "") + (stop.memberReview ?? "");
     if (when.href && timingDescription) {
       when.title += `。${timingDescription}`;

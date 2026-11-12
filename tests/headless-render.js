@@ -2332,7 +2332,7 @@ test(`half-month plans reach all four views with exact source scope and retained
   const signature = row => [
     row.dataset.name, row.dataset.evidence, row.dataset.store,
     withClass(row, "entry-update")
-      .filter(node => !node.classList.contains("work-timing-note")).map(node => node.textContent).join("|")
+      .map(node => node.textContent).join("|")
   ];
   const entriesFor = (key, shift) => rows(withClass(byDay(key), "shift-section")[shift === "昼" ? 0 : 1]);
   const openDate = key => {
@@ -2405,8 +2405,8 @@ test(`half-month plans reach all four views with exact source scope and retained
       for (const [key, shift] of datesAndShifts) {
         const current = entriesFor(key, shift).filter(row => row.dataset.name === "いと");
         assert.equal(current.length, 1, `${mode} ${key} ${shift}`);
-        assert.deepEqual(withClass(current[0], "work-timing-note").map(node => node.textContent),
-          ["2026-09-05", "2026-09-12"].includes(key) ? ["ながめ"] : []);
+        assert.deepEqual(withClass(current[0], "shift-length-note").map(node => node.textContent),
+          ["2026-09-05", "2026-09-12"].includes(key) ? ["(ながめ)"] : []);
         if (key === "2026-09-05") {
           assert.match(current[0].title, /明示語に基づく補足/);
           assert.doesNotMatch(current[0].title + current[0].getAttribute("aria-label"), /数値記載なし/);
@@ -2457,8 +2457,8 @@ test(`half-month plans reach all four views with exact source scope and retained
     for (const [date, currentShift] of datesAndShifts) {
       const stop = stops.find(row => row.dataset.date === date && row.dataset.shift === currentShift);
       assert.ok(stop);
-      assert.deepEqual(withClass(stop, "work-timing-note").map(node => node.textContent),
-        ["2026-09-05", "2026-09-12"].includes(date) ? ["ながめ"] : []);
+      assert.deepEqual(withClass(stop, "shift-length-note").map(node => node.textContent),
+        ["2026-09-05", "2026-09-12"].includes(date) ? ["(ながめ)"] : []);
       assert.equal(withClass(stop, "maid-plan-when")[0].href, source.url);
       assert.equal(withClass(stop, "maid-plan-where")[0].dataset.store, forecastRows.get(`${date}|${currentShift}`),
         "maid and forecast store placements agree");
@@ -2470,8 +2470,8 @@ test(`half-month plans reach all four views with exact source scope and retained
       assertSources(content, [[date, currentShift]]);
       const timedEntry = withClass(withClass(content, "shift-section")[currentShift === "昼" ? 0 : 1], "maid-entry")
         .find(row => row.dataset.name === "いと");
-      assert.deepEqual(withClass(timedEntry, "work-timing-note").map(node => node.textContent),
-        ["2026-09-05", "2026-09-12"].includes(date) ? ["ながめ"] : []);
+      assert.deepEqual(withClass(timedEntry, "shift-length-note").map(node => node.textContent),
+        ["2026-09-05", "2026-09-12"].includes(date) ? ["(ながめ)"] : []);
       if (date === "2026-09-02") {
         const sections = withClass(content, "shift-section");
         assert.equal(rows(sections[0]).find(row => row.dataset.name === "いと").dataset.store, "s2");
@@ -2516,7 +2516,7 @@ test(`half-month plans reach all four views with exact source scope and retained
     assert.notEqual(withClass(content, "shift-section")[0], daySection, "timing-only updates redraw the affected shift");
     assert.equal(withClass(content, "shift-section")[1], nightSection, "the other shift is not redrawn");
     const changedTimingRow = withClass(withClass(content, "shift-section")[0], "maid-entry")[0];
-    assert.deepEqual(withClass(changedTimingRow, "work-timing-note").map(node => node.textContent), ["短め"]);
+    assert.deepEqual(withClass(changedTimingRow, "shift-length-note").map(node => node.textContent), ["(みじかめ)"]);
     assert.match(changedTimingRow.title, /16:00まで.*時刻記載/);
     nameLink = halfLinks(content)[0];
     assert.equal(documentShim.activeElement, nameLink);
@@ -2711,6 +2711,8 @@ test("v3 date-only, own-reply and bounded hours reach every view without invente
   const content = elementById("day-dialog-content");
   const links = root => walk(root).filter(node => node.tagName === "A" && node.dataset.name === "いと" &&
     ["half-month-schedule", "own-reply"].includes(node.dataset.sourceKind));
+  const describedText = root => walk(root).map(node =>
+    `${node.title ?? ""}|${node.getAttribute?.("aria-label") ?? ""}`).join("\n");
   const check = root => {
     for (const [date, url] of [["2026-09-03", source.url], ["2026-09-04", reply.url]]) {
       const dayLinks = links(root).filter(node => node.dataset.date === date);
@@ -2718,10 +2720,16 @@ test("v3 date-only, own-reply and bounded hours reach every view without invente
       assert.equal(dayLinks[0].dataset.shift, "unassigned");
       assert.equal(dayLinks[0].href, url);
     }
-    const hours = withClass(root, "reading-hours");
-    assert.ok(hours.some(node => node.dataset.basis === "explicit" && node.textContent.includes("13:15")));
-    assert.ok(hours.some(node => node.dataset.basis === "qualifier-rule-v1" && node.textContent.includes("18:00")));
-    assert.ok(!hours.some(node => node.textContent.includes("12:00")), "explicit start overrides the qualifier default");
+    const lengths = withClass(root, "shift-length-note");
+    assert.ok(lengths.some(node => node.dataset.source === "reading" && node.textContent === "(ながめ)"),
+      "explicit 13:15 start keeps the qualifier-derived 18:00 end, so the day shift is ながめ");
+    assert.ok(lengths.some(node => node.dataset.source === "reading" && node.textContent === "(おそめ)"));
+    assert.equal(withClass(root, "reading-hours").length, 0, "exact hours are not visible chips");
+    assert.doesNotMatch(root.textContent, /開始|終了|表現から換算/);
+    const described = describedText(root);
+    assert.match(described, /開始 13:15（明記）/);
+    assert.match(described, /終了 18:00（表現から換算）/);
+    assert.doesNotMatch(described, /開始 12:00/, "explicit start overrides the qualifier default");
     assert.match(root.textContent, /時間帯未確認/);
     assert.doesNotMatch(root.textContent, /transcriptionHash|imageHash|private/);
   };
@@ -2761,15 +2769,17 @@ test("v3 date-only, own-reply and bounded hours reach every view without invente
       await dispatch("close-day-dialog", "click");
     }
     open("2026-09-05");
-    assert.ok(withClass(content, "reading-hours").some(node => node.textContent.includes("13:15")));
+    assert.deepEqual(withClass(content, "shift-length-note").map(node => node.textContent), ["(ながめ)"]);
+    assert.match(describedText(content), /開始 13:15（明記）/);
     payload = JSON.parse(JSON.stringify(payload));
     payload.partialSchedules[0].reading.days["2026-09-05"].hours.start.time = "13:30";
     await dispatch("refresh-half-month", "click");
-    assert.ok(withClass(content, "reading-hours").some(node => node.textContent.includes("13:30")),
-      "hours-only refresh updates an open popup");
+    assert.match(describedText(content), /開始 13:30（明記）/, "hours-only refresh updates an open popup");
+    assert.doesNotMatch(content.textContent, /13:30/, "exact hours stay out of the visible text");
     await dispatch("close-day-dialog", "click");
     open("2026-09-09");
-    assert.equal(withClass(content, "reading-hours").length, 0, "all-day does not synthesize standard hours");
+    assert.equal(withClass(content, "shift-length-note").length, 0, "all-day has no shift length word");
+    assert.doesNotMatch(describedText(content), /半月予定表 (開始|終了)/, "all-day does not synthesize standard hours");
   } finally {
     payload = emptyHalfMonthSchedules();
     await dispatch("close-day-dialog", "click");
