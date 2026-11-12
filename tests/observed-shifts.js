@@ -298,13 +298,47 @@ function timingFact(source, changes = {}) {
     qualifier: "long", explicitTime: null, source, ...changes };
 }
 
+test("shift length is one parenthesised word from reading hours or work timing, never guessed", () => {
+  const source = timingSource(halfSource(), "half-month-schedule");
+  const hour = (boundary, time, basis = "explicit") => ({ boundary, time, basis, label: `${boundary} ${time}` });
+  const note = (qualifier, ...hours) => ({ hours, partial: false, qualifier });
+  for (const [shift, reading, word] of [
+    ["昼", note("long", hour("start", "12:00", "qualifier-rule-v1"), hour("end", "18:00", "qualifier-rule-v1")), "ながめ"],
+    ["夜", note(null, hour("start", "18:00"), hour("end", "22:00")), "おそめ"],
+    ["夜", note(null, hour("start", "16:00"), hour("end", "22:00")), "はやめ"],
+    ["昼", note(null, hour("start", "12:00"), hour("end", "16:00")), "みじかめ"],
+    ["夜", note("late", hour("start", "17:30"), hour("end", "22:00")), "おそめ"],
+    ["夜", note(null, hour("start", "17:30"), hour("end", "22:00")), null],
+    ["夜", note("early", hour("start", "18:00")), null],
+    ["昼", note(null, hour("start", "12:00"), hour("end", "17:00")), null],
+    ["夜", note(null, hour("end", "22:00")), undefined],
+    ["昼", note("all_day", hour("start", "12:00"), hour("end", "22:00")), undefined]
+  ]) {
+    assert.equal(api.readingShiftLength(reading, shift, false), word, JSON.stringify([shift, reading]));
+  }
+  assert.equal(api.readingShiftLength(note(null, hour("start", "12:00"), hour("end", "18:00")), "昼", true), undefined,
+    "a day read as both shifts does not lend its clock to one shift");
+  const older = timingFact(source, { qualifier: "short", explicitTime: null });
+  const covered = { ...note(null, hour("end", "17:00")), word: null };
+  assert.deepEqual(api.shiftLengthPresentation(older, covered),
+    { word: null, source: "reading", descriptions: ["半月予定表 end 17:00"] }, "the newer reading's normal hours win");
+  const silent = { ...note(null, hour("start", "12:00")), word: undefined };
+  const fallback = api.shiftLengthPresentation(older, silent);
+  assert.equal(fallback.word, "みじかめ");
+  assert.equal(fallback.source, "work-timing");
+  assert.match(fallback.descriptions[0], /明示語に基づく補足/);
+  assert.deepEqual(api.shiftLengthPresentation(null, { ...note("long", hour("end", "18:00", "qualifier-rule-v1")), word: "ながめ" }),
+    { word: "ながめ", source: "reading", descriptions: ["ながめ・半月予定表 end 18:00"] });
+  assert.deepEqual(api.shiftLengthPresentation(null, null), { word: null, source: "work-timing", descriptions: [] });
+});
+
 test("work timing strictly separates source words, exact clocks and work boundaries", () => {
   const source = timingSource(halfSource(), "half-month-schedule");
   for (const [shift, boundary, explicitTime, qualifier, label] of [
-    ["昼", "end", "16:00", null, "短め"], ["昼", "end", "18:00", null, "ながめ"],
-    ["夜", "start", "16:00", null, "早め"], ["夜", "start", "18:00", null, "おそめ"],
-    ["昼", "end", null, "short", "短め"], ["昼", "end", null, "long", "ながめ"],
-    ["夜", "start", null, "early", "早め"], ["夜", "start", null, "late", "おそめ"],
+    ["昼", "end", "16:00", null, "みじかめ"], ["昼", "end", "18:00", null, "ながめ"],
+    ["夜", "start", "16:00", null, "はやめ"], ["夜", "start", "18:00", null, "おそめ"],
+    ["昼", "end", null, "short", "みじかめ"], ["昼", "end", null, "long", "ながめ"],
+    ["夜", "start", null, "early", "はやめ"], ["夜", "start", null, "late", "おそめ"],
     ["昼", "start", "16:00", null, null], ["夜", "end", "18:00", null, null],
     ["昼", "end", "15:00", null, null], ["昼", "end", "17:00", null, null],
     ["昼", "end", "19:00", null, null], ["夜", "start", "17:00", null, null],
@@ -356,7 +390,7 @@ test("timing is display-only for curated and planned entries without inventing l
   assert.equal(api.validateHalfMonthSchedules(halfFeed([table]), { roster: schedule.roster, insights }).schedules[0], table);
   const plain = api.buildEffectiveSchedule(schedule.schedule, halfFeed());
   const effective = api.buildEffectiveSchedule(schedule.schedule, halfFeed([table]));
-  for (const [dateKey, shift, label] of [["2026-09-02", "夜", "早め"], ["2026-09-07", "昼", "ながめ"]]) {
+  for (const [dateKey, shift, label] of [["2026-09-02", "夜", "はやめ"], ["2026-09-07", "昼", "ながめ"]]) {
     const options = { insights, observations: null, personal: null, dateKey, shift, roster: schedule.roster };
     const before = api.resolveShiftRoster({ ...options, schedule: plain });
     const after = api.resolveShiftRoster({ ...options, schedule: effective });
@@ -403,8 +437,8 @@ test("timing precedence retains unmentioned facts and never revives explicitly b
     personal: { posts }, schedule: effective, insights, dateKey: "2026-09-07", shift: "昼", name: "あむ", ...changes
   });
   const unrelated = makePost(2);
-  assert.equal(api.workTimingLabel(resolve([unrelated, short])), "短め");
-  assert.equal(api.workTimingLabel(resolve([makePost(3, { workTiming: { schemaVersion: 1, facts: [] } }), short])), "短め");
+  assert.equal(api.workTimingLabel(resolve([unrelated, short])), "みじかめ");
+  assert.equal(api.workTimingLabel(resolve([makePost(3, { workTiming: { schemaVersion: 1, facts: [] } }), short])), "みじかめ");
   const changedTime = makePost(3);
   changedTime.workTiming = { schemaVersion: 1, facts: [
     timingFact(timingSource(changedTime, "personal-work-post"), { qualifier: null, explicitTime: "17:00" })
@@ -424,7 +458,7 @@ test("timing precedence retains unmentioned facts and never revives explicitly b
   future.workTiming = { schemaVersion: 1, facts: [
     timingFact(timingSource(future, "personal-work-post"), { serviceDate: future.date, status: "withdrawn", qualifier: null })
   ] };
-  assert.equal(api.workTimingLabel(resolve([short, future])), "短め");
+  assert.equal(api.workTimingLabel(resolve([short, future])), "みじかめ");
   assert.equal(api.workTimingLabel(resolve([makePost(4, { events: [{ shift: "昼", kind: "late", time: "16:00", excerpt: "遅れ" }] })])), "ながめ");
   assert.equal(resolve([short], { shift: "夜" }), null);
 });
@@ -468,7 +502,7 @@ test("value-specific timing denials do not cancel unrelated labels or revive old
   assert.equal(api.workTimingLabel(resolve([base], [notEarly])), "おそめ");
   assert.equal(resolve([base], [notLate, notEarly, unrelatedLater]), null);
   assert.equal(api.workTimingLabel(resolve([base], [notLate, notEarly, unrelatedLater,
-    post(4, { status: "set", qualifier: "early" })])), "早め");
+    post(4, { status: "set", qualifier: "early" })])), "はやめ");
   for (const facts of [
     [{ ...earlyDenial, explicitTime: "16:00" }],
     [{ ...earlyDenial, qualifier: null, explicitTime: null }],
