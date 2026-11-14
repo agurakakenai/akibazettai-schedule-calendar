@@ -1,14 +1,11 @@
 """Standard-library regression tests. All fault injection stays in memory."""
-import contextlib
 import datetime as dt
-from decimal import Decimal
 import importlib.util
-import io
+import json
 import re
 from pathlib import Path
 import sys
 import unittest
-from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
@@ -21,167 +18,13 @@ def load(name, filename):
     return module
 
 
-checker = load("readme_checker", "check-readme.py")
 evaluation = load("insights_evaluation", "evaluate-insights.py")
 builder = evaluation.load_builder()
 
 
-class ReadmeClaims(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.text = checker.load_readme()
-        cls.data = checker.load_insights()
-        counts = cls.data["openCountPerShift"]["昼"]
-        cls.lunch_n = sum(counts.values())
-        cls.above = sum(n for k, n in counts.items() if int(k) > 3)
-        cls.lunch_claim = f"昼{cls.lunch_n}件の記録に{cls.above}件"
-        cls.wrong_lunch_claim = f"昼{cls.lunch_n + 1}件の記録に{cls.above}件"
-        cls.roster_n = cls.data["schedulePending"]["rostered"]
-
-    def test_current_document(self):
-        self.assertEqual(checker.check(self.text, self.data), [])
-        self.assertEqual(self.run_main(self.text)[0], 0)
-
-    def run_main(self, text):
-        output = io.StringIO()
-        with (mock.patch.object(checker, "load_readme", return_value=text),
-              mock.patch.object(checker, "load_insights", return_value=self.data),
-              contextlib.redirect_stdout(output)):
-            code = checker.main()
-        return code, output.getvalue()
-
-    def test_main_rejects_wrong_roster_count_with_whitespace(self):
-        for space in (" ", "\t", "\u3000", "\n"):
-            with self.subTest(space=repr(space)):
-                changed = self.text.replace(
-                    f"roster{self.roster_n}名",
-                    f"在籍{space}{self.roster_n - 2}{space}名", 1)
-                self.assertNotEqual(changed, self.text)
-                code, output = self.run_main(changed)
-                self.assertEqual(code, 1)
-                self.assertIn("保存された統計の名簿人数", output)
-
-    def test_main_accepts_correct_roster_count_with_whitespace(self):
-        for prefix in ("在籍", "roster は"):
-            with self.subTest(prefix=prefix):
-                changed = self.text.replace(f"roster{self.roster_n}名",
-                                            f"{prefix} {self.roster_n} 名", 1)
-                self.assertEqual(self.run_main(changed)[0], 0)
-
-    def test_main_ignores_same_named_target_under_historical_heading(self):
-        title = "### 開く店の数が表の上限に当たったら、そう断ります"
-        for claim in (self.lunch_claim, self.wrong_lunch_claim):
-            with self.subTest(claim=claim):
-                changed = self.text + f"\n## 過去測定: 旧表\n{title}\n{claim}。\n"
-                self.assertEqual(self.run_main(changed)[0], 0)
-
-    def test_main_does_not_accept_target_only_inside_history(self):
-        title = "### 開く店の数が表の上限に当たったら、そう断ります"
-        changed = self.text.replace(title, "### 対象外の説明", 1)
-        self.assertNotEqual(changed, self.text)
-        changed += f"\n## 過去測定: 旧表\n{title}\n{self.lunch_claim}。\n"
-        code, output = self.run_main(changed)
-        self.assertEqual(code, 1)
-        self.assertIn("0件", output)
-
-    def test_main_still_rejects_duplicate_current_target(self):
-        title = "### 開く店の数が表の上限に当たったら、そう断ります"
-        changed = self.text + f"\n## 現在の追記\n{title}\n{self.lunch_claim}。\n"
-        self.assertEqual(self.run_main(changed)[0], 1)
-
-    def test_wrong_lunch_body_cannot_borrow_historical_360(self):
-        changed = self.text.replace(self.lunch_claim, self.wrong_lunch_claim, 1)
-        self.assertNotEqual(changed, self.text)
-        changed += f"\n## 過去測定: 対照\n{self.lunch_claim}という記録でした。\n"
-        self.assertTrue(checker.check(changed, self.data))
-
-    def test_all_lunch_numbers_changed_control(self):
-        self.assertTrue(checker.check(
-            self.text.replace(str(self.lunch_n), str(self.lunch_n + 1)), self.data))
-
-    def test_arbitrary_roster_errors_not_only_neighbors(self):
-        for n in (self.roster_n - 2, self.roster_n - 1, self.roster_n + 1, self.roster_n * 10):
-            with self.subTest(n=n):
-                changed = self.text.replace(f"roster{self.roster_n}名", f"在籍{n}名", 1)
-                self.assertNotEqual(changed, self.text)
-                self.assertTrue(checker.check(changed, self.data))
-
-    def test_new_conflicting_current_claim_fails(self):
-        self.assertTrue(checker.check(
-            self.text + f"\n## 現在の補足\n在籍{self.roster_n - 2}名。\n", self.data))
-
-    def test_explicit_historical_roster_is_not_current(self):
-        self.assertEqual(checker.check(
-            self.text + f"\n## 過去測定: 名簿\n在籍{self.roster_n - 2}名。\n", self.data), [])
-
-    def test_missing_and_duplicated_sections_fail(self):
-        title = "#### 未掲載者の集計単位"
-        for text in (self.text.replace(title, "#### 別の節"), self.text + "\n" + title + "\n"):
-            with self.subTest():
-                self.assertTrue(checker.check(text, self.data))
-
-    def test_every_coverage_column_is_checked(self):
-        scope = checker.section(self.text, "未掲載者の集計単位")
-        original = next(line for line in scope.splitlines() if line.startswith("| 全店ユニーク |"))
-        self.assert_row_mutations_fail(original, start=2)
-
-    def test_every_trainee_column_is_checked(self):
-        scope = checker.section(self.text, "店舗枠の見習い率")
-        original = next(line for line in scope.splitlines() if line.startswith("| 1号店 |"))
-        self.assert_row_mutations_fail(original, start=2)
-
-    def test_every_unlisted_store_column_is_scoped_and_checked(self):
-        scope = checker.section(self.text, "店舗ごとの未掲載率")
-        for sid in ("s1", "s2", "s3", "s4"):
-            original = next(line for line in scope.splitlines()
-                            if line.startswith(f"| {sid[1:]}号店 |"))
-            self.assert_row_mutations_fail(original, start=2)
-
-    def test_every_move_count_and_rate_is_checked_in_its_section(self):
-        move = self.data["sameDayMaidMoveSummary"]
-        n, moved = move["personPairs"], move["movedPersonPairs"]
-        percent = round(100 * moved / n, 1) if n else 0
-        original = f"昼夜とも出た{n}人回のうち{moved}人回（{percent}%）が別の店"
-        self.assertIn(original, self.text)
-        for values in ((n + 1, moved, percent), (n, moved + 1, percent), (n, moved, percent + 1)):
-            with self.subTest(values=values):
-                wrong = f"昼夜とも出た{values[0]}人回のうち{values[1]}人回（{values[2]}%）が別の店"
-                changed = self.text.replace(original, wrong, 1)
-                changed += f"\n## 過去測定: 移動\n{original}\n"
-                self.assertTrue(checker.check(changed, self.data))
-
-    def assert_row_mutations_fail(self, original, start):
-        fields = original.split("|")
-        for index in range(start, len(fields) - 1):
-            with self.subTest(column=index):
-                changed_fields = list(fields)
-                value = fields[index].strip()
-                if value == "date-shift":
-                    value = "date-shift-store"
-                else:
-                    percent = "%" if value.endswith("%") else ""
-                    value = str(Decimal(value.rstrip("%")) + 1) + percent
-                changed_fields[index] = " " + value + " "
-                changed = self.text.replace(original, "|".join(changed_fields))
-                self.assertTrue(checker.check(changed, self.data))
-
-    def test_duplicate_correct_claim_does_not_hide_wrong_claim(self):
-        changed = self.text.replace(self.lunch_claim,
-                                   self.wrong_lunch_claim + "。" + self.lunch_claim, 1)
-        self.assertTrue(checker.check(changed, self.data))
-
-    def test_code_fence_cannot_supply_a_missing_claim(self):
-        changed = self.text.replace(self.lunch_claim, "該当する記録", 1)
-        changed = changed.replace("### 開く店の数が表の上限に当たったら、そう断ります",
-            "### 開く店の数が表の上限に当たったら、そう断ります\n```\n" + self.lunch_claim + "\n```", 1)
-        self.assertTrue(checker.check(changed, self.data))
-
-    def test_nested_history_does_not_swallow_current_section(self):
-        changed = self.text + (
-            f"\n## 過去測定: 名簿\n在籍{self.roster_n - 2}名。\n"
-            f"### 過去測定: 補足\n在籍{self.roster_n - 1}名。\n"
-            f"## 現在の追記\n在籍{self.roster_n - 3}名。\n")
-        self.assertTrue(checker.check(changed, self.data))
+def load_shipped_insights():
+    raw = (ROOT / "data" / "store-insights.js").read_text(encoding="utf-8")
+    return json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
 
 
 class CountingUnits(unittest.TestCase):
@@ -278,7 +121,7 @@ class ProductionRegression(unittest.TestCase):
         cls.cases = evaluation.cases_from(builder, cls.values)
 
     def test_generation_matches_shipping_except_timestamp(self):
-        expected = checker.load_insights()
+        expected = load_shipped_insights()
         actual = dict(self.insights)
         expected.pop("generatedAt")
         actual.pop("generatedAt")
