@@ -1,6 +1,17 @@
 {
   "absences": {},
-  "additions": [],
+  "additions": [
+    {
+      "detailUrl": "https://akibazettai.com/staff/detail_202611141902/",
+      "detectedAt": "2026-11-14T20:17:34Z",
+      "homeStore": "s2",
+      "memberId": "m-a04cf3e5cde6576592f59920a7cd8fe2",
+      "name": "みらい",
+      "pageSha256": "280f261cf9b009f46dfb353ca99708ef2a19377bbe36610a3638c1af2d0b0d35",
+      "runId": "roster-43636624437-1",
+      "xProfileUrl": "https://x.com/mirai1_zettai"
+    }
+  ],
   "changes": [
     {
       "at": "2026-10-29T20:46:56Z",
@@ -22,6 +33,27 @@
       "name": "いと",
       "postId": "2115820966031110642",
       "runId": "roster-41344689953-1"
+    },
+    {
+      "at": "2026-11-14T20:17:34Z",
+      "evidenceUrl": "https://akibazettai.com/staff/detail_202611141902/",
+      "homeStore": "s2",
+      "kind": "addition",
+      "memberId": "m-a04cf3e5cde6576592f59920a7cd8fe2",
+      "name": "みらい",
+      "runId": "roster-43636624437-1",
+      "xProfileUrl": "https://x.com/mirai1_zettai"
+    },
+    {
+      "at": "2026-11-14T20:19:51Z",
+      "effectiveFrom": "2026-11-17",
+      "evidenceUrl": "https://x.com/arata_zettai/status/2120896920071852065",
+      "kind": "graduation",
+      "lastServiceDate": "2026-11-16",
+      "memberId": "m-270f112220705fc5a8f592407d7196a5",
+      "name": "あらた",
+      "postId": "2120896920071852065",
+      "runId": "roster-43636624437-1"
     }
   ],
   "departures": [
@@ -52,14 +84,26 @@
       "postCreatedAt": "2026-10-29T15:00:03Z",
       "postId": "2115820966031110642",
       "runId": "roster-41344689953-1"
+    },
+    {
+      "authorId": "1404766254552944645",
+      "bodySha256": "4954c527fd2b7fe92c23bf93d37c375fcd714082e57609430d2c708ba22af710",
+      "detectedAt": "2026-11-14T20:19:51Z",
+      "evidenceUrl": "https://x.com/arata_zettai/status/2120896920071852065",
+      "lastServiceDate": "2026-11-16",
+      "memberId": "m-270f112220705fc5a8f592407d7196a5",
+      "name": "あらた",
+      "postCreatedAt": "2026-11-12T15:10:04Z",
+      "postId": "2120896920071852065",
+      "runId": "roster-43636624437-1"
     }
   ],
   "lastRun": {
-    "at": "2026-11-13T21:46:47Z",
-    "date": "2026-11-14",
-    "reason": null,
+    "at": "2026-11-14T20:20:52Z",
+    "date": "2026-11-15",
+    "reason": "candidates_deferred",
     "runs": 1,
-    "status": "no-new"
+    "status": "partial"
   },
   "posts": {
     "2105681113981309218": {
@@ -128,11 +172,23 @@
       "memberId": "m-a407b2f8f183583c83e92577eca313be",
       "reason": "not_self_graduation"
     },
+    "2120541090252259581": {
+      "bodySha256": "20f21fd0b283529814fc9a886ea59729c27d74f0607c88b7a50c7e107ea53ff1",
+      "checkedAt": "2026-11-14T20:20:52Z",
+      "memberId": "m-7a129d767b5f523ba157a9d249cc48d9",
+      "reason": "not_self_graduation"
+    },
     "2120874931571589164": {
       "bodySha256": "268534bd3a9da21b278ff7842373c70d2d14c09ec575c5ac704fdbcee48092cf",
       "checkedAt": "2026-11-12T22:16:43Z",
       "memberId": "m-a407b2f8f183583c83e92577eca313be",
       "reason": "not_self_graduation"
+    },
+    "2120896920071852065": {
+      "bodySha256": "4954c527fd2b7fe92c23bf93d37c375fcd714082e57609430d2c708ba22af710",
+      "checkedAt": "2026-11-14T20:19:51Z",
+      "memberId": "m-270f112220705fc5a8f592407d7196a5",
+      "reason": "adopted"
     }
   },
   "scan": {
@@ -140,7 +196,7 @@
       "searchedAt": "2026-11-13T21:46:31Z"
     },
     "m-09343f2feb365b3eb51e4bbd578c3f85": {
-      "searchedAt": "2026-10-31T19:40:14Z"
+      "searchedAt": "2026-11-14T20:18:36Z"
     },
     "m-0ac77d2c2c375ccdbc96b7fe00de71f1": {
       "searchedAt": "2026-11-11T22:24:33Z"
@@ -164,19 +220,19 @@
       "searchedAt": "2026-11-11T22:25:33Z"
     },
     "m-24430e94d9be5303bb165149ae3fbe48": {
-      "searchedAt": "2026-10-31T19:39:38Z"
+      "searchedAt": "2026-11-14T20:18:00Z"
     },
     "m-270f112220705fc5a8f592407d7196a5": {
-      "searchedAt": "2026-11-01T20:11:11Z"
+      "searchedAt": "2026-11-14T20:19:48Z"
     },
     "m-2f98570f1960585a8f5e9f303ea97031": {
-      "searchedAt": "2026-11-01T20:10:23Z"
+      "searchedAt": "2026-11-14T20:19:00Z"
     },
     "m-339a0462aa12593c84c6792ced80ab9f": {
       "searchedAt": "2026-11-11T22:25:09Z"
     },
     "m-37423c8cbbe95a46a52018f6c1bf46bb": {
-      "searchedAt": "2026-11-01T20:10:47Z"
+      "searchedAt": "2026-11-14T20:19:24Z"
     },
     "m-384bb8c9ee075780a1aa25ff7f22a509": {
       "searchedAt": "2026-11-13T21:45:43Z"
@@ -191,7 +247,7 @@
       "searchedAt": "2026-11-10T21:36:45Z"
     },
     "m-7a129d767b5f523ba157a9d249cc48d9": {
-      "searchedAt": "2026-10-31T19:39:50Z"
+      "searchedAt": "2026-11-14T20:18:12Z"
     },
     "m-7ac2643d6adb5cfca3c530633af6a856": {
       "searchedAt": "2026-11-13T21:46:07Z"
@@ -203,13 +259,16 @@
       "searchedAt": "2026-11-13T21:46:19Z"
     },
     "m-8ff8adf3882151c2b4a6a5ac401e7057": {
-      "searchedAt": "2026-11-01T20:10:35Z"
+      "searchedAt": "2026-11-14T20:19:12Z"
     },
     "m-914cdf30c89d5fcca7252779037b7e8f": {
       "searchedAt": "2026-11-10T21:36:32Z"
     },
     "m-9e1f38560c775139bd9e8c696c8b0c5e": {
-      "searchedAt": "2026-11-01T20:10:59Z"
+      "searchedAt": "2026-11-14T20:19:36Z"
+    },
+    "m-a04cf3e5cde6576592f59920a7cd8fe2": {
+      "searchedAt": "2026-11-14T20:17:36Z"
     },
     "m-a2dcb0787b3c5e3791182922e298caf6": {
       "searchedAt": "2026-11-12T22:15:39Z"
@@ -227,7 +286,7 @@
       "searchedAt": "2026-11-10T21:36:57Z"
     },
     "m-c19cb919a9885157819dba3164a4c728": {
-      "searchedAt": "2026-10-31T19:40:02Z"
+      "searchedAt": "2026-11-14T20:18:24Z"
     },
     "m-d0b01b4dd7ca56ddb92174679f582e86": {
       "searchedAt": "2026-11-13T21:45:55Z"
@@ -247,7 +306,7 @@
   },
   "schemaVersion": 1,
   "staff": {
-    "checkedAt": "2026-11-13T21:45:41Z",
+    "checkedAt": "2026-11-14T20:17:34Z",
     "names": [
       "ひかり",
       "あむ",
@@ -276,17 +335,16 @@
       "ららこ",
       "ちま",
       "ちぇる",
-      "ゆめ",
-      "いと",
       "にゃな",
       "ぴあの",
       "もち",
+      "みらい",
       "まこっちゃん",
       "あらた",
       "うる",
       "みりん",
       "けだま"
     ],
-    "pageSha256": "f42eae27a045d92c0b3d590c05b51e54f032a0cc4844952d6b9329ca9b8dcf06"
+    "pageSha256": "e83da604a71c84d59ea205f5d27cc88ce40ac366330ade21e6f666e869cdae10"
   }
 }
