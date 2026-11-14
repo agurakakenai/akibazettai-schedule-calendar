@@ -1270,7 +1270,15 @@ class StateTests(Offline):
                                               registry, (), lambda _: client, None, lambda: future)
         client.fetch_post.assert_not_called()
         self.assertEqual(report['acquisition']['expired'], 1)
-        self.assertEqual(self.state['pending'][0]['id'], old['id'])
+        self.assertEqual(self.state['pending'], [])
+        self.assertEqual(self.state['expiredPending'], {old['date']: {'azure_ungrounded': 1}})
+        personal.official.atomic_json(self.snapshot, self.state)
+        personal.read_state(self.snapshot)
+        # Already retired items never count again, so later runs can report real failures only.
+        report, _ = personal.collect_recovery(self.state, durable, self.schedule, None, None,
+                                              registry, (), lambda _: client, None, lambda: future)
+        self.assertEqual(report['acquisition']['expired'], 0)
+        self.assertEqual(self.state['expiredPending'], {old['date']: {'azure_ungrounded': 1}})
 
     def test_selection_requires_current_roster_verified_account_and_exact_insights(self):
         targets = personal.select_targets(self.schedule, self.insights, self.accounts, DATE, self.state)

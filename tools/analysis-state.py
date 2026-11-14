@@ -114,6 +114,38 @@ def _receipt_id(component, key):
     return hashlib.sha256((component + ':' + key).encode()).hexdigest()
 
 
+# Settled receipts of closed JST months are compacted into retired[month] (see
+# tools/state-retention.py). Their receipt-ID prefixes still block a second issue.
+RETIRED_ID_LENGTH = 16
+RETIRED_COMPONENTS = ('official', 'personal', 'schedule')
+
+
+def retired_ids(state):
+    return {prefix for month in (state.get('retired') or {}).values() for prefix in month['receiptIds']}
+
+
+def _validate_retired(value):
+    if not isinstance(value, dict):
+        raise ValueError('invalid_ai_usage')
+    for month, record in value.items():
+        if not isinstance(month, str) or not re.fullmatch(r'\d{4}-\d{2}', month):
+            raise ValueError('invalid_ai_usage')
+        dt.date.fromisoformat(month + '-01')
+        _keys(record, ('requests', 'chargedMicroJPY', 'components', 'receiptIds'))
+        if (type(record['requests']) is not int or record['requests'] < 1
+                or type(record['chargedMicroJPY']) is not int or record['chargedMicroJPY'] < 0
+                or not isinstance(record['components'], dict)
+                or not set(record['components']) <= set(RETIRED_COMPONENTS)
+                or any(type(count) is not int or count < 1 for count in record['components'].values())
+                or sum(record['components'].values()) != record['requests']):
+            raise ValueError('invalid_ai_usage')
+        ids = record['receiptIds']
+        if (not isinstance(ids, list) or not ids or len(ids) > record['requests'] or ids != sorted(set(ids))
+                or any(not isinstance(item, str)
+                       or not re.fullmatch('[0-9a-f]{%d}' % RETIRED_ID_LENGTH, item) for item in ids)):
+            raise ValueError('invalid_ai_usage')
+
+
 def empty_state():
     return {'schemaVersion': 1, 'receipts': {}, 'imports': {}, 'sourceImports': {},
             'nextRequestAt': None, 'retryAt': None, 'paused': None}
@@ -194,6 +226,8 @@ def validate_state(value):
         fields = set(empty_state())
         if isinstance(value, dict) and 'money' in value:
             fields.add('money')
+        if isinstance(value, dict) and 'retired' in value:
+            fields.add('retired')
         if isinstance(value, dict) and 'sourceImports' not in value:
             fields.remove('sourceImports')
         _keys(value, fields)
@@ -274,6 +308,11 @@ def validate_state(value):
         if minimum_next is not None:
             if value['nextRequestAt'] is None or _time(value['nextRequestAt']) < minimum_next:
                 raise ValueError
+        if 'retired' in value:
+            _validate_retired(value['retired'])
+            retired = retired_ids(value)
+            if any(key[:RETIRED_ID_LENGTH] in retired for key in value['receipts']):
+                raise ValueError
         provenance, attested_requests = set(), set()
         for key, receipt in value['imports'].items():
             _validate_import(receipt)
@@ -285,7 +324,8 @@ def validate_state(value):
             provenance.add(source)
             if 'resultAttestation' in receipt:
                 request = receipt['resultAttestation']['requestHash']
-                if request in attested_requests or _receipt_id('schedule', request) in value['receipts']:
+                if (request in attested_requests or _receipt_id('schedule', request) in value['receipts']
+                        or _receipt_id('schedule', request)[:RETIRED_ID_LENGTH] in retired_ids(value)):
                     raise ValueError
                 attested_requests.add(request)
         if 'money' in value:
@@ -411,6 +451,7 @@ def apply_import(state, receipt):
     if 'resultAttestation' in receipt:
         request = receipt['resultAttestation']['requestHash']
         if (_receipt_id('schedule', request) in state['receipts']
+                or _receipt_id('schedule', request)[:RETIRED_ID_LENGTH] in retired_ids(state)
                 or any(item.get('resultAttestation', {}).get('requestHash') == request
                        for item in state['imports'].values())):
             raise ValueError('duplicate_ai_usage_result')
@@ -589,6 +630,8 @@ class SharedUsage:
             previous = self.state['receipts'][receipt_id]
             reason = previous['reason'] if previous['reason'] not in SUCCESS_REASONS else 'azure_already_analyzed'
             raise UsageFailure(reason, previous['httpStatus'], previous['retryAt'])
+        if receipt_id[:RETIRED_ID_LENGTH] in retired_ids(self.state):
+            raise UsageFailure('azure_already_analyzed')
         if self.component == 'schedule' and any(
                 item.get('resultAttestation', {}).get('requestHash') == key
                 for item in self.state['imports'].values()):
