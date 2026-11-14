@@ -74,6 +74,13 @@ class CycleTests(unittest.TestCase):
         def search(handle):
             self.gets['searches'].append(handle)
             return self.documents[handle]
+        def search_group(handles, term):
+            # Synthetic grouped search: the members' own result entries, newest first.
+            self.gets['searches'].append(('group', tuple(handles), term))
+            entries = [entry for handle in handles if handle in self.documents
+                       for entry in collector.yahoo.candidate_entries(collector.yahoo.search_page(self.documents[handle]))]
+            entries.sort(key=lambda entry: -int(entry['createdAt']))
+            return base.document(*entries)
         def post(tid):
             self.gets['posts'].append(tid)
             payload = copy.deepcopy(self.payloads[tid])
@@ -82,6 +89,7 @@ class CycleTests(unittest.TestCase):
             self.gets['images'].append(url)
             return {'bytes': bytearray(base.png()), 'mime': 'image/png'}
         client.search.side_effect = search
+        client.search_group.side_effect = search_group
         client.post.side_effect = post
         client.image.side_effect = image
         return client

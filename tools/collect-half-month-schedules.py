@@ -57,6 +57,53 @@ def plausible_schedule_text(text):
     return bool(SCHEDULE_WORDS.search(text)) or len(DATE_TOKEN.findall(text)) >= 2
 
 
+# Words that let a search result be opened at all: a half or a schedule word, or a list of dates.
+# Day-of announcements ("本日11月15日、3号店夜") and chatter are not opened.
+SCREEN_WORDS = re.compile(r'前半|後半|予定|よてい|ヨテイ|シフト|スケジュール')
+GROUP_QUERY = re.compile(r'\((id:[A-Za-z0-9_]{1,15}(?: OR id:[A-Za-z0-9_]{1,15}){1,%d})\) '
+                         r'((?:[1-9]|1[0-2])月(?:前半|後半))' % 11)
+
+
+def group_search_url(handles, term):
+    if (not isinstance(handles, (list, tuple)) or not 2 <= len(handles) <= facts.GROUP_SIZE
+            or len({handle.casefold() for handle in handles}) != len(handles)):
+        raise ValueError('invalid_group_search')
+    url = 'https://' + SEARCH_HOST + '/realtime/search?' + urllib.parse.urlencode(
+        {'p': '(' + ' OR '.join('id:' + handle for handle in handles) + ') ' + term, 'ei': 'UTF-8'})
+    if not valid_group_search_url(url):
+        raise ValueError('invalid_group_search')
+    return url
+
+
+def valid_group_search_url(url):
+    if not isinstance(url, str):
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        query = urllib.parse.parse_qs(parsed.query, strict_parsing=True)
+    except ValueError:
+        return False
+    if (parsed.scheme != 'https' or parsed.netloc != SEARCH_HOST or parsed.path != '/realtime/search'
+            or set(query) != {'p', 'ei'} or query['ei'] != ['UTF-8'] or len(query['p']) != 1
+            or not GROUP_QUERY.fullmatch(query['p'][0])):
+        return False
+    return url == 'https://' + SEARCH_HOST + '/realtime/search?' + urllib.parse.urlencode(
+        {'p': query['p'][0], 'ei': 'UTF-8'})
+
+
+def screened(entry, mode):
+    """Decide from the search result alone (text, media) whether the post may be opened.
+
+    group: only posts with a half/schedule word or a list of dates. account (the per-account
+    fallback): also posts with photos, since a table may be an image without any words.
+    """
+    text = discovery_text(entry).replace('\tSTART\t', '').replace('\tEND\t', '')
+    if SCREEN_WORDS.search(text) or len(DATE_TOKEN.findall(text)) >= 2:
+        return True
+    media = entry.get('media')
+    return mode == 'account' and isinstance(media, list) and bool(media)
+
+
 def alt_schedule_text(source, text):
     """The author's ALT text itself lists at least two dates: read it before the images."""
     return len(DATE_TOKEN.findall(azure.alt_text(source, text))) >= 2
@@ -173,8 +220,10 @@ def discovery_text(entry):
 
 
 def discover(document, targets, now, bindings=None, *, registry=None, other_bindings=(),
-             candidate_since=None):
-    """Bound publication dates separately from the real discovery/receipt clock."""
+             candidate_since=None, screen=None, stats=None):
+    """Bound publication dates separately from the real discovery/receipt clock.
+
+    screen ('group'/'account', finite cycles) drops posts that may not be opened at all."""
     if not isinstance(document, str) or len(document.encode('utf-8')) > MAX_DOCUMENT_BYTES:
         raise ValueError('invalid_search_response')
     page = yahoo.search_page(document)
@@ -185,6 +234,11 @@ def discover(document, targets, now, bindings=None, *, registry=None, other_bind
                              error.get('errorType') not in (None, '', 'zeromatch')):
         raise ValueError('invalid_search_response')
     entries = yahoo.candidate_entries(page)
+    if stats is not None:
+        times = [int(entry['createdAt']) for entry in entries
+                 if type(entry.get('createdAt')) in (int, str) and re.fullmatch(r'\d{10}', str(entry['createdAt']))]
+        stats.update(entries=len(entries),
+                     oldest=dt.datetime.fromtimestamp(min(times), facts.UTC) if times else None)
     handles = {target['handle'].casefold(): target for target in targets.values()}
     candidates, conflicts = {}, set()
     start = facts.candidate_start(now) if candidate_since is None else candidate_since
@@ -200,6 +254,8 @@ def discover(document, targets, now, bindings=None, *, registry=None, other_bind
             continue
         if any(entry.get(key) for key in (
                 'retweetedStatus', 'retweeted_status', 'isRetweet')):
+            continue
+        if screen is not None and not screened(entry, screen):
             continue
         try:
             when = dt.datetime.fromtimestamp(int(epoch), facts.UTC)
@@ -411,7 +467,7 @@ class SourceClient:
         raise Failure('shared_host_cooldown', status=status, retry_at=until)
 
     def _get(self, kind, url, maximum):
-        if (kind == 'searches' and not personal.valid_search_url(url)
+        if (kind == 'searches' and not (personal.valid_search_url(url) or valid_group_search_url(url))
                 or kind == 'posts' and not re.fullmatch(
                     r'https://cdn\.syndication\.twimg\.com/tweet-result\?id=[0-9]{15,22}&lang=ja&token=a', url)):
             raise ValueError('route_refused')
@@ -509,6 +565,10 @@ class SourceClient:
         raw, _ = self._get('searches', personal.account_search_url(handle), MAX_DOCUMENT_BYTES)
         return raw.decode('utf-8', 'strict')
 
+    def search_group(self, handles, term):
+        raw, _ = self._get('searches', group_search_url(handles, term), MAX_DOCUMENT_BYTES)
+        return raw.decode('utf-8', 'strict')
+
     def post(self, tid):
         facts.identifier(tid)
         raw, _ = self._get('posts', f'https://{POST_HOST}/tweet-result?id={tid}&lang=ja&token=a',
@@ -543,11 +603,12 @@ class SourceClient:
 
 
 def refresh_coverage(state, reasons, now, manual, *, registry=None, terminal_confirmed=False,
-                     periods=None, by_roster=False):
-    """by_roster (finite cycles): drop a graduate's rows for halves that begin after she left."""
+                     periods=None, cycle=False):
+    """cycle (finite cycles): drop a graduate's rows for halves that begin after she left, and
+    schedule the next grouped search by the publication-start/midnight time bands."""
     periods = facts.target_periods(now) if periods is None else periods
     merged = facts.effective_schedule(manual, state, registry=registry)
-    off_roster = (lambda name, period: not serves_period(registry, name, period)) if by_roster else (
+    off_roster = (lambda name, period: not serves_period(registry, name, period)) if cycle else (
         lambda name, period: False)
     for start, end in periods:
         people = state['coverage'].setdefault(start, {})
@@ -569,6 +630,9 @@ def refresh_coverage(state, reasons, now, manual, *, registry=None, terminal_con
                 'name': name, 'handle': reason['handle'], 'to': end,
                 'lastSearchedAt': None, 'nextCheckAt': None,
                 'candidateIds': [], 'confirmedIds': [], 'reason': reason['reason']})
+            if cycle:
+                # Rows written before grouped search only ever had per-account searches.
+                row.setdefault('accountSearchedAt', row['lastSearchedAt'])
             previously_unavailable = row['handle'] is None
             row['handle'] = reason['handle']
             row['confirmedIds'] = sorted({item['id'] for item in state['schedules']
@@ -583,6 +647,8 @@ def refresh_coverage(state, reasons, now, manual, *, registry=None, terminal_con
                 row['reason'] = 'valid_schedule'
             if terminal_confirmed and row['confirmedIds']:
                 row['nextCheckAt'] = None
+            elif row['lastSearchedAt'] is not None and cycle and empty_day:
+                row['nextCheckAt'] = facts.stamp(facts.next_group_check(row['lastSearchedAt'], (start, end)))
             elif row['lastSearchedAt'] is not None:
                 interval = 6 if empty_day and not row['confirmedIds'] else 24
                 row['nextCheckAt'] = facts.stamp(facts.timestamp(row['lastSearchedAt'])
@@ -1585,7 +1651,7 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
     anchor = min(facts.day(start) for start, _ in discovery)
     periods = sorted(set(facts.target_periods(anchor)) | set(discovery))
     refresh_coverage(state, reasons, started, manual, registry=registry,
-                     terminal_confirmed=True, periods=periods, by_roster=True)
+                     terminal_confirmed=True, periods=periods, cycle=True)
     # A resumed cohort keeps its saved scope, but the real JST date decides which of its
     # periods are still open. One day of grace lets a delayed slot or a continuation that
     # crosses midnight finish the half that has just ended. A candidate created before
@@ -1741,6 +1807,123 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                                   or facts.timestamp(item['nextAttemptAt']) <= clock())
 
     searched = set()
+    search_kinds = {'group': 0, 'account': 0}
+    force_account = set()
+    search_stopped = []
+
+    def account_periods(name):
+        """Open unconfirmed periods for which this account is due a search of its own."""
+        result = []
+        now = clock()
+        for period in ([] if search_stopped else open_periods):
+            if not serves_period(registry, name, period):
+                continue
+            row = state['coverage'][period[0]][name]
+            if row['confirmedIds'] or any(
+                    item['name'] == name and created(item) >= facts.publication_start(period) and waiting(item)
+                    for item in state['pending']):
+                continue
+            late = (now.astimezone(facts.JST).date()
+                    >= facts.publication_start(period) + dt.timedelta(days=facts.GROUP_FALLBACK_DAYS))
+            last = row.get('accountSearchedAt')
+            if ((late or name in force_account)
+                    and (last is None or facts.timestamp(last) + facts.ACCOUNT_SEARCH_INTERVAL <= now)):
+                result.append(period)
+        return result
+
+    def account_search(client, name, periods, screen):
+        searched.add(name)
+        source.check('searches')
+        counts['searches'] += 1
+        search_kinds['account'] += 1
+        document = client.search(targets[name]['handle'])
+        candidates, truncated = discover(
+            document, {name: targets[name]}, clock(), bindings, registry=registry,
+            other_bindings=(state['identityBindings'], existing_bindings or {}),
+            candidate_since=max(candidate_since, scope_since(name) or candidate_since), screen=screen)
+        del document
+        dropped = enqueue(state, candidates, clock(), analyzer, capacity, cache)
+        for start, end in periods:
+            row = state['coverage'][start][name]
+            row.update(lastSearchedAt=facts.stamp(clock()),
+                       nextCheckAt=facts.stamp(facts.next_group_check(clock(), (start, end))),
+                       reason='queue_limit' if name in dropped else 'candidate_limit' if truncated else
+                       'post_unverified' if candidates else 'source_not_found')
+            if screen == 'account':
+                row['accountSearchedAt'] = facts.stamp(clock())
+        save()
+
+    def group_phase(order):
+        """One grouped query per GROUP_SIZE due accounts and period; True if the run must stop."""
+        due = {}
+        for position in order:
+            name = state['collection']['names'][position]
+            # An account due its own search is searched alone below; that covers every half.
+            if name in targets and not account_periods(name):
+                for period in due_periods(name):
+                    due.setdefault(tuple(period), []).append(name)
+        for period in sorted(due, reverse=True):
+            # A candidate found for one half by the previous query may already cover this one.
+            names = [name for name in due[period] if name not in searched and period in due_periods(name)]
+            chunks = -(-len(names) // facts.GROUP_SIZE)
+            for index in range(chunks):
+                chunk = names[index::chunks]
+                client = client_factory()
+                client.chunk_images = True
+                try:
+                    for name in chunk:
+                        check_registry(registry_guard, name)
+                    client.registry_name = chunk[0]
+                    if not allowed():
+                        raise Failure('time_limit')
+                    if len(chunk) == 1:
+                        # One due account: its own search costs the same and sees every post.
+                        account_search(client, chunk[0], due_periods(chunk[0]), 'group')
+                        continue
+                    since = [state['coverage'][period[0]][name]['lastSearchedAt'] for name in chunk]
+                    window = (min(facts.timestamp(value) for value in since) if all(since) else
+                              dt.datetime.combine(facts.publication_start(period), dt.time(), facts.JST))
+                    source.check('searches')
+                    counts['searches'] += 1
+                    search_kinds['group'] += 1
+                    document = client.search_group([targets[name]['handle'] for name in chunk],
+                                                   facts.group_term(period))
+                    page = {}
+                    candidates, _ = discover(
+                        document, {name: targets[name] for name in chunk}, clock(), bindings, registry=registry,
+                        other_bindings=(state['identityBindings'], existing_bindings or {}),
+                        candidate_since=max(candidate_since, facts.publication_start(period)),
+                        screen='group', stats=page)
+                    del document
+                    truncated = (page['entries'] >= facts.GROUP_PAGE and page['oldest'] is not None
+                                 and page['oldest'] > window)
+                    if truncated:
+                        # Older posts of this window may not have been returned: search each alone.
+                        force_account.update(chunk)
+                    dropped = enqueue(state, candidates, clock(), analyzer, capacity, cache)
+                    found = {item['name'] for item in candidates}
+                    for name in chunk:
+                        state['coverage'][period[0]][name].update(
+                            lastSearchedAt=facts.stamp(clock()),
+                            nextCheckAt=facts.stamp(facts.next_group_check(clock(), period)),
+                            reason='queue_limit' if name in dropped else 'candidate_limit' if truncated else
+                            'post_unverified' if name in found else 'source_not_found')
+                    save()
+                except Exception as exc:
+                    reason, next_at, stop = _cycle_failure(exc, clock())
+                    errors.append(reason)
+                    for name in chunk:
+                        _set_reason(state, name, [period], reason)
+                        if next_at:
+                            state['coverage'][period[0]][name]['nextCheckAt'] = facts.stamp(next_at)
+                    save()
+                    if stop or reason == 'paused':
+                        # A stopped search host refuses every further search of this run.
+                        search_stopped.append(reason)
+                        return stop
+                finally:
+                    client.close()
+        return False
 
     try:
         if cache is None:
@@ -1756,6 +1939,8 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
             start = min(initial_cursor, len(current['names']))
             order = [*range(start, len(current['names'])), *range(0, start)]
             plan = [(phase, position) for phase in ('search', 'open', 'rest') for position in order]
+            if group_phase(order):
+                plan = []
             for phase, position in plan:
                 # Applying a reading revision can replace the collection mapping; never write to a stale copy.
                 current = state['collection']
@@ -1765,7 +1950,7 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                 if name not in targets or confirmed(name) and not reply_waiting:
                     current['cursor'] = max(current['cursor'], position + 1)
                     continue
-                if phase == 'search' and (name in searched or not due_periods(name)):
+                if phase == 'search' and (name in searched or not account_periods(name)):
                     continue
                 if phase != 'search' and not any(item['name'] == name and relevant(item) == (phase == 'open')
                                                  for item in state['pending']):
@@ -1782,25 +1967,9 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                                [item for item in state['pending']
                                 if item['name'] == name and relevant(item) == (phase == 'open')])
                     if phase == 'search':
-                        due = due_periods(name)
+                        due = account_periods(name)
                         if due:
-                            searched.add(name)
-                            source.check('searches')
-                            counts['searches'] += 1
-                            document = client.search(targets[name]['handle'])
-                            candidates, truncated = discover(
-                                document, {name: targets[name]}, clock(), bindings, registry=registry,
-                                other_bindings=(state['identityBindings'], existing_bindings or {}),
-                                candidate_since=max(candidate_since, scope_since(name) or candidate_since))
-                            del document
-                            dropped = enqueue(state, candidates, clock(), analyzer, capacity, cache)
-                            for start, _ in due:
-                                row = state['coverage'][start][name]
-                                row.update(lastSearchedAt=facts.stamp(clock()),
-                                           nextCheckAt=facts.stamp(clock() + dt.timedelta(hours=6)),
-                                           reason='queue_limit' if name in dropped else 'candidate_limit' if truncated else
-                                           'post_unverified' if candidates else 'source_not_found')
-                            save()
+                            account_search(client, name, sorted(set(due) | set(due_periods(name))), 'account')
                     # Posts for the latest open half first; then schedule-keyword posts; newest first.
                     for selected in sorted(pending, key=lambda item: (
                             newest_period_first(item), item['priority'], -int(item['id']))):
@@ -2030,7 +2199,7 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                                                     else 'not_schedule', clock(),
                                                     image_hashes=[facts.digest(bytes(image['bytes'])) for image in images])
                         refresh_coverage(state, reasons, clock(), manual, registry=registry,
-                                         terminal_confirmed=True, periods=periods, by_roster=True)
+                                         terminal_confirmed=True, periods=periods, cycle=True)
                         save()
                         client.close()
                     if phase == 'rest':
@@ -2147,6 +2316,7 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                   nextStage='complete' if current['reason'] == 'complete' else 'resume' if remaining else 'waiting',
                   nextEligible=current['nextAt'], reasons=sorted(set(errors)), unresolvedCount=len(unresolved),
                   retiredReadings=retired, readings=len(state['readings']), scopeRetired=scope_retired,
+                  searchKinds=dict(search_kinds),
                   capacity={key: value for key, value in sorted(capacity.items()) if value})
     for record in state['readings'].values():
         failure = record.get('failure')
@@ -2279,7 +2449,7 @@ def run(args, *, clock=official.utc_now, sleep=time.sleep, environment=None):
             state, {}, {}, [], personal_state['identityBindings'], registry=registry,
             today=registry_guard.today)
         refresh_coverage(state, reasons, clock(), {}, registry=registry, terminal_confirmed=cycle,
-                         by_roster=cycle)
+                         cycle=cycle)
         state['lastRun'] = {'status': status}
         facts.validate_state(state)
         official.atomic_json(args.snapshot, state)

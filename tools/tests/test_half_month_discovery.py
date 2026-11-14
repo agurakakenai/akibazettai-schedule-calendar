@@ -50,6 +50,12 @@ class DiscoveryBase(unittest.TestCase):
                 self.calls.append((kind, arg))
                 return normal(arg)
             getattr(value, kind).side_effect = wrapped
+        group = value.search_group.side_effect
+
+        def grouped(handles, term):
+            self.calls.append(('search_group', tuple(handles), term))
+            return group(handles, term)
+        value.search_group.side_effect = grouped
         return value
 
     def post(self, created, suffix, text, handle='amu_zettai'):
@@ -126,7 +132,7 @@ class SecondHalfSearchTests(DiscoveryBase):
         self.documents = {'amu_zettai': base.document()}
         self.run_cycle(cycle_id='3003-1')
         self.assertEqual(self.searches(), ['amu_zettai'])
-        self.now = at(13, 14)
+        self.now = at(13, 11)
         self.reopen()
         self.calls.clear()
         self.run_cycle(resume=True, cycle_id='3003-1')
@@ -811,6 +817,216 @@ class MemberStatusSummaryTests(unittest.TestCase):
                       'image wait (host stop or retry time)=2', text)
         self.assertIn('- に: state=image_wait_and_queued; queued=1; imagesNotTried=1; imageWait=1', text)
         self.assertIn('Retired without HTTP or AI', text)
+
+
+class GroupedSearchTests(DiscoveryBase):
+    """2026-11-15: one Yahoo query per 12 accounts instead of one `id:` search per person."""
+
+    def members(self, count):
+        self.documents['amu_zettai'] = base.document()
+        result = []
+        for index in range(1, count + 1):
+            name, handle, uid = f'メンバー{index}', f'member_{index:02d}', str(2080944098043977700 + index)
+            self.registry['members'].append(collector.members.new_member(
+                name, 'https://x.com/' + handle, base.NOW, member_id='m-' + f'{index:032d}'))
+            self.documents[handle] = base.document()
+            result.append((name, handle, uid))
+        return result
+
+    def member_post(self, member, created, suffix, text, *, photos=1):
+        name, handle, uid = member
+        entry = base.entry(created=created, suffix=suffix, name=name, handle=handle)
+        entry.update(userId=uid, text=text, media=[{'type': 'photo'}] * photos)
+        payload = base.payload(created=created, suffix=suffix, photos=photos)
+        payload['text'] = text
+        payload['user'] = {'id_str': uid, 'screen_name': handle}
+        for index, media in enumerate(payload['mediaDetails'], 1):
+            media['expanded_url'] = f'https://x.com/{handle}/status/{entry["id"]}/photo/{index}'
+        self.payloads[entry['id']] = payload
+        self.documents[handle] = base.document(entry)
+        return entry
+
+    def kinds(self):
+        groups = [(call[1], call[2]) for call in self.calls if call[0] == 'search_group']
+        return groups, [call[1] for call in self.calls if call[0] == 'search']
+
+    def test_query_is_built_split_and_validated(self):
+        handles = [f'member_{index:02d}' for index in range(1, 13)]
+        url = collector.group_search_url(handles, '11月後半')
+        query = collector.urllib.parse.parse_qs(collector.urllib.parse.urlsplit(url).query)['p'][0]
+        self.assertEqual(query, '(' + ' OR '.join('id:' + handle for handle in handles) + ') 11月後半')
+        self.assertTrue(collector.valid_group_search_url(url))
+        self.assertLess(len(url), 600)
+        self.assertEqual(facts.group_term(('2026-12-01', '2026-12-15')), '12月前半')
+        self.assertEqual(facts.group_term(('2026-11-16', '2026-11-30')), '11月後半')
+        for bad in ([handles[0]], [*handles, 'member_13'], [handles[0], handles[0].upper()],
+                    [handles[0], 'bad-handle!']):
+            with self.subTest(handles=bad), self.assertRaises(ValueError):
+                collector.group_search_url(bad, '11月後半')
+        for term in ('後半', '11月後半 OR 予定', '13月前半', '11月後半) OR (id:x'):
+            with self.subTest(term=term), self.assertRaises(ValueError):
+                collector.group_search_url(handles[:2], term)
+        self.assertFalse(collector.valid_group_search_url(url + '&extra=1'))
+        self.assertFalse(collector.valid_group_search_url(url.replace('https:', 'http:')))
+        # The shared HTTP client still accepts only the two fixed search forms.
+        self.assertFalse(collector.valid_group_search_url(collector.personal.account_search_url('member_01')))
+
+    def test_results_are_matched_to_the_bound_account_and_screened_before_any_post_is_opened(self):
+        one, two = self.members(2)
+        self.now = at(14, 12)
+        bindings = {one[0]: {'authorId': one[2], 'authorScreenName': one[1], 'verifiedAt': facts.stamp(at(1))}}
+        good = self.member_post(one, at(14, 1), 1, '10月後半のお給仕予定')
+        spoofed = {**self.member_post(one, at(14, 2), 2, '10月後半の予定'), 'userId': '2080944098043977999'}
+        outsider = {**self.member_post(two, at(14, 3), 3, '10月後半の予定'), 'screenName': 'someone_else',
+                    'url': 'https://x.com/someone_else/status/' + base.post_id(at(14, 3), 3)}
+        early = self.member_post(two, at(12, 23), 4, '10月後半の予定')
+        daily = self.member_post(two, at(14, 4), 5, '本日10月14日は1号店昼です', photos=0)
+        selfie = self.member_post(two, at(14, 5), 6, 'かわいい')
+        marked = self.member_post(two, at(14, 6), 7, '\tSTART\t10\tEND\t月\tSTART\t後半\tEND\tです')
+        dates = self.member_post(two, at(14, 7), 8, '16日 19日 21日', photos=0)
+        document = base.document(good, spoofed, outsider, early, daily, selfie, marked, dates)
+        targets = {name: {'name': name, 'handle': handle} for name, handle, _ in (one, two)}
+
+        def found(screen):
+            candidates, _ = collector.discover(document, targets, self.now, bindings, registry=self.registry,
+                                               candidate_since=facts.publication_start(('2026-10-16', '2026-10-31')),
+                                               screen=screen)
+            return {item['id'] for item in candidates}
+        self.assertEqual(found('group'), {good['id'], marked['id'], dates['id']})
+        # The per-account fallback also opens photo posts without any words (image-only tables).
+        self.assertEqual(found('account'), {good['id'], marked['id'], dates['id'], selfie['id']})
+
+    def test_one_grouped_query_per_twelve_due_accounts_instead_of_one_per_person(self):
+        self.members(25)
+        # 10/12: only the first half is open and nobody has a table two weeks in: each account is
+        # searched alone (the old cost, one search per person).
+        self.now = at(12, 9)
+        report, _ = self.run_cycle(cycle_id='4000-1')
+        self.assertEqual(report['searchKinds'], {'group': 0, 'account': 26})
+        self.reopen()
+        self.calls.clear()
+        # 10/13 01:00: the second half opened. Grouped queries cover both halves for 26 accounts.
+        self.now = at(13, 1)
+        report, _ = self.run_cycle(cycle_id='4001-1')
+        groups, accounts = self.kinds()
+        self.assertEqual(sorted(len(handles) for handles, _ in groups), [8, 8, 9, 9, 9, 9])
+        self.assertEqual(sorted(term for _, term in groups), ['10月前半'] * 3 + ['10月後半'] * 3)
+        self.assertEqual(len({handle for handles, _ in groups for handle in handles}), 26)
+        self.assertEqual(report['searchKinds'], {'group': 6, 'account': 0})
+        self.assertEqual(report['requests']['searches'], 6)
+        self.assertEqual(accounts, [])
+        row = self.state['coverage'][SECOND_HALF]['メンバー1']
+        # Publication start day: the next grouped check is two hours later.
+        self.assertEqual(row['nextCheckAt'], facts.stamp(at(13, 3)))
+        self.assertIsNone(row['accountSearchedAt'])
+        self.reopen()
+        self.calls.clear()
+        self.now = at(13, 1) + dt.timedelta(minutes=30)
+        report, _ = self.run_cycle(resume=True, cycle_id='4001-1')
+        self.assertEqual(report['searchKinds'], {'group': 0, 'account': 0})
+
+    def test_accounts_still_unfound_two_days_after_publication_start_are_searched_alone(self):
+        found_member, quiet_member = self.members(2)
+        self.model.structured.return_value = {'classification': 'uncertain', 'complete': False, 'periods': []}
+        self.now = at(12, 9)
+        self.run_cycle(cycle_id='4100-1')
+        self.assertEqual(len(self.kinds()[1]), 3)
+        # 10/13: one member posts a worded table (the grouped query finds it); another posts an
+        # image-only table that only her own `id:` search can see.
+        table = self.member_post(found_member, at(13, 0) + dt.timedelta(minutes=30), 11, '10月後半のお給仕予定')
+        image_only = self.member_post(quiet_member, at(13, 2), 12, '')
+        self.now = at(13, 3)
+        self.reopen()
+        self.calls.clear()
+        # The worded table lists both halves, so this member is confirmed for both.
+        self.model.structured.return_value = reading.result(
+            reading.row(weekday='月'), reading.row(20, weekday='火', transcription='20日 昼'), month=10, half='full')
+        report, _ = self.run_cycle(cycle_id='4101-1')
+        groups, accounts = self.kinds()
+        self.assertEqual((report['searchKinds'], accounts), ({'group': 2, 'account': 0}, []))
+        self.assertIn(('post', table['id']), self.calls)
+        self.assertNotIn(('post', image_only['id']), self.calls)
+        # 24 hours after their last own search, the accounts still without a candidate are
+        # searched alone; the one found by the grouped query is not.
+        self.now = at(13, 10)
+        self.reopen()
+        self.calls.clear()
+        report, _ = self.run_cycle(resume=True, cycle_id='4101-1')
+        groups, accounts = self.kinds()
+        self.assertEqual(sorted(accounts), sorted(['amu_zettai', quiet_member[1]]))
+        self.assertEqual(groups, [])
+        self.assertIn(('post', image_only['id']), self.calls)
+        self.assertEqual(report['searchKinds'], {'group': 0, 'account': 2})
+        row = self.state['coverage'][SECOND_HALF][quiet_member[0]]
+        self.assertEqual(row['accountSearchedAt'], facts.stamp(at(13, 10)))
+        self.now = at(13, 20)
+        self.reopen()
+        self.calls.clear()
+        self.run_cycle(resume=True, cycle_id='4101-1')
+        # Only あむ is still due a grouped check; one account alone costs the same as a group of one.
+        self.assertEqual(self.kinds()[1], ['amu_zettai'])
+        self.assertEqual(self.state['coverage'][SECOND_HALF]['あむ']['accountSearchedAt'],
+                         facts.stamp(at(13, 10)), 'that substitute is not the 24-hour per-account search')
+        facts.validate_state(self.state)
+
+    def test_a_full_page_newer_than_the_last_search_falls_back_to_account_searches(self):
+        one, two = self.members(2)
+        self.now = at(12, 9)
+        self.run_cycle(cycle_id='4200-1')
+        self.member_post(one, at(13, 0) + dt.timedelta(minutes=10), 21, '雑談')
+        self.member_post(two, at(13, 0) + dt.timedelta(minutes=20), 22, '雑談')
+        self.now = at(13, 1)
+        self.reopen()
+        self.calls.clear()
+        with mock.patch.object(facts, 'GROUP_PAGE', 2):
+            self.run_cycle(cycle_id='4201-1')
+        groups, accounts = self.kinds()
+        self.assertTrue(groups)
+        # The page was full of posts newer than the last check, so older ones might be missing:
+        # those accounts are searched alone in the same run.
+        self.assertEqual(sorted(accounts), sorted(['amu_zettai', one[1], two[1]]))
+
+    def test_search_cadence_follows_the_publication_start_and_midnight_bands(self):
+        period = ('2026-11-16', '2026-11-30')
+        jst = lambda day, hour, minute=0: dt.datetime(2026, 11, day, hour, minute, tzinfo=facts.JST)
+        for searched, expected in (
+                (jst(13, 9), jst(13, 11)), (jst(14, 23), jst(15, 1)),        # publication start day and next
+                (jst(15, 0, 30), jst(15, 1, 30)), (jst(15, 1, 50), jst(15, 2, 50)),  # 0-1 o'clock band
+                (jst(15, 9), jst(15, 15)), (jst(15, 20), jst(16, 0, 40))):   # otherwise 6h, never past 00:40
+            with self.subTest(searched=searched):
+                self.assertEqual(facts.next_group_check(searched, period), expected.astimezone(facts.UTC))
+
+    def test_grouped_search_due_dispatches_once_and_respects_a_search_host_stop(self):
+        now = at(13, 12)
+        state = {'collection': {'chainId': '4300-1', 'names': ['あむ'], 'periods': [['2026-10-16', '2026-10-31']],
+                                'reason': 'waiting', 'ready': False, 'cursor': 1, 'nextAt': None},
+                 'pending': [], 'readings': {},
+                 'coverage': {SECOND_HALF: {'あむ': {'handle': 'amu_zettai', 'confirmedIds': [],
+                                                     'nextCheckAt': facts.stamp(at(13, 11))}}}}
+        due = lambda source=None, checked=None: cloud.half_month_search_due(
+            state, source or {}, now, legacy.collector, checked=checked)
+        self.assertTrue(due())
+        self.assertFalse(due(checked=at(13, 11)), 'a run after the due time already handled it')
+        half = dt.timedelta(minutes=30)
+        stopped = {'paused': {'host': 'search.yahoo.co.jp', 'reason': 'access_denied', 'httpStatus': 403,
+                              'at': facts.stamp(at(13, 11) + half), 'retryAt': facts.stamp(at(13, 12) + half)}}
+        self.assertFalse(due(stopped))
+        state['pending'].append({'id': base.post_id(at(14), 1), 'name': 'あむ',
+                                 'searchCreatedAt': facts.stamp(at(13, 10))})
+        self.assertFalse(due(), 'a queued candidate for the half already covers it')
+        state['pending'].clear()
+        state['coverage'][SECOND_HALF]['あむ']['confirmedIds'] = ['1']
+        self.assertFalse(due())
+
+    def test_summary_counts_grouped_and_per_account_searches(self):
+        summary = Path(tempfile.mkdtemp(prefix='search-summary-')) / 'summary.md'
+        self.addCleanup(shutil.rmtree, summary.parent, True)
+        with contextlib.redirect_stdout(io.StringIO()):
+            cloud.emit({'halfMonthAcquisition': {'period': '2026-11-16', 'searched': 37, 'targets': 37,
+                                                 'confirmed': 9, 'pending': 4},
+                        'halfMonthSearches': {'group': 4, 'account': 3}}, {'GITHUB_STEP_SUMMARY': str(summary)})
+        self.assertIn('grouped (up to 12 accounts, period word)=4; per account (id:<handle>)=3',
+                      summary.read_text(encoding='utf-8'))
 
 
 class AzureErrorTokenTests(unittest.TestCase):
