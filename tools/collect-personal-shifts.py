@@ -76,7 +76,7 @@ PUBLIC_FIELDS = {'schemaVersion', 'complete', 'checkedAt', 'lastSuccessAt', 'pos
 PRIVATE_FIELDS = {'pending', 'resolved', 'budgets', 'paused', 'identityBindings',
                   'originalTargets', 'lastRequests'}
 OPTIONAL_PRIVATE_FIELDS = {'azureAnalysis', 'coverage', 'searchHistory', 'savedPersonalImports', 'hostStops',
-                           'recovery', 'collectionSlots'}
+                           'recovery', 'collectionSlots', 'expiredPending'}
 SCOPES = ('昼', '夜', 'unspecified')
 LINK_STATUSES = ('work', 'withdrawn', 'conflict')
 TARGET_ORIGINS = {'original', 'scheduled', 'official_names', 'official_notice', 'personal', 'curated',
@@ -343,6 +343,11 @@ def read_state(path, private=True):
                         raise ValueError
             if 'azureAnalysis' in value:
                 azure.validate_state(value['azureAnalysis'], azure_context())
+            for day, reasons in value.get('expiredPending', {}).items():
+                if (dt.date.fromisoformat(day).isoformat() != day or not isinstance(reasons, dict)
+                        or any(not isinstance(reason, str) or not re.fullmatch('[a-z_]+', reason)
+                               or type(count) is not int or count < 1 for reason, count in reasons.items())):
+                    raise ValueError
             validate_collection_coverage(value)
             if 'savedPersonalImports' in value:
                 saved = saved_validator()
@@ -2175,8 +2180,20 @@ def collect_recovery(state, durable, schedule, insights, observations, registry,
             'analysisHeld': sum(item['reason'].startswith('azure_') for item in active_pending),
         })
     failures = blocked + [failure for report in reports for failure in report['failures']]
-    expired = sum((today - dt.date.fromisoformat(item['date'])).days >= RECOVERY_DAYS
-                  for item in state['pending'])
+    # Pending posts older than the recovery window are never retried; retire them into per-day
+    # counts so `expired` reports only what expired in this run (manual saved-body reviews stay).
+    review = state.get('azureAnalysis', {}).get('review', {})
+    retired = [item for item in state['pending']
+               if (today - dt.date.fromisoformat(item['date'])).days >= RECOVERY_DAYS
+               and item['id'] not in review and item['reason'] != 'azure_saved_body_required']
+    if retired:
+        retired_ids = {item['id'] for item in retired}
+        state['pending'] = [item for item in state['pending'] if item['id'] not in retired_ids]
+        history = state.setdefault('expiredPending', {})
+        for item in retired:
+            reasons = history.setdefault(item['date'], {})
+            reasons[item['reason']] = reasons.get(item['reason'], 0) + 1
+    expired = len(retired)
     incomplete = bool(expired) or bool(supplemental and supplemental['unsearched']) or any(
         row['unsearched'] or row['pending'] or row['unavailableTargets'] or row['withoutWorkLink']
         for row in summaries)

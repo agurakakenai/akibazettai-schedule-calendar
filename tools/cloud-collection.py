@@ -168,6 +168,64 @@ def load_roster_automation():
     return module
 
 
+def load_state_retention():
+    spec = importlib.util.spec_from_file_location(
+        'cloud_state_retention', ROOT / 'tools' / 'state-retention.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def apply_retention(state_dir, collector, personal):
+    """Compact closed records in place; any failure restores the exact validated bytes."""
+    retention = load_state_retention()
+    names = [name for name in (AI_USAGE, SOURCE_USAGE, PERSONAL, HALF_MONTH) if (state_dir / name).exists()]
+    originals = {name: (state_dir / name).read_bytes() for name in names}
+    counts = {}
+    try:
+        now = collector.utc_now()
+        states = {name: read_json(state_dir / name)[0] for name in names}
+        usage, source = states.get(AI_USAGE), states.get(SOURCE_USAGE)
+        personal_state, half_month = states.get(PERSONAL), states.get(HALF_MONTH)
+        runs = set()
+        if source is not None:
+            counts['sourceReceipts'], runs = retention.prune_source(
+                source, now, keep_hashes=retention.recovery_hashes(half_month))
+            if counts['sourceReceipts']:
+                load_source_state().atomic_json(state_dir / SOURCE_USAGE, source)
+        if half_month is not None:
+            counts['halfMonthRecords'] = retention.prune_half_month(half_month, now, usage)
+            if counts['halfMonthRecords']:
+                collector.atomic_json(state_dir / HALF_MONTH, half_month)
+        if personal_state is not None:
+            counts['personalCacheEntries'] = retention.prune_personal(personal_state, now)
+            if counts['personalCacheEntries']:
+                collector.atomic_json(state_dir / PERSONAL, personal_state)
+        if usage is not None:
+            counts['aiReceipts'] = retention.prune_ai(
+                usage, now, keep=retention.ai_references(half_month, personal_state), keep_runs=runs)
+            if counts['aiReceipts']:
+                load_analysis_state().atomic_json(state_dir / AI_USAGE, usage)
+        personal_state = validate_personal(state_dir / PERSONAL, personal)[0] if personal_state is not None else None
+        usage = validate_ai_usage(state_dir / AI_USAGE)[0] if usage is not None else None
+        validate_usage_links(usage, personal_state, personal)
+        validate_half_month_links(
+            validate_half_month(state_dir / HALF_MONTH)[0] if half_month is not None else None,
+            validate_source_usage(state_dir / SOURCE_USAGE)[0] if source is not None else None,
+            usage, personal_state)
+        return {'status': 'ok', **counts}
+    except (CloudError, ValueError, KeyError, TypeError, OSError):
+        for name, raw in originals.items():
+            atomic_bytes(state_dir / name, raw)
+        return {'status': 'failed'}
+
+
+def state_sizes(state_dir):
+    sizes = {name: (state_dir / name).stat().st_size for name in sorted(FILES - {LEASE})
+             if (state_dir / name).exists()}
+    return sizes, load_state_retention().size_warnings(sizes, MAX_JSON_BYTES)
+
+
 def safe_environment(environment, *, credentials=False, azure=False):
     result = {
         key: value for key, value in environment.items()
@@ -574,7 +632,7 @@ def validate_personal(path, personal=None, *, private=True):
                       'originalTargets', 'lastRequests')
     fields = (*public_fields, *private_fields) if private else public_fields
     keys(state, (*fields, 'azureAnalysis', 'coverage', 'searchHistory', 'savedPersonalImports', 'hostStops',
-                 'recovery', 'collectionSlots')
+                 'recovery', 'collectionSlots', 'expiredPending')
          if private else fields, fields)
     official = personal.official
 
@@ -2720,6 +2778,8 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
             if collect_half_month and half_month_state is not None:
                 result['halfMonthImageHealth'] = half_month_image_health(
                     half_month_state, current_usage, collector.utc_now(), run_started, collector)
+        result['stateRetention'] = apply_retention(state_dir, collector, personal)
+        result['stateSizes'], result['stateSizeWarnings'] = state_sizes(state_dir)
         (state_dir / LEASE).unlink()
         result['stateCommit'] = repo.persist(collector, leased=False, personal=personal)
         continuation = (result.get('halfMonthContinuation') if args.mode == 'schedule'
@@ -3035,6 +3095,28 @@ def emit(result, environment):
         if image_health['stalled']:
             print('::warning::Half-month image-backed candidates are pending but no image was read for 24 hours '
                   '(alert token image_reading_stalled).')
+    sizes = result.get('stateSizes')
+    if isinstance(sizes, dict):
+        warnings = result.get('stateSizeWarnings') or []
+        result['stateSizeWarning'] = '-'.join(
+            re.sub(r'[^a-z]+', '_', name.removesuffix('.json')) for name in warnings)
+        if environment.get('GITHUB_STEP_SUMMARY'):
+            retention = result.get('stateRetention') or {}
+            lines = [f"\n## Collector state size (limit {MAX_JSON_BYTES:,} bytes per file; "
+                     f"warning above {int(load_state_retention().SIZE_WARNING_RATIO * 100)}%)\n\n"]
+            lines += [f"- {name}: {size:,} bytes ({size * 100 // MAX_JSON_BYTES}%)"
+                      + (' (alert token state_file_large)' if name in warnings else '') + '\n'
+                      for name, size in sizes.items()]
+            lines.append('- retention: ' + '; '.join(
+                f'{key}={value}' for key, value in sorted(retention.items())
+                if re.fullmatch(r'[A-Za-z]{1,32}', key) and re.fullmatch(r'[a-z0-9]{1,16}', str(value))) + '\n')
+            with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
+                target.writelines(lines)
+        if warnings:
+            print('::warning::A collector state file is above 60% of its size limit '
+                  '(alert token state_file_large): ' + result['stateSizeWarning'])
+        if (result.get('stateRetention') or {}).get('status') == 'failed':
+            print('::warning::State retention failed and was skipped; the validated state was saved unchanged.')
     output = environment.get('GITHUB_OUTPUT')
     if output:
         # Only fixed names and single-line values; no report/paths/token payloads.
@@ -3044,7 +3126,7 @@ def emit(result, environment):
                    'personalCollectionStatus', 'personalCollectionCode', 'personalStateSource',
                    'halfMonthCollectionStatus', 'halfMonthCollectionCode',
                    'officialFailureReason', 'personalFailureReason', 'scheduleFailureReason',
-                   'scheduleCapacityLimit', 'scheduleImageStall', 'scheduleImageRead',
+                   'scheduleCapacityLimit', 'scheduleImageStall', 'scheduleImageRead', 'stateSizeWarning',
                    'rosterCollectionStatus', 'rosterCollectionCode',
                    'rosterFailureReason',
                    'reason', 'continuationReady', 'continuationMode', 'attention', 'failedComponents')

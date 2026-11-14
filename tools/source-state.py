@@ -220,15 +220,31 @@ def _images(value):
         sources.add(source)
 
 
+def _retired(value):
+    """Per-day request counts of receipts compacted by tools/state-retention.py."""
+    if not isinstance(value, dict):
+        raise ValueError
+    for day, components in value.items():
+        usage._day(day)
+        if not isinstance(components, dict) or not components or not set(components) <= set(COMPONENTS):
+            raise ValueError
+        for counts in components.values():
+            if (not isinstance(counts, dict) or not counts or not set(counts) <= set(KINDS)
+                    or any(type(count) is not int or count < 1 for count in counts.values())):
+                raise ValueError
+
+
 def validate_state(state):
     """Strict public-Git-safe metadata schema; reservations remain spent."""
     try:
         usage._keys(state, ('schemaVersion', 'baseline', 'receipts',
                             'nextRequests', 'cooldowns', 'paused',
                             *(('hostStops',) if isinstance(state, dict) and 'hostStops' in state else ()),
+                            *(('retired',) if isinstance(state, dict) and 'retired' in state else ()),
                             *(('sourceImports',) if isinstance(state, dict) and 'sourceImports' in state else ())))
         if type(state['schemaVersion']) is not int or state['schemaVersion'] != 1:
             raise ValueError
+        _retired(state.get('retired', {}))
         baseline = state['baseline']
         usage._keys(baseline, ('at', 'sourceHash', 'personalBudgets', 'sourceImports',
                                'historicalImages', 'paused', 'cooldowns', 'lastRequests'))
@@ -350,6 +366,11 @@ def _imported_budgets(state):
 
 def legacy_budgets(state):
     result = _imported_budgets(state)
+    for day, components in state.get('retired', {}).items():
+        for kind in ('searches', 'posts'):
+            if components.get('personal', {}).get(kind):
+                counts = result.setdefault(day, {'searches': 0, 'posts': 0})
+                counts[kind] += components['personal'][kind]
     for item in state['receipts'].values():
         if item['component'] == 'personal' and item['kind'] in ('searches', 'posts'):
             counts = result.setdefault(item['date'], {'searches': 0, 'posts': 0})
@@ -521,6 +542,9 @@ def usage_counts(state, run_id, now, component='schedule', *, catch_up=False):
     run = {name: _zero() for name in COMPONENTS}
     daily = {name: _zero() for name in COMPONENTS}
     daily['personal'].update(_imported_budgets(state).get(day, {}))
+    for component, counts in state.get('retired', {}).get(day, {}).items():
+        for kind, count in counts.items():
+            daily[component][kind] += count
     historical = sum(item['images'] for item in state['baseline']['historicalImages']
                      if item['date'] == day)
     for item in state['receipts'].values():

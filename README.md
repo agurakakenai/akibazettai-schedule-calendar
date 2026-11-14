@@ -1427,6 +1427,17 @@ Azureが4xxを返した場合は、応答JSONの`error.code`（なければ`erro
 
 半月の画像付き候補（画像の読取りが未完了のreading）がpendingなのに、画像を入力したscheduleのAI読取り（`imageInput=true`の成功receipt）が**24時間無い**場合は、半月runのjob summary「Half-month image reading」とwarningに出し、Issueの半月（schedule）項目を`image_reading_stalled`で開きます（10/25以降の画像読取り0件が`partial`のまま気付かれなかったため）。この項目は、その後の半月runで**画像の読取りが実際に成功したとき**だけ閉じます。画像を読まなかった半月runの成功や、公式・本人runでは閉じません。
 
+#### collector-stateの保持期間（16 MiB上限の手前で止まらないため）
+
+`collector-state`の各JSONは16 MiB（`MAX_JSON_BYTES`）を超えると読めず、全runが止まります（2026-11-15時点で本人5.3MB・AI台帳4.6MB・通信台帳4.6MB・半月3.3MBが毎日増えていました）。保存commitの直前に`tools/state-retention.py`で、課金・二重発行防止・公開に要らなくなった記録だけを畳みます。失敗したら畳む前の検証済みbytesに戻して保存します。
+
+- **AI台帳**: JSTで締まった月（UTC月境界日より前）の精算済みreceiptだけを`retired[月]`（件数・精算額・構成要素別件数・receipt IDの先頭16桁）へ移します。畳んだIDは`reserve`で引き続き拒否するので、同じrequest hashを二度発行しません。未精算・`usage_missing`・予約中・中断のreceipt、月初の開始残高の根拠、半月・本人の確認記録が参照するreceiptは残します。当月とUTC境界日は全件残すため、月額上限の計算は変わりません。
+- **通信台帳**: 14日より前の完了receiptを日別・構成要素別・種類別の件数へ移します。403/429/401/3xxの停止根拠と、半月の画像再取得の照合に使うreceiptは残します。
+- **本人**: 14日より前の投稿のAI解析cacheを消します（pending・保存本文待ち・履歴・確認記録・保存取込の投稿は残します）。7日の回収窓を過ぎたpendingは二度と再試行しないので、日別・理由別の件数`expiredPending`へ移します。job summaryの`expired`はそのrunで期限切れになった件数だけになり、本人の状態は古いpendingだけで`partial`になり続けません。
+- **半月**: 検索がもう受け付けない日付よりさらに半月前の投稿の`candidateHistory`・`sources`と、その期間の`coverage`を消します（revision・reading・pending・公開中の予定が参照するものは残します）。
+
+job summaryの「Collector state size」に各ファイルのbytesと上限比を出し、60%を超えたファイルがあるとwarningとIssueの`state`項目（`state_file_large`）を開きます。60%未満に戻った公開成功runで閉じます。
+
 #### 承認済み保存根拠の適用
 
 `personalLinkReviews`（最大1件）は出典を人が確認した明示訂正です。既存の誤リンク撤回に加え、`operation="confirm-work-link"`では、本人・投稿日・本文hash・既存no_eventと計上済みreceipt・対象日の予定・subject CASを照合して昼または夜のリンクだけを追加できます。入力は`id/expectedSubjectHash/bodyHash/sourceHash/source/scope/reviewedAt`で、`source`は本人metadataと`fetchedAt`だけです。元のno_event、cache、費用は書き換えず、私的resolvedの`linkReview`へ別の確認記録を残します。店舗・時刻・勤務予定を作らず、Luna抽出成功とも扱いません。通常収集から自動で呼ぶ操作ではなく、全文やモデル応答は保存適用入力へ含めません。
