@@ -4870,10 +4870,13 @@ class RosterReportTests(unittest.TestCase):
             path.write_text(json.dumps({**report, 'activityUnreadable': ['personal']}, ensure_ascii=False),
                             encoding='utf-8')
             self.assertEqual(cloud.validate_roster_report(path, 0, roster)['activityUnreadable'], ['personal'])
+            path.write_text(json.dumps({**report, 'deferred': 2}, ensure_ascii=False), encoding='utf-8')
+            self.assertEqual(cloud.validate_roster_report(path, 0, roster)['deferred'], 2)
             # The roster child reads collector-state with the same bound the state branch is checked against.
             self.assertEqual(roster.STATE_MAX_BYTES, cloud.MAX_JSON_BYTES)
             for change in ({'status': 'unavailable'}, {'staff': {**report['staff'], 'status': 'broken'}},
                            {'activityUnreadable': ['C:\\private']}, {'activityUnreadable': 'personal'},
+                           {'deferred': -1}, {'deferred': '1'},
                            {'changes': [{**addition, 'evidenceUrl': 'https://example.com/x/'}]},
                            {'changes': [{**departure, 'effectiveFrom': '2026-08-30'}]},
                            {'missing': [{**missing[0], 'status': 'gone'}]},

@@ -63,7 +63,9 @@ HIATUS_RECHECK_DAYS = 30
 HIATUS_LOOKBACK_DAYS = 60
 OFFICIAL_AUTHOR_ID = '822429861218131969'
 CONTRACT = 'roster-graduation-v1'
-MAX_SEARCHES, MAX_POSTS, MAX_ANALYSIS = 6, 3, 2
+# 12 searches a run (one run a JST day) re-searches all ~36 members every 3 days; graduation
+# announcements usually come two to four weeks ahead, so each one is seen several times.
+MAX_SEARCHES, MAX_POSTS, MAX_ANALYSIS = 12, 3, 2
 RUNS_PER_DAY = 3
 RUNTIME_SECONDS = 420
 LOOKBACK_DAYS = 120
@@ -96,8 +98,11 @@ kind:
   hypothetical or past reference.
 - unrelated: anything else.
 lastServiceDate: the month and day of her final working day ONLY when that date is written
-in the post (for example 10月27日, 10/27, or 16日（金） for her final shift). Return null when no
-date is written, when only relative words such as 明日 or 本日 are used, or when unsure.
+in the post (for example 10月27日, 10/27, or 16日（金） for her final shift). In her own shift
+schedule post, a line that puts 卒業 (or 最終日 next to 卒業) on a dated shift, such as
+"16日(月) おーらす 卒業", gives that day; the month comes from the schedule heading
+(for example 11月後半) or the posting date. Return null when no date is written, when only
+relative words such as 明日, 本日 or 卒業の日 are used, or when unsure.
 Never guess a date. evidenceLineIds: the line ids that state the graduation and the date.
 """
 SCHEMA = {
@@ -649,10 +654,17 @@ def candidate_entries(document, handle, binding, now):
         if not now - dt.timedelta(days=LOOKBACK_DAYS) <= created <= now:
             continue
         text = hint_text(entry)
-        if KEYWORD not in text or not explicit_dates(text, created):
+        dates = explicit_dates(text, created)
+        if KEYWORD not in text or not dates:
             continue
-        result.append({'id': tid, 'userId': uid, 'createdAt': created})
+        result.append({'id': tid, 'userId': uid, 'createdAt': created, 'hintDates': sorted(dates)})
     return sorted(result, key=lambda row: row['createdAt'], reverse=True)
+
+
+def candidate_priority(entry, today):
+    """Announcements naming a day still ahead (a last day to act on) first, then newest."""
+    upcoming = any(day >= today for day in entry['hintDates'])
+    return (not upcoming, -entry['createdAt'].timestamp())
 
 
 def verified_text(payload, candidate, handle):
@@ -709,73 +721,95 @@ def scan_targets(registry, state, now):
 
 
 def collect_graduations(state, base, bindings, client, analyzer, *, now, run_id, clock, deadline):
-    """Search a few members a day; record self-announced last service days."""
+    """Search members in rotation; record self-announced last service days.
+
+    A member counts as searched only once every candidate found for her has been checked:
+    candidates left over when the run's post/AI allowance runs out keep her first in line
+    for the next run (2026-11: あらた's dated announcement was found but dropped this way,
+    and she was not searched again for a whole rotation).
+    """
     registry, _, _ = effective_registry(base, state)
-    changes, counts = [], {'scanned': 0, 'candidates': 0}
-    queue = []
-    for member in scan_targets(registry, state, now):
-        if client.requests['searches'] >= MAX_SEARCHES or clock() >= deadline:
-            break
-        handle = members.profile_handle(member['xProfileUrl'])
-        binding = bindings.get(member['canonicalName'])
-        document = client.get('searches', search_url(handle), MAX_SEARCHES)
-        state['scan'][member['memberId']] = {'searchedAt': stamp(clock())}
-        counts['scanned'] += 1
-        try:
-            entries = candidate_entries(document.decode('utf-8', 'strict'), handle, binding, now)
-        except (UnicodeError, ValueError):
-            raise Stop('invalid_search_response')
-        for entry in entries:
-            if entry['id'] in state['posts'] or members.rejected_graduation(
-                    registry, member['memberId'], entry['id']):
+    changes, counts = [], {'scanned': 0, 'candidates': 0, 'deferred': 0}
+    queue, previous = [], {}
+    today = now.astimezone(JST).date()
+    try:
+        for member in scan_targets(registry, state, now):
+            if client.requests['searches'] >= MAX_SEARCHES or clock() >= deadline:
+                break
+            handle = members.profile_handle(member['xProfileUrl'])
+            binding = bindings.get(member['canonicalName'])
+            document = client.get('searches', search_url(handle), MAX_SEARCHES)
+            previous[member['memberId']] = state['scan'].get(member['memberId'])
+            state['scan'][member['memberId']] = {'searchedAt': stamp(clock())}
+            counts['scanned'] += 1
+            try:
+                entries = candidate_entries(document.decode('utf-8', 'strict'), handle, binding, now)
+            except (UnicodeError, ValueError):
+                raise Stop('invalid_search_response')
+            for entry in entries:
+                if entry['id'] in state['posts'] or members.rejected_graduation(
+                        registry, member['memberId'], entry['id']):
+                    continue
+                queue.append((member, handle, entry))
+        queue.sort(key=lambda item: candidate_priority(item[2], today))
+        counts['candidates'] = len(queue)
+        for member, handle, entry in queue:
+            if any(row['memberId'] == member['memberId'] for row in state['graduations']):
+                continue  # her graduation was adopted from another post in this run
+            if client.requests['posts'] >= MAX_POSTS or clock() >= deadline:
+                break
+            if analyzer is None:
+                raise Stop('ai_unavailable')
+            if analyzer.requests >= MAX_ANALYSIS:
+                break
+            analyzer.check_or_stop()
+            body = client.get('posts', post_url(entry['id']), MAX_POSTS)
+            try:
+                payload = json.loads(body.decode('utf-8', 'strict'))
+            except (UnicodeError, ValueError, RecursionError):
+                remember_post(state, entry['id'], member['memberId'], 'invalid_post_json', clock())
                 continue
-            queue.append((member, handle, entry))
-    counts['candidates'] = len(queue)
-    for member, handle, entry in queue:
-        if client.requests['posts'] >= MAX_POSTS or clock() >= deadline:
-            break
-        if analyzer is None:
-            raise Stop('ai_unavailable')
-        if analyzer.requests >= MAX_ANALYSIS:
-            break
-        analyzer.check_or_stop()
-        body = client.get('posts', post_url(entry['id']), MAX_POSTS)
-        try:
-            payload = json.loads(body.decode('utf-8', 'strict'))
-        except (UnicodeError, ValueError, RecursionError):
-            remember_post(state, entry['id'], member['memberId'], 'invalid_post_json', clock())
-            continue
-        text, reason = verified_text(payload, entry, handle)
-        if text is None:
-            remember_post(state, entry['id'], member['memberId'], reason, clock())
-            continue
-        body_hash = digest(text)
-        if not explicit_dates(text, entry['createdAt']):
-            remember_post(state, entry['id'], member['memberId'], 'no_explicit_date', clock(), body_hash)
-            continue
-        reason, parsed = analyzer.assess(name=member['canonicalName'], text=text, created=entry['createdAt'],
-                                         post_id=entry['id'], author_id=entry['userId'])
-        if reason != 'analyzed':
+            text, reason = verified_text(payload, entry, handle)
+            if text is None:
+                remember_post(state, entry['id'], member['memberId'], reason, clock())
+                continue
+            body_hash = digest(text)
+            if not explicit_dates(text, entry['createdAt']):
+                remember_post(state, entry['id'], member['memberId'], 'no_explicit_date', clock(), body_hash)
+                continue
+            reason, parsed = analyzer.assess(name=member['canonicalName'], text=text, created=entry['createdAt'],
+                                             post_id=entry['id'], author_id=entry['userId'])
+            if reason != 'analyzed':
+                remember_post(state, entry['id'], member['memberId'], reason, clock(), body_hash)
+                continue
+            last, reason = adopt(parsed, text, entry['createdAt'])
             remember_post(state, entry['id'], member['memberId'], reason, clock(), body_hash)
-            continue
-        last, reason = adopt(parsed, text, entry['createdAt'])
-        remember_post(state, entry['id'], member['memberId'], reason, clock(), body_hash)
-        if last is None or any(row['memberId'] == member['memberId'] for row in state['graduations']):
-            continue
-        detected = clock()
-        url = status_url(handle, entry['id'])
-        state['graduations'].append({
-            'memberId': member['memberId'], 'name': member['canonicalName'],
-            'lastServiceDate': last.isoformat(), 'evidenceUrl': url, 'postId': entry['id'],
-            'authorId': entry['userId'], 'bodySha256': body_hash, 'postCreatedAt': stamp(entry['createdAt']),
-            'detectedAt': stamp(detected), 'runId': run_id})
-        change = {'at': stamp(detected), 'runId': run_id, 'kind': 'graduation', 'memberId': member['memberId'],
-                  'name': member['canonicalName'], 'lastServiceDate': last.isoformat(),
-                  'effectiveFrom': (last + dt.timedelta(days=1)).isoformat(), 'evidenceUrl': url,
-                  'postId': entry['id']}
-        state['changes'].append(change)
-        del state['changes'][:-HISTORY_LIMIT]
-        changes.append(change)
+            if last is None or any(row['memberId'] == member['memberId'] for row in state['graduations']):
+                continue
+            detected = clock()
+            url = status_url(handle, entry['id'])
+            state['graduations'].append({
+                'memberId': member['memberId'], 'name': member['canonicalName'],
+                'lastServiceDate': last.isoformat(), 'evidenceUrl': url, 'postId': entry['id'],
+                'authorId': entry['userId'], 'bodySha256': body_hash, 'postCreatedAt': stamp(entry['createdAt']),
+                'detectedAt': stamp(detected), 'runId': run_id})
+            change = {'at': stamp(detected), 'runId': run_id, 'kind': 'graduation', 'memberId': member['memberId'],
+                      'name': member['canonicalName'], 'lastServiceDate': last.isoformat(),
+                      'effectiveFrom': (last + dt.timedelta(days=1)).isoformat(), 'evidenceUrl': url,
+                      'postId': entry['id']}
+            state['changes'].append(change)
+            del state['changes'][:-HISTORY_LIMIT]
+            changes.append(change)
+    finally:
+        waiting = {member['memberId'] for member, _, entry in queue
+                   if entry['id'] not in state['posts']
+                   and not any(row['memberId'] == member['memberId'] for row in state['graduations'])}
+        for member_id in waiting:
+            if previous.get(member_id) is None:
+                state['scan'].pop(member_id, None)
+            else:
+                state['scan'][member_id] = previous[member_id]
+        counts['deferred'] = len(waiting)
     return changes, counts
 
 
@@ -1198,6 +1232,9 @@ def run(args, *, clock=lambda: dt.datetime.now(UTC), sleep=time.sleep, environme
                                                       run_id=args.run_id, clock=clock, deadline=deadline)
                 report.update(changes=changes, **counts)
                 report['status'] = 'ok' if changes else 'no-new'
+                if counts['deferred']:
+                    # Candidates still waiting: a later slot the same JST day picks them up (due()).
+                    report.update(status='partial', reason='candidates_deferred')
             except Stop as stop:
                 report.update(status=stop.status, reason=stop.reason)
             finally:

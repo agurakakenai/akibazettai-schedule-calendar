@@ -628,6 +628,83 @@ class StaffTests(unittest.TestCase):
 
 
 MAHIRO_ID = 'm-' + 'e' * 32
+ARATA_SCHEDULE = '🌷 11月後半 お給仕よてい 🌷\n\n16日(月)おーらすにゃんこ❕卒業🌸'
+ARATA_NOTICE = '🌷 おしらせ 🌷\n\n2026年11月16日(月)卒業します🌸\n\n約7年、思い出いっぱいの領域がだいすきです🎀'
+
+
+class MissedAnnouncementTests(unittest.TestCase):
+    """2026-11: あらた announced 11/16 (11/02 notice, 11/13 schedule) and was never recorded."""
+
+    def setUp(self):
+        self.run_case = RunTests('test_self_announced_dated_graduation_is_recorded_once_with_evidence')
+        self.run_case.setUp()
+        self.addCleanup(self.run_case.doCleanups)
+        case = self.run_case
+        case.now = dt.datetime(2026, 11, 13, 1, 0, tzinfo=UTC)
+        self.schedule = entry(dt.datetime(2026, 11, 12, 15, 10, tzinfo=UTC), ARATA_SCHEDULE, handle='amu_test',
+                              uid=OTHER_UID, salt=1)
+        self.notice = entry(dt.datetime(2026, 11, 1, 15, 0, tzinfo=UTC), ARATA_NOTICE, handle='amu_test',
+                            uid=OTHER_UID, salt=2)
+        undated = [entry(dt.datetime(2026, 11, 7, 7, 17, tzinfo=UTC), '今から卒業の日めっちゃ楽しみです❕', handle='amu_test',
+                         uid=OTHER_UID, salt=3),
+                   entry(dt.datetime(2026, 11, 11, 23, 30, tzinfo=UTC), '本日卒業前の夜にゃんこおーらすにゃんこ最終日です',
+                         handle='amu_test', uid=OTHER_UID, salt=4)]
+        case.searches = {'amu_test': [self.schedule, self.notice, *undated], 'yume_test': []}
+        case.posts = {item['id']: payload(item) for item in (self.schedule, self.notice, *undated)}
+
+    def test_schedule_line_with_graduation_is_adopted_and_undated_posts_cost_nothing(self):
+        case = self.run_case
+        self.assertEqual(sorted(roster.explicit_dates(ARATA_SCHEDULE, dt.datetime(2026, 11, 12, 15, 10, tzinfo=UTC))),
+                         [dt.date(2026, 11, 16)])
+        case.ai.open.return_value = ai_reply(date=(11, 16), lines=(1, 2))
+        report = case.run_once()
+        state = roster.load_state(case.state_path)[0]
+        self.assertEqual([(row['name'], row['lastServiceDate'], row['postId']) for row in state['graduations']],
+                         [('あむ', '2026-11-16', self.schedule['id'])])
+        self.assertEqual(report['changes'][0]['effectiveFrom'], '2026-11-17')
+        # The 11/02 notice of the same graduation is not analysed again; undated posts never were.
+        self.assertEqual(report['requests'], {'searches': 2, 'posts': 1, 'analysis': 1})
+        effective, _, _ = roster.effective_registry(members.load_registry(case.members), state)
+        self.assertIn('あむ', members.display_projection(effective, '2026-11-16')['roster'])
+        self.assertNotIn('あむ', members.display_projection(effective, '2026-11-17')['roster'])
+
+    def test_candidates_left_by_the_run_allowance_keep_her_first_for_the_next_run(self):
+        case = self.run_case
+        yume = entry(dt.datetime(2026, 11, 12, 20, 0, tzinfo=UTC), '12/20で卒業するゆめちゃんへ', salt=5)
+        case.searches['yume_test'] = [yume]
+        case.posts[yume['id']] = payload(yume)
+        case.ai.open.side_effect = [ai_reply('other_graduation', (12, 20))]
+        with mock.patch.object(roster, 'MAX_ANALYSIS', 1):
+            report = case.run_once()
+        state = roster.load_state(case.state_path)[0]
+        # Only one analysis fits: the newest upcoming candidate (ゆめ's) goes first and あむ waits.
+        self.assertEqual(list(state['posts']), [yume['id']])
+        self.assertEqual((report['deferred'], state['graduations']), (1, []))
+        self.assertEqual((report['status'], report['reason'], report['exitCode']), ('partial', 'candidates_deferred', 2))
+        self.assertTrue(roster.due(state, case.now + dt.timedelta(hours=6)))
+        self.assertNotIn(AMU_ID, state['scan'])
+        self.assertIn(YUME_ID, state['scan'])
+        case.now += dt.timedelta(days=1)
+        case.ai.open.side_effect = [ai_reply(date=(11, 16), lines=(1, 2))]
+        with mock.patch.object(roster, 'MAX_ANALYSIS', 1):
+            report = case.run_once('roster-2-1')
+        state = roster.load_state(case.state_path)[0]
+        self.assertEqual([row['lastServiceDate'] for row in state['graduations']], ['2026-11-16'])
+        self.assertEqual(report['deferred'], 0)
+        self.assertEqual(report['status'], 'ok')
+        self.assertIn(AMU_ID, state['scan'])
+        self.assertEqual(len(case.receipts()), 2)
+
+    def test_upcoming_dates_are_checked_before_newer_past_ones(self):
+        today = dt.date(2026, 11, 13)
+        past = {'hintDates': [dt.date(2026, 10, 16)], 'createdAt': dt.datetime(2026, 11, 12, tzinfo=UTC)}
+        upcoming = {'hintDates': [dt.date(2026, 11, 16)], 'createdAt': dt.datetime(2026, 11, 1, tzinfo=UTC)}
+        self.assertEqual(sorted([past, upcoming], key=lambda row: roster.candidate_priority(row, today)),
+                         [upcoming, past])
+
+    def test_every_member_is_searched_again_within_a_few_days(self):
+        self.assertGreaterEqual(roster.MAX_SEARCHES, 12)
+        self.assertLessEqual(-(-36 // roster.MAX_SEARCHES), 3)
 
 
 def grown_state(path, size, **fields):
