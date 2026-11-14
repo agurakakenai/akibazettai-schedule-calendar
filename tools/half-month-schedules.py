@@ -212,6 +212,42 @@ def searched_in_period(row, period):
     return searched is not None and timestamp(searched).astimezone(JST).date() >= publication_start(period)
 
 
+# Grouped half-month search (finite cycles). One Yahoo realtime query covers up to GROUP_SIZE
+# accounts: `(id:a OR id:b ...) <M>月前半|後半`. Yahoo returns at most 40 posts, newest first; with
+# 12 accounts that window spans several days of their posts (checked 2026-11-15), while checks
+# below are hours apart. An account without a usable candidate for GROUP_FALLBACK_DAYS after the
+# publication start is also searched alone (`id:<handle>`, every ACCOUNT_SEARCH_INTERVAL) for
+# image-only posts and spellings the grouped query does not match.
+GROUP_SIZE = 12
+GROUP_PAGE = 40
+GROUP_FALLBACK_DAYS = 2
+ACCOUNT_SEARCH_INTERVAL = dt.timedelta(hours=24)
+# Of the 33 confirmed tables up to 2026-11-15, 19 were posted on the publication start day or the
+# day after, and 17 in the JST 0 o'clock hour. Search often then, rarely otherwise.
+HOT_START_INTERVAL = dt.timedelta(hours=2)
+HOT_MIDNIGHT_INTERVAL = dt.timedelta(hours=1)
+COLD_INTERVAL = dt.timedelta(hours=6)
+MIDNIGHT_CHECK = dt.time(0, 40)
+
+
+def group_term(period):
+    start = day(period[0])
+    return f"{start.month}月{'前半' if start.day == 1 else '後半'}"
+
+
+def next_group_check(searched, period):
+    """When a grouped search for `period` is next due after a search at `searched`."""
+    local = timestamp(searched).astimezone(JST) if isinstance(searched, str) else searched.astimezone(JST)
+    opened = publication_start(period)
+    if opened <= local.date() <= opened + dt.timedelta(days=1):
+        return (local + HOT_START_INTERVAL).astimezone(UTC)
+    if local.hour < 2:
+        return (local + HOT_MIDNIGHT_INTERVAL).astimezone(UTC)
+    # Never skip the post-midnight posts: the next check is at the latest 00:40 JST.
+    midnight = dt.datetime.combine(local.date() + dt.timedelta(days=1), MIDNIGHT_CHECK, JST)
+    return min(local + COLD_INTERVAL, midnight).astimezone(UTC)
+
+
 def validate_period(value):
     require_keys(value, ('from', 'to', 'printedYear', 'yearBasis'))
     start, end = day(value['from']), day(value['to'])
@@ -1041,15 +1077,17 @@ def validate_state(value, private=True):
             raise ValueError('invalid_schedule_coverage')
         for name, row in people.items():
             require_keys(row, ('name', 'handle', 'to', 'lastSearchedAt', 'nextCheckAt',
-                               'candidateIds', 'confirmedIds', 'reason'))
+                               'candidateIds', 'confirmedIds', 'reason',
+                               *(('accountSearchedAt',) if isinstance(row, dict) and 'accountSearchedAt' in row
+                                 else ())))
             if row['name'] != name or not NAME.fullmatch(name) or row['reason'] not in REASONS:
                 raise ValueError('invalid_schedule_coverage')
             if row['handle'] is not None:
                 identity(name, row['handle'])
             if half_period(day(start))[1] != row['to']:
                 raise ValueError('invalid_schedule_coverage')
-            for field in ('lastSearchedAt', 'nextCheckAt'):
-                if row[field] is not None:
+            for field in ('lastSearchedAt', 'nextCheckAt', 'accountSearchedAt'):
+                if row.get(field) is not None:
                     timestamp(row[field])
             for field in ('candidateIds', 'confirmedIds'):
                 if not isinstance(row[field], list) or len(row[field]) > PENDING_PER_NAME:

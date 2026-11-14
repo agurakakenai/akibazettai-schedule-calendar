@@ -1800,6 +1800,32 @@ def half_month_wait_due(state, usage, source, now, collector):
         kind = 'posts' if row is None else 'images' if row['stage'] == 'fetch' else None
         if kind is None or source_module.paused_for(source, kind, now) is None:
             return True
+    return half_month_search_due(state, source, now, collector, checked=checked)
+
+
+def half_month_search_due(state, source, now, collector, *, checked=None):
+    """Whether a grouped search set by a previous run (its time band) is due for an open half."""
+    progress = (state or {}).get('collection')
+    if not progress or load_source_state().paused_for(source, 'searches', now) is not None:
+        return False
+    facts = load_half_month_state()
+    today = now.astimezone(JST).date()
+    readings = {row['sourceId']: row for row in state.get('readings', {}).values()}
+    for start, end in progress['periods']:
+        if facts.day(end) < today - dt.timedelta(days=1):
+            continue
+        opened = facts.publication_start((start, end))
+        for name in progress['names']:
+            row = state['coverage'].get(start, {}).get(name)
+            if (row is None or row.get('handle') is None or row.get('confirmedIds') or not row.get('nextCheckAt')
+                    or collector.timestamp(row['nextCheckAt']) > now
+                    or checked is not None and checked >= collector.timestamp(row['nextCheckAt'])):
+                continue
+            if any(item['name'] == name and collector.timestamp(item['searchCreatedAt']).astimezone(JST).date()
+                   >= opened and (readings.get(item['id']) or {}).get('stage') not in ('done', 'held')
+                   for item in state['pending']):
+                continue
+            return True
     return False
 
 
@@ -1858,7 +1884,9 @@ def half_month_due(*, root=ROOT, environment=None, collector=None):
         progress = half_state.get('collection') or {}
         result['nextAt'] = progress.get('nextAt')
         if half_month_wait_due(half_state, usage, source, now, collector):
-            result.update(halfMonthDue='true', reason='wait_expired')
+            checked = collector.timestamp(half_state['checkedAt']) if half_state.get('checkedAt') else None
+            search = half_month_search_due(half_state, source, now, collector, checked=checked)
+            result.update(halfMonthDue='true', reason='search_due' if search else 'wait_expired')
         elif restored_half_month_continuation(half_state, usage, source, now, collector):
             # A time_limit checkpoint whose dispatch was suppressed by a queued run.
             result.update(halfMonthDue='true', reason='time_limit')
@@ -2510,6 +2538,11 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                     'readings': len(half_month_state.get('readings', {})),
                     'retiredReadings': report.get('retiredReadings', 0),
                     'scopeRetired': report.get('scopeRetired', 0)}
+                kinds = report.get('searchKinds', {'group': 0, 'account': 0})
+                keys(kinds, ('group', 'account'), ('group', 'account'))
+                for kind in ('group', 'account'):
+                    integer(kinds[kind])
+                result['halfMonthSearches'] = {kind: kinds[kind] for kind in ('group', 'account')}
                 result['halfMonthMembers'] = half_month_member_status(
                     half_month_state, sorted(active_names), period, collector.utc_now(), collector)
                 capacity = report.get('capacity', {})
@@ -2798,6 +2831,10 @@ def emit(result, environment):
             if half.get('scopeRetired'):
                 lines.append(f"\nRetired without HTTP or AI (published before every open half, or of a member "
                              f"off the roster): {half['scopeRetired']} candidates.\n")
+            searches = result.get('halfMonthSearches')
+            if searches:
+                lines.append(f"\nHalf-month searches this run: grouped (up to 12 accounts, period word)="
+                             f"{searches['group']}; per account (id:<handle>)={searches['account']}.\n")
             members = result.get('halfMonthMembers')
             if members:
                 states, kinds = members['states'], members['candidates']
