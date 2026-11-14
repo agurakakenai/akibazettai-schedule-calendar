@@ -1033,7 +1033,9 @@ def search_page(document):
 # A reply addressed only to other accounts whose search text has no work/absence word is not
 # fetched or analysed (2026-11-15 sample: about 40% of search results; every analysed one was
 # no_event). Self-replies, replies without mention data and any reply with such a word still are.
-REPLY_NOTICE_WORDS = re.compile(r'休|欠勤|遅|復帰|出勤|お給仕|号店|店|昼|夜|シフト|体調|延長|早上|退勤|変更|代わ|予定|今日|本日|明日')
+REPLY_NOTICE_WORDS = re.compile(
+    r'休|やすみ|欠|遅|おくれ|ちこく|復帰|出勤|出られ|出れな|いない|いけな|行けな|中止|キャンセル|なくなっ'
+    r'|お給仕|店|昼|夜|シフト|体調|延長|早上|退勤|変更|代わ|予定|今日|本日|明日|あした|あす|きょう|ほんじつ')
 
 
 def reply_to_others(entry, handle):

@@ -1333,6 +1333,10 @@ class StateTests(Offline):
         self.assertTrue(personal.reply_to_others(chatter, 'amu_zettai'))
         self.assertEqual([personal.reply_to_others(row, 'amu_zettai') for row in (notice, thread, top)],
                          [False, False, False])
+        for text in ('ごめんね、明後日出られなくなっちゃった', 'やすみになっちゃった', 'いけなくなった', '行けない',
+                     '欠席します', '中止になりました', 'キャンセルです', 'ちょっとおくれる', 'ちこくしそう',
+                     'あしたはいないよ', 'きょうは出れないの', 'ほんじつは無理'):
+            self.assertFalse(personal.reply_to_others(entry(TID, text, '1', ['fan_account']), 'amu_zettai'), text)
 
     def test_selection_requires_current_roster_verified_account_and_exact_insights(self):
         targets = personal.select_targets(self.schedule, self.insights, self.accounts, DATE, self.state)
