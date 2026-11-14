@@ -1280,6 +1280,60 @@ class StateTests(Offline):
         self.assertEqual(report['acquisition']['expired'], 0)
         self.assertEqual(self.state['expiredPending'], {old['date']: {'azure_ungrounded': 1}})
 
+    def grouped_run(self, extent, people=14):
+        targets = {f'人{i}': {'name': f'人{i}', 'handle': f'person{i}', 'shifts': ['昼']} for i in range(people)}
+        durable = personal.DurableHttp(self.state, self.snapshot, self.http, DATE, targets, 14, 0,
+                                       clock=lambda: NOW, sleep=self.sleeps.append)
+        durable.catch_up = True
+        durable.progress = {'searches': [{'date': DATE.isoformat(), 'name': name, 'handle': target['handle']}
+                                         for name, target in targets.items()],
+                            'postIds': [], 'targets': {}}
+        durable.preflight()
+        urls = []
+
+        class Client:
+            def search(self, url, targets, date, now, bindings):
+                durable.reserve(personal.SEARCH_HOST, 'searches')
+                urls.append(url)
+                return []
+
+            def search_group(self, url, targets, date, now, bindings):
+                return self.search(url, targets, date, now, bindings), extent
+
+        personal.collect(self.state, durable, Client(), targets, DATE, 14, 0, clock=lambda: NOW)
+        return urls, durable
+
+    def test_grouped_same_day_search_replaces_per_account_searches_only_when_the_day_is_covered(self):
+        start = dt.datetime.combine(DATE, dt.time(), personal.JST)
+        urls, durable = self.grouped_run({'entries': 40, 'oldest': start - dt.timedelta(minutes=1)})
+        self.assertEqual([personal.group_handles(url) for url in urls],
+                         [[f'person{i}' for i in range(8)], [f'person{i}' for i in range(8, 14)]])
+        self.assertTrue(all(personal.valid_search_url(url) for url in urls))
+        self.assertEqual(durable.progress['searches'], [])
+        self.assertEqual(len(self.state['searchHistory'][DATE.isoformat()]), 14)
+
+    def test_grouped_page_that_does_not_reach_the_day_start_falls_back_to_each_account(self):
+        start = dt.datetime.combine(DATE, dt.time(), personal.JST)
+        urls, _ = self.grouped_run({'entries': 40, 'oldest': start + dt.timedelta(minutes=1)})
+        self.assertEqual(len(urls), 14)
+        self.assertEqual(len([url for url in urls if personal.group_handles(url)]), 2)
+        self.assertEqual(urls[2:], [personal.account_search_url(f'person{i}') for i in range(12)])
+
+    def test_replies_to_other_accounts_without_work_words_are_not_candidates(self):
+        def entry(tid, text, reply=None, mentions=None):
+            row = {'id': tid, 'userId': UID, 'screenName': 'amu_zettai', 'createdAt': '1788670802',
+                   'url': f'https://x.com/amu_zettai/status/{tid}', 'displayTextBody': text}
+            if reply:
+                row.update(inReplyTo=reply, replyMentions=mentions)
+            return row
+        chatter = entry(TID, 'ありがとう〜！また来てね', '1', ['fan_account'])
+        notice = entry(str(int(TID) + 1), 'ごめんね今日お休みです', '1', ['fan_account'])
+        thread = entry(str(int(TID) + 2), 'ありがとう', '1', ['amu_zettai'])
+        top = entry(str(int(TID) + 3), 'ありがとう')
+        self.assertTrue(personal.reply_to_others(chatter, 'amu_zettai'))
+        self.assertEqual([personal.reply_to_others(row, 'amu_zettai') for row in (notice, thread, top)],
+                         [False, False, False])
+
     def test_selection_requires_current_roster_verified_account_and_exact_insights(self):
         targets = personal.select_targets(self.schedule, self.insights, self.accounts, DATE, self.state)
         self.assertEqual(set(targets), {'あむ', 'ららこ'})
