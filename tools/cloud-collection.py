@@ -1186,7 +1186,8 @@ def invoke_roster_automation(root, state, base_members, report, environment):
 def validate_roster_report(path, code, roster):
     report, _ = read_json(path)
     fields = ('component', 'status', 'reason', 'changes', 'requests', 'scanned', 'candidates', 'exitCode')
-    keys(report, (*fields, 'staff', 'missing', 'notes', 'activityUnreadable'), fields)
+    keys(report, (*fields, 'staff', 'missing', 'notes', 'activityUnreadable', 'deferred'), fields)
+    integer(report.get('deferred', 0), 0, 1000)
     unreadable = report.get('activityUnreadable', [])
     require(isinstance(unreadable, list) and set(unreadable) <= ROSTER_ACTIVITY_SOURCES
             and len(set(unreadable)) == len(unreadable), 'roster_report_invalid')
@@ -1255,6 +1256,7 @@ def run_roster(root, collected, state_dir, work, base_members, environment, resu
                   rosterFailureReason=report['reason'] if report['status'] == 'unavailable' else '')
     result['rosterAutomation'] = {key: report[key] for key in (
         'status', 'reason', 'changes', 'requests', 'scanned', 'candidates')}
+    result['rosterAutomation']['deferred'] = report.get('deferred', 0)
     if 'staff' in report:
         result['rosterAutomation']['staff'] = report['staff']
     result['rosterAutomation']['missing'] = report.get('missing', [])
@@ -2842,6 +2844,7 @@ def emit(result, environment):
         if roster:
             lines.append(f"\nGraduation scan: status={roster['status']}; reason={roster['reason'] or 'none'}; "
                          f"members searched={roster['scanned']}; candidates={roster['candidates']}; "
+                         f"left for the next run={roster.get('deferred', 0)}; "
                          f"search/post/AI={roster['requests']['searches']}/{roster['requests']['posts']}/"
                          f"{roster['requests']['analysis']}; automatic updates applied={roster['applied']}.\n")
             staff = roster.get('staff')
