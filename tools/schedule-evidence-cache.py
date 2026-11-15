@@ -257,10 +257,23 @@ def _encode_blob(records, cipher):
     return nonce + cipher.encrypt(nonce, raw, AAD)
 
 
+def _image_bytes(record):
+    value = record['value']
+    return sum(len(item) if isinstance(item, str) else len(_json(item))
+               for item in (*value['images'], *value.get('variants', [])))
+
+
 class EvidenceCache:
+    """evictable, when set, returns record keys whose images may be dropped to make room, in order.
+
+    Only images and variant views are dropped; source, text, reading progress (including the issued
+    request hashes) and expiry stay, so recovery and duplicate-request refusal are unchanged.
+    """
+
     def __init__(self, path, key, *, clock):
         self.cipher, self.path, self.clock = _cipher(key), checked_path(path, output=True), clock
         _now(clock)
+        self.evictable, self.evicted = None, 0
         self.records = {}
         if self.path.exists():
             self.records = decode_blob(read_bounded(self.path, output=True), key, clock=clock)
@@ -308,7 +321,7 @@ class EvidenceCache:
             'expiresAt': old['expiresAt'] if old else (now + TTL).isoformat(),
             'value': {'source': source, 'text': text, 'images': encoded, 'reading': reading,
                       'variants': encoded_variants, 'seen': seen}}
-        self._save(candidate)
+        self._save(candidate, keep=key)
         self.records = copy.deepcopy(candidate)
 
     def recreate_unissued(self, key, source, text, *, reading, audit):
@@ -332,11 +345,32 @@ class EvidenceCache:
             'expiresAt': (now + TTL).isoformat(),
             'value': {'source': source, 'text': text, 'images': [],
                       'reading': value, 'variants': [], 'seen': []}}
-        self._save(candidate)
+        self._save(candidate, keep=key)
         self.records = copy.deepcopy(candidate)
 
-    def _save(self, records):
-        atomic_write(self.path, _encode_blob(records, self.cipher))
+    def _save(self, records, keep=None):
+        try:
+            blob = _encode_blob(records, self.cipher)
+        except ValueError as exc:
+            if str(exc) != 'evidence_cache_capacity' or self.evictable is None:
+                raise
+            excess = len(_json(records)) + 28 - MAX_BYTES
+            dropped = []
+            for key in self.evictable():
+                if excess <= 0:
+                    break
+                record = records.get(key)
+                if key == keep or record is None or not _image_bytes(record):
+                    continue
+                excess -= _image_bytes(record)
+                # Seen view ids must name a kept view, so they go with the images.
+                record['value'].update(images=[], variants=[], seen=[])
+                dropped.append(key)
+            if excess > 0:
+                raise
+            blob = _encode_blob(records, self.cipher)
+            self.evicted += len(dropped)
+        atomic_write(self.path, blob)
 
     def save(self):
         self._save(self.records)

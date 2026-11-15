@@ -265,9 +265,11 @@ SAFE_STAGE = re.compile(r'[a-z_]{1,32}\Z')
 COMPONENTS = ('official', 'personal', 'schedule')
 # Half-month queue bounds reached in a run: counter -> alert token. Housekeeping-only counters
 # (finishedCandidatesRetired) are summarized but never alert.
-HALF_MONTH_CAPACITY_TOKENS = {'readingCapacityWaits': 'reading_capacity', 'queueLimitDeferred': 'queue_limit',
+HALF_MONTH_CAPACITY_TOKENS = {'evidenceCacheFull': 'evidence_cache_capacity',
+                              'readingCapacityWaits': 'reading_capacity', 'queueLimitDeferred': 'queue_limit',
                               'queueLimitReplaced': 'queue_limit_replaced',
-                              'finishedCandidatesRetired': None}
+                              'finishedCandidatesRetired': None, 'evidenceImagesEvicted': None,
+                              'evidenceHeldReleased': None}
 
 
 def child_failure_facts(process, component):

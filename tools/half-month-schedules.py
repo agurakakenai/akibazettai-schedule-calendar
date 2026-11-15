@@ -48,7 +48,7 @@ REASONS = {
     'image_cache_unconfigured', 'image_cache_expired', 'reading_pending', 'reading_uncertain',
     'reading_partial', 'reading_outside_period', 'time_limit', 'image_fetch_failed',
     'source_not_found', 'identity_unknown',
-    'image_cache_invalid', 'candidate_unexpected_error', 'reading_capacity',
+    'image_cache_invalid', 'candidate_unexpected_error', 'reading_capacity', 'evidence_cache_capacity',
 }
 # Live reading progress. Terminal readings whose re-processing is already blocked by
 # sources/candidateHistory/the AI ledger are retired by the collector before this is reached.

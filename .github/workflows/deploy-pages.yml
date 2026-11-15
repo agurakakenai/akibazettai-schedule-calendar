@@ -380,7 +380,7 @@ jobs:
           done
           [[ "$COMPONENTS" =~ ^[a-z-]{1,64}$ ]] || COMPONENTS=none
           # A reached queue bound (e.g. queue_limit, reading_capacity) is surfaced, never silently absorbed.
-          [[ "$SCHEDULE_CAPACITY" =~ ^[a-z_]{1,64}(-[a-z_]{1,64}){0,3}$ ]] || SCHEDULE_CAPACITY=""
+          [[ "$SCHEDULE_CAPACITY" =~ ^[a-z_]{1,64}(-[a-z_]{1,64}){0,4}$ ]] || SCHEDULE_CAPACITY=""
           # Pending image-backed half-month readings with no image read for 24 hours (not a silent 'partial').
           [[ "$SCHEDULE_IMAGE_STALL" == true ]] || SCHEDULE_IMAGE_STALL=false
           [[ "$SCHEDULE_IMAGE_READ" == true ]] || SCHEDULE_IMAGE_READ=false
