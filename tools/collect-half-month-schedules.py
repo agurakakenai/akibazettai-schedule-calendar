@@ -657,6 +657,45 @@ def refresh_coverage(state, reasons, now, manual, *, registry=None, terminal_con
 
 
 TRANSIENT_REASONS = {'azure_timeout', 'azure_network_error', 'azure_interrupted', 'azure_rate_limited'}
+ENVIRONMENT_FAULTS = {'ImportError', 'ModuleNotFoundError'}
+
+
+def reading_ai_issued(state, record, cache=None):
+    """Whether any AI request may already belong to this reading."""
+    source = state['sources'].get(record['cacheKey']) or {}
+    if source.get('requestHash') or source.get('status') not in (None, 'pending'):
+        return True
+    cached = (cache.records.get(record['cacheKey']) or {}) if cache is not None else {}
+    return bool(((cached.get('value') or {}).get('reading') or {}).get('issued'))
+
+
+def evictable_evidence(state, cache, now):
+    """Cache records whose images may be dropped when the encrypted cache is full, in order:
+    expired records, readings already retired from state, finished readings, then other held ones.
+
+    Live readings (fetch/original/detail, whether or not an AI request was issued) and held readings
+    an environment fault may still release are never chosen.
+    """
+    readings, queued = state.get('readings', {}), {item['id'] for item in state['pending']}
+    groups = ([], [], [], [])
+    for key, record in cache.records.items():
+        source_id = record['value']['source'].get('id', '0')
+        reading = readings.get(key)
+        if dt.datetime.fromisoformat(record['expiresAt']) <= now:
+            group = 0
+        elif reading is None:
+            if source_id in queued:
+                continue
+            group = 1
+        elif reading['stage'] == 'done':
+            group = 2
+        elif (reading['stage'] == 'held'
+                and (reading.get('failure') or {}).get('exceptionClass') not in ENVIRONMENT_FAULTS):
+            group = 3
+        else:
+            continue
+        groups[group].append((int(source_id) if str(source_id).isdigit() else 0, key))
+    return [key for group in groups for _, key in sorted(group)]
 
 
 def retry_reason(record, analyzer):
@@ -1515,6 +1554,9 @@ def _cycle_failure(exc, now):
         retry = None
     if reason in ('time_limit', 'azure_deadline'):
         return 'time_limit', now + dt.timedelta(minutes=1), True
+    if reason == 'evidence_cache_capacity':
+        # Not a property of the source: wait (eviction runs on every save) instead of holding.
+        return 'evidence_cache_capacity', now + dt.timedelta(hours=1), False
     if reason == 'reading_capacity':
         # Nothing was fetched or issued for this candidate; retry once readings were retired.
         return 'reading_capacity', now + dt.timedelta(hours=6), False
@@ -1720,6 +1762,25 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
             for item in state['pending']:
                 if item['id'] == progress['sourceId']:
                     item['nextAttemptAt'] = None
+    # Before 2026-11-15 a full encrypted cache held readings for good (image_cache_invalid with
+    # detail evidence_cache_capacity). Release those no AI request belongs to; AI-issued ones stay
+    # held, so nothing is requested twice.
+    cache_released = 0
+    for progress in state['readings'].values():
+        failure = progress.get('failure') or {}
+        if (progress['stage'] == 'held' and progress['reason'] == 'image_cache_invalid'
+                and failure.get('detail') == 'evidence_cache_capacity'
+                and progress['sourceId'] in {item['id'] for item in state['pending']}
+                and not reading_ai_issued(state, progress, cache)):
+            progress['stage'] = failure['stage'] if failure.get('stage') in ('fetch', 'original', 'detail') else 'fetch'
+            progress.pop('failure')
+            progress.update(reason='reading_pending', nextAt=None)
+            for item in state['pending']:
+                if item['id'] == progress['sourceId']:
+                    item['nextAttemptAt'] = None
+            cache_released += 1
+    if cache is not None:
+        cache.evictable = lambda: evictable_evidence(state, cache, clock())
     def scope_since(name):
         """Earliest publication start (1st/13th rule) of an open period this person still serves."""
         return min((facts.publication_start(period) for period in open_periods
@@ -2226,6 +2287,8 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
                     elif reason == 'paused' and failure_host == PHOTO_HOST:
                         # Only the image host is stopped; searches and other posts are not paused.
                         reason = 'image_host_paused'
+                    if reason == 'evidence_cache_capacity':
+                        capacity['evidenceCacheFull'] = capacity.get('evidenceCacheFull', 0) + 1
                     errors.append(reason)
                     _set_reason(state, name, discovery, reason)
                     if selected is not None:
@@ -2310,6 +2373,9 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
         update_check_time(state, clock(), successful=changed)
     facts.validate_state(state)
     save()
+    if cache is not None:
+        capacity['evidenceImagesEvicted'] = cache.evicted
+        capacity['evidenceHeldReleased'] = cache_released
     report, code = completion_report(state, outcome, counts, clock(), registry=registry,
                                      existing_bindings=existing_bindings)
     report.update(continuation=copy.deepcopy(current),

@@ -288,6 +288,64 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(self.usage.calls, 1)
         self.assertEqual(len(self.state['schedules']), 1)
 
+    def test_full_cache_waits_instead_of_holding_and_old_capacity_holds_are_released(self):
+        self.payloads[base.post_id()] = base.payload(photos=2)
+        put = self.cache.put
+        def full(key, source, text, images, **kwargs):
+            if images:
+                raise ValueError('evidence_cache_capacity')
+            return put(key, source, text, images, **kwargs)
+        with mock.patch.object(self.cache, 'put', side_effect=full):
+            report, _ = self.run_cycle()
+        progress = next(iter(self.state['readings'].values()))
+        retry = facts.stamp(self.now + dt.timedelta(hours=1))
+        self.assertEqual((progress['stage'], progress['reason'], progress['nextAt']),
+                         ('fetch', 'evidence_cache_capacity', retry))
+        self.assertEqual(report['capacity']['evidenceCacheFull'], 1)
+        self.assertEqual(self.usage.calls, 0)
+        # A reading held for this by the old code (no AI issued) is released and read normally.
+        progress.update(stage='held', reason='image_cache_invalid', nextAt=None)
+        progress['failure'].update(reason='image_cache_invalid', detail='evidence_cache_capacity', nextStage='held')
+        self.state['pending'][0]['nextAttemptAt'] = None
+        self.now += dt.timedelta(minutes=5)
+        self.reopen()
+        self.model.structured.return_value = reading_fixture.result(indexes=(0, 1))
+        report, _ = self.run_cycle(resume=True)
+        self.assertEqual(report['capacity']['evidenceHeldReleased'], 1)
+        self.assertEqual((self.usage.calls, len(self.state['schedules'])), (1, 1))
+
+    def test_capacity_held_reading_with_an_issued_ai_request_stays_held(self):
+        self.model.structured.return_value = {'classification': 'uncertain', 'complete': False, 'periods': []}
+        self.run_cycle()
+        progress = next(iter(self.state['readings'].values()))
+        self.assertEqual(progress['stage'], 'held')
+        progress.update(reason='image_cache_invalid', failure={
+            'name': 'あむ', 'postId': base.post_id(), 'postUrl': facts.public_url('amu_zettai', base.post_id()),
+            'imageIndex': None, 'failedAt': facts.stamp(self.now), 'host': None, 'httpStatus': None,
+            'retryAt': None, 'stage': 'original', 'nextStage': 'held', 'reason': 'image_cache_invalid',
+            'detail': 'evidence_cache_capacity'})
+        calls, requests = self.usage.calls, list(self.usage.requests)
+        self.now += dt.timedelta(minutes=5)
+        self.reopen()
+        report, _ = self.run_cycle(resume=True)
+        self.assertNotIn('evidenceHeldReleased', report['capacity'])
+        self.assertEqual(next(iter(self.state['readings'].values()))['stage'], 'held')
+        self.assertEqual((self.usage.calls, self.usage.requests), (calls, requests))
+
+    def test_eviction_never_offers_live_or_environment_held_readings(self):
+        self.model.structured.return_value = {'classification': 'uncertain', 'complete': False, 'periods': []}
+        self.run_cycle()
+        key = next(iter(self.state['readings']))
+        evictable = lambda: collector.evictable_evidence(self.state, self.cache, self.now)
+        self.assertEqual(evictable(), [key])
+        for stage in ('fetch', 'original', 'detail'):
+            self.state['readings'][key]['stage'] = stage
+            self.assertEqual(evictable(), [], stage)
+        self.state['readings'][key].update(stage='held', failure={'exceptionClass': 'ModuleNotFoundError'})
+        self.assertEqual(evictable(), [])
+        self.now += dt.timedelta(days=8)
+        self.assertEqual(evictable(), [key], 'expired evidence cannot be read any more')
+
     def test_multi_person_finite_snapshot_no_one_search_post_cap(self):
         self.registry['members'].append(collector.members.new_member(
             '新人', 'https://x.com/new_member', base.NOW, member_id='m-' + '2' * 32))

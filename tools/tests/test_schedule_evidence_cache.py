@@ -61,6 +61,25 @@ class CacheTests(unittest.TestCase):
         nonce = bytes(range(12))
         return nonce + self.cache.cipher.encrypt(nonce, json.dumps(records).encode(), cache.AAD)
 
+    def test_full_cache_drops_only_the_offered_images_and_keeps_reading_progress(self):
+        done, live, new = (hashlib.sha256(name.encode()).hexdigest() for name in ('done', 'live', 'new'))
+        bundle = {'stage': 'original', 'issued': ['a' * 64], 'results': []}
+        for key in (done, live):
+            self.cache.put(key, self.source, self.text, self.images, reading=bundle)
+        size = self.path.stat().st_size
+        with mock.patch.object(cache, 'MAX_BYTES', size + size // 4):
+            with self.assertRaisesRegex(ValueError, 'evidence_cache_capacity'):
+                self.cache.put(new, self.source, self.text, self.images)
+            self.cache.evictable = lambda: [new, done]
+            self.cache.put(new, self.source, self.text, self.images)
+        self.assertEqual(self.cache.evicted, 1)
+        reopened = self.load()
+        self.assertEqual(reopened.get(done)['images'], [])
+        # The issued request hashes stay, so a reading can never be requested again by mistake.
+        self.assertEqual(reopened.get(done)['reading'], bundle)
+        self.assertEqual(len(reopened.get(live)['images']), 1)
+        self.assertEqual(len(reopened.get(new)['images']), 1)
+
     def test_missing_is_only_none_and_key_validation_never_logs_key(self):
         self.assertIsNone(self.cache.get('0' * 64))
         for key in (None, '', ' ', 'NOT-BASE64', base64.b64encode(b'short').decode(), 42):

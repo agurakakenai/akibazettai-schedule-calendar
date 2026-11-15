@@ -1391,6 +1391,8 @@ job summaryには、そのrunのまとめた検索の回数と1人ずつの検�
 
 複数画像の投稿では、Xが全画像の`expanded_url`を`…/photo/1`として返します。そのため写真の所有者確認は、handle・投稿IDと、画像枚数以内の位置だけを照合します。2026-10-25以前は2枚目で`photo_owner_mismatch`となり、複数画像の予定表（あらた・ぴあの・みえる・みりあ・ゆめ）が`permanent_failure`で終わっていました。この時期に記録された`permanent_failure`と、優先度の高い（予定語を含む）`queue_limit`の候補履歴は、まだsourceとして取得しておらず対象期間内のものに限り、1回だけ候補へ戻します。画像cacheの期限切れで保留した候補は、暗号cacheの記録自体が整理済みでも、canonical sourceが`pending`でrequest hashが無い（AI未発行）ことを確認できれば、本文と画像を通常の経路で1回だけ取り直します。AI発行済みの候補は取り直しません。
 
+暗号化した証拠cache（最大64MiB）が満杯になったときは、新しい画像を保存する前に、画像だけを古いものから捨てて空きを作ります。順番は、期限切れの記録、stateから退役済みの読取り、読み終わった（done）読取り、その他の保留（held）読取りです。本文・読取りの進捗・発行済みAIのrequest hash・期限は残すため、再取得の判定とAIの二重発行防止は変わりません。読取り中（fetch/original/detail）の画像は、AI発行の有無にかかわらず捨てません。環境障害で保留になった読取りの画像も捨てません。それでも空きが足りない場合は、その候補を保留にせず`evidence_cache_capacity`として1時間後に取り直し、job summaryの「Half-month queue capacity」と通知Issueの半月の項目に出します。2026-11-15以前は満杯のcacheで`image_cache_invalid`（detail `evidence_cache_capacity`）として再試行なしで止まっていました（11月後半で33件）。そのうちAI未発行で候補が残っているものは次のcycleで元の段階に戻して通常どおり取り直し、AI発行済みのものは二度発行しないよう保留のままにします。
+
 Azureが4xxを返した場合は、応答JSONの`error.code`（なければ`error.type`）が短い識別子のときだけ`azure_<code>`の形で診断の`detail`へ残します。message・param・本文・画像・raw応答は保持しません。
 
 新しいrunでは`budget_wait`を実入力の予約額で再判定し、旧予約方式の月末待機だけで除外しません。期限切れcacheの再取得は、canonicalの未発行記録・空のattemptedVariants/issued/seen・共有source台帳の成功済み本文receipt（request hashと完了時刻）・その元runにschedule AI予約がないことをすべて確認できた候補に限定します。元runと異なるrun IDで、通常のURL・間隔・cooldownを守って本文と画像を1回取得し、同じsource keyであることを照合します。元receiptとholdは変更せず、元cacheの期限・failure・再取得runとpayload hashを暗号cacheの監査記録へ保持します。本人性やAI未発行の証明ができない候補、発行済みAI候補はheldを維持し、再GET・再AIしません。
