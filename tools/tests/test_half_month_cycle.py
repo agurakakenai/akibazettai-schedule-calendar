@@ -346,6 +346,37 @@ class CycleTests(unittest.TestCase):
         self.now += dt.timedelta(days=8)
         self.assertEqual(evictable(), [key], 'expired evidence cannot be read any more')
 
+    def test_image_403_stop_steps_15_30_60_minutes_and_resets_after_a_success(self):
+        receipts = {}
+
+        def done(status, http_status):
+            receipts[str(len(receipts))] = {
+                'host': 'pbs.twimg.com', 'status': status, 'httpStatus': http_status,
+                'completedAt': facts.stamp(self.now + dt.timedelta(seconds=len(receipts)))}
+
+        def deny(retry_after=None):
+            source = mock.Mock(state={'receipts': receipts, 'cooldowns': {}})
+            client = collector.SourceClient(source, clock=lambda: self.now)
+            with self.assertRaises(collector.Failure) as caught:
+                client._deny('pbs.twimg.com', 403, retry_after)
+            pause = source.set_cooldown.call_args.kwargs['paused']
+            self.assertEqual(pause['retryAt'], facts.stamp(caught.exception.retry_at))
+            return caught.exception.retry_at - self.now
+        minutes = lambda value: dt.timedelta(minutes=value)
+        for expected in (15, 30, 60, 60):
+            self.assertEqual(deny(), minutes(expected))
+            done('failed', 403)
+        done('failed', None)  # A network error neither counts nor resets.
+        self.assertEqual(deny(), minutes(60))
+        done('ok', 200)
+        self.assertEqual(deny(), minutes(15))
+        self.assertEqual(deny('120'), minutes(2), 'Retry-After decides when sent')
+        # Search/post hosts and 429 keep the one-hour stop.
+        source = mock.Mock(state={'receipts': receipts, 'cooldowns': {}})
+        with self.assertRaises(collector.Failure) as caught:
+            collector.SourceClient(source, clock=lambda: self.now)._deny('pbs.twimg.com', 429, None)
+        self.assertEqual(caught.exception.retry_at - self.now, minutes(60))
+
     def test_multi_person_finite_snapshot_no_one_search_post_cap(self):
         self.registry['members'].append(collector.members.new_member(
             '新人', 'https://x.com/new_member', base.NOW, member_id='m-' + '2' * 32))

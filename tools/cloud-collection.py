@@ -1844,7 +1844,10 @@ def half_month_wait_due(state, usage, source, now, collector):
     if (usage['paused'] or usage['retryAt'] and collector.timestamp(usage['retryAt']) > now
             or load_analysis_state().usage_counts(usage, progress['chainId'], now, None)['remaining'] == 0):
         return False
-    checked = collector.timestamp(state['checkedAt']) if state.get('checkedAt') else None
+    # A wait counts only if no run has started since it expired. The run start (not its end) is
+    # used: a 15-minute image stop can expire while the run that set it is still going.
+    checked = (collector.timestamp(progress['startedAt']) if progress.get('startedAt') else
+               collector.timestamp(state['checkedAt']) if state.get('checkedAt') else None)
     source_module = load_source_state()
     names, starts = set(progress['names']), [period[0] for period in progress['periods']]
     readings = {row['sourceId']: row for row in state.get('readings', {}).values()}
@@ -1946,7 +1949,8 @@ def half_month_due(*, root=ROOT, environment=None, collector=None):
         progress = half_state.get('collection') or {}
         result['nextAt'] = progress.get('nextAt')
         if half_month_wait_due(half_state, usage, source, now, collector):
-            checked = collector.timestamp(half_state['checkedAt']) if half_state.get('checkedAt') else None
+            progress_start = progress.get('startedAt') or half_state.get('checkedAt')
+            checked = collector.timestamp(progress_start) if progress_start else None
             search = half_month_search_due(half_state, source, now, collector, checked=checked)
             result.update(halfMonthDue='true', reason='search_due' if search else 'wait_expired')
         elif restored_half_month_continuation(half_state, usage, source, now, collector):
