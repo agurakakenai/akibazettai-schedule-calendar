@@ -420,6 +420,38 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise Failure('redirect_refused', status=code)
 
 
+# pbs.twimg.com denies image GETs from shared runners intermittently (one 403, then 200s). A 403
+# stops the image host for 15 minutes, 30 after a second denial in a row, then 60 at most; any
+# successful image resets it. Retry-After, when sent, decides instead. No request is made while
+# stopped, and no other URL, variant, UA or proxy is tried.
+PHOTO_STOP_STEPS = (dt.timedelta(minutes=15), dt.timedelta(minutes=30), dt.timedelta(minutes=60))
+
+
+def photo_stop_until(receipts, now, retry_after=None):
+    """End of the image-host stop after a 403, from the denials since the last successful image."""
+    if retry_after:
+        try:
+            parsed = now + dt.timedelta(seconds=max(0, int(retry_after)))
+        except (ValueError, TypeError, OverflowError):
+            try:
+                parsed = email.utils.parsedate_to_datetime(retry_after).astimezone(facts.UTC)
+            except (ValueError, TypeError, OverflowError, AttributeError):
+                parsed = None
+        if parsed is not None:
+            # A stop must end after it began; otherwise it would never be lifted.
+            return max(parsed, now + dt.timedelta(minutes=1))
+    rows = sorted((item for item in receipts.values()
+                   if item.get('host') == PHOTO_HOST and item.get('completedAt') is not None),
+                  key=lambda item: item['completedAt'], reverse=True)
+    streak = 0
+    for item in rows:
+        if item['status'] == 'ok':
+            break
+        if item['status'] == 'failed' and item.get('httpStatus') == 403:
+            streak += 1
+    return now + PHOTO_STOP_STEPS[min(streak, len(PHOTO_STOP_STEPS) - 1)]
+
+
 class SourceClient:
     def __init__(self, source, *, clock, opener=None, http_state=None, registry_guard=None,
                  chunk_images=False):
@@ -442,8 +474,11 @@ class SourceClient:
 
     def _deny(self, host, status, retry_after, *, reason='access_denied'):
         now = self.clock()
-        until = now + dt.timedelta(hours=1)
-        if retry_after:
+        if host == PHOTO_HOST and status == 403:
+            until = photo_stop_until(self.source.state.get('receipts', {}), now, retry_after)
+        else:
+            until = now + dt.timedelta(hours=1)
+        if retry_after and not (host == PHOTO_HOST and status == 403):
             try:
                 parsed = now + dt.timedelta(seconds=max(0, int(retry_after)))
             except (ValueError, TypeError, OverflowError):
@@ -1704,6 +1739,8 @@ def collect_cycle(state, schedule, source, analyzer, client_factory, *, clock, s
     open_periods = [tuple(period) for period in discovery if facts.day(period[1]) >= reference]
     current.setdefault('cursor', 0)
     current.setdefault('nextAt', None)
+    # The 30-minute wait check re-dispatches only waits that expired after this run began.
+    current['startedAt'] = facts.stamp(started)
     initial_cursor = current['cursor']
     state.setdefault('readings', {})
     stale = {item['id'] for item in state['pending'] if item['name'] in targets

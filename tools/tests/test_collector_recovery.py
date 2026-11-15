@@ -436,6 +436,16 @@ class HalfMonthRecoveryTests(unittest.TestCase):
             self.assertFalse(due(again, restopped, self.now + later))
         self.assertTrue(due(again, restopped, self.now + dt.timedelta(minutes=62)))
 
+    def test_a_15_minute_stop_that_expires_before_its_run_ends_is_still_resumed(self):
+        # The run started at 10:00, got a 403 at 10:02 (stop until 10:17) and ended at 10:18.
+        start = self.now - dt.timedelta(minutes=40)
+        state = self.wait_state(start + dt.timedelta(minutes=17), start + dt.timedelta(minutes=18))
+        state['collection']['startedAt'] = hcollector.iso(start)
+        self.assertTrue(hcloud.half_month_wait_due(state, self.h.usage, self.h.source_state, self.now, hcollector))
+        # A later run that started after the stop expired had its chance: no repeated dispatch.
+        state['collection']['startedAt'] = hcollector.iso(start + dt.timedelta(minutes=20))
+        self.assertFalse(hcloud.half_month_wait_due(state, self.h.usage, self.h.source_state, self.now, hcollector))
+
     def test_nothing_due_is_a_no_op(self):
         now, before = self.now, self.now - dt.timedelta(minutes=5)
         usage = copy.deepcopy(self.h.usage)

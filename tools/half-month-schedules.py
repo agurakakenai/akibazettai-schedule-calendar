@@ -1103,7 +1103,7 @@ def validate_collection_state(value):
     if 'collection' in value:
         collection = value['collection']
         require_keys(collection, {'chainId', 'names', 'periods', 'reason', 'ready'}
-                     | (set(collection) & {'nextAt', 'cursor', 'serviceDate', 'mode'}
+                     | (set(collection) & {'nextAt', 'cursor', 'serviceDate', 'mode', 'startedAt'}
                         if isinstance(collection, dict) else set()))
         if (not isinstance(collection['chainId'], str)
                 or not re.fullmatch(r'[1-9][0-9]{0,19}-[1-9][0-9]{0,19}', collection['chainId'])
@@ -1125,8 +1125,9 @@ def validate_collection_state(value):
             day(collection['serviceDate'])
         if 'mode' in collection and collection['mode'] not in ('schedule', 'both'):
             raise ValueError('invalid_schedule_collection_mode')
-        if collection.get('nextAt') is not None:
-            timestamp(collection['nextAt'])
+        for field in ('nextAt', 'startedAt'):
+            if collection.get(field) is not None:
+                timestamp(collection[field])
         if 'cursor' in collection and (type(collection['cursor']) is not int
                 or not 0 <= collection['cursor'] <= len(collection['names'])):
             raise ValueError('invalid_collection_cursor')
