@@ -875,9 +875,59 @@ def account_search_url(handle):
         {'p': 'id:' + handle, 'ei': 'UTF-8'})
 
 
+# Grouped same-day search: one Yahoo realtime query `(id:a OR id:b ...)` for up to GROUP_SIZE
+# accounts returns their newest posts together (at most GROUP_PAGE). A day is covered only when the
+# page is not full or its oldest timeline post is older than that JST day; otherwise each account
+# is still searched alone. Measured 2026-11-15: 12 accounts posted 40 posts in 17.5-130 hours, so 8
+# accounts per query normally reach back past JST midnight; a page that does not falls back.
+GROUP_SIZE = 8
+GROUP_PAGE = 40
+GROUP_QUERY = re.compile(r'\((id:[A-Za-z0-9_]{1,15}(?: OR id:[A-Za-z0-9_]{1,15}){1,%d})\)' % (GROUP_SIZE - 1))
+
+
+def group_search_url(handles):
+    if not 2 <= len(handles) <= GROUP_SIZE or len({handle.casefold() for handle in handles}) != len(handles):
+        raise ValueError('invalid_search_account')
+    for handle in handles:
+        account_search_url(handle)
+    return 'https://' + SEARCH_HOST + '/realtime/search?' + urllib.parse.urlencode(
+        {'p': '(' + ' OR '.join('id:' + handle for handle in handles) + ')', 'ei': 'UTF-8'})
+
+
+def group_handles(url):
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        query = urllib.parse.parse_qs(parsed.query, strict_parsing=True)
+        match = GROUP_QUERY.fullmatch(query.get('p', [''])[0]) if set(query) == {'p', 'ei'} else None
+        if match is None:
+            return None
+        handles = [part[3:] for part in match[1].split(' OR ')]
+        return handles if url == group_search_url(handles) else None
+    except ValueError:
+        return None
+
+
+def page_extent(document):
+    """Timeline size and oldest timeline post; bestTweet can be old and never proves coverage."""
+    timeline = search_page(document).get('timeline')
+    entries = timeline.get('entry') if isinstance(timeline, dict) else []
+    if not isinstance(entries, list):
+        raise Failure('invalid_search_response')
+    times = [dt.datetime.fromtimestamp(int(entry['createdAt']), UTC) for entry in entries
+             if isinstance(entry, dict) and re.fullmatch(r'\d{10}', str(entry.get('createdAt', '')))]
+    return {'entries': len(entries), 'oldest': min(times, default=None)}
+
+
+def group_covers(extent, day):
+    return extent['entries'] < GROUP_PAGE or (
+        extent['oldest'] is not None and extent['oldest'] < dt.datetime.combine(day, dt.time(), JST))
+
+
 def valid_search_url(url):
     if not isinstance(url, str):
         return False
+    if group_handles(url) is not None:
+        return True
     try:
         parsed = urllib.parse.urlsplit(url)
         query = urllib.parse.parse_qs(parsed.query, strict_parsing=True)
@@ -980,6 +1030,24 @@ def search_page(document):
         raise Failure('invalid_search_response') from None
 
 
+# A reply addressed only to other accounts whose search text has no work/absence word is not
+# fetched or analysed (2026-11-15 sample: about 40% of search results; every analysed one was
+# no_event). Self-replies, replies without mention data and any reply with such a word still are.
+REPLY_NOTICE_WORDS = re.compile(
+    r'休|やすみ|欠|遅|おくれ|ちこく|復帰|出勤|出られ|出れな|いない|いけな|行けな|中止|キャンセル|なくなっ'
+    r'|お給仕|店|昼|夜|シフト|体調|延長|早上|退勤|変更|代わ|予定|今日|本日|明日|あした|あす|きょう|ほんじつ')
+
+
+def reply_to_others(entry, handle):
+    mentions = entry.get('replyMentions')
+    text = entry.get('displayTextBody')
+    if (not entry.get('inReplyTo') or not isinstance(mentions, list) or not mentions
+            or any(not isinstance(mention, str) or mention.casefold() == handle.casefold() for mention in mentions)
+            or not isinstance(text, str)):
+        return False
+    return not REPLY_NOTICE_WORDS.search(unicodedata.normalize('NFKC', text))
+
+
 def discover(document, targets, date, now, bindings):
     page = search_page(document)
     error = page.get('searchError')
@@ -1021,6 +1089,8 @@ def discover(document, targets, date, now, bindings):
         except (ValueError, OSError, OverflowError, TypeError):
             continue
         target = handles[handle.casefold()]
+        if reply_to_others(entry, handle):
+            continue
         bound = bindings.get(target['name'])
         if bound and bound['authorId'] != uid:
             continue
@@ -1455,7 +1525,9 @@ class PersonalClient(official.PublicClient):
     def open(self, request, timeout=35):
         url = request.full_url
         parsed = urllib.parse.urlsplit(url)
-        if url in self.urls:
+        grouped = group_handles(url)
+        if url in self.urls or grouped is not None and {handle.casefold() for handle in grouped} <= {
+                target['handle'].casefold() for target in self.durable.targets.values()}:
             kind = 'searches'
         elif (parsed.scheme == 'https' and parsed.hostname == POST_HOST
               and not parsed.username and not parsed.port and not parsed.fragment
@@ -1548,6 +1620,7 @@ class PersonalClient(official.PublicClient):
             try:
                 document = response.read().decode('utf-8')
                 candidates = discover(document, targets, date, now, bindings)
+                self.extent = page_extent(document)
                 if self.durable.progress is not None:
                     for day, saved in self.durable.progress['targets'].items():
                         if day != date.isoformat():
@@ -1559,6 +1632,11 @@ class PersonalClient(official.PublicClient):
                 if exc.reason == 'access_denied':
                     self.durable.deny(SEARCH_HOST, 'access_denied', exc.status)
                 raise
+
+    def search_group(self, url, targets, date, now, bindings):
+        """One grouped page for several accounts; the caller decides which days it covers."""
+        candidates = self.search(url, targets, date, now, bindings)
+        return candidates, self.extent
 
     def fetch_post(self, tid):
         try:
@@ -1744,6 +1822,86 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                     if task['date'] == date.isoformat() and task['name'] in search_targets][:max_searches]
     if durable.source_paused('searches') and search_targets and saved_payloads is None:
         failures.append({'reason': 'source_paused'})
+
+    def admit(candidate):
+        nonlocal skipped
+        tid = candidate['id']
+        if tid in resolved:
+            skipped += 1
+            return
+        if tid not in pending:
+            pending[tid] = {**candidate, 'reason': 'discovered',
+                            'firstSeenAt': stamp(clock()), 'lastAttemptAt': None,
+                            'attempts': 0}
+        if durable.progress is not None and tid not in durable.progress['postIds']:
+            durable.progress['postIds'].append(tid)
+
+    def record_search(name, handle, covered):
+        tasks = [task for task in durable.progress['searches']
+                 if task['handle'].casefold() == handle.casefold() and covered(dt.date.fromisoformat(task['date']))]
+        for task in tasks:
+            state.setdefault('searchHistory', {}).setdefault(task['date'], {})[task['name']] = {
+                'handle': task['handle'], 'attemptedAt': stamp(clock())}
+        durable.progress['searches'] = [task for task in durable.progress['searches'] if task not in tasks]
+        state.setdefault('searchHistory', {}).setdefault(date.isoformat(), {})[name] = {
+            'handle': handle, 'attemptedAt': stamp(clock())}
+
+    if searches and durable.progress is not None and getattr(type(client), 'search_group', None) is not None:
+        names = list(dict.fromkeys(task['name'] for task in durable.progress['searches']
+                                   if task['date'] == date.isoformat() and task['name'] in search_targets))
+        grouped_requests, grouped_names = 0, set()
+        for start in range(0, len(names), GROUP_SIZE):
+            if (max_searches is not None and grouped_requests >= max_searches) or (
+                    clock() - durable.started).total_seconds() >= RECOVERY_SECONDS - RECOVERY_SAVE_SECONDS:
+                break
+            active_now = durable.active(targets)
+            chunk = [name for name in names[start:start + GROUP_SIZE] if name in active_now]
+            if len(chunk) < 2:
+                continue
+            url = group_search_url([targets[name]['handle'] for name in chunk])
+            before = durable.used['searches']
+            try:
+                for name in chunk:
+                    durable.check_registry(name)
+                found, extent = client.search_group(url, {name: active_now[name] for name in chunk},
+                                                    date, clock(), durable.bindings())
+            except Failure as exc:
+                sources.append({'url': url, 'status': 'failed', **exc.facts()})
+                failures.append(exc.facts())
+                if isinstance(exc, RegistryFailure) or exc.reason in (
+                        'budget_exhausted', 'current_day_reserved', 'outside_window', 'shared_host_cooldown',
+                        'source_budget_exhausted', 'source_paused', 'source_host_cooldown') or durable.source_paused('searches'):
+                    searches = ()
+                    break
+                continue
+            except Exception as exc:
+                if isinstance(exc, InfrastructureFailure) or failure_facts.fatal(exc):
+                    raise
+                sources.append({'url': url, 'status': 'failed', 'reason': failure_facts.UNEXPECTED_REASON})
+                failures.append({'reason': failure_facts.UNEXPECTED_REASON})
+                unexpected_failures.append({'stage': 'search', **failure_facts.exception_facts(exc)})
+                continue
+            finally:
+                grouped_requests += durable.used['searches'] > before
+            sources.append({'url': url, 'status': 'ok', 'candidateCount': len(found)})
+            by_handle = {targets[name]['handle'].casefold(): name for name in chunk}
+            for candidate in found:
+                if by_handle.get(candidate['authorScreenName'].casefold()) == candidate['name']:
+                    admit(candidate)
+            state['pending'] = list(pending.values())
+            if group_covers(extent, date):
+                # Covered accounts are done for every day the page reaches; the rest are searched alone.
+                for name in chunk:
+                    durable.searched_handles.add(targets[name]['handle'].casefold())
+                    record_search(name, targets[name]['handle'], lambda day: group_covers(extent, day))
+                    grouped_names.add(name)
+            durable.save()
+        if searches:
+            searches = [(task['name'], account_search_url(task['handle']))
+                        for task in durable.progress['searches']
+                        if task['date'] == date.isoformat() and task['name'] in search_targets
+                        and task['name'] not in grouped_names][
+                            :None if max_searches is None else max(0, max_searches - grouped_requests)]
     for name, url in searches:
         if durable.progress is not None and (clock() - durable.started).total_seconds() >= (
                 RECOVERY_SECONDS - RECOVERY_SAVE_SECONDS):
@@ -1764,16 +1922,7 @@ def collect(state, durable, client, targets, date, max_searches, max_posts,
                 if (candidate['name'] != name
                         or candidate['authorScreenName'].casefold() != targets[name]['handle'].casefold()):
                     continue
-                tid = candidate['id']
-                if tid in resolved:
-                    skipped += 1
-                    continue
-                if tid not in pending:
-                    pending[tid] = {**candidate, 'reason': 'discovered',
-                                    'firstSeenAt': stamp(clock()), 'lastAttemptAt': None,
-                                    'attempts': 0}
-                if durable.progress is not None and tid not in durable.progress['postIds']:
-                    durable.progress['postIds'].append(tid)
+                admit(candidate)
             state['pending'] = list(pending.values())
             durable.save()
         except Failure as exc:
