@@ -201,26 +201,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "021a68386e09324afaa022987be83206f3d9ab3f4455de2183959e5155a6240f": {
-        "at": "2026-11-03T03:34:22.726607Z",
-        "bodyHash": "f76878a759f761a0c76f742f4f6aa849c9ed04ed6a3eeffc86aa8e6c6d972231",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117453807986843941",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "025678804c91f2c752f0c526e15107362542e2ccf0770c3a2bd60a53f87095e6": {
         "at": "2026-11-10T00:18:22.612430Z",
         "bodyHash": "d9e77e4ecfc2453f6d3d3ddeaca26d4d1895b91d48793b902c89fa040b5201c0",
@@ -734,33 +714,6 @@
         "serviceDates": {
           "events": [],
           "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "06e49e65f7e8f4df521c456509d33fccc3d8ed97b9dd289382a9345c571a059c": {
-        "at": "2026-11-03T22:25:34.919210Z",
-        "bodyHash": "e8c5550e154801c845aa6ec345cf571fc64f68406a49178d83abfef5cc74b6ed",
-        "channels": {
-          "events": "none",
-          "links": "confirmed",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [
-          {
-            "scope": "unspecified",
-            "status": "work"
-          }
-        ],
-        "postId": "2117454686534127833",
-        "reason": "links",
-        "serviceDates": {
-          "events": [],
-          "links": [
-            "2026-11-03"
-          ],
           "workTiming": []
         },
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
@@ -1433,42 +1386,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "0cbe58c93b67a2abeb0b883161dff482e9808c52dfe44aa34061b76c83ca2c17": {
-        "at": "2026-11-02T23:27:42.424908Z",
-        "bodyHash": "6de58b5f26dfe65e5116a89182237c8ac5dc6dab6053b8669fe85000310659c3",
-        "channels": {
-          "events": "confirmed",
-          "links": "confirmed",
-          "workTiming": "none"
-        },
-        "events": [
-          {
-            "excerpt": "1号店",
-            "kind": "placement",
-            "shift": "夜",
-            "storeId": "s1"
-          }
-        ],
-        "links": [
-          {
-            "scope": "夜",
-            "status": "work"
-          }
-        ],
-        "postId": "2117311321280856170",
-        "reason": "events",
-        "serviceDates": {
-          "events": [
-            "2026-11-03"
-          ],
-          "links": [
-            "2026-11-03"
-          ],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "0cdcfa627bcd3a92af9abfe3c79327abaeba073ef116b302854eca0eca97bb9a": {
         "at": "2026-11-15T01:42:50.584493Z",
         "bodyHash": "563b97c9ec36c96526c85fe993b52c6f848a4b63adcc18f268cdf3540de0df0c",
@@ -1612,53 +1529,6 @@
           }
         ]
       },
-      "0da50359a8ade66254ea872998de9a08b628077299dec01a72c9de8fa6fa7ac0": {
-        "at": "2026-11-02T23:25:38.563701Z",
-        "bodyHash": "a5d6f818caabbe7770f138de897cc4172de8cdb2def1619f3b30d2cbb69be32a",
-        "channels": {
-          "events": "confirmed",
-          "links": "confirmed",
-          "workTiming": "confirmed"
-        },
-        "events": [
-          {
-            "excerpt": "3号店",
-            "kind": "placement",
-            "shift": "昼",
-            "storeId": "s3"
-          }
-        ],
-        "links": [
-          {
-            "scope": "昼",
-            "status": "work"
-          }
-        ],
-        "postId": "2117273015096590468",
-        "reason": "events",
-        "serviceDates": {
-          "events": [
-            "2026-11-03"
-          ],
-          "links": [
-            "2026-11-03"
-          ],
-          "workTiming": [
-            "2026-11-03"
-          ]
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": [
-          {
-            "boundary": "end",
-            "explicitTime": "17:00",
-            "qualifier": null,
-            "serviceDate": "2026-11-03",
-            "shift": "昼",
-            "status": "set"
-          }
-        ]
-      },
       "0db4e9650f849ddc18055dc1554288c88d844133321ee834175c1b34afb0c182": {
         "at": "2026-11-14T19:49:21.568532Z",
         "bodyHash": "6fb6354bcc5044e108b5453fae73ea23a11b1a1bd0195dcfdb4e96d53447f699",
@@ -1690,26 +1560,6 @@
           "links": [
             "2026-11-15"
           ],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "0e0264e023e8fd0650b5ffdf54c791b7d6503ce1a0aeabb13f519782bc7fce09": {
-        "at": "2026-11-03T03:23:20.182329Z",
-        "bodyHash": "486f84e060d6bdca3dd041a6cddb8fd76f210df8b4134926f7013f98713b75a6",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117455635378037000",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
           "workTiming": []
         },
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
@@ -1880,26 +1730,6 @@
           "links": [
             "2026-11-17"
           ],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "1025ca2ff295c3da0d7b823aa37cdafb9e44d765cbbc2d6ea7b479e6218bbc51": {
-        "at": "2026-11-03T22:37:14.484012Z",
-        "bodyHash": "477c4e8ec115786f3b5b1b6563eaee0703b41a5201d1df08b6fa161c6ba5be80",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117281116973597074",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
           "workTiming": []
         },
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
@@ -2085,53 +1915,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "11f8868f930380542046389c3426b87ecd1d171e6d6a8c82cec04ad299e8f255": {
-        "at": "2026-11-02T23:28:43.919530Z",
-        "bodyHash": "ce7c391e4cac73ae2c30595d7c9fc55721ad03e2ce646e7fac0c2b482ba1f551",
-        "channels": {
-          "events": "confirmed",
-          "links": "confirmed",
-          "workTiming": "confirmed"
-        },
-        "events": [
-          {
-            "excerpt": "3号店",
-            "kind": "placement",
-            "shift": "夜",
-            "storeId": "s3"
-          }
-        ],
-        "links": [
-          {
-            "scope": "夜",
-            "status": "work"
-          }
-        ],
-        "postId": "2117283390034673738",
-        "reason": "events",
-        "serviceDates": {
-          "events": [
-            "2026-11-03"
-          ],
-          "links": [
-            "2026-11-03"
-          ],
-          "workTiming": [
-            "2026-11-03"
-          ]
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": [
-          {
-            "boundary": "start",
-            "explicitTime": "17:00",
-            "qualifier": null,
-            "serviceDate": "2026-11-03",
-            "shift": "夜",
-            "status": "set"
-          }
-        ]
-      },
       "120064eacc3395ce117cb1a37261081a395378ef4f3af6bef49327a93d6f7dbf": {
         "at": "2026-11-07T19:50:01.400692Z",
         "bodyHash": "1916db7ed1a1fcf9cc828f2ee03c84843129f42e1f3f2074b552f7b609ed63ce",
@@ -2151,53 +1934,6 @@
         },
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
-      },
-      "1255291cc03202416d22aaa5b7e3784c163efd7613bf12f68e37edb655d71702": {
-        "at": "2026-11-03T03:26:37.025521Z",
-        "bodyHash": "a798dff8bc02507cb351456cb07d40fb4148969a9dc381d905328a028b9898cd",
-        "channels": {
-          "events": "confirmed",
-          "links": "confirmed",
-          "workTiming": "confirmed"
-        },
-        "events": [
-          {
-            "excerpt": "3号店",
-            "kind": "placement",
-            "shift": "昼",
-            "storeId": "s3"
-          }
-        ],
-        "links": [
-          {
-            "scope": "昼",
-            "status": "work"
-          }
-        ],
-        "postId": "2117432354977517845",
-        "reason": "events",
-        "serviceDates": {
-          "events": [
-            "2026-11-03"
-          ],
-          "links": [
-            "2026-11-03"
-          ],
-          "workTiming": [
-            "2026-11-03"
-          ]
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": [
-          {
-            "boundary": "end",
-            "explicitTime": "18:00",
-            "qualifier": null,
-            "serviceDate": "2026-11-03",
-            "shift": "昼",
-            "status": "set"
-          }
-        ]
       },
       "1263344c755f1933c4378c56a0de209f20533bce31f5ef2936113d761382d397": {
         "at": "2026-11-17T04:25:26.985243Z",
@@ -2813,26 +2549,6 @@
         "events": [],
         "links": [],
         "postId": "2118728544864059793",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "19daa84edce235675d1d0dc21c26871d71a2d8900fdd1edc6784cd9925c02558": {
-        "at": "2026-11-03T03:23:33.120377Z",
-        "bodyHash": "8b32fcf322b2c7d39f94d91904791d367c3efc850023ab4d89988fa7d3e313f6",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117435882206806265",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -3690,28 +3406,6 @@
           }
         ]
       },
-      "24bbb719f8b9279e8ca07b684c9f82ffbf5c31f9c63d79e6ea19e4a7677f6be6": {
-        "at": "2026-11-03T03:33:19.790078Z",
-        "bodyHash": "9f1328b0df24ea14b65ed9efed9b250d2d5c55c09c497a1c2be4acd716ce1ec7",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117432314301124678",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [
-            "2026-11-01"
-          ],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "24c40aa2199ec1b55e2ea1357b5f1460df002d65794cc0acb9313b8b0b4bfa1e": {
         "at": "2026-11-10T21:52:24.835487Z",
         "bodyHash": "afc9424beecb0c8dbdf261c4106de94ed82d45e0d951b4e1458f3ea6fc8916b1",
@@ -3820,26 +3514,6 @@
             "status": "set"
           }
         ]
-      },
-      "2655c5d443816b934f6824246af12331c32045e87dae2f0a79f7078b5f2ded6b": {
-        "at": "2026-11-03T22:33:09.662236Z",
-        "bodyHash": "4cb5eee875909d73ab17441ce08675c03b1a79d63828b6e1bea1c9857607d50d",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117472070615597360",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
       },
       "26dbef6f9a0794df6ae24bec381805508a54b99de6ffb29fedae6ee36e694f09": {
         "at": "2026-11-11T22:59:05.821614Z",
@@ -4118,53 +3792,6 @@
         },
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
-      },
-      "2a85838d1b38176229fe306540534a21e418c5fdb51c6820e8108768cae56333": {
-        "at": "2026-11-02T23:32:54.625100Z",
-        "bodyHash": "f0425a5caf8bc832d45114174e54013328dc8b24326badbc9ee1dad65dbc6887",
-        "channels": {
-          "events": "confirmed",
-          "links": "confirmed",
-          "workTiming": "confirmed"
-        },
-        "events": [
-          {
-            "excerpt": "3号店",
-            "kind": "placement",
-            "shift": "昼",
-            "storeId": "s3"
-          }
-        ],
-        "links": [
-          {
-            "scope": "昼",
-            "status": "work"
-          }
-        ],
-        "postId": "2117287527883411539",
-        "reason": "events",
-        "serviceDates": {
-          "events": [
-            "2026-11-03"
-          ],
-          "links": [
-            "2026-11-03"
-          ],
-          "workTiming": [
-            "2026-11-03"
-          ]
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": [
-          {
-            "boundary": "end",
-            "explicitTime": "17:00",
-            "qualifier": null,
-            "serviceDate": "2026-11-03",
-            "shift": "昼",
-            "status": "set"
-          }
-        ]
       },
       "2ad175572b65df664d2e06716d054e292eacd36ac6c914b42eb17de95d03ed07": {
         "at": "2026-11-17T04:24:25.287263Z",
@@ -4496,26 +4123,6 @@
           "links": [
             "2026-11-08"
           ],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "2e9b7f85bac2c2b79ef1cefafada6118207d874b901cdc8b590dfe42d03b05ea": {
-        "at": "2026-11-03T22:26:37.731422Z",
-        "bodyHash": "6a4fd7981e9a97012a245dc8d5d9dd8496af3f00154610333a14b3c1901c5c9c",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117293764251463998",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
           "workTiming": []
         },
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
@@ -4868,26 +4475,6 @@
           }
         ]
       },
-      "33bb997d4a55deb462f965c203f6b9b54a4459fd09adf4b1427cfb15b7ee12ac": {
-        "at": "2026-11-03T07:28:08.858167Z",
-        "bodyHash": "c08eebfc3f16009b84786e478b02b529da5e111a05c4827e45f48eb212e91152",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117498648103915865",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "34439bd062aef3fdd0995dc4663ceae217dd085b47d0c129dc6617dc824ec001": {
         "at": "2026-11-05T10:35:42.452338Z",
         "bodyHash": "e32218937fa8eeaffcfec2ebcfdbc7895ebe7fb90077c352986bc59babd58ffa",
@@ -5081,26 +4668,6 @@
           "links": [
             "2026-11-09"
           ],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "35a204a401131ea998df93f17b0ca345fc10bad21b363eff12906577bd98786e": {
-        "at": "2026-11-03T07:27:56.035463Z",
-        "bodyHash": "5387bfcca7fa64d486d1963b82f76be42782d2d37dd01ea0e7f0f3615cfe5d19",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117510582702412206",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
           "workTiming": []
         },
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
@@ -5327,26 +4894,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "375874b8187dee2b0c495473a0174a042d744561f2f6cf8baf4215cfac3f3a32": {
-        "at": "2026-11-02T23:26:43.404393Z",
-        "bodyHash": "3cb3e749e4010c80ab0fe6389cc5940fc4f43cc319ab49db3710c6981a6e06c3",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117272056412917938",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "375ea8d6f50267db09cf9a8e46c6d55929f35bb3e30b901f9154143f49a03e69": {
         "at": "2026-11-09T07:59:57.205673Z",
         "bodyHash": "52c03a58b52cbdfa89aa6ecdc7436db299b14a09a75ef6d88577d4aff414e220",
@@ -5511,26 +5058,6 @@
           "links": [
             "2026-11-07"
           ],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "3ad20f8028571daa885972873dc8f4c72c11feee67ca95ba677bdb4af631d333": {
-        "at": "2026-11-03T22:19:23.722473Z",
-        "bodyHash": "a35eb16be5025d2eb501967d5798af65a26177b7fe0a2c63e5f3367a131d5f74",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117623284971999245",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
           "workTiming": []
         },
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
@@ -5838,26 +5365,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "3e86bcf1cced02adc94bf034463886d1b43657b07bb429545f7f135f6f79b204": {
-        "at": "2026-11-03T03:29:41.648427Z",
-        "bodyHash": "e6fcf71177e7a5ed15ccf5592ede8c1cb35f62d452a54b01bab9623e714231b5",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117430796139302970",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "3f1818f14618519a839591e760153503f81ca949973bf4f6d4392c378b74f52d": {
         "at": "2026-11-12T22:45:37.968802Z",
         "bodyHash": "a5c4ab77a750efee0d3e7acab6cb132d99b2a305e6fb30f442cb8b47e871a3df",
@@ -5986,26 +5493,6 @@
           "links": [
             "2026-11-09"
           ],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "3fe4d0906358a11c8fc6a6c5cfcebfc4a5e13fe8007c282ec55bc1070acaa77b": {
-        "at": "2026-11-03T22:23:30.634087Z",
-        "bodyHash": "fa580c0610f6f640d791793cba8ce4f5b113d329a9c55dd9beea157747a9333a",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117620292340387996",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
           "workTiming": []
         },
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
@@ -6157,26 +5644,6 @@
         "events": [],
         "links": [],
         "postId": "2121058412058542102",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "41daf902053e593bb578d8293182b1debea6439aab7c97bdbf84dba75d8e943d": {
-        "at": "2026-11-03T22:36:13.208326Z",
-        "bodyHash": "8bc4d30b88efbce1f2a3de81e9719be6629b44c2f7871633b2273b394208c511",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117452478455415198",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -7173,26 +6640,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "4d64bd44c374733934223c120913f6bbed50145e87973eba43fd9297c9152e0b": {
-        "at": "2026-11-03T10:36:36.963868Z",
-        "bodyHash": "d3e26864b6f7778b4a85e6ebe4bf1725f992c63955e8022b9b2d0b9ff1995217",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117562732732104888",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "4d776a6d875732bab3dee93efc0bb0333466846d3c2026d7037bb36e83bd23f1": {
         "at": "2026-11-14T19:52:27.683243Z",
         "bodyHash": "56bc38fe1f3802623f206863022cbf4b9b12d5d356ac5efe99330be948009653",
@@ -7751,42 +7198,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "53eed97efa31dfaf340eb56a32deecde8181288eeacffb27cb5a228ff33c3b29": {
-        "at": "2026-11-03T22:18:09.516165Z",
-        "bodyHash": "7a0c0fe0223ecbdd66b7ac75a1e0eb048c2f18ea4fc706c623bb6d29b66d11df",
-        "channels": {
-          "events": "confirmed",
-          "links": "confirmed",
-          "workTiming": "none"
-        },
-        "events": [
-          {
-            "excerpt": "1号店",
-            "kind": "placement",
-            "shift": "昼",
-            "storeId": "s1"
-          }
-        ],
-        "links": [
-          {
-            "scope": "unspecified",
-            "status": "work"
-          }
-        ],
-        "postId": "2117454154432127029",
-        "reason": "events",
-        "serviceDates": {
-          "events": [
-            "2026-11-03"
-          ],
-          "links": [
-            "2026-11-03"
-          ],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "549d7083ecf6f66c964f8fe01a64e91bf90172b92f7c2a9f3d0122125e4f4ada": {
         "at": "2026-11-07T20:18:22.459113Z",
         "bodyHash": "a8bac94ba8df269a2c3d5711856a34e2642346c1805f49772e2aee723813802e",
@@ -8078,26 +7489,6 @@
         "events": [],
         "links": [],
         "postId": "2117648005964927205",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "567c62c284fdbd1d971bf78bab45e1edd037b0a9f5d4e2309906311b747cbbb7": {
-        "at": "2026-11-03T10:39:54.112431Z",
-        "bodyHash": "0be2f3ca8064875bb38822778dfc07c017abd897d1c7717c375a3750193e6efb",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117549886631772542",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -8736,26 +8127,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "5e1ac432b9789703f4bdc1d7258874999d9b3dd639c74f4b4631f18e2b480d99": {
-        "at": "2026-11-02T23:29:47.387619Z",
-        "bodyHash": "e24e2b5bd6602b4aa05a77edab5a8873d93aac564efc01cbeb0a6c4e09bbe91d",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117280605708951833",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "5e6de1f55998b2a945660f5b9d4b37273a9812443f3b401f15083a565df48d6b": {
         "at": "2026-11-09T11:09:55.787159Z",
         "bodyHash": "1c2ccf5d4831e53c3273ce6b9284013c0db82235482ad9a6aaebedb8570e34fc",
@@ -9023,26 +8394,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "620668f0bfa443d65cd954494c1b71cc4c79d588eb7bde0e238bb127a0cd6f75": {
-        "at": "2026-11-03T03:24:33.228348Z",
-        "bodyHash": "c62a333af6b140f2d4d8857a638ab9f179f81a26cb03f09eb572dfeb09e56699",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117454870198505557",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "6220695d9ac46ad7836252add865166cd117034a0012aa8f6f8d7f018d6abe48": {
         "at": "2026-11-14T19:44:12.417037Z",
         "bodyHash": "f72a90e4137f5234ca021e8a0b6d3e4ee73a6b788d6b5d289854ca6f7ed1501f",
@@ -9097,26 +8448,6 @@
         "links": [],
         "postId": "2120042000334655648",
         "reason": "azure_ungrounded",
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "626e3b95e330ef008a37769909b2e621392937f69f325fa6181ef8c68d51e4e1": {
-        "at": "2026-11-03T22:32:56.592978Z",
-        "bodyHash": "56a542f49b9094cd7868091a0c3ee82d9a0da4e337245f8c9ef570bed056f1f9",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117608410762064287",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
@@ -9235,26 +8566,6 @@
           "links": [
             "2026-11-04"
           ],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "632ed599fe4d779837e85e2f49ffff152f836dd3b74916e7083909a1f63ebbf5": {
-        "at": "2026-11-03T03:32:19.775712Z",
-        "bodyHash": "526ed028157b36e0fc0d560c8e46f1e4f822327a768bc95f022205c6ea1d6d41",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117455510555545663",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
           "workTiming": []
         },
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
@@ -9467,26 +8778,6 @@
         "events": [],
         "links": [],
         "postId": "2120739208381997324",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "65d14945b528468838872b2f9392950ce381032687418cacc880b28d2047c167": {
-        "at": "2026-11-03T03:27:39.638396Z",
-        "bodyHash": "dbe47d2f982c8a19de9cde9b4953f899e20a27dab3040dd885bf4bc185a78ca2",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117432934689050706",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -10454,26 +9745,6 @@
           "links": [
             "2026-11-08"
           ],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "729293171f951c5ef1ae4ed229ca655a2326ee55b1dffecf883cfca94c16389d": {
-        "at": "2026-11-03T22:38:16.250667Z",
-        "bodyHash": "018f72041104efc96d62285cc204d09bdb9f5ee140c3d32bc3b1839a7ccd6b97",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117606108097548467",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
           "workTiming": []
         },
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
@@ -11662,26 +10933,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "7ffb2104757d43884a215848133376eee15a0c8307932ba960ed8fbf1577c089": {
-        "at": "2026-11-03T10:38:51.475455Z",
-        "bodyHash": "398c9ba73ba05c09c784f9d0d55a836195013eaad5ed59ea23928095a1a0c73f",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117534669776548306",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "80084466fa23a1596976f3b0d260f745bf1a6bd72d86de342580ed93db7c907c": {
         "at": "2026-11-12T02:46:31.200116Z",
         "bodyHash": "3f28f34293494c70b412ef168f5742e6ba47413316f270a0b66648d6e91ba242",
@@ -12341,26 +11592,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "85bdd749ca4e93d7b8bf373c0da8d3638bbf3db92990ce142e68382d8f5c0c79": {
-        "at": "2026-11-03T22:20:25.392594Z",
-        "bodyHash": "7aaa1e8dbb4624a7495570e61d2657e8344aa5600b6fdcc1606e6dfd75bea2e2",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117619872746393740",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "8632787baa1ab4c11ae265b283aa0d9d7831597fe12020fa9a06e1443d944867": {
         "at": "2026-11-13T22:00:22.580303Z",
         "bodyHash": "99a4d07edbd96a59c6e18a6d678200be2cfbf7857d576e42dacde248a3078273",
@@ -12412,53 +11643,6 @@
         "serviceDates": {
           "events": [],
           "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "868247180f23322b7de9bd73d1505d21b038a6baa7038e6b0a472d6701155b4c": {
-        "at": "2026-11-03T22:40:19.390071Z",
-        "bodyHash": "441d410500398d140cc2b3c7eee61bcff88316a5317e67b0ade764b66d9dcea3",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117605616982347922",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "8688b6e59ed9041498a64cb74433d194150aa88040477f52ff9a7896f2acb53f": {
-        "at": "2026-11-02T23:30:47.339624Z",
-        "bodyHash": "c65839645fedbf5d954c720df349d7d4ca9cf9eb9903bb07e1a05e90a517c8f8",
-        "channels": {
-          "events": "pending",
-          "links": "confirmed",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [
-          {
-            "scope": "夜",
-            "status": "work"
-          }
-        ],
-        "postId": "2117276526551171449",
-        "reason": "links",
-        "serviceDates": {
-          "events": [],
-          "links": [
-            "2026-11-03"
-          ],
           "workTiming": []
         },
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
@@ -12535,26 +11719,6 @@
         "events": [],
         "links": [],
         "postId": "2121055416121790826",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "8764cb72874a040d465b7cae85349df4997b086301a1863cff6b4eb1e302fe9e": {
-        "at": "2026-11-02T23:24:24.058025Z",
-        "bodyHash": "03f20301962db1546dafcaa08518861e8e5911388e112c55e74d3c6f92ce8e8b",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117293181637480458",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -12927,26 +12091,6 @@
         "events": [],
         "links": [],
         "postId": "2117800648704151934",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "8c4979d60e521406ec30d2acc509c4af4d296753111c1c7f5d42c5ba146063a4": {
-        "at": "2026-11-03T03:28:39.745230Z",
-        "bodyHash": "992a8af1e8ec9b4376e9b83edd11610799a338c6646f434c9cc5f011e9026fc2",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117432318214488302",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -13528,26 +12672,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "91d1ee9438bb4bcb78f356375544cf07913d8fd0c3617f1816ccc6ec085b2659": {
-        "at": "2026-11-03T22:35:11.256582Z",
-        "bodyHash": "db7164442b205144a059bbdaebba96c1f81764eef555c89be4fe310fd7330f9c",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117607647834988630",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "91f9c685640a8c29cc4613a65ee2d063cdfd63dde8e81da9000b1cf78a984ed8": {
         "at": "2026-11-06T21:59:43.465451Z",
         "bodyHash": "f7a1acd6c419325b29a791874f7e6a589fee8a24c71af4ef16d83c6e0d802089",
@@ -13885,26 +13009,6 @@
             "status": "set"
           }
         ]
-      },
-      "961daa62b845c94f1dd917d0d68ecc7407fc5e23a6b7c02177f472a8b80d0740": {
-        "at": "2026-11-03T10:37:50.282679Z",
-        "bodyHash": "441a16d8792021c2beaa56d8bb61c09abfa3e783dc1eb594a2de3daa8b6051cb",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117560951272849603",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
       },
       "9650c2a296350d7fc033ee70c64ac6280b1263848839eda489e956349bf06e5f": {
         "at": "2026-11-08T06:59:43.345105Z",
@@ -14681,26 +13785,6 @@
         "events": [],
         "links": [],
         "postId": "2117987185354051829",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "9ff86d120544af74a72d74de299b23238c7dd7b44837fd09468de4ce89089098": {
-        "at": "2026-11-03T22:34:09.507289Z",
-        "bodyHash": "50650884dd33edf87ee134e477c81c20a8391df0a5afe005a7975636da3f9163",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117282767570682014",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -15709,26 +14793,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "ace4281ce2327f5d7d2ffea522120372b84ecd24f7c6ab5d887ec568b8a16583": {
-        "at": "2026-11-03T10:33:49.069072Z",
-        "bodyHash": "4e702a4765b6d609077fc9e3d33db3241ed2ae8dd8c154c84834b6b300abd998",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117534454126375050",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "acf5391155aeadef8e91c9d75127ee4026882cc56967ac3c9dbca735cdf9b96f": {
         "at": "2026-11-05T22:19:08.436539Z",
         "bodyHash": "a1784d5173f77e50cbc234f4768fc114db6e31b910c215e578e0f7cbbf3ebed7",
@@ -15925,26 +14989,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "af3f4f04037d31b3819844bd33367cf30e29b5b3385d22354d0252a1c0105dda": {
-        "at": "2026-11-03T22:21:29.143952Z",
-        "bodyHash": "10e9e0e7a3e77016779b5a25b871ef3d1280297c2f2f1d7af8ec6300837a50a8",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117478211626156260",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "af4121d3fd8e0d174ffcb649de5af866081f97887cd995fdd81043fc892bd1a9": {
         "at": "2026-11-09T23:59:25.784343Z",
         "bodyHash": "5438bed4213a0911c1c84dc95f2f82ea69617174ecab9dcbde3aa8b56efbd1be",
@@ -15976,26 +15020,6 @@
         "events": [],
         "links": [],
         "postId": "2118721457060819299",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "afbb5822b578b759b36c4e3fa7a18650db0c7e77ca99e42bd43ad78be69fa47c": {
-        "at": "2026-11-03T22:39:18.204207Z",
-        "bodyHash": "a8ee65041b138fb82d60ea9d52474bff94bd6676610e962cde7645fff901e1f8",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117442210480406910",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -16071,42 +15095,6 @@
             "status": "set"
           }
         ]
-      },
-      "b081ea56180f54d9b232fea03d32b27c4a19158b8d27b0ad00efdb03a8f3cc40": {
-        "at": "2026-11-02T23:33:54.588503Z",
-        "bodyHash": "064145974b27114f1e5e911ab0aaa42e73a551c62f6862ada91ef2b43d9a0369",
-        "channels": {
-          "events": "confirmed",
-          "links": "confirmed",
-          "workTiming": "none"
-        },
-        "events": [
-          {
-            "excerpt": "1号店",
-            "kind": "placement",
-            "shift": "昼",
-            "storeId": "s1"
-          }
-        ],
-        "links": [
-          {
-            "scope": "昼",
-            "status": "work"
-          }
-        ],
-        "postId": "2117271125277474928",
-        "reason": "events",
-        "serviceDates": {
-          "events": [
-            "2026-11-03"
-          ],
-          "links": [
-            "2026-11-03"
-          ],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
       },
       "b0a2dee9bdd88082038b242f90572bc4059339d02c39a1773d0933fa0bdde6b9": {
         "at": "2026-11-05T10:32:39.731270Z",
@@ -17585,53 +16573,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "c690f6c0e734f7801100df762b666c232a7b36d5097dcbc89a66d887c2f87682": {
-        "at": "2026-11-03T22:41:20.806894Z",
-        "bodyHash": "d222851ca4e327453123d9c5b7ab35b55e4b778a266729829309df4383bb83a5",
-        "channels": {
-          "events": "confirmed",
-          "links": "confirmed",
-          "workTiming": "confirmed"
-        },
-        "events": [
-          {
-            "excerpt": "1号店",
-            "kind": "placement",
-            "shift": "夜",
-            "storeId": "s1"
-          }
-        ],
-        "links": [
-          {
-            "scope": "夜",
-            "status": "work"
-          }
-        ],
-        "postId": "2117271013486702861",
-        "reason": "events",
-        "serviceDates": {
-          "events": [
-            "2026-11-03"
-          ],
-          "links": [
-            "2026-11-03"
-          ],
-          "workTiming": [
-            "2026-11-03"
-          ]
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": [
-          {
-            "boundary": "start",
-            "explicitTime": "17:00",
-            "qualifier": null,
-            "serviceDate": "2026-11-03",
-            "shift": "夜",
-            "status": "set"
-          }
-        ]
-      },
       "c6c01924283ab4a22024a0e0ef8090be74f92ea282bf7833f6447ecefb59bd57": {
         "at": "2026-11-11T23:03:12.985555Z",
         "bodyHash": "b8a05ac34330345c2d41d03815c50861dea605dfe0778ba12d0c28d09ab2f1c7",
@@ -18289,26 +17230,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "cf94e4ca0a0afc19ab637eb4cdb199536045dc9c9098bae428cdeb17731f81ce": {
-        "at": "2026-11-03T22:24:32.551521Z",
-        "bodyHash": "efc9cd515ef204ec46267439d5042ea308a499a7a6d90764c33d1d8d88cc1faa",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117533999488987574",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "cfacdf109c45e3fc1e58450f287722b17edac0d4588bd61cbae411b420ffd28e": {
         "at": "2026-11-08T20:37:04.710818Z",
         "bodyHash": "473fe7acfd99042079caebc22aca9894421017ddde7d6cf704a3b0273161938a",
@@ -18514,26 +17435,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "d19dd61397d2cd3c37f80a7d0f38824800b7358ebe5c306a2c473fc7e153de70": {
-        "at": "2026-11-03T03:35:23.143883Z",
-        "bodyHash": "e6cfd4d2065c04f9bf505c716d909ffefa9172cdf8de05ceb71f07769aff814a",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117455303306539103",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "d1fd1aeaaf231b2ea767f3d2264d658b3cfb9157db69688b0c3686155f61f973": {
         "at": "2026-11-07T19:52:05.072574Z",
         "bodyHash": "32152fe4d48f5d45b2ba8381fb1e6919a7da2d9d59b5f1d5ed63f36983efb255",
@@ -18580,26 +17481,6 @@
             "status": "set"
           }
         ]
-      },
-      "d2cf2510831a4bf3425d1f46530f4dae91f3cbe3b1f173981b3d58489b7073aa": {
-        "at": "2026-11-02T23:31:50.675971Z",
-        "bodyHash": "ede5e00ca37485d9c7d52f91fb107af3b2914bbdc17e7575687665fc5ece7492",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117272002583253325",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
       },
       "d302ccd5aa35ed472f1c24826c253602907a9450f0cdc37e5abff59da5b8650c": {
         "at": "2026-11-17T00:25:06.989159Z",
@@ -19068,26 +17949,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "d569d58228d2ee54f771c53337fba1b066713749d479c0a86592f902245c91c9": {
-        "at": "2026-11-03T22:22:28.700887Z",
-        "bodyHash": "5fcd67153619dd2ac6b88f9224cdd7f1df7d278bcbf705bb7805cf9c8c8a268a",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117612186633986093",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "d5b17fe04e93054e350dfd1c9823f3673209fc7810cdbf4c37165be610535a7c": {
         "at": "2026-11-05T22:13:00.721258Z",
         "bodyHash": "91802fe7420305fa30608297e82a062416fcaf197fc1905f0c60c5e6b20437cd",
@@ -19290,46 +18151,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "d72a2ca7e3d0d91d570d020aa41d6a9b6b4176e54c3d9a77fd4498b426ecad69": {
-        "at": "2026-11-03T10:34:01.942877Z",
-        "bodyHash": "f603f6abc0d8afa1b03145b55fc6c9b6974824da5fef456b7c208af3b0b8ddce",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117548628453839357",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "d766470d3e60eb6ce81b5d769acae38d233f17dc07ba2e641ab769033b558e14": {
-        "at": "2026-11-02T23:24:38.342827Z",
-        "bodyHash": "30d59d38cede617bd5fc0d0f9a56abf542557a7fdd3bb2bf97841c9950712a22",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117274385434431890",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "d79a27f6c2b7c61bbaee69bc34771ce0cfdc69068eb34d08c454d4de787ea89e": {
         "at": "2026-11-07T06:52:06.447486Z",
         "bodyHash": "0a20f6474ba49a7a19f1127d41cfc4311b67536627694a442b986b018feaea0a",
@@ -19341,26 +18162,6 @@
         "events": [],
         "links": [],
         "postId": "2118924526163730870",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "d7f0fca40a7e27de8035f51c05239c06068c546966ea6f1e6d0d31f09c6b9b09": {
-        "at": "2026-11-03T22:18:23.296764Z",
-        "bodyHash": "a592287c4a2ccb4411760f3bff233b5c906b0861b16926ab5339823534b4c6cc",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117626493761364078",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -19423,26 +18224,6 @@
         "events": [],
         "links": [],
         "postId": "2121418014369468850",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "d8dbba9314e3fb75e8edc71fda99eea854e980cbcd64e7855acec79f49ee912a": {
-        "at": "2026-11-03T03:25:34.494245Z",
-        "bodyHash": "4635cbffa9125ab253e5c3a47b7fc1024000a01ed05d9e6fe43a20b3fdf50e32",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117434090953839039",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -20403,26 +19184,6 @@
           }
         ]
       },
-      "e6d27c96a359f730079f1f97051d85494d9e038b1e15ca4cf46f54e21f91eb3a": {
-        "at": "2026-11-02T23:34:54.946819Z",
-        "bodyHash": "53bfd43488aa54d434f313de83e61bdcbc9e3febe36c287ea14d2890239880d9",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117276593366438051",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "e6e22ceaa79a59e2338e511689c15c3118cc5607e03ed997eeb24846c20d6246": {
         "at": "2026-11-09T07:39:32.673732Z",
         "bodyHash": "d534fbbd1471b221bf897e89d6d6fadab4fb4623ce6776f6bd24ab5f3490e2e0",
@@ -21218,26 +19979,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "f103c9a730df298ff7f2d61d009ac36d0231b5e07df113407e13218070aeba96": {
-        "at": "2026-11-03T03:32:06.504484Z",
-        "bodyHash": "302e7363d80d93ee13d820db8e7ea3731be6f51f2ee0f17ffae3e646885c7176",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117455342338703386",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "f180960a4de7ffbb562b1bac37aef84f119e3a9459671c190c4615801e9b968a": {
         "at": "2026-11-09T07:53:40.920995Z",
         "bodyHash": "f9647ff29630be012f90c23879bdcb473b064c791a24687d27f20c9e202e759b",
@@ -21316,26 +20057,6 @@
         "events": [],
         "links": [],
         "postId": "2119593676385272091",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "f2c50b18c759723d4d75b8e247481cab47fd59e1f1e0c996581a3fd4fa239648": {
-        "at": "2026-11-03T22:27:38.196574Z",
-        "bodyHash": "c45257d719205508a7412cfd4d547e6ae78391e94f5b98f3bed417af31e741da",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117611299249217818",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -22060,26 +20781,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "f89d1c3bde7eaa01a6bbaccb81e5599598abea03db4460fec61fafc719c55e83": {
-        "at": "2026-11-03T10:36:49.892367Z",
-        "bodyHash": "48fba91a68a37389693c394e1c5a9051b214a1e18a06be02fb0bb569afd7322a",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2117538477340508210",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "f8ade77bda7161f3fef9bd13985553096dab97702af990e988421de30e30457a": {
         "at": "2026-11-17T00:22:43.134632Z",
         "bodyHash": "33355afd6c144470e994e8279bb53f75b1edf76a5178554bfedef2b92c2c1558",
@@ -22120,52 +20821,6 @@
           ],
           "links": [
             "2026-11-16"
-          ],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "f95f3ffd7457745ac478fcde5954a6188085f7d4b3b964eac3e42d707f540c29": {
-        "at": "2026-11-02T23:35:57.714885Z",
-        "bodyHash": "461299eaf54f799f39e645472177d5bf03f4bf8da68c4c4012f334ffad4c99df",
-        "channels": {
-          "events": "confirmed",
-          "links": "confirmed",
-          "workTiming": "none"
-        },
-        "events": [
-          {
-            "excerpt": "3号店",
-            "kind": "placement",
-            "shift": "昼",
-            "storeId": "s3"
-          },
-          {
-            "excerpt": "3号店",
-            "kind": "placement",
-            "shift": "夜",
-            "storeId": "s3"
-          }
-        ],
-        "links": [
-          {
-            "scope": "昼",
-            "status": "work"
-          },
-          {
-            "scope": "夜",
-            "status": "work"
-          }
-        ],
-        "postId": "2117271336510980174",
-        "reason": "events",
-        "serviceDates": {
-          "events": [
-            "2026-11-03"
-          ],
-          "links": [
-            "2026-11-03"
           ],
           "workTiming": []
         },
