@@ -192,13 +192,14 @@ function shiftsFor(name) {
     assert.equal(JSON.stringify(data.schedule[date]), JSON.stringify(day),
       `${date}: the original manual data must remain unchanged`);
   }
-  assert.ok(allPlans.every(plan => ["2026-09-16", "2026-10-16", "2026-11-01"].includes(plan.source.period.from)));
+  assert.ok(allPlans.every(plan => ["2026-09-16", "2026-10-16", "2026-11-01", "2026-11-16"].includes(plan.source.period.from)));
   assert.equal(new Set(plans.map(plan => plan.source.name)).size, 36);
   assert.equal(plans.length, 37);
   assert.equal(plans.reduce((total, plan) => total + plan.days.length, 0), 230);
   assert.equal(plans.reduce((total, plan) =>
     total + plan.days.reduce((count, day) => count + day.shifts.length, 0), 0), 265);
   const registry = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "data", "members.json"), "utf8"));
+  // No September source was found for the four kitchen members; later halves may have their own posts.
   const excluded = ["まこっちゃん", "うる", "みりん", "けだま"];
   for (const plan of allPlans) {
     const source = plan.source;
@@ -209,7 +210,7 @@ function shiftsFor(name) {
     assert.equal(source.confirmation.method, "source-confirmed");
     assert.match(source.confirmation.bodySha256, /^[a-f0-9]{64}$/);
     for (const hash of source.confirmation.imageSha256) assert.match(hash, /^[a-f0-9]{64}$/);
-    assert.ok(!excluded.includes(source.name));
+    if (source.period.from === "2026-09-16") assert.ok(!excluded.includes(source.name));
     for (const day of plan.days) {
       assert.ok(source.period.from <= day.date && day.date <= source.period.to);
       for (const shift of day.shifts) {
@@ -351,6 +352,38 @@ function shiftsFor(name) {
   const nov12 = [...new Set(Object.values(data.schedule["2026-11-12"]).flat().map(entry => entry.name))].sort();
   assert.deepEqual(nov12, ["あらた", "こん", "ちま", "ちゆ", "にゃな", "はぴる", "ひかり", "ぴあの", "みえる",
     "みりあ", "もなか"].sort());
+
+  // November second half: same method, for members whose images the cloud reader could not fetch.
+  const lateNovember = allPlans.filter(plan => plan.source.period.from === "2026-11-16");
+  assert.ok(lateNovember.every(plan => plan.source.period.to === "2026-11-30"));
+  assert.equal(lateNovember.length, 19);
+  assert.equal(new Set(lateNovember.map(plan => plan.source.name)).size, 19);
+  assert.equal(lateNovember.reduce((total, plan) => total + plan.days.length, 0), 110);
+  assert.equal(lateNovember.reduce((total, plan) =>
+    total + plan.days.reduce((count, day) => count + day.shifts.length, 0), 0), 138);
+  const late = (name) => lateNovember.find(plan => plan.source.name === name);
+  const lateCompact = (name) => Array.from(late(name).days, day => `${day.date.slice(8)}${day.shifts.join("")}`);
+  for (const name of ["あくび", "つぼみ", "ゆめ", "まひろ", "いと", "あめる", "かなた", "こい", "こえび", "すくい",
+    "ちぇる", "ちょこ", "にゃな"]) {
+    assert.equal(late(name), undefined, `${name}: graduated or already confirmed automatically`);
+  }
+  assert.deepEqual(lateCompact("あらた"), ["16昼夜"], "graduation day only");
+  assert.deepEqual(lateCompact("ひなり"), ["16夜", "18昼", "19夜", "20夜", "22昼", "25昼", "26昼", "28昼", "29昼", "30昼"],
+    "first-half rows of the same whole-month image stay out of this period");
+  assert.equal(late("ひなり").days.find(day => day.date === "2026-11-19").unmappedQualifier, "長め夜");
+  assert.ok(late("るるか").days.every(day => day.date >= "2026-11-16"));
+  const una19 = late("うな").days.find(day => day.date === "2026-11-19");
+  assert.deepEqual([...una19.shifts], ["夜"]);
+  assert.equal(una19.explicitStart, undefined, "word beats a conflicting clock");
+  assert.match(una19.reviewNote, /よる with 12-17/);
+  assert.deepEqual(lateCompact("ひかり"), ["17昼夜", "18夜", "21夜", "23夜", "25昼夜", "27夜", "28夜", "29夜", "30夜"],
+    "16-22 is 夜");
+  const monakaLate = late("もなか");
+  assert.equal(monakaLate.source.confirmation.replyTo, "2120935115845169485");
+  assert.deepEqual(lateCompact("もなか"), ["25昼夜", "26昼夜", "27昼", "30昼夜"]);
+  const nov25 = [...new Set(Object.values(data.schedule["2026-11-25"]).flat().map(entry => entry.name))].sort();
+  assert.deepEqual(nov25, ["うな", "きらり", "こん", "ちま", "ちゆ", "ひかり", "ひなり", "ぴあの", "まこっちゃん",
+    "みえる", "もなか", "ららこ", "るるか"].sort());
 }
 
 assert.deepEqual(
