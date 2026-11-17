@@ -48106,98 +48106,22 @@
   },
   "lastRun": {
     "activeTargetCount": 21,
-    "attemptedCount": 3,
+    "attemptedCount": 0,
     "complete": false,
     "date": "2026-11-17",
     "dateBasis": "JST calendar date, 00:00 boundary",
     "deferredCount": 7,
-    "failures": [
-      {
-        "id": "2122486725255766271",
-        "reason": "azure_pending"
-      },
-      {
-        "id": "2122343936559841559",
-        "reason": "azure_pending"
-      },
-      {
-        "id": "2122509820360327275",
-        "reason": "azure_pending"
-      },
-      {
-        "id": "2122354556688646526",
-        "reason": "azure_pending"
-      },
-      {
-        "id": "2120532634975809646",
-        "reason": "azure_ungrounded"
-      },
-      {
-        "id": "2120180088134422533",
-        "reason": "azure_ungrounded"
-      }
-    ],
-    "finishedAt": "2026-11-17T11:38:53.538311Z",
+    "failures": [],
+    "finishedAt": "2026-11-17T12:21:28.538175Z",
     "newEventCount": 0,
     "newPostCount": 0,
     "pendingCount": 36,
     "requests": {
-      "posts": 3,
-      "searches": 10
+      "posts": 0,
+      "searches": 0
     },
-    "sourceCount": 10,
-    "sources": [
-      {
-        "candidateCount": 6,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Akanata2_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 4,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Auna_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 9,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Akoi_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 2,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Aameru_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 4,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Akirari_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 1,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Acheru2_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 1,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Akedama_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 5,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Aemi_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 1,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Amakoto2_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 0,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Amirin_zettai&ei=UTF-8"
-      }
-    ],
+    "sourceCount": 0,
+    "sources": [],
     "status": "partial",
     "targetCount": 21
   },
@@ -75008,7 +74932,7 @@
     }
   ],
   "recovery": {
-    "chainId": "44075252045-1",
+    "chainId": "44082304412-1",
     "mode": "personal",
     "nextAt": null,
     "postIds": [],
