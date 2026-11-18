@@ -2011,6 +2011,49 @@ def half_month_member_status(state, names, period, now, collector):
     return {'period': period[0], 'states': labels, 'candidates': totals, 'members': rows}
 
 
+def read_source_confirmed_plans(root):
+    """Public user-confirmed plans (`window.SCHEDULE_DATA.sourceConfirmedPlans = [...]`)."""
+    text = (root / 'data' / 'schedule.js').read_text(encoding='utf-8-sig')
+    match = re.search(r'window\.SCHEDULE_DATA\.sourceConfirmedPlans\s*=\s*', text)
+    if not match:
+        return []
+    plans, _ = json.JSONDecoder().raw_decode(text, match.end())
+    require(isinstance(plans, list), 'invalid_source_confirmed_plans')
+    return plans
+
+
+def half_month_missing_plans(state, registry, plans, now, members):
+    """Active members with an X account but no schedule for the newest half whose publication
+    start was GROUP_FALLBACK_DAYS ago: neither confirmed automatically nor a source-confirmed plan.
+
+    Image posts whose text is only a URL never appear in Yahoo realtime search, so these are
+    listed for the user to send the URL; this is a notice, never a component failure.
+    """
+    facts = load_half_month_state()
+    today = now.astimezone(JST).date()
+    due = [period for period in facts.discovery_periods(today)
+           if today >= facts.publication_start(period) + dt.timedelta(days=facts.GROUP_FALLBACK_DAYS)]
+    if not due:
+        return {'period': None, 'members': []}
+    start = max(due)[0]
+
+    def canonical(name):
+        member = members.lookup(registry, name) if isinstance(name, str) else None
+        return member['canonicalName'] if member else name
+    found = {canonical(row['name']) for row in state['schedules'] if row['period']['from'] == start}
+    found |= {canonical(name) for name, row in state['coverage'].get(start, {}).items() if row['confirmedIds']}
+    for plan in plans:
+        source = plan.get('source', {}) if isinstance(plan, dict) else {}
+        if ((source.get('period') or {}).get('from') == start
+                and (source.get('confirmation') or {}).get('method') == 'source-confirmed'):
+            found.add(canonical(source.get('name')))
+    missing = [{'name': member['canonicalName'], 'handle': members.profile_handle(member['xProfileUrl'])}
+               for member in registry['members']
+               if member['xProfileUrl'] and members.active_on(member, now)
+               and member['canonicalName'] not in found]
+    return {'period': start, 'members': sorted(missing, key=lambda row: row['handle'].casefold())}
+
+
 def half_month_dependencies(root, environment):
     """Children run as `python -I -B`; prove that exact interpreter sees the image/cache deps.
 
@@ -2611,6 +2654,13 @@ def orchestrate(args, *, root=ROOT, environment=None, collector=None, personal=N
                 result['halfMonthSearches'] = {kind: kinds[kind] for kind in ('group', 'account')}
                 result['halfMonthMembers'] = half_month_member_status(
                     half_month_state, sorted(active_names), period, collector.utc_now(), collector)
+                try:
+                    result['halfMonthMissingPlans'] = half_month_missing_plans(
+                        half_month_state, registry, read_source_confirmed_plans(root), collector.utc_now(),
+                        member_registry)
+                except (CloudError, ValueError, OSError):
+                    # A notice only: an unreadable public plan file never fails or changes collection.
+                    pass
                 capacity = report.get('capacity', {})
                 require(isinstance(capacity, dict) and all(
                     key in HALF_MONTH_CAPACITY_TOKENS and type(value) is int and value > 0
@@ -3087,6 +3137,22 @@ def emit(result, environment):
             target.writelines(notes)
     if result['scheduleCapacityLimit']:
         print('::warning::Half-month queue capacity was reached: ' + result['scheduleCapacityLimit'])
+    missing = result.get('halfMonthMissingPlans')
+    if isinstance(missing, dict):
+        rows = [row for row in missing['members'] if re.fullmatch(r'[A-Za-z0-9_]{1,15}', row['handle'])]
+        result['scheduleMissingChecked'] = 'true'
+        result['scheduleMissingPeriod'] = missing['period'] or ''
+        result['scheduleMissingHandles'] = '-'.join(row['handle'] for row in rows)
+        if rows and environment.get('GITHUB_STEP_SUMMARY'):
+            lines = [f"\n## Half-month schedule posts not found ({missing['period']}; notice, not a failure)\n",
+                     '\n本文がURLだけの画像投稿などは検索に出ないため、URL を教えてください。'
+                     '（公開開始から2日たっても、自動の確定も sourceConfirmedPlans もない在籍メイド）\n']
+            lines += [f"\n- {row['name']}: https://x.com/{row['handle']}\n" for row in rows]
+            with Path(environment['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as target:
+                target.writelines(lines)
+        if rows:
+            print(f"::notice::Half-month schedule posts not found for {len(rows)} members ({missing['period']}); "
+                  'see the job summary.')
     image_health = result.get('halfMonthImageHealth')
     if image_health:
         result['scheduleImageStall'] = 'true' if image_health['stalled'] else 'false'
@@ -3132,7 +3198,8 @@ def emit(result, environment):
                    'personalCollectionStatus', 'personalCollectionCode', 'personalStateSource',
                    'halfMonthCollectionStatus', 'halfMonthCollectionCode',
                    'officialFailureReason', 'personalFailureReason', 'scheduleFailureReason',
-                   'scheduleCapacityLimit', 'scheduleImageStall', 'scheduleImageRead', 'stateSizeWarning',
+                   'scheduleCapacityLimit', 'scheduleImageStall', 'scheduleImageRead',
+                   'scheduleMissingChecked', 'scheduleMissingPeriod', 'scheduleMissingHandles', 'stateSizeWarning',
                    'rosterCollectionStatus', 'rosterCollectionCode',
                    'rosterFailureReason',
                    'reason', 'continuationReady', 'continuationMode', 'attention', 'failedComponents')
