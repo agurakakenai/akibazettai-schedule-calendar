@@ -446,6 +446,30 @@ class HalfMonthRecoveryTests(unittest.TestCase):
         state['collection']['startedAt'] = hcollector.iso(start + dt.timedelta(minutes=20))
         self.assertFalse(hcloud.half_month_wait_due(state, self.h.usage, self.h.source_state, self.now, hcollector))
 
+    def test_members_without_a_found_schedule_are_listed_two_days_after_publication_start(self):
+        members = hcloud.load_member_registry()
+        registry = members.empty_registry()
+        for index, (name, handle) in enumerate((('あむ', 'amu_zettai'), ('ちま', 'chima_zettai'),
+                                                ('すくい', 'sukui_zettai'), ('卒業', 'graduate'), ('無垢', None)), 1):
+            registry['members'].append(members.new_member(
+                name, handle and 'https://x.com/' + handle, dt.datetime(2026, 9, 1, tzinfo=hcloud.JST),
+                member_id='m-' + f'{index:032d}'))
+        registry['members'][3]['graduation'] = {'lastServiceDate': '2026-11-10',
+                                                'evidenceUrl': 'https://x.com/graduate/status/2109664298628944019'}
+        state = {'schedules': [{'name': 'すくい', 'period': {'from': '2026-11-16'}}],
+                 'coverage': {'2026-11-16': {'ちま': {'confirmedIds': []}}}}
+        plans = [{'source': {'name': 'ちま', 'period': {'from': '2026-11-16'},
+                             'confirmation': {'method': 'source-confirmed'}}}]
+        at = lambda day: dt.datetime(2026, 11, day, 12, tzinfo=hcloud.JST)
+        listed = lambda now, plans=plans: hcloud.half_month_missing_plans(state, registry, plans, now, members)
+        self.assertEqual(listed(at(14))['period'], '2026-11-01', '11/16 is not yet 2 days after 11/13')
+        self.assertEqual(listed(at(15)), {'period': '2026-11-16', 'members': [{'name': 'あむ', 'handle': 'amu_zettai'}]})
+        self.assertEqual([row['name'] for row in listed(at(18), [])['members']], ['あむ', 'ちま'])
+        plans_js = self.fx.root / 'data' / 'schedule.js'
+        plans_js.write_text('window.SCHEDULE_DATA = {"schedule": {}};\nwindow.SCHEDULE_DATA.sourceConfirmedPlans = '
+                            + json.dumps(plans, ensure_ascii=False) + ';\n', encoding='utf-8')
+        self.assertEqual(hcloud.read_source_confirmed_plans(self.fx.root), plans)
+
     def test_nothing_due_is_a_no_op(self):
         now, before = self.now, self.now - dt.timedelta(minutes=5)
         usage = copy.deepcopy(self.h.usage)
@@ -736,6 +760,28 @@ gh() {
         self.assertIn('issue close 7', self.run_alert({'SCHEDULE_STATUS': 'ok', 'SCHEDULE_CODE': '0'}, '7', capacity))
         self.assertNotIn('issue create', self.run_alert({'SCHEDULE_STATUS': 'partial', 'SCHEDULE_CODE': '2',
                                                          'SCHEDULE_IMAGE_STALL': 'true;$(touch pwned)'}))
+
+    def test_missing_schedule_notice_is_shown_kept_and_removed_without_a_failure(self):
+        found = {'SCHEDULE_STATUS': 'partial', 'SCHEDULE_CODE': '2', 'SCHEDULE_MISSING_CHECKED': 'true',
+                 'SCHEDULE_MISSING_PERIOD': '2026-11-16', 'SCHEDULE_MISSING_HANDLES': 'amu_zettai-chima_zettai'}
+        log = self.run_alert(found)
+        self.assertIn('issue create', log)
+        self.assertIn('<!-- schedule-notice 2026-11-16 amu_zettai-chima_zettai -->', log)
+        self.assertIn('[amu_zettai](https://x.com/amu_zettai)', log)
+        self.assertIn('URL を教えてください', log)
+        self.assertIn('<!-- alert-state -->', log)
+        self.assertNotIn('schedule=', log)
+        body = '<!-- alert-state -->\n<!-- schedule-notice 2026-11-16 amu_zettai-chima_zettai -->\nold'
+        for values in ({'OFFICIAL_STATUS': 'ok', 'OFFICIAL_CODE': '0'}, found):
+            with self.subTest(values=values):
+                log = self.run_alert(values, '7', body)
+                self.assertNotIn('issue close', log)
+                self.assertNotIn('issue edit', log)
+        log = self.run_alert({**found, 'SCHEDULE_MISSING_HANDLES': 'amu_zettai'}, '7', body)
+        self.assertIn('<!-- schedule-notice 2026-11-16 amu_zettai -->', log)
+        log = self.run_alert({**found, 'SCHEDULE_MISSING_HANDLES': ''}, '7', body)
+        self.assertIn('issue close 7', log)
+        self.assertNotIn('issue create', self.run_alert({**found, 'SCHEDULE_MISSING_HANDLES': 'a;$(touch pwned)'}))
 
     def test_roster_failure_is_its_own_component_until_a_roster_run_succeeds(self):
         failing = {'ATTENTION': 'true', 'COMPONENTS': 'roster', 'ROSTER_STATUS': 'unavailable',
