@@ -356,11 +356,11 @@ function shiftsFor(name) {
   // November second half: same method, for members whose images the cloud reader could not fetch.
   const lateNovember = allPlans.filter(plan => plan.source.period.from === "2026-11-16");
   assert.ok(lateNovember.every(plan => plan.source.period.to === "2026-11-30"));
-  assert.equal(lateNovember.length, 20);
-  assert.equal(new Set(lateNovember.map(plan => plan.source.name)).size, 20);
-  assert.equal(lateNovember.reduce((total, plan) => total + plan.days.length, 0), 114);
+  assert.equal(lateNovember.length, 21);
+  assert.equal(new Set(lateNovember.map(plan => plan.source.name)).size, 21);
+  assert.equal(lateNovember.reduce((total, plan) => total + plan.days.length, 0), 125);
   assert.equal(lateNovember.reduce((total, plan) =>
-    total + plan.days.reduce((count, day) => count + day.shifts.length, 0), 0), 143);
+    total + plan.days.reduce((count, day) => count + day.shifts.length, 0), 0), 158);
   const late = (name) => lateNovember.find(plan => plan.source.name === name);
   const lateCompact = (name) => Array.from(late(name).days, day => `${day.date.slice(8)}${day.shifts.join("")}`);
   for (const name of ["あくび", "つぼみ", "ゆめ", "まひろ", "いと", "あめる", "かなた", "こい", "こえび", "すくい",
@@ -383,8 +383,17 @@ function shiftsFor(name) {
   assert.deepEqual(lateCompact("もなか"), ["25昼夜", "26昼夜", "27昼", "30昼夜"]);
   // The table image carries the period; the post body is only a hashtag line.
   assert.deepEqual(lateCompact("しゃち"), ["18昼", "24昼夜", "25昼", "30夜"]);
+  // あむ's table post body is only a URL; clock-only rows map by store hours, and the nap note is not hours.
+  assert.deepEqual(lateCompact("あむ"), ["16昼夜", "17夜", "19昼夜", "21夜", "22夜", "23夜", "24夜", "25昼夜", "27昼",
+    "28夜", "30昼夜"]);
+  const amu17 = data.schedule["2026-11-17"]["夜"].find(entry => entry.name === "あむ").workTiming.facts
+    .find(fact => fact.boundary === "start");
+  assert.equal(amu17.explicitTime, "16:00");
+  assert.equal(amu17.qualifier, null);
+  assert.ok(late("あむ").days.filter(day => day.reviewNote).every(day => day.explicitStart === "12:00" &&
+    day.explicitEnd === "22:00" && /nap/.test(day.reviewNote)));
   const nov25 = [...new Set(Object.values(data.schedule["2026-11-25"]).flat().map(entry => entry.name))].sort();
-  assert.deepEqual(nov25, ["うな", "きらり", "こん", "しゃち", "ちま", "ちゆ", "ひかり", "ひなり", "ぴあの", "まこっちゃん",
+  assert.deepEqual(nov25, ["あむ", "うな", "きらり", "こん", "しゃち", "ちま", "ちゆ", "ひかり", "ひなり", "ぴあの", "まこっちゃん",
     "みえる", "もなか", "ららこ", "るるか"].sort());
 }
 
