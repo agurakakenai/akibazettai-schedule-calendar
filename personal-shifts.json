@@ -294,53 +294,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "0391050837a3bc50355f53a630eeaec80657f8dabed2195a462699f245836bf8": {
-        "at": "2026-11-05T21:51:26.782220Z",
-        "bodyHash": "a4de5b04468a3cf416042e7dd1717831115eb6866bece88425fd2436f7f7aa40",
-        "channels": {
-          "events": "confirmed",
-          "links": "confirmed",
-          "workTiming": "confirmed"
-        },
-        "events": [
-          {
-            "excerpt": "1号店",
-            "kind": "placement",
-            "shift": "夜",
-            "storeId": "s1"
-          }
-        ],
-        "links": [
-          {
-            "scope": "夜",
-            "status": "work"
-          }
-        ],
-        "postId": "2118359945284563288",
-        "reason": "events",
-        "serviceDates": {
-          "events": [
-            "2026-11-06"
-          ],
-          "links": [
-            "2026-11-06"
-          ],
-          "workTiming": [
-            "2026-11-06"
-          ]
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": [
-          {
-            "boundary": "start",
-            "explicitTime": "17:00",
-            "qualifier": null,
-            "serviceDate": "2026-11-06",
-            "shift": "夜",
-            "status": "set"
-          }
-        ]
-      },
       "03fc388a002e06af7c20ddf8abde020bc8450d1cb5c2e34d67ae367f73e03deb": {
         "at": "2026-09-12T20:05:41.699797Z",
         "bodyHash": "7e5c2f66f8edbf12bd25759f26e9b7870e9d8ca4452814ef1512b2e26edc0415",
@@ -792,48 +745,6 @@
           ],
           "links": [
             "2026-11-11"
-          ],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "0991853380a3a9dfc10e11f50fdbb9ed358156d16023392baa9d8751430f9d01": {
-        "at": "2026-11-06T22:14:02.237162Z",
-        "bodyHash": "2fbf81678adf053797e7726e56dec585774d8f674ba25666b7d1d5ca6c7566a9",
-        "channels": {
-          "events": "confirmed",
-          "links": "confirmed",
-          "workTiming": "none"
-        },
-        "events": [
-          {
-            "excerpt": "1号店",
-            "kind": "placement",
-            "shift": "昼",
-            "storeId": "s1"
-          },
-          {
-            "excerpt": "1号店",
-            "kind": "placement",
-            "shift": "夜",
-            "storeId": "s1"
-          }
-        ],
-        "links": [
-          {
-            "scope": "unspecified",
-            "status": "work"
-          }
-        ],
-        "postId": "2118501718392729689",
-        "reason": "events",
-        "serviceDates": {
-          "events": [
-            "2026-11-06"
-          ],
-          "links": [
-            "2026-11-06"
           ],
           "workTiming": []
         },
@@ -2475,42 +2386,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "1f19776dca257d377cee899950e591647c77db72dffe8c19acdc8c54622ff7eb": {
-        "at": "2026-11-05T21:47:17.299646Z",
-        "bodyHash": "f1cd29d6b13cc2cb13bb02f6ca5bcf36c8fddc47b29275782533f76d2eadf27c",
-        "channels": {
-          "events": "confirmed",
-          "links": "confirmed",
-          "workTiming": "none"
-        },
-        "events": [
-          {
-            "excerpt": "1号店",
-            "kind": "placement",
-            "shift": "夜",
-            "storeId": "s1"
-          }
-        ],
-        "links": [
-          {
-            "scope": "夜",
-            "status": "work"
-          }
-        ],
-        "postId": "2118357679869468956",
-        "reason": "events",
-        "serviceDates": {
-          "events": [
-            "2026-11-06"
-          ],
-          "links": [
-            "2026-11-06"
-          ],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "1f20e9f0333a214f8708a2f2a12c0eef2b36aca240db3bebb31ae7ac36809767": {
         "at": "2026-11-09T11:04:09.593070Z",
         "bodyHash": "014df1e68aa1713114e5af55a3f43693e391d25a92b05384feb586c803b332b0",
@@ -3387,26 +3262,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "2cb8d98d9ddc8e4d4097f7d6670fcff64b644e3c76922d3982fdfd58f0d653fc": {
-        "at": "2026-11-06T07:34:45.545096Z",
-        "bodyHash": "96a306db1c5bcfc34f6cbf0792300866a08aa154f2bad4e1e584541140c2567c",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2118542558230176194",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "2d085a40e5beb41324d7f3f42a524ba970e551758bfb5b0f486f2334a9598ca2": {
         "at": "2026-11-08T07:02:49.304255Z",
         "bodyHash": "e0acf4b9300fcfc0ed9bca0b0e28d9b9ef6cc56fc3584e0f073e685c28e33dfb",
@@ -3738,26 +3593,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "31edf8d02bac86de6c0c1c1e05cfc58e3990280e89e8a1c0d8d257bd8031a7f9": {
-        "at": "2026-11-06T07:32:34.185960Z",
-        "bodyHash": "94f12ae273b4d39e3fa1f84476360d7f5a7803a16b7c684fc5ba2e2ff42f6f6b",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2118575096336109899",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "32cc6d270499940468a89fb02b8bc1ca24658a56066c9a71c8d04057d159aaa5": {
         "at": "2026-11-09T23:58:23.686383Z",
         "bodyHash": "ecbff7af78dcdacf1284b7385b543fa7a08dac0fa3e4bac866c34fea055fcf18",
@@ -3810,26 +3645,6 @@
         "links": [],
         "postId": "2121874329751457904",
         "reason": "azure_pending",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "337f2da2e01a16962b4c6b9bb70e19fc52c3f113a093a3f5cef77e5d9747cbfd": {
-        "at": "2026-11-06T22:13:00.332081Z",
-        "bodyHash": "6b8425d857283638e28fdf8d6ec7380841c2c8e55a037239a39934651a7f725a",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2118705139368477137",
-        "reason": "no_event",
         "serviceDates": {
           "events": [],
           "links": [],
@@ -5185,33 +5000,6 @@
         "serviceDates": {
           "events": [],
           "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "4453818679079f0af0d77c52abef29954ab4138cc4fedde069566551621e94d8": {
-        "at": "2026-11-06T07:35:47.559756Z",
-        "bodyHash": "2984062b5bfca66fa6c2347c0c4a0151cdd6d528154cdcd4925ef0de7e71bfe5",
-        "channels": {
-          "events": "pending",
-          "links": "confirmed",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [
-          {
-            "scope": "昼",
-            "status": "work"
-          }
-        ],
-        "postId": "2118550705564971409",
-        "reason": "links",
-        "serviceDates": {
-          "events": [],
-          "links": [
-            "2026-11-06"
-          ],
           "workTiming": []
         },
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
@@ -6683,26 +6471,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "5602c123b825a8dc3fc2dfcf97f501b5c412016024e4d45fb8aaf8281ffee1af": {
-        "at": "2026-11-06T10:32:59.145670Z",
-        "bodyHash": "0b89017e35db034bc788010276c7a71c489278e0e9f8f033230469e369dcb64c",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2118622515824373812",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "5654ee15e0b2cd4f870d50c024a310facc1168ad666049cd6147d28a1a8ba6b0": {
         "at": "2026-11-12T10:45:33.556578Z",
         "bodyHash": "a3c2b2651d34e0bff43c791866bf7cbdda3f7b3e089a8ef809be6e7819381e30",
@@ -7232,33 +7000,6 @@
           ],
           "links": [
             "2026-11-10"
-          ],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "5c56a18eb9d97feaca6f99e69c92ea9d1b451fef6697de0ca3923c8dd39c00b1": {
-        "at": "2026-11-05T21:48:19.340663Z",
-        "bodyHash": "dfad5de04a72213002a6590e4ba464c1dacd323a701370dceb5567fccd657fc3",
-        "channels": {
-          "events": "pending",
-          "links": "confirmed",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [
-          {
-            "scope": "昼",
-            "status": "work"
-          }
-        ],
-        "postId": "2118359185880703099",
-        "reason": "links",
-        "serviceDates": {
-          "events": [],
-          "links": [
-            "2026-11-06"
           ],
           "workTiming": []
         },
@@ -8109,26 +7850,6 @@
         "events": [],
         "links": [],
         "postId": "2119667722770690529",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "670d5640a44175b3e5d2014d1bc4beacf8e610e040c71df7eea290c6c72e149d": {
-        "at": "2026-11-05T21:46:15.674339Z",
-        "bodyHash": "f2bf871ef37ef344f87ae8498bb378f9cf03ce91bc60701e59aa38dca81aa4ab",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2118360676276339121",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -9926,26 +9647,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "7ee899d88d55fab04c7e8caf4090fe63ff6c07023e552dd86efb026ce350acdd": {
-        "at": "2026-11-05T21:45:01.047482Z",
-        "bodyHash": "06dc63f91ec08e75c17903039fcbae341a4fc6aa074e120f6fd740c378272687",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2118375558950359429",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "7f4f5e99f7c895a88db93039c5a8f0311c01b09ace21a07ac5054d0ab6507594": {
         "at": "2026-11-17T11:37:32.004428Z",
         "bodyHash": "64de1d1d842ff6f4159a33d9ba4704638d80228295722ab1e7c306c8686fa8a5",
@@ -10301,53 +10002,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "823adb62e702b1f6cdc59e6689324c82d7a56f501ea021813bb69ad37a82bb1a": {
-        "at": "2026-11-06T02:05:01.034828Z",
-        "bodyHash": "61068c771d191d105f5e1f5715798ac17383d895a041016ab7bfa4b5a4e8d97f",
-        "channels": {
-          "events": "confirmed",
-          "links": "confirmed",
-          "workTiming": "confirmed"
-        },
-        "events": [
-          {
-            "excerpt": "1号店",
-            "kind": "placement",
-            "shift": "昼",
-            "storeId": "s1"
-          }
-        ],
-        "links": [
-          {
-            "scope": "昼",
-            "status": "work"
-          }
-        ],
-        "postId": "2118522730282930509",
-        "reason": "events",
-        "serviceDates": {
-          "events": [
-            "2026-11-06"
-          ],
-          "links": [
-            "2026-11-06"
-          ],
-          "workTiming": [
-            "2026-11-06"
-          ]
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": [
-          {
-            "boundary": "end",
-            "explicitTime": "17:00",
-            "qualifier": null,
-            "serviceDate": "2026-11-06",
-            "shift": "昼",
-            "status": "set"
-          }
-        ]
-      },
       "823c3b7713229d24e0d541873451b02354d17a4001c59933d396622e03193a4b": {
         "at": "2026-11-17T23:32:12.156493Z",
         "bodyHash": "45d37672b65cf820329080b7252cf7c3634f2ca7c48f596476e6c793437dea8c",
@@ -10517,26 +10171,6 @@
             "status": "set"
           }
         ]
-      },
-      "833e7ff012d17ddab578ac72a6a058c208cc92215f84c094566eca1e19282933": {
-        "at": "2026-11-06T07:33:45.105563Z",
-        "bodyHash": "6a93ee378cdf78c087e42722f6fdb5745a018ae0fb67fb8a0596ddd04916d02c",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2118532112550952989",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
       },
       "8376f6ef0adec85ee4190b0c1cd606fd046c0ef3aba8c4e06aa7ce6571199cea": {
         "at": "2026-11-10T00:07:41.416719Z",
@@ -11798,26 +11432,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "932f52134c096c59708eae3c827c7a8381eea965eb8b8317a3e4b77370a455b9": {
-        "at": "2026-11-06T07:32:46.932273Z",
-        "bodyHash": "76daffa737488844cc0fa861583a3934d7c70e260520ab144a3dfd1f6d2d7dd1",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2118574365642289515",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "93697b2150934bae177eb52adb66ec4f74e5691cbc184c1bacbbfb3d060ab480": {
         "at": "2026-11-17T23:19:45.014431Z",
         "bodyHash": "262f9ed20308b3ba24babbd904613687bd51f2959df23c0fc44d57268ba1eb35",
@@ -12937,26 +12551,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "a0df7737209f7f69c469bf5ab8e9d0c510f2dc6412cfb179ab395763ea64d62b": {
-        "at": "2026-11-05T21:52:28.108666Z",
-        "bodyHash": "f428852f9804f07fc60deffb44f8672e126ba94fed1f256f3e8b7d42b9329a28",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2118359081367027824",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "a15e9358b95eb56908ae03dd927ac9ae56c6e57a7cc78092eb45fdf14fa2f8d0": {
         "at": "2026-11-14T19:55:34.790128Z",
         "bodyHash": "f1b11d966bc3c72dd321f7220bdf1a99b1362075e657642126f46aff314dbccc",
@@ -13218,26 +12812,6 @@
         "events": [],
         "links": [],
         "postId": "2119289406339367394",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "a61c9daa3d1e5073dff8c4d199ec88a02590ecdbd42341b64de2899696fcf3f3": {
-        "at": "2026-11-05T21:49:21.812871Z",
-        "bodyHash": "86f60852c402cae62af81d410ce9ce4178e7c9c27a62e59b812f44c15f44b6f8",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2118375026147942621",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -15968,26 +15542,6 @@
         "events": [],
         "links": [],
         "postId": "2119131671333323005",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "ceeaee88d118f2caba37b166df607f736d3e18906adb8a6a8fb8f98f9a413b65": {
-        "at": "2026-11-06T22:12:07.756187Z",
-        "bodyHash": "18842f13773fd5ead76dbbb3c6fc16dfb49aecbb58b8d5ae0aa89605678c7295",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2118705973187809593",
         "reason": "no_event",
         "serviceDates": {
           "events": [],
@@ -18963,26 +18517,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "f0de186318e2676bbb4575c805b270784cfbd884ea6e104c187d4c5d87a7985d": {
-        "at": "2026-11-05T21:45:13.726167Z",
-        "bodyHash": "d9924080a2d91634db5487fd101bce1e656d0be3cde613897b9f64a2470245cb",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2118375890757566734",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
       "f0de557017845cc06d45cd5791eff69d6a6d97a93828a91279ea132ef3a257d2": {
         "at": "2026-11-11T22:31:04.320081Z",
         "bodyHash": "49dbca2ad6f6e083735451e72a245e899fcd6addadb8cd08787d528b37457abe",
@@ -19565,53 +19099,6 @@
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
         "workTiming": []
       },
-      "f78cfa84e1fe10c5080d8a0ec5e38140e328ff3ae9ffd4341bcb2da0d8d70274": {
-        "at": "2026-11-05T21:50:22.701668Z",
-        "bodyHash": "4cf028f67826059341a3a2728a719d57db93e37fe87e3375dbe58ad38f55c939",
-        "channels": {
-          "events": "confirmed",
-          "links": "confirmed",
-          "workTiming": "confirmed"
-        },
-        "events": [
-          {
-            "excerpt": "1号店",
-            "kind": "placement",
-            "shift": "夜",
-            "storeId": "s1"
-          }
-        ],
-        "links": [
-          {
-            "scope": "夜",
-            "status": "work"
-          }
-        ],
-        "postId": "2118359054338994385",
-        "reason": "events",
-        "serviceDates": {
-          "events": [
-            "2026-11-06"
-          ],
-          "links": [
-            "2026-11-06"
-          ],
-          "workTiming": [
-            "2026-11-06"
-          ]
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": [
-          {
-            "boundary": "start",
-            "explicitTime": "17:00",
-            "qualifier": null,
-            "serviceDate": "2026-11-06",
-            "shift": "夜",
-            "status": "set"
-          }
-        ]
-      },
       "f7e3bc041a201933280e618aa6d5cd8b460b6674897dd2d56ba52b4c27bd854e": {
         "at": "2026-09-12T18:11:25.029539Z",
         "bodyHash": "10a592eb23cd4b4cea8eddb5468d72826c0b209ebd6c8563120cc8c21745b68f",
@@ -20018,26 +19505,6 @@
           "links": [
             "2026-11-08"
           ],
-          "workTiming": []
-        },
-        "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
-        "workTiming": []
-      },
-      "fda57171ea21013f03214e046e2a83fd3355f3e2c04ad8ee6c88c25dfa28ae29": {
-        "at": "2026-11-06T07:36:51.097068Z",
-        "bodyHash": "adc5953403c802cc0e2050d9b4e5cd4878f354684c152e2a0ab18eba361bab7a",
-        "channels": {
-          "events": "none",
-          "links": "none",
-          "workTiming": "none"
-        },
-        "events": [],
-        "links": [],
-        "postId": "2118526363225461001",
-        "reason": "no_event",
-        "serviceDates": {
-          "events": [],
-          "links": [],
           "workTiming": []
         },
         "versionHash": "66c65c2fd8b6d076ed949691a391b115298f4cd4b15bce31b3a76877fdc7c240",
