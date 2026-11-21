@@ -20753,11 +20753,11 @@
       "searches": 13
     },
     "2026-11-21": {
-      "posts": 20,
+      "posts": 22,
       "searches": 9
     }
   },
-  "checkedAt": "2026-11-21T07:54:08.742972Z",
+  "checkedAt": "2026-11-21T10:45:44.494589Z",
   "collectionSlots": [
     "personal:2026-09-23T10:00+09:00",
     "personal:2026-09-23T12:00+09:00",
@@ -46506,7 +46506,7 @@
         "postIds": [
           "2123793503822155982"
         ],
-        "reason": "metadata_only",
+        "reason": "response_id_mismatch",
         "searchedAt": "2026-11-21T03:04:44.590323Z",
         "shifts": [
           "昼"
@@ -47238,33 +47238,36 @@
     }
   },
   "lastRequests": {
-    "cdn.syndication.twimg.com": "2026-11-21T03:04:49.532842Z",
+    "cdn.syndication.twimg.com": "2026-11-21T10:46:02.715912Z",
     "search.yahoo.co.jp": "2026-11-21T07:54:10.521687Z"
   },
   "lastRun": {
     "activeTargetCount": 33,
-    "attemptedCount": 0,
+    "attemptedCount": 2,
     "complete": false,
     "date": "2026-11-21",
     "dateBasis": "JST calendar date, 00:00 boundary",
     "deferredCount": 8,
-    "failures": [],
-    "finishedAt": "2026-11-21T07:54:13.803491Z",
+    "failures": [
+      {
+        "id": "2124016681425277013",
+        "reason": "response_id_mismatch"
+      },
+      {
+        "id": "2123979387628630101",
+        "reason": "response_id_mismatch"
+      }
+    ],
+    "finishedAt": "2026-11-21T10:46:05.935476Z",
     "newEventCount": 0,
     "newPostCount": 0,
     "pendingCount": 28,
     "requests": {
-      "posts": 0,
-      "searches": 1
+      "posts": 2,
+      "searches": 0
     },
-    "sourceCount": 1,
-    "sources": [
-      {
-        "candidateCount": 4,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Auna_zettai&ei=UTF-8"
-      }
-    ],
+    "sourceCount": 0,
+    "sources": [],
     "status": "partial",
     "targetCount": 33
   },
@@ -48678,28 +48681,28 @@
       "url": "https://x.com/miria_zettai/status/2123822140105650369"
     },
     {
-      "attempts": 0,
+      "attempts": 1,
       "authorId": "1959230080657563648",
       "authorScreenName": "una_zettai",
       "date": "2026-11-21",
       "firstSeenAt": "2026-11-21T07:54:13.482264Z",
       "id": "2124016681425277013",
-      "lastAttemptAt": null,
+      "lastAttemptAt": "2026-11-21T10:45:47.457104Z",
       "name": "うな",
-      "reason": "discovered",
+      "reason": "response_id_mismatch",
       "searchCreatedAt": "2026-11-21T05:46:53Z",
       "url": "https://x.com/una_zettai/status/2124016681425277013"
     },
     {
-      "attempts": 0,
+      "attempts": 1,
       "authorId": "1959230080657563648",
       "authorScreenName": "una_zettai",
       "date": "2026-11-21",
       "firstSeenAt": "2026-11-21T07:54:13.482277Z",
       "id": "2123979387628630101",
-      "lastAttemptAt": null,
+      "lastAttemptAt": "2026-11-21T10:45:55.249278Z",
       "name": "うな",
-      "reason": "discovered",
+      "reason": "response_id_mismatch",
       "searchCreatedAt": "2026-11-21T03:18:42Z",
       "url": "https://x.com/una_zettai/status/2123979387628630101"
     }
@@ -75577,11 +75580,8 @@
     "chainId": "44858949491-1",
     "mode": "personal",
     "nextAt": null,
-    "postIds": [
-      "2124016681425277013",
-      "2123979387628630101"
-    ],
-    "reason": "no_progress",
+    "postIds": [],
+    "reason": "complete",
     "searches": [],
     "serviceDate": "2026-11-21",
     "targets": {
