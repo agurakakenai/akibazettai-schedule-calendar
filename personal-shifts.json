@@ -20754,10 +20754,10 @@
     },
     "2026-11-21": {
       "posts": 20,
-      "searches": 8
+      "searches": 9
     }
   },
-  "checkedAt": "2026-11-21T03:05:43.452398Z",
+  "checkedAt": "2026-11-21T07:54:08.742972Z",
   "collectionSlots": [
     "personal:2026-09-23T10:00+09:00",
     "personal:2026-09-23T12:00+09:00",
@@ -45334,7 +45334,7 @@
         ],
         "postIds": [],
         "reason": "azure_pending",
-        "searchedAt": "2026-11-19T23:20:07.602368Z",
+        "searchedAt": "2026-11-21T07:54:13.589311Z",
         "shifts": [
           "夜"
         ]
@@ -46506,7 +46506,7 @@
         "postIds": [
           "2123793503822155982"
         ],
-        "reason": "verified_post_available",
+        "reason": "metadata_only",
         "searchedAt": "2026-11-21T03:04:44.590323Z",
         "shifts": [
           "昼"
@@ -47239,69 +47239,36 @@
   },
   "lastRequests": {
     "cdn.syndication.twimg.com": "2026-11-21T03:04:49.532842Z",
-    "search.yahoo.co.jp": "2026-11-21T03:05:53.507073Z"
+    "search.yahoo.co.jp": "2026-11-21T07:54:10.521687Z"
   },
   "lastRun": {
     "activeTargetCount": 33,
-    "attemptedCount": 4,
+    "attemptedCount": 0,
     "complete": false,
     "date": "2026-11-21",
     "dateBasis": "JST calendar date, 00:00 boundary",
-    "deferredCount": 6,
-    "failures": [
-      {
-        "id": "2123822140105650369",
-        "reason": "azure_pending"
-      },
-      {
-        "id": "2123795019069055279",
-        "reason": "azure_pending"
-      },
-      {
-        "id": "2123793489573933441",
-        "reason": "azure_pending"
-      }
-    ],
-    "finishedAt": "2026-11-21T03:05:57.651236Z",
-    "newEventCount": 2,
-    "newPostCount": 2,
-    "pendingCount": 26,
+    "deferredCount": 8,
+    "failures": [],
+    "finishedAt": "2026-11-21T07:54:13.803491Z",
+    "newEventCount": 0,
+    "newPostCount": 0,
+    "pendingCount": 28,
     "requests": {
-      "posts": 4,
-      "searches": 5
+      "posts": 0,
+      "searches": 1
     },
-    "sourceCount": 5,
+    "sourceCount": 1,
     "sources": [
       {
-        "candidateCount": 7,
+        "candidateCount": 4,
         "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=%28id%3Akoebi_zettai+OR+id%3Amochi1_zettai+OR+id%3Akanata2_zettai+OR+id%3Acheru2_zettai+OR+id%3Aemi_zettai+OR+id%3Amiria_zettai+OR+id%3Ahikari_zettai+OR+id%3Amakoto2_zettai%29&ei=UTF-8"
-      },
-      {
-        "candidateCount": 1,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Achisato_zettai&ei=UTF-8"
-      },
-      {
-        "candidateCount": 11,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=%28id%3Achoko_zettai+OR+id%3Asukui_zettai+OR+id%3Akoi_zettai+OR+id%3Anyana_zettai+OR+id%3Aamu_zettai+OR+id%3Auna_zettai+OR+id%3Aameru_zettai+OR+id%3Amieru_zettai%29&ei=UTF-8"
-      },
-      {
-        "candidateCount": 0,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=%28id%3Auru_zettai+OR+id%3Aeru_zettai+OR+id%3Akedama_zettai%29&ei=UTF-8"
-      },
-      {
-        "candidateCount": 2,
-        "status": "ok",
-        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Amirin_zettai&ei=UTF-8"
+        "url": "https://search.yahoo.co.jp/realtime/search?p=id%3Auna_zettai&ei=UTF-8"
       }
     ],
     "status": "partial",
     "targetCount": 33
   },
-  "lastSuccessAt": "2026-11-21T03:05:57.323410Z",
+  "lastSuccessAt": "2026-11-21T07:54:13.640843Z",
   "originalTargets": {
     "2026-09-06": {
       "あくび": {
@@ -48709,6 +48676,32 @@
       "reason": "azure_pending",
       "searchCreatedAt": "2026-11-20T16:53:51Z",
       "url": "https://x.com/miria_zettai/status/2123822140105650369"
+    },
+    {
+      "attempts": 0,
+      "authorId": "1959230080657563648",
+      "authorScreenName": "una_zettai",
+      "date": "2026-11-21",
+      "firstSeenAt": "2026-11-21T07:54:13.482264Z",
+      "id": "2124016681425277013",
+      "lastAttemptAt": null,
+      "name": "うな",
+      "reason": "discovered",
+      "searchCreatedAt": "2026-11-21T05:46:53Z",
+      "url": "https://x.com/una_zettai/status/2124016681425277013"
+    },
+    {
+      "attempts": 0,
+      "authorId": "1959230080657563648",
+      "authorScreenName": "una_zettai",
+      "date": "2026-11-21",
+      "firstSeenAt": "2026-11-21T07:54:13.482277Z",
+      "id": "2123979387628630101",
+      "lastAttemptAt": null,
+      "name": "うな",
+      "reason": "discovered",
+      "searchCreatedAt": "2026-11-21T03:18:42Z",
+      "url": "https://x.com/una_zettai/status/2123979387628630101"
     }
   ],
   "posts": [
@@ -75584,15 +75577,12 @@
     "chainId": "44858949491-1",
     "mode": "personal",
     "nextAt": null,
-    "postIds": [],
-    "reason": "no_progress",
-    "searches": [
-      {
-        "date": "2026-11-17",
-        "handle": "una_zettai",
-        "name": "うな"
-      }
+    "postIds": [
+      "2124016681425277013",
+      "2123979387628630101"
     ],
+    "reason": "no_progress",
+    "searches": [],
     "serviceDate": "2026-11-21",
     "targets": {
       "2026-11-15": {},
@@ -111951,7 +111941,7 @@
         "handle": "ameru_zettai"
       },
       "うな": {
-        "attemptedAt": "2026-11-19T23:20:07.602368Z",
+        "attemptedAt": "2026-11-21T07:54:13.589311Z",
         "handle": "una_zettai"
       },
       "かなた": {
